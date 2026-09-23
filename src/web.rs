@@ -6,6 +6,7 @@ use crate::bill;
 use crate::invoice;
 use crate::journal::{self, Entry, Posting};
 use crate::reconcile;
+use crate::statement;
 use crate::repo::Ctx;
 use anyhow::{bail, Context as _, Result};
 use axum::extract::{DefaultBodyLimit, Form, Multipart, Path, Query, State};
@@ -28,6 +29,7 @@ pub async fn serve(ctx: Ctx, port: u16) -> Result<()> {
     let app = Router::new()
         .route("/", get(index))
         .route("/add", get(add_form).post(add_submit))
+        .route("/report/{kind}", get(report))
         .route("/reconcile", get(reconcile_view).post(reconcile_act))
         .route("/invoice", get(invoice_form).post(invoice_submit))
         .route("/invoice/{number}", get(invoice_pdf))
@@ -93,6 +95,7 @@ async fn index(State(ctx): State<Arc<Ctx>>) -> Response {
                 a href="/bill" { "Book a bill" } " · "
                 a href="/invoice" { "Issue an invoice" } " · "
                 a href="/reconcile" { "Reconcile" } " · "
+                a href="/report/pl" { "Statements" } " · "
                 a href="/add" { "Book an entry by hand" }
             }
             @if !waiting.is_empty() {
@@ -169,6 +172,92 @@ struct InvoiceForm {
 }
 
 type Fields = std::collections::BTreeMap<String, String>;
+
+/// One page for all three statements, and the same page as a PDF with ?pdf=1.
+async fn report(State(ctx): State<Arc<Ctx>>, Path(kind): Path<String>, Query(q): Query<Fields>) -> Response {
+    let period = q.get("period").cloned().unwrap_or_default();
+    let date = match q.get("date") {
+        Some(d) if !d.trim().is_empty() => d.trim().to_string(),
+        _ => jiff::Zoned::now().date().to_string(),
+    };
+    let built = match kind.as_str() {
+        "pl" => statement::profit_and_loss(&ctx, &period),
+        "bs" => statement::balance_sheet(&ctx, &date),
+        "vat" => statement::vat_return(&ctx, &period),
+        _ => return (StatusCode::NOT_FOUND, "no such statement").into_response(),
+    };
+    let s = match built {
+        Ok(s) => s,
+        Err(e) => return or_error("Statements", || Err(e)),
+    };
+
+    if q.contains_key("pdf") {
+        let out = ctx.root.join(format!(".abo/{kind}.pdf"));
+        return match statement::pdf(&ctx, &s, &out).and_then(|()| Ok(std::fs::read(&out)?)) {
+            Ok(bytes) => (
+                [("content-type", "application/pdf"), ("x-content-type-options", "nosniff")],
+                bytes,
+            )
+                .into_response(),
+            Err(e) => or_error("Statements", || Err(e)),
+        };
+    }
+
+    let here = |k: &str| if k == kind { "current" } else { "" };
+    or_error(&s.title, || {
+        Ok(html! {
+            h1 { (s.title) }
+            p {
+                a href="/report/pl" class=(here("pl")) { "Profit and loss" } " · "
+                a href="/report/bs" class=(here("bs")) { "Balance sheet" } " · "
+                a href="/report/vat" class=(here("vat")) { "Tax return" }
+            }
+            form method="get" {
+                @if kind == "bs" {
+                    label { "As at" input type="date" name="date" value=(date); }
+                } @else {
+                    label {
+                        "Period — any hledger period expression, e.g. " code { "2026" } ", " code { "2026q1" }
+                        input type="text" name="period" value=(period);
+                    }
+                }
+                button type="submit" { "Show" }
+            }
+            p.dim { (s.period) }
+            @for section in &s.sections {
+                @if !section.title.is_empty() { h2 { (section.title) } }
+                table.figures {
+                    @for l in &section.lines {
+                        tr {
+                            td { @if let Some(c) = &l.code { span.dim { (c) " " } } (l.label) }
+                            td { (money(&l.amounts)) }
+                        }
+                    }
+                    @if !section.total.is_empty() {
+                        tr.total { td { "Total" } td { (money(&section.total)) } }
+                    }
+                }
+            }
+            table.figures {
+                tr.total { td { (s.bottom.label) } td { (money(&s.bottom.amounts)) } }
+            }
+            p {
+                a href=({
+                    let q = if kind == "bs" { format!("date={date}") } else { format!("period={period}") };
+                    format!("/report/{kind}?pdf=1&{q}")
+                }) { "Download as PDF" }
+                " · " a href="/" { "Back" }
+            }
+        })
+    })
+}
+
+fn money(a: &[statement::Amount]) -> String {
+    a.iter()
+        .map(|m| format!("{} {}", m.quantity, m.commodity).trim().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 async fn reconcile_view(State(ctx): State<Arc<Ctx>>, Query(q): Query<Fields>) -> Response {
     or_error("Reconcile", || reconcile_page(&ctx, &q, None))
@@ -578,6 +667,8 @@ table.figures { margin: 1.5rem 0; border-collapse: collapse; font-variant-numeri
 table.figures td { padding: .3rem 1.5rem .3rem 0; }
 table.figures td:last-child { text-align: right; padding-right: 0; }
 table.figures tr.total td { border-top: 1px solid var(--line); font-weight: 600; }
+table.figures { width: 100%; }
+a.current { font-weight: 600; text-decoration: none; }
 ul.items { list-style: none; padding: 0; }
 ul.items li { border-bottom: 1px solid var(--line); }
 label.row { display: grid; grid-template-columns: auto 6.5rem 7rem 1fr; gap: .75rem;

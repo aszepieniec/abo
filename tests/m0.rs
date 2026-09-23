@@ -285,3 +285,93 @@ fn reconciliation() {
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// P&L, balance sheet and the tax return, including the arithmetic between
+/// configured lines and the fact that a sheet drawn from a journal balances
+/// only once unclosed profit is counted as equity.
+#[test]
+fn statements() {
+    let dir = std::env::temp_dir().join(format!("abo-stm-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // name, address, country, tax id, payment, currency, method, input,
+    // output, rate charged to customers
+    let o = abo(&dir, &["init"], "Test Ltd\n\n\n\n\nEUR\neffective\n\n\n10\n");
+    assert!(o.status.success(), "init failed: {}", err(&o));
+
+    let add = |args: &[&str]| {
+        let o = abo(&dir, args, "");
+        assert!(o.status.success(), "add failed: {}", err(&o));
+    };
+    add(&["add", "--date", "2026-02-01", "--desc", "Sale",
+          "assets:receivable=1100.00", "income:sales=-1000.00", "liabilities:vat:output=-100.00"]);
+    add(&["add", "--date", "2026-03-01", "--desc", "Purchase",
+          "expenses:general=200.00", "assets:vat:input=20.00", "liabilities:payable=-220.00"]);
+
+    let run = |args: &[&str]| -> serde_json::Value {
+        let o = abo(&dir, args, "");
+        assert!(o.status.success(), "{args:?}: {}", err(&o));
+        serde_json::from_slice(&o.stdout).unwrap()
+    };
+
+    let pl = run(&["pl", "--period", "2026", "--json"]);
+    assert_eq!(pl["sections"][0]["total"][0]["quantity"], "1000.00");
+    assert_eq!(pl["sections"][1]["total"][0]["quantity"], "200.00");
+    assert_eq!(pl["bottom"]["amounts"][0]["quantity"], "800.00");
+
+    // assets 1120, liabilities 320, equity 0 + 800 retained: it ties only
+    // because unclosed profit is carried into equity
+    let bs = run(&["bs", "--date", "2026-12-31", "--json"]);
+    assert_eq!(bs["sections"][0]["total"][0]["quantity"], "1120.00");
+    assert_eq!(bs["sections"][1]["total"][0]["quantity"], "320.00");
+    assert_eq!(bs["sections"][2]["total"][0]["quantity"], "800.00");
+    assert_eq!(bs["bottom"]["amounts"][0]["quantity"], "0");
+
+    // no configured return is an error that says what to write, not a wrong answer
+    let o = abo(&dir, &["vat", "--period", "2026"], "");
+    assert!(err(&o).contains("[[report.vat]]"), "{}", err(&o));
+
+    let toml = dir.join("abo.toml");
+    let cfg = std::fs::read_to_string(&toml).unwrap() + r#"
+[[report.vat]]
+code   = "1"
+label  = "Turnover"
+query  = "acct:^income(:|$)"
+invert = true
+
+[[report.vat]]
+code  = "2"
+label = "Tax at ten percent of turnover"
+of    = "1"
+rate  = 10
+
+[[report.vat]]
+code  = "3"
+label = "Input tax"
+query = "acct:^assets:vat:input(:|$)"
+
+[[report.vat]]
+code  = "4"
+label = "Payable"
+sum   = ["2", "-3"]
+"#;
+    std::fs::write(&toml, cfg).unwrap();
+
+    let vat = run(&["vat", "--period", "2026", "--json"]);
+    let line = |i: usize| vat["sections"][0]["lines"][i]["amounts"][0]["quantity"].clone();
+    assert_eq!(line(0), "1000.00");          // query, inverted
+    assert_eq!(line(1), "100.00");           // of + rate
+    assert_eq!(line(2), "20.00");            // query
+    assert_eq!(line(3), "80.00");            // sum with a subtraction
+    assert_eq!(vat["bottom"]["amounts"][0]["quantity"], "80.00");
+
+    if Command::new("typst").arg("--version").output().is_ok() {
+        let pdf = dir.join("out.pdf");
+        let o = abo(&dir, &["vat", "--period", "2026", "--pdf", pdf.to_str().unwrap()], "");
+        assert!(o.status.success(), "pdf failed: {}", err(&o));
+        assert_eq!(&std::fs::read(&pdf).unwrap()[..5], b"%PDF-");
+        assert!(dir.join("templates/report.typ").is_file());
+    }
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}

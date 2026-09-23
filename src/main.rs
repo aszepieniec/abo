@@ -5,6 +5,7 @@ mod journal;
 mod report;
 mod reconcile;
 mod repo;
+mod statement;
 mod web;
 
 use anyhow::{bail, Context as _, Result};
@@ -88,6 +89,30 @@ enum Cmd {
         reference: String,
         #[arg(long, default_value = "")]
         note: String,
+    },
+    /// Profit and loss for a period.
+    Pl {
+        /// An hledger period expression, e.g. 2026, 2026q1, "last month".
+        #[arg(long, default_value = "")]
+        period: String,
+        /// Also write a PDF here.
+        #[arg(long)]
+        pdf: Option<PathBuf>,
+    },
+    /// Balance sheet as at a date.
+    Bs {
+        /// Defaults to today.
+        #[arg(long)]
+        date: Option<String>,
+        #[arg(long)]
+        pdf: Option<PathBuf>,
+    },
+    /// Tax return for a period, from the [[report.vat]] lines in abo.toml.
+    Vat {
+        #[arg(long, default_value = "")]
+        period: String,
+        #[arg(long)]
+        pdf: Option<PathBuf>,
     },
     /// Tick booked transactions off against a statement.
     Reconcile {
@@ -221,6 +246,19 @@ async fn main() -> Result<()> {
                 format!("Invoice {} for {} — {}\nCommitted {}.", r.number, r.total, r.pdf, r.commit)
             })
         }
+        Cmd::Pl { period, pdf } => {
+            let ctx = Ctx::open(&here)?;
+            statement(&ctx, statement::profit_and_loss(&ctx, &period)?, pdf, cli.json)
+        }
+        Cmd::Bs { date, pdf } => {
+            let ctx = Ctx::open(&here)?;
+            let date = date.unwrap_or_else(|| jiff::Zoned::now().date().to_string());
+            statement(&ctx, statement::balance_sheet(&ctx, &date)?, pdf, cli.json)
+        }
+        Cmd::Vat { period, pdf } => {
+            let ctx = Ctx::open(&here)?;
+            statement(&ctx, statement::vat_return(&ctx, &period)?, pdf, cli.json)
+        }
         Cmd::Reconcile { account, commodity, date, balance, record } => {
             let ctx = Ctx::open(&here)?;
             let commodity = commodity.unwrap_or_else(|| ctx.cfg.company.currency.clone());
@@ -287,6 +325,43 @@ fn logging() {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "abo=info".into()))
         .with_target(false)
         .init();
+}
+
+fn statement(
+    ctx: &Ctx,
+    s: statement::Statement,
+    pdf: Option<PathBuf>,
+    json: bool,
+) -> Result<()> {
+    if let Some(path) = &pdf {
+        statement::pdf(ctx, &s, path)?;
+    }
+    emit(json, &s, || {
+        let money = |a: &[statement::Amount]| {
+            a.iter()
+                .map(|m| format!("{} {}", m.quantity, m.commodity).trim().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut out = format!("{}\n{} — {}\n", s.company, s.title, s.period);
+        for section in &s.sections {
+            if !section.title.is_empty() {
+                out += &format!("\n{}\n", section.title);
+            }
+            for l in &section.lines {
+                let code = l.code.as_deref().unwrap_or("");
+                out += &format!("  {code:<5}{:<44}{:>16}\n", l.label, money(&l.amounts));
+            }
+            if !section.total.is_empty() {
+                out += &format!("  {:<49}{:>16}\n", "", money(&section.total));
+            }
+        }
+        out += &format!("\n  {:<49}{:>16}", s.bottom.label, money(&s.bottom.amounts));
+        if let Some(p) = &pdf {
+            out += &format!("\n\nWrote {}.", p.display());
+        }
+        out
+    })
 }
 
 fn passthrough(here: &std::path::Path, cmd: &str, args: &[String], json: bool) -> Result<()> {

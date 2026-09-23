@@ -9,9 +9,9 @@ different agent. It records what was decided and **why**, so the decisions are
 not re-litigated. Where something was deliberately left out, the trigger for
 adding it is stated.
 
-Status: M0-M3 built, plus manual reconciliation — `abo init`, `add`, `bill`,
-`invoice`, `reconcile`, `clear`, `bal`, `reg`, `serve`, `demo`. Next step is
-the rest of M4 (statements).
+Status: M0-M4 built — `abo init`, `add`, `bill`, `invoice`, `reconcile`,
+`clear`, `pl`, `bs`, `vat`, `bal`, `reg`, `serve`, `demo`. Next step is M5
+(companies and users).
 
 ---
 
@@ -86,7 +86,7 @@ src/invoice.rs   fill typst template, compile
 src/web.rs       axum + maud
 ```
 
-Nine files plus `invoice.typ` (`bill.rs` was split out of the plan's seven so
+Ten files plus two typst templates (`bill.rs` was split out of the plan's seven so
 that `ai.rs` stays pure transport and can be swapped or stubbed without touching
 the workflow). No `lib.rs`/`bin/` split, no workspace, no crate-per-module.
 
@@ -286,6 +286,37 @@ Entries are inserted in date order rather than appended, which is what makes a
 late-arriving bill ordinary rather than a failure of `hledger check
 ordereddates`. That applies to every write, not just this one.
 
+### Statements
+
+`abo pl`, `abo bs`, `abo vat`, each with `--json` and `--pdf <file>`, and each a
+page under `/report/`. Everything is computed by `hledger balance` over a query,
+read back through the one JSON shape `reconcile.rs` already parses — mantissa
+and scale, never the `floatingPoint` field beside them. A P&L is `balance
+income` and `balance expenses` over a period; a balance sheet is the same three
+queries with `-H` and an end date. There is no second report engine.
+
+Two things are decided here rather than by hledger:
+
+- **Which side is turned over.** Income, liabilities and equity carry credit
+  balances. A reader wants both columns positive, so those sections are negated
+  for display and the arithmetic is done on the signed figures underneath.
+- **Unclosed profit is equity.** A balance sheet drawn from a journal does not
+  balance until the year's result is counted, because nothing has closed income
+  and expenses into equity. So the equity section carries a computed
+  "Retained earnings, not yet closed" line, and the bottom line —
+  assets less liabilities and equity — is nil. Without it the difference looks
+  like a bug rather than the year's profit.
+
+PDFs follow M3 exactly: abo writes `.abo/report.json`, `templates/report.typ`
+lays it out, and the template does no arithmetic. It is seeded into the books on
+first use and committed, so it belongs to the company.
+
+```
+ponytail: rendered statements are handed to you, not committed. A filed return
+is arguably a document that belongs in the repository beside the bills. Add
+`--file` writing under reports/<year>/ when a filing actually needs archiving.
+```
+
 ### Nothing in the code knows where you are
 
 Tax law is the one part of this that differs everywhere, so none of it is
@@ -307,6 +338,16 @@ Everything else is configuration, which means changing it is not a rebuild:
   what is deductible here, what is reverse charged, how import tax arrives, what
   the scheme is called locally. This is where local rules live.
 - **`[company] country`** — only the model reads it.
+- **`[[report.vat]]`** — the tax return, one entry per box on the form. Each
+  has a `code` and a `label`, and is one of three things: a `query` (any hledger
+  query; its balance over the period is the figure, with `invert` for the
+  credit side), `of` + `rate` (this box is a percentage of an earlier box), or
+  `sum` of earlier codes where a leading `-` subtracts. Three forms cover
+  every return shape seen so far; if a fourth is needed, it is a small
+  evaluator in `statement.rs` and still not a rate in the code.
+
+`abo vat` with nothing configured is an error that says what to write, rather
+than a plausible wrong answer.
 
 Under `flat`, an invoice still charges the ordinary rate to the customer; the
 flat percentage is what gets remitted, computed on gross turnover when the return
@@ -369,7 +410,8 @@ One binary, clap subcommands. `--json` on every read command.
 
 ### Web
 axum + maud, server-rendered forms: balance and register, bill upload and
-proposal card, invoice form, reconciliation checkboxes, hand-typed entry. `abo serve --port 8801` binds
+proposal card, invoice form, reconciliation checkboxes, statements with a PDF
+link, hand-typed entry. `abo serve --port 8801` binds
 127.0.0.1 and
 runs until SIGINT or SIGTERM, finishing in-flight requests. TLS and any public
 name belong to nginx in front of it; the Origin check works either way because
@@ -497,12 +539,12 @@ Not legal advice, but none of this is controversial.
   has one home. The next number is `max(invoice:) + 1` read from the journal —
   no counter file. The PDF is `git add`ed before the entry is committed, so both
   land in one commit or neither does.
-- **M4** — **manual reconciliation done**: `abo reconcile` / `abo clear`, and
-  the same as a page of checkboxes. Bank import moved to §11 — the point of
-  reconciliation is to notice what is wrong, and typing a closing balance is
-  enough to do that. Remaining: statements (tax return, P&L, balance sheet),
-  on screen and as PDFs. **← next**
-- **M5** — companies and users.
+- **M4** — reconciliation and statements. **Done.** `abo reconcile` / `abo
+  clear` and a page of checkboxes; `abo pl`, `abo bs`, `abo vat` on screen,
+  as `--json`, and as PDFs through a second typst template. Bank import moved
+  to §11 — the point of reconciliation is to notice what is wrong, and typing
+  a closing balance is enough to do that.
+- **M5** — companies and users. **← next**
 - **M6** — PWA manifest, or the JSON API if native has been chosen.
 
 Reconciliation was not in the original list of workflows and is the one that
@@ -514,45 +556,8 @@ has to tie out.
 ## 11. Wish list
 
 Wanted, but not specified closely enough to be a milestone yet. New entries go
-here first; they graduate to §10 once the shape is clear.
-
-### Financial reports, downloadable as PDFs
-
-P&L, balance sheet, trial balance and the tax return, over a chosen period,
-readable in the browser and downloadable as a PDF that can be sent to an
-accountant, a bank or a tax authority without further handling.
-
-Most of the machinery already exists and the shape should follow M3 exactly:
-
-1. **hledger computes.** `hledger balancesheet`, `incomestatement`, `balance`
-   with a period expression, `-O json` or `-O csv`. No arithmetic in abo, for
-   the same reason as §1 — that is where a hand-rolled money implementation goes
-   quietly wrong.
-2. **abo writes the numbers** to `.abo/report.json`.
-3. **`templates/report.typ` lays them out**, seeded into the books on first use
-   and then owned by the company, exactly like `templates/invoice.typ`. The rule
-   from §6 carries over unchanged: the template does layout and never arithmetic,
-   so rounding keeps one home.
-
-That makes `templates/` a directory with two files rather than a special case,
-and `abo report --pdf` / a download link on the web page the whole interface.
-
-Open questions, to settle before this becomes a milestone:
-
-- **Where the report definition lives.** Which accounts roll into which line, and
-  which accounts map to which numbered box on a tax return, is jurisdiction- and
-  company-specific, so by §6 it is configuration rather than code — probably a
-  `[report]` table of account globs. Worth confirming that a glob list is
-  expressive enough before committing to it.
-- **Comparatives.** A balance sheet is usually shown against the prior period.
-  hledger does this already; the question is whether the template or the caller
-  decides.
-- **Whether a rendered report is committed.** A filed return is a document and
-  arguably belongs in the repository beside the bills and invoices; a P&L a
-  person glanced at is not. Probably: `--file` commits it under `reports/<year>/`,
-  bare `--pdf` just hands it to you.
-
----
+here first; they graduate to §10 once the shape is clear. Statements and their
+PDFs started here and are now §6 and M4.
 
 ### Bank import
 
@@ -635,7 +640,9 @@ Each with the trigger for revisiting.
 | Statutory rates in code | Never. They are `[invoice] vat_rate` and `--vat-rate`. |
 | Auth in the application | Users exist (§8). |
 | Templating engine, ORM, workspace split | Not foreseen. |
-| A second typst template before it is needed | `templates/report.typ` and `templates/payslip.typ` arrive with the features in §11, not before. |
+| A third typst template before it is needed | `templates/payslip.typ` arrives with payroll in §11, not before. |
+| Committing rendered statements | A filing needs archiving. Today they are handed to you. |
+| Closing entries at year end | A balance sheet needs to show a closed prior year. Today unclosed profit is a computed equity line. |
 
 ---
 
@@ -669,4 +676,41 @@ The return is filed by box number: 200-series turnover, 300-series tax,
 400-series input tax. Quarterly under the effective method, semi-annual under
 the flat scheme.
 """
+```
+
+An example return for the same company, in the same file:
+
+```toml
+[[report.vat]]
+code   = "200"
+label  = "Total agreed consideration"
+query  = "acct:^income(:|$)"
+invert = true
+
+[[report.vat]]
+code   = "302"
+label  = "Tax at the standard rate"
+query  = "acct:^liabilities:vat:output(:|$)"
+invert = true
+
+[[report.vat]]
+code  = "400"
+label = "Input tax on materials and services"
+query = "acct:^assets:vat:input(:|$)"
+
+[[report.vat]]
+code  = "500"
+label = "Amount payable"
+sum   = ["302", "-400"]
+```
+
+Under a flat scheme the tax owed is a percentage of gross turnover rather than
+a collected figure, which is the `of` form:
+
+```toml
+[[report.vat]]
+code  = "322"
+label = "Tax at the flat rate"
+of    = "200"
+rate  = 5.3
 ```

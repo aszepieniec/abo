@@ -12,6 +12,16 @@ pub struct Config {
     pub vat: Vat,
     #[serde(default)]
     pub invoice: InvoiceCfg,
+    #[serde(default)]
+    pub report: ReportCfg,
+}
+
+#[derive(Deserialize, Clone, Default)]
+pub struct ReportCfg {
+    /// One entry per box on the tax return form. Empty until configured,
+    /// because the form differs everywhere.
+    #[serde(default)]
+    pub vat: Vec<crate::statement::VatLine>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -277,6 +287,36 @@ pub fn demo(dir: &Path) -> Result<Ctx> {
     // 10% is obviously a placeholder: real rates are statutory and belong in
     // the company's own abo.toml, not in abo.
     init(dir, &company, &vat, "10")?;
+
+    // An illustrative return. Which accounts feed which numbered box is set
+    // by the tax authority wherever the company is, so this is config.
+    std::fs::write(
+        dir.join("abo.toml"),
+        std::fs::read_to_string(dir.join("abo.toml"))?
+            + r#"
+[[report.vat]]
+code   = "1"
+label  = "Turnover"
+query  = "acct:^income(:|$)"
+invert = true
+
+[[report.vat]]
+code   = "2"
+label  = "Tax charged on turnover"
+query  = "acct:^liabilities:vat:output(:|$)"
+invert = true
+
+[[report.vat]]
+code   = "3"
+label  = "Input tax paid"
+query  = "acct:^assets:vat:input(:|$)"
+
+[[report.vat]]
+code  = "4"
+label = "Payable to the tax authority"
+sum   = ["2", "-3"]
+"#,
+    )?;
 
     let ctx = Ctx::open(dir)?;
     let extra = ["expenses:hosting", "expenses:salary", "assets:wallet:btc"];
