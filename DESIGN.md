@@ -9,8 +9,8 @@ different agent. It records what was decided and **why**, so the decisions are
 not re-litigated. Where something was deliberately left out, the trigger for
 adding it is stated.
 
-Status: M0 built, plus `abo serve` / `abo demo` (the web shell of M2, without
-the AI). Next step is M1.
+Status: M0, M1 and M2 built — `abo init`, `add`, `bal`, `reg`, `bill`, `serve`,
+`demo`. Next step is M3 (invoices).
 
 ---
 
@@ -82,7 +82,9 @@ src/invoice.rs   fill typst template, compile
 src/web.rs       axum + maud
 ```
 
-Seven files. No `lib.rs`/`bin/` split, no workspace, no crate-per-module.
+Eight files (`bill.rs` was split out of the plan's seven so that `ai.rs` stays
+pure transport and can be swapped or stubbed without touching the workflow).
+No `lib.rs`/`bin/` split, no workspace, no crate-per-module.
 
 ### Three invariants that keep future work cheap
 
@@ -112,7 +114,16 @@ CLI and it does not talk to itself over HTTP.
 5. On correction: append the user's text to the message thread, re-request.
    The thread is persisted as JSON keyed by the file's sha256, so the CLI and the
    browser resume the same conversation.
-6. On approval: move the document to its final path, append the entry, commit.
+6. On approval: copy the document to its final path, `git add` it, then append
+   the entry — the commit inside `add` sweeps up the index, so the document and
+   its entry land in one commit or not at all. If the entry fails at that point
+   the copy is removed and the path reset.
+
+The destination is `bills/<year>/<date>-<vendor-slug>-<sha8>.<ext>`. The vendor
+slug keeps only `[a-z0-9]` and collapses the rest to `-`, so a vendor name of
+`../../.ssh/authorized_keys` cannot escape the directory. There is a test for
+exactly that. The supplier's own invoice number is tagged `ref:`, never
+`invoice:`, which is reserved for the numbering of invoices we issue.
 
 Document filenames are derived from the sha256 and a sanitized vendor string —
 **never** from a client-supplied filename (§8).
@@ -158,6 +169,26 @@ Proposal schema:
 
 `questions` is how the model asks rather than guesses — a non-empty list blocks
 auto-approval even under `--yes`.
+
+As built: `output_config` carries both `effort` (`medium`) and
+`format: {type: "json_schema", schema}`, which is what makes the response a
+single text block of schema-valid JSON — `additionalProperties: false` and a
+complete `required` are mandatory there. Thinking is on by default on
+`claude-opus-5`, so the `thinking` parameter is omitted entirely. Amounts cross
+the wire as **decimal strings**: a JSON number is an `f64` by the time serde
+sees it. `stop_reason` is checked for `refusal` and `max_tokens` before the
+body is parsed.
+
+The conversation lives in `.abo/threads/<sha256>.json` and the document in
+`.abo/pending/<sha256>.<ext>`, both gitignored — working state, not books. The
+thread stores only text turns; the document is re-attached from disk on every
+request, so one copy of the bytes exists and the thread stays small. Re-running
+`abo bill` on the same file resumes that conversation instead of paying for a
+fresh proposal. Nothing is written until a call succeeds.
+
+Server-side refusal fallbacks (`fallbacks` + its beta header) are deliberately
+not enabled: silently re-running a booking on a different model is not a
+property this app should have. A refusal is an error the human sees.
 
 ---
 
@@ -373,12 +404,12 @@ Not legal advice, but none of this is controversial.
   full validation chain. `abo bal` / `abo reg` passthrough. One test: a balanced
   entry commits; an unbalanced one is rejected; an input-VAT posting under
   `method = "saldo"` is rejected. ~300 lines. **Done.**
-- **M1** — `abo bill <file>` **← next**: AI proposal, terminal approve/refine.
-- **M2** — `abo serve`: balance, register and a booking form. **Done.** The
-  upload form and proposal card land with M1. `abo demo` serves the same pages
-  against a throwaway repository of toy data in the temp directory, rebuilt on
-  every start, through the ordinary validated `add`.
-- **M3** — invoices: typst template, numbering from the journal.
+- **M1** — `abo bill <file>`: AI proposal, terminal approve/refine. **Done.**
+- **M2** — `abo serve`: balance, register, a booking form, and the bill upload
+  and proposal card. **Done.** `abo demo` serves the same pages against a
+  throwaway repository of toy data in the temp directory, rebuilt on every
+  start, through the ordinary validated `add`.
+- **M3** — invoices: typst template, numbering from the journal. **← next**
 - **M4** — bank import and reconciliation, then statements (VAT return, P&L,
   balance sheet).
 - **M5** — companies and users.

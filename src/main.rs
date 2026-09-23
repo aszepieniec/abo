@@ -1,3 +1,5 @@
+mod ai;
+mod bill;
 mod journal;
 mod report;
 mod repo;
@@ -46,6 +48,14 @@ enum Cmd {
     Bal {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+    /// Propose a booking for a scanned bill, then approve or refine it.
+    Bill {
+        file: PathBuf,
+        /// Book it without asking, unless the model asked a question or the
+        /// validator objected.
+        #[arg(long)]
+        yes: bool,
     },
     /// Serve the web interface on localhost. Put nginx in front for TLS.
     Serve {
@@ -98,6 +108,45 @@ async fn main() -> Result<()> {
             };
             let r = journal::add(&ctx, &entry)?;
             emit(cli.json, &r, || format!("{}\nCommitted {} to {}.", entry.render(), r.commit, r.file))
+        }
+        Cmd::Bill { file, yes } => {
+            let ctx = Ctx::open(&here)?;
+            let bytes = std::fs::read(&file).with_context(|| format!("{}", file.display()))?;
+            let mut p = bill::propose(&ctx, bytes).await?;
+            if cli.json {
+                return emit(true, &p, String::new);
+            }
+            loop {
+                println!("\n{}", p.entry);
+                println!("confidence: {}", p.proposal.confidence);
+                for q in &p.proposal.questions {
+                    println!("  ? {q}");
+                }
+                if let Some(problem) = &p.problem {
+                    println!("  rejected: {problem}");
+                }
+                let ready = p.problem.is_none() && p.proposal.questions.is_empty();
+                if yes {
+                    if !ready {
+                        bail!("--yes given but the entry is not ready to book");
+                    }
+                } else {
+                    let a = prompt("\n[a]pprove, [q]uit, or type a correction", "q")?;
+                    match a.as_str() {
+                        "q" => {
+                            println!("Left pending. Run the same command again to resume.");
+                            return Ok(());
+                        }
+                        "a" | "y" => {}
+                        correction => {
+                            p = bill::refine(&ctx, &p.sha256, correction).await?;
+                            continue;
+                        }
+                    }
+                }
+                let r = bill::approve(&ctx, &p.sha256)?;
+                return emit(cli.json, &r, || format!("Committed {} to {}.", r.commit, r.file));
+            }
         }
         Cmd::Bal { args } => passthrough(&here, "balance", &args, cli.json),
         Cmd::Reg { args } => passthrough(&here, "register", &args, cli.json),

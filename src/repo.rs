@@ -146,7 +146,9 @@ pub fn init(dir: &Path, name: &str, uid: &str, currency: &str, vat: &Vat) -> Res
         format!("commodity 1000.00 {currency}\n\n{decls}"),
     )?;
     std::fs::write(dir.join("journal/main.journal"), "include accounts.journal\n")?;
-    std::fs::write(dir.join(".gitignore"), "*~\n.DS_Store\n")?;
+    // .abo holds bills awaiting a decision and their conversations: working
+    // state, not books.
+    std::fs::write(dir.join(".gitignore"), ".abo/\n*~\n.DS_Store\n")?;
 
     if !dir.join(".git").exists() {
         git_in(dir, &["init", "-q", "-b", "master"])?;

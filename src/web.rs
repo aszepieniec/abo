@@ -2,14 +2,15 @@
 //! Handlers call the workflow functions in process; they never shell out to
 //! the CLI and never talk to themselves over HTTP.
 
+use crate::bill;
 use crate::journal::{self, Entry, Posting};
 use crate::repo::Ctx;
 use anyhow::{bail, Result};
-use axum::extract::{Form, State};
+use axum::extract::{DefaultBodyLimit, Form, Multipart, Path, State};
 use axum::http::header::{HOST, ORIGIN};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use maud::{html, Markup, DOCTYPE};
 use serde::Deserialize;
@@ -25,6 +26,14 @@ pub async fn serve(ctx: Ctx, port: u16) -> Result<()> {
     let app = Router::new()
         .route("/", get(index))
         .route("/add", get(add_form).post(add_submit))
+        .route("/bill", get(upload_form).post(upload))
+        .route("/bill/{sha}", get(card))
+        .route("/bill/{sha}/document", get(document))
+        .route("/bill/{sha}/approve", post(approve))
+        .route("/bill/{sha}/refine", post(refine))
+        // A scanned bill is much bigger than a form post, and 32 MB is the
+        // API's own request limit.
+        .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
         .layer(axum::middleware::from_fn(log))
         .with_state(Arc::new(ctx));
 
@@ -72,9 +81,25 @@ async fn index(State(ctx): State<Arc<Ctx>>) -> Response {
         let balance = journal::hledger(&ctx, &["balance", "--tree"])?;
         let register = journal::hledger(&ctx, &["register"])?;
         let recent: Vec<&str> = register.lines().rev().take(20).collect();
+        let waiting = bill::waiting(&ctx)?;
         Ok(html! {
             h1 { (ctx.cfg.company.name) }
-            p { a href="/add" { "Book an entry" } }
+            p { a href="/bill" { "Book a bill" } " · " a href="/add" { "Book an entry by hand" } }
+            @if !waiting.is_empty() {
+                h2 { "Waiting for you" }
+                ul {
+                    @for sha in &waiting {
+                        li {
+                            a href={"/bill/" (sha)} {
+                                @match bill::review(&ctx, sha) {
+                                    Ok(p) => { (p.proposal.vendor) " — " (p.proposal.date) },
+                                    Err(_) => { (sha[..8]) },
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             h2 { "Balance" }
             pre { (balance) }
             h2 { "Recent" }
@@ -119,6 +144,122 @@ async fn add_submit(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Form(f): Fo
         Err(e) => or_error("Book an entry", || {
             form(&ctx, &f.date, &f.description, &f.postings, Some(&e.to_string()))
         }),
+    }
+}
+
+async fn upload_form(State(_ctx): State<Arc<Ctx>>) -> Response {
+    or_error("Book a bill", || {
+        Ok(html! {
+            h1 { "Book a bill" }
+            form method="post" action="/bill" enctype="multipart/form-data" {
+                label {
+                    "A PDF or a photograph of the bill"
+                    // capture= is why this works as a phone app without one
+                    // line of JavaScript.
+                    input type="file" name="document" accept="image/*,application/pdf"
+                          capture="environment" required;
+                }
+                button type="submit" { "Read it" }
+            }
+            p { a href="/" { "Back" } }
+        })
+    })
+}
+
+async fn upload(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, mut mp: Multipart) -> Response {
+    if let Err(e) = same_origin(&headers) {
+        warn!(%e, "rejected cross-origin upload");
+        return (StatusCode::FORBIDDEN, "cross-origin request").into_response();
+    }
+    // The filename is deliberately not read: the path comes from the hash (§8).
+    let bytes = match mp.next_field().await {
+        Ok(Some(f)) => f.bytes().await.ok(),
+        _ => None,
+    };
+    let Some(bytes) = bytes else {
+        return or_error("Book a bill", || bail!("no document in the upload"));
+    };
+    match bill::propose(&ctx, bytes.to_vec()).await {
+        Ok(p) => Redirect::to(&format!("/bill/{}", p.sha256)).into_response(),
+        Err(e) => or_error("Book a bill", || Err(e)),
+    }
+}
+
+async fn card(State(ctx): State<Arc<Ctx>>, Path(sha): Path<String>) -> Response {
+    or_error("Proposal", || {
+        let p = bill::review(&ctx, &sha)?;
+        let ready = p.problem.is_none() && p.proposal.questions.is_empty();
+        Ok(html! {
+            h1 { (p.proposal.vendor) }
+            p.dim { "confidence: " (p.proposal.confidence) " · "
+                    a href={"/bill/" (sha) "/document"} { "the document" } }
+            pre { (p.entry) }
+            @if let Some(problem) = &p.problem {
+                p.error { "The validator rejects this: " (problem) }
+            }
+            @if !p.proposal.questions.is_empty() {
+                h2 { "The model is asking" }
+                ul { @for q in &p.proposal.questions { li { (q) } } }
+            }
+            form method="post" action={"/bill/" (sha) "/refine"} {
+                label {
+                    "Correct it in your own words"
+                    textarea name="correction" rows="3" required
+                             placeholder="That is hosting, not general expenses." {}
+                }
+                button type="submit" { "Send the correction" }
+            }
+            form method="post" action={"/bill/" (sha) "/approve"} {
+                button type="submit" disabled[!ready] { "Approve and commit" }
+            }
+            p { a href="/" { "Back" } }
+        })
+    })
+}
+
+async fn document(State(ctx): State<Arc<Ctx>>, Path(sha): Path<String>) -> Response {
+    match bill::document(&ctx, &sha) {
+        Ok((media_type, bytes)) => (
+            [("content-type", media_type), ("x-content-type-options", "nosniff".into())],
+            bytes,
+        )
+            .into_response(),
+        Err(e) => or_error("Proposal", || Err(e)),
+    }
+}
+
+#[derive(Deserialize)]
+struct Correction {
+    correction: String,
+}
+
+async fn refine(
+    State(ctx): State<Arc<Ctx>>,
+    Path(sha): Path<String>,
+    headers: HeaderMap,
+    Form(f): Form<Correction>,
+) -> Response {
+    if let Err(e) = same_origin(&headers) {
+        warn!(%e, "rejected cross-origin refine");
+        return (StatusCode::FORBIDDEN, "cross-origin request").into_response();
+    }
+    match bill::refine(&ctx, &sha, &f.correction).await {
+        Ok(_) => Redirect::to(&format!("/bill/{sha}")).into_response(),
+        Err(e) => or_error("Proposal", || Err(e)),
+    }
+}
+
+async fn approve(State(ctx): State<Arc<Ctx>>, Path(sha): Path<String>, headers: HeaderMap) -> Response {
+    if let Err(e) = same_origin(&headers) {
+        warn!(%e, "rejected cross-origin approve");
+        return (StatusCode::FORBIDDEN, "cross-origin request").into_response();
+    }
+    match bill::approve(&ctx, &sha) {
+        Ok(r) => {
+            info!(commit = %r.commit, "approved");
+            Redirect::to("/").into_response()
+        }
+        Err(e) => or_error("Proposal", || Err(e)),
     }
 }
 
@@ -209,6 +350,8 @@ input, textarea, button { display: block; width: 100%; margin-top: .25rem; paddi
 textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
 button { width: auto; padding: .5rem 1.25rem; cursor: pointer; border-color: var(--fg); }
 .error { color: #b00020; white-space: pre-wrap; }
+.dim { color: var(--dim); font-size: .85rem; }
+button[disabled] { opacity: .4; cursor: not-allowed; border-color: var(--line); }
 @media (prefers-color-scheme: dark) { .error { color: #ff8a80; } }
 ul.accounts { columns: 2; list-style: none; padding: 0; font-size: 13px; }
 "#;
