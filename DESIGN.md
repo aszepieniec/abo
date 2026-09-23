@@ -9,7 +9,8 @@ different agent. It records what was decided and **why**, so the decisions are
 not re-litigated. Where something was deliberately left out, the trigger for
 adding it is stated.
 
-Status: M0 built (`abo init`, `abo add`, `abo bal`, `abo reg`, one test). Next step is M1.
+Status: M0 built, plus `abo serve` / `abo demo` (the web shell of M2, without
+the AI). Next step is M1.
 
 ---
 
@@ -257,7 +258,13 @@ this only bites if the company switches methods and then re-runs an old period.
 One binary, clap subcommands. `--json` on every read command.
 
 ### Web
-axum + maud, server-rendered forms. Localhost first.
+axum + maud, server-rendered forms. `abo serve --port 8801` binds 127.0.0.1 and
+runs until SIGINT or SIGTERM, finishing in-flight requests. TLS and any public
+name belong to nginx in front of it; the Origin check works either way because
+nginx forwards the public Host. `abo demo` is the same server over toy data.
+
+Logging is `tracing`, off for the short-lived commands and `abo=info` for these
+two. `RUST_LOG` overrides it.
 
 ### Phone
 A **PWA** over the same server-rendered pages: a manifest plus a responsive
@@ -367,7 +374,10 @@ Not legal advice, but none of this is controversial.
   entry commits; an unbalanced one is rejected; an input-VAT posting under
   `method = "saldo"` is rejected. ~300 lines. **Done.**
 - **M1** — `abo bill <file>` **← next**: AI proposal, terminal approve/refine.
-- **M2** — `abo web`: upload form, proposal card, approve/refine. Localhost.
+- **M2** — `abo serve`: balance, register and a booking form. **Done.** The
+  upload form and proposal card land with M1. `abo demo` serves the same pages
+  against a throwaway repository of toy data in the temp directory, rebuilt on
+  every start, through the ordinary validated `add`.
 - **M3** — invoices: typst template, numbering from the journal.
 - **M4** — bank import and reconciliation, then statements (VAT return, P&L,
   balance sheet).

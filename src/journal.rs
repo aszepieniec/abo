@@ -10,6 +10,7 @@ use std::path::Path;
 use std::process::Command;
 use std::str::FromStr;
 
+
 #[derive(Serialize, Clone)]
 pub struct Posting {
     pub account: String,
@@ -232,6 +233,8 @@ pub fn add(ctx: &Ctx, e: &Entry) -> Result<AddReport> {
         &[&target, &ctx.main_journal()],
         &format!("{} {}", e.date, e.description),
     )?;
+
+    tracing::info!(%commit, date = %e.date, description = %e.description, "booked");
 
     Ok(AddReport {
         file: target.strip_prefix(&ctx.root).unwrap_or(&target).display().to_string(),

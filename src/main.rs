@@ -1,8 +1,7 @@
-// ponytail: no async runtime yet. M0 shells out and blocks; #[tokio::main]
-// arrives with reqwest and axum in M1/M2.
 mod journal;
 mod report;
 mod repo;
+mod web;
 
 use anyhow::{bail, Context as _, Result};
 use clap::{Parser, Subcommand};
@@ -48,6 +47,16 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Serve the web interface on localhost. Put nginx in front for TLS.
+    Serve {
+        #[arg(long, default_value_t = 8801)]
+        port: u16,
+    },
+    /// Serve the web interface against a throwaway repository of toy data.
+    Demo {
+        #[arg(long, default_value_t = 8801)]
+        port: u16,
+    },
     /// hledger register.
     #[command(alias = "register")]
     Reg {
@@ -56,7 +65,8 @@ enum Cmd {
     },
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
     let here = cli.dir.clone().unwrap_or(std::env::current_dir()?);
 
@@ -91,7 +101,26 @@ fn main() -> Result<()> {
         }
         Cmd::Bal { args } => passthrough(&here, "balance", &args, cli.json),
         Cmd::Reg { args } => passthrough(&here, "register", &args, cli.json),
+        Cmd::Serve { port } => {
+            logging();
+            web::serve(Ctx::open(&here)?, port).await
+        }
+        Cmd::Demo { port } => {
+            logging();
+            let dir = std::env::temp_dir().join("abo-demo");
+            tracing::info!(dir = %dir.display(), "building toy books");
+            web::serve(repo::demo(&dir)?, port).await
+        }
     }
+}
+
+/// Only the long-running commands log; `abo add` keeps stderr for its own errors.
+fn logging() {
+    use tracing_subscriber::EnvFilter;
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "abo=info".into()))
+        .with_target(false)
+        .init();
 }
 
 fn passthrough(here: &std::path::Path, cmd: &str, args: &[String], json: bool) -> Result<()> {

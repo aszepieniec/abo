@@ -157,3 +157,53 @@ pub fn init(dir: &Path, name: &str, uid: &str, currency: &str, vat: &Vat) -> Res
 
     Ok(InitReport { root: dir.display().to_string(), commit })
 }
+
+/// A throwaway books repository with toy data, rebuilt from scratch every time.
+/// Same code path as a real one: `init`, then the ordinary validated `add`.
+pub fn demo(dir: &Path) -> Result<Ctx> {
+    use crate::journal::{add, Entry, Posting};
+
+    if dir.exists() {
+        std::fs::remove_dir_all(dir).with_context(|| format!("clearing {}", dir.display()))?;
+    }
+    std::fs::create_dir_all(dir)?;
+
+    // The demo must work on a machine with no git identity configured.
+    std::env::set_var("GIT_AUTHOR_NAME", "abo demo");
+    std::env::set_var("GIT_AUTHOR_EMAIL", "demo@example.invalid");
+    std::env::set_var("GIT_COMMITTER_NAME", "abo demo");
+    std::env::set_var("GIT_COMMITTER_EMAIL", "demo@example.invalid");
+
+    let vat = Vat::Effective {
+        input: "assets:vat:input".into(),
+        output: "liabilities:vat:output".into(),
+    };
+    init(dir, "Beispiel GmbH", "CHE-123.456.789 MWST", "CHF", &vat)?;
+
+    let ctx = Ctx::open(dir)?;
+    let extra = ["expenses:hosting", "expenses:salary"];
+    let decls: String = extra.iter().map(|a| format!("account {a}\n")).collect();
+    let acc = ctx.accounts_journal();
+    std::fs::write(&acc, std::fs::read_to_string(&acc)? + &decls)?;
+    ctx.commit(&[&acc], "Declare hosting and salary accounts")?;
+
+    let cur = "CHF";
+    let p = |a: &str, n: &str| Posting::parse(&format!("{a}={n}"), cur).unwrap();
+    let entries = [
+        ("2026-01-01", "Opening balance", vec![p("assets:bank", "25000.00"), p("equity:opening", "-25000.00")]),
+        ("2026-02-14", "Acme Hosting AG", vec![p("expenses:hosting", "100.00"), p("assets:vat:input", "8.10"), p("liabilities:payable", "-108.10")]),
+        ("2026-02-28", "Pay Acme Hosting AG", vec![p("liabilities:payable", "108.10"), p("assets:bank", "-108.10")]),
+        ("2026-03-31", "Invoice 2026-0001 Muster AG", vec![p("assets:receivable", "5405.00"), p("income:sales", "-5000.00"), p("liabilities:vat:output", "-405.00")]),
+        ("2026-04-15", "Muster AG pays 2026-0001", vec![p("assets:bank", "5405.00"), p("assets:receivable", "-5405.00")]),
+        ("2026-04-30", "Salary April", vec![p("expenses:salary", "6000.00"), p("assets:bank", "-6000.00")]),
+    ];
+    for (date, description, postings) in entries {
+        add(&ctx, &Entry {
+            date: date.into(),
+            description: description.into(),
+            tags: vec![],
+            postings,
+        })?;
+    }
+    Ok(ctx)
+}
