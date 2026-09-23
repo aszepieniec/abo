@@ -68,8 +68,8 @@ Documents are linked to entries by hledger tags, never by a join table:
 - `invoice:` on issued invoices carries the invoice number. The next number is
   `max(invoice:) + 1` read from the journal — no counter file, no state to corrupt.
 
-Account naming: `assets:bank`, `expenses:telecom`. If a Treuhänder requires Käfer
-/ Kontenrahmen KMU numbers, `assets:1020:bank` also sorts correctly.
+Account naming: `assets:bank`, `expenses:telecom`. If your accountant wants a
+numbered chart of accounts, `assets:1020:bank` also sorts correctly.
 
 ---
 
@@ -457,7 +457,7 @@ Not legal advice, but none of this is controversial.
   no counter file. The PDF is `git add`ed before the entry is committed, so both
   land in one commit or neither does.
 - **M4** — bank import and reconciliation, then statements (tax return, P&L,
-  balance sheet). **← next**
+  balance sheet), on screen and as PDFs. **← next**
 - **M5** — companies and users.
 - **M6** — PWA manifest, or the JSON API if native has been chosen.
 
@@ -470,7 +470,97 @@ files.
 
 ---
 
-## 11. Explicitly not built
+## 11. Wish list
+
+Wanted, but not specified closely enough to be a milestone yet. New entries go
+here first; they graduate to §10 once the shape is clear.
+
+### Financial reports, downloadable as PDFs
+
+P&L, balance sheet, trial balance and the tax return, over a chosen period,
+readable in the browser and downloadable as a PDF that can be sent to an
+accountant, a bank or a tax authority without further handling.
+
+Most of the machinery already exists and the shape should follow M3 exactly:
+
+1. **hledger computes.** `hledger balancesheet`, `incomestatement`, `balance`
+   with a period expression, `-O json` or `-O csv`. No arithmetic in abo, for
+   the same reason as §1 — that is where a hand-rolled money implementation goes
+   quietly wrong.
+2. **abo writes the numbers** to `.abo/report.json`.
+3. **`templates/report.typ` lays them out**, seeded into the books on first use
+   and then owned by the company, exactly like `templates/invoice.typ`. The rule
+   from §6 carries over unchanged: the template does layout and never arithmetic,
+   so rounding keeps one home.
+
+That makes `templates/` a directory with two files rather than a special case,
+and `abo report --pdf` / a download link on the web page the whole interface.
+
+Open questions, to settle before this becomes a milestone:
+
+- **Where the report definition lives.** Which accounts roll into which line, and
+  which accounts map to which numbered box on a tax return, is jurisdiction- and
+  company-specific, so by §6 it is configuration rather than code — probably a
+  `[report]` table of account globs. Worth confirming that a glob list is
+  expressive enough before committing to it.
+- **Comparatives.** A balance sheet is usually shown against the prior period.
+  hledger does this already; the question is whether the template or the caller
+  decides.
+- **Whether a rendered report is committed.** A filed return is a document and
+  arguably belongs in the repository beside the bills and invoices; a P&L a
+  person glanced at is not. Probably: `--file` commits it under `reports/<year>/`,
+  bare `--pdf` just hands it to you.
+
+---
+
+### Payroll, with configurable deductions
+
+Run a payroll: gross to net for each employee, the journal entry that books it,
+and a payslip PDF. Deductions are configuration — social insurance, pension,
+unemployment, withheld income tax and anything else are set by statute and by
+scheme, differ everywhere, and change yearly, so by §6 not one of them is
+compiled in.
+
+The shape follows M3 again: abo computes from a configured table of deductions,
+writes `.abo/payslip.json`, and `templates/payslip.typ` lays it out.
+
+Three things to get right, because they are where payroll goes wrong:
+
+- **An employer contribution is not a deduction.** A deduction reduces net pay;
+  an employer contribution does not touch it and is an additional expense with
+  its own liability. A deduction table therefore needs a share field, not just a
+  rate, and the entry has four kinds of posting: gross salary expense, employer
+  contribution expense, net payable to the employee, and one liability per
+  scheme for what is owed to it.
+- **Bases and ceilings.** Rates apply to a base that is often not gross —
+  capped at a ceiling, floored at a threshold, or reckoned on a different
+  definition of pay. So a deduction is `{ name, base, rate, floor, ceiling,
+  share, account }`, and the arithmetic is ordered because one deduction's base
+  can be another's result.
+- **Year to date.** Ceilings are annual, so a run needs what has been paid and
+  withheld so far this year. That is already in the journal: `hledger` over
+  prior runs for this employee supplies it, the same way invoice numbering reads
+  `max(invoice:)` instead of keeping a counter. No payroll state file.
+
+Open questions, to settle before this becomes a milestone:
+
+- **Where employees live.** `payroll.toml` in the books repository is consistent
+  with everything else and gets versioning and history for free. But it puts
+  names and salaries in the repository — already half true of the journal, and
+  fully true once payslips are committed. That is a §8 question, and it is the
+  first thing in the design with a reason to be readable by some people and not
+  others.
+- **Progressive withholding.** A flat rate per deduction covers contributions
+  but not banded income tax. Either a bracket table in the same config, or
+  withholding is entered per employee and abo only books it.
+- **Whether payslips are committed.** Same question as a rendered report, with
+  more force: a payslip is a document the employee is owed, so probably yes,
+  under `payslips/<year>/`, and then §8 grows a reason to care who can read the
+  repository.
+
+---
+
+## 12. Explicitly not built
 
 Each with the trigger for revisiting.
 
@@ -488,6 +578,7 @@ Each with the trigger for revisiting.
 | Statutory rates in code | Never. They are `[invoice] vat_rate` and `--vat-rate`. |
 | Auth in the application | Users exist (§8). |
 | Templating engine, ORM, workspace split | Not foreseen. |
+| A second typst template before it is needed | `templates/report.typ` and `templates/payslip.typ` arrive with the features in §11, not before. |
 
 ---
 
