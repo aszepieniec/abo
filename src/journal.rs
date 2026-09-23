@@ -86,9 +86,38 @@ pub fn declared_accounts(ctx: &Ctx) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Steps 1-5 of the validation chain. Step 6 (hledger check) lives in `add`,
+/// Every string that reaches the journal is untrusted: it comes from a scanned
+/// document via a language model, or from a form. Journal syntax is the thing
+/// being protected. A newline starts a new transaction; `;` starts a comment,
+/// and hledger reads tags out of comments, so a description containing
+/// `; sha256: ...` would forge the tag the duplicate check relies on.
+fn check_syntax(field: &str, value: &str, forbidden: &str) -> Result<()> {
+    if let Some(c) = value.chars().find(|c| c.is_control() || forbidden.contains(*c)) {
+        bail!("{field} contains {c:?}, which is journal syntax: {value:?}");
+    }
+    if value.chars().count() > 200 {
+        bail!("{field} is longer than 200 characters");
+    }
+    Ok(())
+}
+
+/// Steps 0-5 of the validation chain. Step 6 (hledger check) lives in `add`,
 /// because it needs the entry written somewhere.
 pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
+    // 0. no field may carry journal syntax
+    check_syntax("description", &e.description, ";")?;
+    for (k, v) in &e.tags {
+        if k.is_empty() || !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+            bail!("tag name {k:?} is not alphanumeric");
+        }
+        // a comma ends a tag value and starts the next tag
+        check_syntax("tag value", v, ";,")?;
+    }
+    for p in &e.postings {
+        check_syntax("account", &p.account, ";")?;
+        check_syntax("commodity", &p.commodity, ";@=*()[]{}0123456789.,-+")?;
+    }
+
     // 1. balance, per commodity
     let elided = e.postings.iter().filter(|p| p.amount.is_none()).count();
     if elided > 1 {

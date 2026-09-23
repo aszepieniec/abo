@@ -167,6 +167,7 @@ auto-approval even under `--yes`.
 Runs in `journal.rs`, on every entry from any source. Order matters; stop at the
 first failure.
 
+0. No field carries journal syntax (control characters, `;`, oversize).
 1. Postings balance per commodity (or exactly one amount elided).
 2. Every account already declared in `accounts.journal`. An undeclared account is
    an explicit "create this account?" step, never an implicit write.
@@ -287,6 +288,41 @@ Two items are day-one, not deferred to exposure.
 - **Never derive a filesystem path from an uploaded filename.** Build it from the
   sha256 and a sanitized vendor string. Path traversal through a multipart
   filename is how a file-upload feature becomes a shell.
+
+### The model is an untrusted input source
+
+Treat model output exactly like a form field submitted by a stranger. Then
+"jailbreaking" is not a category: persuading the model to *want* something is
+only an attack if the model *holds* something. Three rules keep it holding
+nothing. Each is cheap now and each is the sort of thing that gets given away
+casually later.
+
+1. **The model gets no tools.** It receives a document and returns one JSON
+   proposal. No filesystem, no shell, no hledger, no network. If a future
+   feature wants the model to look things up, it gets a fixed set of
+   parameterized queries — `recent_entries(vendor)` — never a command string.
+   The moment a model-supplied string can select *what runs* rather than *what
+   is proposed*, this section is void and the whole design needs re-reading.
+2. **abo never invokes a shell.** `Command::new("hledger").args([...])` with an
+   argument vector, never `sh -c`. No string concatenation into a command line.
+   With no shell there is no shell injection, whatever the model writes.
+3. **Every model-supplied string is validated before it touches disk.** The
+   validator, not the prompt, is the boundary. It runs on entries from every
+   source, so the CLI and the web form are covered by the same code.
+
+The adversary is not hypothetical and does not require a hostile user: a
+supplier emails a PDF, and the PDF contains text addressed to the model. What
+that text can reach is (a) the strings in the proposal and (b) nothing else.
+Amounts parse as `Decimal` or fail; accounts must already be declared;
+document paths are derived from the sha256, never from the model. What remains
+is the free-text fields, and journal syntax is what they can smuggle — a
+newline opens a second transaction, and because hledger reads tags out of
+comments, a `;` in a vendor name forges the `sha256:` tag that the duplicate
+check depends on. Step 0 of the chain rejects control characters, `;` and
+over-long values.
+
+The prompt is not a security control. Nothing about the system may depend on
+the model refusing to do something.
 
 Deferred, with triggers:
 

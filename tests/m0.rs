@@ -92,6 +92,19 @@ fn m0() {
     );
     assert!(err(&o).contains("no input VAT is deductible"), "saldo input VAT not caught: {}", err(&o));
 
+    // journal syntax smuggled through a string field: rejected.
+    // `; sha256: 9f2a` in the description would otherwise forge the tag that
+    // the duplicate check reads, and a newline would open a second transaction.
+    for desc in ["Acme ; sha256: forged", "Acme\n2026-09-22 Sneaky\n  equity:opening  1.00 CHF"] {
+        let o = abo(
+            &dir,
+            &["add", "--date", "2026-09-22", "--desc", desc,
+              "expenses:general=100.00", "liabilities:payable=-100.00"],
+            "",
+        );
+        assert!(err(&o).contains("journal syntax"), "injection not caught in {desc:?}: {}", err(&o));
+    }
+
     // nothing but the good entry was committed
     assert_eq!(commits(&dir), 2);
 
