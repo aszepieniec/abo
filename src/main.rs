@@ -211,11 +211,17 @@ fn preflight() -> Result<Vec<&'static Dep>> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    for d in preflight()? {
-        eprintln!(
-            "warning: {} is not installed, so {} will not work.\n         Install it from {}",
-            d.name, d.needed_for, d.install
-        );
+    let missing = preflight()?;
+    // The long-running commands report it through the log, beside the line
+    // saying where the server is, because that is where someone starting a
+    // server reads. Everything else says it on stderr before it does anything.
+    if !matches!(cli.cmd, Cmd::Serve { .. } | Cmd::Demo { .. }) {
+        for d in &missing {
+            eprintln!(
+                "warning: {} is not installed, so {} will not work.\n         Install it from {}",
+                d.name, d.needed_for, d.install
+            );
+        }
     }
     let here = cli.dir.clone().unwrap_or(std::env::current_dir()?);
 
@@ -365,11 +371,11 @@ async fn main() -> Result<()> {
         Cmd::Bal { args } => passthrough(&here, "balance", &args, cli.json),
         Cmd::Reg { args } => passthrough(&here, "register", &args, cli.json),
         Cmd::Serve { port } => {
-            logging();
+            logging(&missing);
             web::serve(Ctx::open(&here)?, port).await
         }
         Cmd::Demo { port } => {
-            logging();
+            logging(&missing);
             let dir = std::env::temp_dir().join("abo-demo");
             tracing::info!(dir = %dir.display(), "building toy books");
             web::serve(repo::demo(&dir)?, port).await
@@ -378,12 +384,20 @@ async fn main() -> Result<()> {
 }
 
 /// Only the long-running commands log; `abo add` keeps stderr for its own errors.
-fn logging() {
+fn logging(missing: &[&'static Dep]) {
     use tracing_subscriber::EnvFilter;
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "abo=info".into()))
         .with_target(false)
         .init();
+    for d in missing {
+        tracing::warn!(
+            install = d.install,
+            "{} is not installed, so {} will not work",
+            d.name,
+            d.needed_for
+        );
+    }
 }
 
 fn statement(

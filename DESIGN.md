@@ -411,8 +411,10 @@ One binary, clap subcommands. `--json` on every read command.
 abo shells out to three programs and owns none of them, so `main` checks for
 all three before dispatching anything. `git` and `hledger` are required and a
 missing one is a startup error naming what it is for and where to get it;
-`typst` is optional, needed only for PDFs, and a missing one is a warning on
-stderr rather than a refusal. Better than a puzzling failure three steps into a
+`typst` is optional, needed only for PDFs, and a missing one is a warning
+rather than a refusal — on stderr for the short commands, and through the log
+beside the "listening on" line for `serve` and `demo`, since that is where
+someone starting a server actually reads. Better than a puzzling failure three steps into a
 workflow, and for `abo serve` it means the server declines to boot broken
 instead of raising an error on the first request that needs a PDF.
 
