@@ -9,7 +9,7 @@ different agent. It records what was decided and **why**, so the decisions are
 not re-litigated. Where something was deliberately left out, the trigger for
 adding it is stated.
 
-Status: design complete, no code written yet. Next step is M0.
+Status: M0 built (`abo init`, `abo add`, `abo bal`, `abo reg`, one test). Next step is M1.
 
 ---
 
@@ -329,8 +329,8 @@ Not legal advice, but none of this is controversial.
   `accounts.journal`, `.gitignore`, `git init`, first commit). `abo add` with the
   full validation chain. `abo bal` / `abo reg` passthrough. One test: a balanced
   entry commits; an unbalanced one is rejected; an input-VAT posting under
-  `method = "saldo"` is rejected. ~300 lines. **← next**
-- **M1** — `abo bill <file>`: AI proposal, terminal approve/refine.
+  `method = "saldo"` is rejected. ~300 lines. **Done.**
+- **M1** — `abo bill <file>` **← next**: AI proposal, terminal approve/refine.
 - **M2** — `abo web`: upload form, proposal card, approve/refine. Localhost.
 - **M3** — invoices: typst template, numbering from the journal.
 - **M4** — bank import and reconciliation, then statements (VAT return, P&L,
