@@ -15,7 +15,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::Router;
-use maud::{html, Markup, DOCTYPE};
+use maud::{html, Markup, PreEscaped, DOCTYPE};
 use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -84,45 +84,101 @@ async fn log(req: axum::extract::Request, next: axum::middleware::Next) -> Respo
 // ponytail: hledger's own aligned text output in a <pre>. Reach for `-O csv`
 // and a real table when a column needs to be sortable or a row clickable.
 async fn index(State(ctx): State<Arc<Ctx>>) -> Response {
-    or_error("Books", || {
-        let balance = journal::hledger(&ctx, &["balance", "--tree"])?;
-        let register = journal::hledger(&ctx, &["register"])?;
-        let recent: Vec<&str> = register.lines().rev().take(20).collect();
+    or_error(&ctx, "Books", || {
+        let accounts = statement::balances(&ctx, "", &[])?;
+        let recent = recent_entries(&ctx, 12)?;
         let waiting = bill::waiting(&ctx)?;
         Ok(html! {
             h1 { (ctx.cfg.company.name) }
-            p {
-                a href="/bill" { "Book a bill" } " · "
-                a href="/invoice" { "Issue an invoice" } " · "
-                a href="/reconcile" { "Reconcile" } " · "
-                a href="/report/pl" { "Statements" } " · "
-                a href="/add" { "Book an entry by hand" }
+            div.actions style="margin-bottom:24px" {
+                a.btn.btn-primary href="/bill" { (icon("camera")) " Book a bill" }
+                a.btn href="/invoice" { (icon("outbox")) " Issue an invoice" }
+                a.btn href="/reconcile" { (icon("checks")) " Reconcile" }
             }
             @if !waiting.is_empty() {
-                h2 { "Waiting for you" }
-                ul {
-                    @for sha in &waiting {
-                        li {
-                            a href={"/bill/" (sha)} {
+                div.box {
+                    div.box-header { (icon("clock")) "Waiting for you"
+                        span.spacer.muted.small { (waiting.len()) }
+                    }
+                    table.list {
+                        @for sha in &waiting {
+                            tr {
                                 @match bill::review(&ctx, sha) {
-                                    Ok(p) => { (p.proposal.vendor) " — " (p.proposal.date) },
-                                    Err(_) => { (sha[..8]) },
+                                    Ok(p) => {
+                                        td.date { (p.proposal.date) }
+                                        td { a href={"/bill/" (sha)} { (p.proposal.vendor) } }
+                                        td.amt { (p.proposal.confidence) }
+                                    },
+                                    Err(_) => {
+                                        td.date {}
+                                        td { a href={"/bill/" (sha)} { (sha[..8]) } }
+                                        td.amt {}
+                                    },
                                 }
                             }
                         }
                     }
                 }
             }
-            h2 { "Balance" }
-            pre { (balance) }
-            h2 { "Recent" }
-            pre { (recent.into_iter().rev().collect::<Vec<_>>().join("\n")) }
+            div.box {
+                div.box-header { (icon("coins")) "Balances"
+                    span.spacer { a.small href="/report/bs" { "Balance sheet" } }
+                }
+                table.list {
+                    @for (account, bag) in &accounts {
+                        tr {
+                            td { code { (account) } }
+                            td.amt { (money(&statement::amounts(bag))) }
+                        }
+                    }
+                }
+            }
+            div.box {
+                div.box-header { (icon("book")) "Recent entries"
+                    span.spacer { a.small href="/report/pl" { "Profit and loss" } }
+                }
+                table.list {
+                    @for e in &recent {
+                        tr {
+                            td.date { (e.0) }
+                            td { (e.1) }
+                            td.amt { (e.2) }
+                        }
+                    }
+                }
+            }
         })
     })
 }
 
+/// The last few transactions as date, description and size, where size is the
+/// debit total — the figure a person recognises the entry by.
+fn recent_entries(ctx: &Ctx, n: usize) -> Result<Vec<(String, String, String)>> {
+    let out = journal::hledger(ctx, &["print", "-O", "json"])?;
+    let txns: Vec<serde_json::Value> = serde_json::from_str(&out)?;
+    let mut rows = Vec::new();
+    for t in txns.iter().rev().take(n) {
+        let mut bag = statement::Bag::new();
+        for p in t["tpostings"].as_array().into_iter().flatten() {
+            for a in p["pamount"].as_array().into_iter().flatten() {
+                let d = journal::decimal(&a["aquantity"])?;
+                if d.is_sign_positive() {
+                    *bag.entry(a["acommodity"].as_str().unwrap_or_default().to_string())
+                        .or_default() += d;
+                }
+            }
+        }
+        rows.push((
+            t["tdate"].as_str().unwrap_or_default().to_string(),
+            t["tdescription"].as_str().unwrap_or_default().to_string(),
+            money(&statement::amounts(&bag)),
+        ));
+    }
+    Ok(rows)
+}
+
 async fn add_form(State(ctx): State<Arc<Ctx>>) -> Response {
-    or_error("Book an entry", || form(&ctx, "", "", "", None))
+    or_error(&ctx, "Book an entry", || form(&ctx, "", "", "", None))
 }
 
 #[derive(Deserialize)]
@@ -154,7 +210,7 @@ async fn add_submit(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Form(f): Fo
     match booked {
         Ok(_) => Redirect::to("/").into_response(),
         // The form comes back filled in with the reason. Nothing is lost.
-        Err(e) => or_error("Book an entry", || {
+        Err(e) => or_error(&ctx, "Book an entry", || {
             form(&ctx, &f.date, &f.description, &f.postings, Some(&e.to_string()))
         }),
     }
@@ -188,7 +244,7 @@ async fn report(State(ctx): State<Arc<Ctx>>, Path(kind): Path<String>, Query(q):
     };
     let s = match built {
         Ok(s) => s,
-        Err(e) => return or_error("Statements", || Err(e)),
+        Err(e) => return or_error(&ctx, "Statements", || Err(e)),
     };
 
     if q.contains_key("pdf") {
@@ -199,54 +255,64 @@ async fn report(State(ctx): State<Arc<Ctx>>, Path(kind): Path<String>, Query(q):
                 bytes,
             )
                 .into_response(),
-            Err(e) => or_error("Statements", || Err(e)),
+            Err(e) => or_error(&ctx, "Statements", || Err(e)),
         };
     }
 
     let here = |k: &str| if k == kind { "current" } else { "" };
-    or_error(&s.title, || {
+    or_error(&ctx, &s.title, || {
         Ok(html! {
             h1 { (s.title) }
-            p {
-                a href="/report/pl" class=(here("pl")) { "Profit and loss" } " · "
-                a href="/report/bs" class=(here("bs")) { "Balance sheet" } " · "
-                a href="/report/vat" class=(here("vat")) { "Tax return" }
+            nav.tabs {
+                a href="/report/pl" class=(here("pl")) { (icon("chart")) " Profit and loss" }
+                a href="/report/bs" class=(here("bs")) { (icon("coins")) " Balance sheet" }
+                a href="/report/vat" class=(here("vat")) { (icon("doc")) " Tax return" }
             }
             form method="get" {
-                @if kind == "bs" {
-                    label { "As at" input type="date" name="date" value=(date); }
-                } @else {
-                    label {
-                        "Period — any hledger period expression, e.g. " code { "2026" } ", " code { "2026q1" }
-                        input type="text" name="period" value=(period);
-                    }
-                }
-                button type="submit" { "Show" }
-            }
-            p.dim { (s.period) }
-            @for section in &s.sections {
-                @if !section.title.is_empty() { h2 { (section.title) } }
-                table.figures {
-                    @for l in &section.lines {
-                        tr {
-                            td { @if let Some(c) = &l.code { span.dim { (c) " " } } (l.label) }
-                            td { (money(&l.amounts)) }
+                div.box {
+                    div.box-body {
+                        @if kind == "bs" {
+                            label.field { "As at" input type="date" name="date" value=(date); }
+                        } @else {
+                            label.field { "Period"
+                                span.hint { "Any hledger period expression: " code { "2026" } ", " code { "2026q1" } ", " code { "last month" } }
+                                input type="text" name="period" value=(period);
+                            }
+                        }
+                        div.actions {
+                            button type="submit" { (icon("chart")) " Show" }
+                            a.btn href=({
+                                let q = if kind == "bs" { format!("date={date}") } else { format!("period={period}") };
+                                format!("/report/{kind}?pdf=1&{q}")
+                            }) { (icon("download")) " Download as PDF" }
                         }
                     }
-                    @if !section.total.is_empty() {
-                        tr.total { td { "Total" } td { (money(&section.total)) } }
-                    }
                 }
             }
-            table.figures {
-                tr.total { td { (s.bottom.label) } td { (money(&s.bottom.amounts)) } }
-            }
-            p {
-                a href=({
-                    let q = if kind == "bs" { format!("date={date}") } else { format!("period={period}") };
-                    format!("/report/{kind}?pdf=1&{q}")
-                }) { "Download as PDF" }
-                " · " a href="/" { "Back" }
+            div.box {
+                div.box-header { (icon("doc")) (s.period) }
+                div.box-body {
+                    @for section in &s.sections {
+                        @if !section.title.is_empty() { h2 { (section.title) } }
+                        table.figures {
+                            @for l in &section.lines {
+                                tr {
+                                    td {
+                                        @if let Some(c) = &l.code { span.muted { (c) " " } }
+                                        (l.label)
+                                    }
+                                    td { (money(&l.amounts)) }
+                                }
+                            }
+                            @if !section.total.is_empty() {
+                                tr.total { td { "Total" } td { (money(&section.total)) } }
+                            }
+                        }
+                    }
+                    table.figures {
+                        tr.grand { td { (s.bottom.label) } td { (money(&s.bottom.amounts)) } }
+                    }
+                }
             }
         })
     })
@@ -260,7 +326,7 @@ fn money(a: &[statement::Amount]) -> String {
 }
 
 async fn reconcile_view(State(ctx): State<Arc<Ctx>>, Query(q): Query<Fields>) -> Response {
-    or_error("Reconcile", || reconcile_page(&ctx, &q, None))
+    or_error(&ctx, "Reconcile", || reconcile_page(&ctx, &q, None))
 }
 
 /// One form, two buttons: tick things off, or record the agreed balance.
@@ -298,8 +364,8 @@ async fn reconcile_act(
     })();
 
     match done {
-        Ok(()) => or_error("Reconcile", || reconcile_page(&ctx, &f, None)),
-        Err(e) => or_error("Reconcile", || reconcile_page(&ctx, &f, Some(&e.to_string()))),
+        Ok(()) => or_error(&ctx, "Reconcile", || reconcile_page(&ctx, &f, None)),
+        Err(e) => or_error(&ctx, "Reconcile", || reconcile_page(&ctx, &f, Some(&e.to_string()))),
     }
 }
 
@@ -324,53 +390,67 @@ fn reconcile_page(ctx: &Ctx, f: &Fields, error: Option<&str>) -> Result<Markup> 
     Ok(html! {
         h1 { "Reconcile" }
         @if let Some(e) = error {
-            p.error { (e) }
+            div.flash.flash-error { (icon("alert")) div { (e) } }
         }
         form method="post" action="/reconcile" {
-            label { "Account" input type="text" name="account" value=(account); }
-            label { "Commodity" input type="text" name="commodity" value=(commodity); }
-            label { "Statement date" input type="date" name="date" value=(date); }
-            label { "Closing balance on the statement" input type="text" name="balance" value=(raw); }
-
-            table.figures {
-                tr { td { "Cleared per the books" } td { (r.cleared) " " (commodity) } }
-                @if let (Some(b), Some(d)) = (&r.statement, &r.difference) {
-                    tr { td { "Per the statement" } td { (b) " " (commodity) } }
-                    tr.total { td { "Difference" } td { (d) " " (commodity) } }
+            div.box {
+                div.box-header { (icon("checks")) "Against the statement" }
+                div.box-body {
+                    label.field { "Account" input type="text" name="account" value=(account); }
+                    label.field { "Commodity" input type="text" name="commodity" value=(commodity); }
+                    label.field { "Statement date" input type="date" name="date" value=(date); }
+                    label.field { "Closing balance on the statement"
+                        input type="text" name="balance" value=(raw);
+                    }
+                    table.figures {
+                        tr { td { "Cleared per the books" } td { (r.cleared) " " (commodity) } }
+                        @if let (Some(b), Some(d)) = (&r.statement, &r.difference) {
+                            tr { td { "Per the statement" } td { (b) " " (commodity) } }
+                            tr.total { td { "Difference" } td { (d) " " (commodity) } }
+                        }
+                    }
                 }
             }
 
             @if r.outstanding.is_empty() {
-                p.dim { "Nothing outstanding." }
+                div.flash.flash-ok { (icon("check")) div { "Nothing outstanding." } }
             } @else {
-                h2 { "Outstanding" }
-                p.dim { "Tick what the statement shows." }
-                ul.items {
-                    @for i in &r.outstanding {
-                        li {
-                            label.row {
-                                input type="checkbox" name="key" value=(i.key);
-                                span.date { (i.date) }
-                                span.amt { (i.amount) }
-                                span { (i.description) }
+                div.box {
+                    div.box-header { (icon("clock")) "Outstanding"
+                        span.spacer.muted.small { "tick what the statement shows" }
+                    }
+                    ul.items {
+                        @for i in &r.outstanding {
+                            li {
+                                label.row {
+                                    input type="checkbox" name="key" value=(i.key);
+                                    span.date { (i.date) }
+                                    span.amt { (i.amount) }
+                                    span { (i.description) }
+                                }
                             }
                         }
                     }
                 }
-                button type="submit" name="action" value="clear" { "Mark ticked as cleared" }
             }
 
-            @if r.reconciled {
-                p.dim { "The books agree with the statement." }
-                button type="submit" name="action" value="record" { "Record this balance" }
+            div.actions {
+                @if !r.outstanding.is_empty() {
+                    button type="submit" name="action" value="clear" { (icon("check")) " Mark ticked as cleared" }
+                }
+                @if r.reconciled {
+                    button.btn-primary type="submit" name="action" value="record" {
+                        (icon("book")) " Record this balance"
+                    }
+                }
+                a.btn href="/" { (icon("left")) " Back" }
             }
         }
-        p { a href="/" { "Back" } }
     })
 }
 
 async fn invoice_form(State(ctx): State<Arc<Ctx>>) -> Response {
-    or_error("Issue an invoice", || invoice_page(&ctx, &InvoiceForm::default(), None))
+    or_error(&ctx, "Issue an invoice", || invoice_page(&ctx, &InvoiceForm::default(), None))
 }
 
 async fn invoice_submit(
@@ -404,39 +484,10 @@ async fn invoice_submit(
             info!(number = %r.number, commit = %r.commit, "invoiced");
             Redirect::to(&format!("/invoice/{}", r.number)).into_response()
         }
-        Err(e) => or_error("Issue an invoice", || invoice_page(&ctx, &f, Some(&e.to_string()))),
+        Err(e) => or_error(&ctx, "Issue an invoice", || invoice_page(&ctx, &f, Some(&e.to_string()))),
     }
 }
 
-fn invoice_page(ctx: &Ctx, f: &InvoiceForm, error: Option<&str>) -> Result<Markup> {
-    let year = jiff::Zoned::now().date().year().to_string();
-    let next = invoice::next_number(ctx, &year)?;
-    Ok(html! {
-        h1 { "Issue an invoice" }
-        p.dim { "This will be invoice " (next) "." }
-        @if let Some(e) = error {
-            p.error { "Rejected: " (e) }
-        }
-        form method="post" action="/invoice" {
-            label { "Customer, one line each" textarea name="to" rows="4" required { (f.to) } }
-            label {
-                "Lines, one per line: " code { "quantity|unit price|description" }
-                textarea name="items" rows="4" required placeholder="10|150.00|Consulting, September" { (f.items) }
-            }
-            label { "Date (blank for today)" input type="date" name="date" value=(f.date); }
-            label { "VAT rate, percent (blank for the configured rate)" input type="text" name="vat_rate" value=(f.vat_rate); }
-            label { "Commodity (blank for " (ctx.cfg.company.currency) ")" input type="text" name="currency" value=(f.currency); }
-            label { "Their reference" input type="text" name="reference" value=(f.reference); }
-            label { "Note" input type="text" name="note" value=(f.note); }
-            button type="submit" { "Issue it" }
-        }
-        p { a href="/" { "Back" } }
-    })
-}
-
-/// Serves an issued invoice. The number is checked against the numbering
-/// format before it touches a path, so nothing else in the repository is
-/// reachable through this route.
 async fn invoice_pdf(State(ctx): State<Arc<Ctx>>, Path(number): Path<String>) -> Response {
     let number = number.strip_suffix(".pdf").unwrap_or(&number);
     let well_formed = matches!(number.split_once('-'), Some((y, n))
@@ -452,25 +503,71 @@ async fn invoice_pdf(State(ctx): State<Arc<Ctx>>, Path(number): Path<String>) ->
             bytes,
         )
             .into_response(),
-        Err(e) => or_error("Invoice", || Err(e.into())),
+        Err(e) => or_error(&ctx, "Invoice", || Err(e.into())),
     }
 }
 
-async fn upload_form(State(_ctx): State<Arc<Ctx>>) -> Response {
-    or_error("Book a bill", || {
+fn invoice_page(ctx: &Ctx, f: &InvoiceForm, error: Option<&str>) -> Result<Markup> {
+    let year = jiff::Zoned::now().date().year().to_string();
+    let next = invoice::next_number(ctx, &year)?;
+    Ok(html! {
+        h1 { "Issue an invoice" }
+        @if let Some(e) = error {
+            div.flash.flash-error { (icon("alert")) div { "Rejected: " (e) } }
+        }
+        form method="post" action="/invoice" {
+            div.box {
+                div.box-header { (icon("outbox")) "Invoice " (next) }
+                div.box-body {
+                    label.field { "Customer"
+                        span.hint { "Name and address, one line each." }
+                        textarea name="to" rows="4" required { (f.to) }
+                    }
+                    label.field { "Lines"
+                        span.hint { "One per line: " code { "quantity|unit price|description" } }
+                        textarea name="items" rows="4" required
+                                 placeholder="10|150.00|Consulting, September" { (f.items) }
+                    }
+                    label.field { "Date" span.hint { "Blank for today." }
+                        input type="date" name="date" value=(f.date);
+                    }
+                    label.field { "VAT rate"
+                        span.hint { "Percent. Blank for the configured rate; 0 for an export or an exempt supply." }
+                        input type="text" name="vat_rate" value=(f.vat_rate);
+                    }
+                    label.field { "Commodity"
+                        span.hint { "Blank for " (ctx.cfg.company.currency) "." }
+                        input type="text" name="currency" value=(f.currency);
+                    }
+                    label.field { "Their reference" input type="text" name="reference" value=(f.reference); }
+                    label.field { "Note" input type="text" name="note" value=(f.note); }
+                    div.actions { button.btn-primary type="submit" { (icon("check")) " Issue it" } }
+                }
+            }
+        }
+        p { a.btn href="/" { (icon("left")) " Back" } }
+    })
+}
+
+async fn upload_form(State(ctx): State<Arc<Ctx>>) -> Response {
+    or_error(&ctx, "Book a bill", || {
         Ok(html! {
             h1 { "Book a bill" }
             form method="post" action="/bill" enctype="multipart/form-data" {
-                label {
-                    "A PDF or a photograph of the bill"
-                    // capture= is why this works as a phone app without one
-                    // line of JavaScript.
-                    input type="file" name="document" accept="image/*,application/pdf"
-                          capture="environment" required;
+                div.box {
+                    div.box-body {
+                        label.field { "The bill"
+                            span.hint { "A PDF, or a photograph. On a phone this opens the camera." }
+                            // capture= is why this works as a phone app without
+                            // one line of JavaScript.
+                            input type="file" name="document" accept="image/*,application/pdf"
+                                  capture="environment" required;
+                        }
+                        div.actions { button.btn-primary type="submit" { (icon("camera")) " Read it" } }
+                    }
                 }
-                button type="submit" { "Read it" }
             }
-            p { a href="/" { "Back" } }
+            p { a.btn href="/" { (icon("left")) " Back" } }
         })
     })
 }
@@ -486,42 +583,58 @@ async fn upload(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, mut mp: Multipa
         _ => None,
     };
     let Some(bytes) = bytes else {
-        return or_error("Book a bill", || bail!("no document in the upload"));
+        return or_error(&ctx, "Book a bill", || bail!("no document in the upload"));
     };
     match bill::propose(&ctx, bytes.to_vec()).await {
         Ok(p) => Redirect::to(&format!("/bill/{}", p.sha256)).into_response(),
-        Err(e) => or_error("Book a bill", || Err(e)),
+        Err(e) => or_error(&ctx, "Book a bill", || Err(e)),
     }
 }
 
 async fn card(State(ctx): State<Arc<Ctx>>, Path(sha): Path<String>) -> Response {
-    or_error("Proposal", || {
+    or_error(&ctx, "Proposal", || {
         let p = bill::review(&ctx, &sha)?;
         let ready = p.problem.is_none() && p.proposal.questions.is_empty();
         Ok(html! {
             h1 { (p.proposal.vendor) }
-            p.dim { "confidence: " (p.proposal.confidence) " · "
-                    a href={"/bill/" (sha) "/document"} { "the document" } }
-            pre { (p.entry) }
+            p.muted.small {
+                "Confidence: " (p.proposal.confidence) " · "
+                a href={"/bill/" (sha) "/document"} { (icon("doc")) " the document" }
+            }
             @if let Some(problem) = &p.problem {
-                p.error { "The validator rejects this: " (problem) }
+                div.flash.flash-error { (icon("alert")) div { "The validator rejects this: " (problem) } }
             }
             @if !p.proposal.questions.is_empty() {
-                h2 { "The model is asking" }
-                ul { @for q in &p.proposal.questions { li { (q) } } }
+                div.flash.flash-warn {
+                    (icon("alert"))
+                    div {
+                        "The model is asking:"
+                        ul { @for q in &p.proposal.questions { li { (q) } } }
+                    }
+                }
+            }
+            div.box {
+                div.box-header { (icon("book")) "The entry it proposes" }
+                div.box-body { pre { (p.entry) } }
             }
             form method="post" action={"/bill/" (sha) "/refine"} {
-                label {
-                    "Correct it in your own words"
-                    textarea name="correction" rows="3" required
-                             placeholder="That is hosting, not general expenses." {}
+                div.box {
+                    div.box-body {
+                        label.field { "Correct it in your own words"
+                            span.hint { "This goes back to the model with the document and it proposes again." }
+                            textarea name="correction" rows="3" required
+                                     placeholder="That is hosting, not general expenses." {}
+                        }
+                        div.actions { button type="submit" { (icon("pencil")) " Send the correction" } }
+                    }
                 }
-                button type="submit" { "Send the correction" }
             }
-            form method="post" action={"/bill/" (sha) "/approve"} {
-                button type="submit" disabled[!ready] { "Approve and commit" }
+            div.actions {
+                form method="post" action={"/bill/" (sha) "/approve"} {
+                    button.btn-primary type="submit" disabled[!ready] { (icon("check")) " Approve and commit" }
+                }
+                a.btn href="/" { (icon("left")) " Back" }
             }
-            p { a href="/" { "Back" } }
         })
     })
 }
@@ -533,7 +646,7 @@ async fn document(State(ctx): State<Arc<Ctx>>, Path(sha): Path<String>) -> Respo
             bytes,
         )
             .into_response(),
-        Err(e) => or_error("Proposal", || Err(e)),
+        Err(e) => or_error(&ctx, "Proposal", || Err(e)),
     }
 }
 
@@ -554,7 +667,7 @@ async fn refine(
     }
     match bill::refine(&ctx, &sha, &f.correction).await {
         Ok(_) => Redirect::to(&format!("/bill/{sha}")).into_response(),
-        Err(e) => or_error("Proposal", || Err(e)),
+        Err(e) => or_error(&ctx, "Proposal", || Err(e)),
     }
 }
 
@@ -568,7 +681,7 @@ async fn approve(State(ctx): State<Arc<Ctx>>, Path(sha): Path<String>, headers: 
             info!(commit = %r.commit, "approved");
             Redirect::to("/").into_response()
         }
-        Err(e) => or_error("Proposal", || Err(e)),
+        Err(e) => or_error(&ctx, "Proposal", || Err(e)),
     }
 }
 
@@ -578,20 +691,31 @@ fn form(ctx: &Ctx, date: &str, description: &str, postings: &str, error: Option<
     Ok(html! {
         h1 { "Book an entry" }
         @if let Some(e) = error {
-            p.error { "Rejected: " (e) }
+            div.flash.flash-error { (icon("alert")) div { "Rejected: " (e) } }
         }
         form method="post" action="/add" {
-            label { "Date" input type="date" name="date" required value=(if date.is_empty() { today } else { date.to_string() }); }
-            label { "Description" input type="text" name="description" required value=(description); }
-            label {
-                "Postings, one per line: " code { "account=amount" }
-                textarea name="postings" rows="5" required placeholder="expenses:hosting=100.00\nliabilities:payable=-100.00" { (postings) }
+            div.box {
+                div.box-body {
+                    label.field { "Date"
+                        input type="date" name="date" required
+                              value=(if date.is_empty() { today } else { date.to_string() });
+                    }
+                    label.field { "Description"
+                        input type="text" name="description" required value=(description);
+                    }
+                    label.field { "Postings"
+                        span.hint { "One per line, " code { "account=amount" } ". Leave one amount off and hledger infers it." }
+                        textarea name="postings" rows="5" required
+                                 placeholder="expenses:hosting=100.00\nliabilities:payable=-100.00" { (postings) }
+                    }
+                    div.actions { button.btn-primary type="submit" { (icon("check")) " Book it" } }
+                }
             }
-            button type="submit" { "Book it" }
         }
-        h2 { "Declared accounts" }
-        ul.accounts { @for a in accounts { li { code { (a) } } } }
-        p { a href="/" { "Back" } }
+        div.box {
+            div.box-header { (icon("book")) "Declared accounts" }
+            div.box-body { ul.accounts { @for a in accounts { li { code { (a) } } } } }
+        }
     })
 }
 
@@ -611,17 +735,70 @@ fn same_origin(h: &HeaderMap) -> Result<()> {
     }
 }
 
-fn or_error(title: &str, body: impl FnOnce() -> Result<Markup>) -> Response {
-    match body() {
-        Ok(m) => page(title, m).into_response(),
-        Err(e) => {
-            error!(%e, "request failed");
-            page("Error", html! { h1 { "Error" } pre.error { (e) } p { a href="/" { "Back" } } }).into_response()
+
+/// Inline SVG, drawn here rather than pulled from an icon font or a CDN: no
+/// extra request, no webfont, works offline, and takes its colour from the
+/// text around it. One stroke weight, one 16-unit grid.
+fn icon(name: &str) -> Markup {
+    let paths: &[&str] = match name {
+        "book" => &["M3.5 2.5h9v11h-9z", "M6 2.5v11", "M8 6h3", "M8 9h3"],
+        "inbox" => &["M2 9.5v3a1.5 1.5 0 0 0 1.5 1.5h9a1.5 1.5 0 0 0 1.5-1.5v-3",
+                     "M8 2v7.5", "M5 6.5 8 9.5 11 6.5"],
+        "outbox" => &["M2 9.5v3a1.5 1.5 0 0 0 1.5 1.5h9a1.5 1.5 0 0 0 1.5-1.5v-3",
+                      "M8 9.5V2", "M5 5 8 2 11 5"],
+        "checks" => &["M2.5 2.5h11v11h-11z", "M5 8.2 7 10.2 11 5.8"],
+        "chart" => &["M2 14h12", "M4.5 11.5v-4", "M8 11.5v-7", "M11.5 11.5v-2.5"],
+        "plus" => &["M8 3.5v9", "M3.5 8h9"],
+        "check" => &["M3.5 8.5 6.5 11.5 12.5 4.5"],
+        "alert" => &["M8 2 14.5 13.5h-13z", "M8 6.5v3", "M8 11.4v.3"],
+        "left" => &["M12.5 8h-9", "M7 4 3.5 8 7 12"],
+        "download" => &["M8 2.5v8", "M4.5 7.5 8 11 11.5 7.5", "M2.5 13.5h11"],
+        "camera" => &["M2.5 5.5h2l1-1.5h5l1 1.5h2a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-.5.5h-11a.5.5 0 0 1-.5-.5v-7a.5.5 0 0 1 .5-.5z",
+                      "M8 11.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"],
+        "pencil" => &["M11 2.5 13.5 5 5.5 13H3v-2.5z", "M9.5 4 12 6.5"],
+        "clock" => &["M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12z", "M8 4.5V8l2.5 1.5"],
+        "doc" => &["M4 1.5h5L12.5 5v9.5h-8.5z", "M9 1.5V5h3.5"],
+        "coins" => &["M8 6.5c3 0 5.5-1 5.5-2.25S11 2 8 2 2.5 3 2.5 4.25 5 6.5 8 6.5z",
+                     "M2.5 4.25v7.5C2.5 13 5 14 8 14s5.5-1 5.5-2.25v-7.5",
+                     "M2.5 8C2.5 9.25 5 10.25 8 10.25s5.5-1 5.5-2.25"],
+        _ => &[],
+    };
+    html! {
+        svg class="icon" viewBox="0 0 16 16" width="16" height="16" fill="none"
+            stroke="currentColor" stroke-width="1.4" stroke-linecap="round"
+            stroke-linejoin="round" aria-hidden="true" {
+            @for d in paths { path d=(d) {} }
         }
     }
 }
 
-fn page(title: &str, body: Markup) -> Html<String> {
+fn or_error(ctx: &Ctx, title: &str, body: impl FnOnce() -> Result<Markup>) -> Response {
+    match body() {
+        Ok(m) => page(ctx, title, m).into_response(),
+        Err(e) => {
+            error!(%e, "request failed");
+            page(
+                ctx,
+                "Error",
+                html! {
+                    h1 { "Something went wrong" }
+                    div.flash.flash-error { (icon("alert")) pre { (e) } }
+                    p { a.btn href="/" { (icon("left")) " Back to the books" } }
+                },
+            )
+            .into_response()
+        }
+    }
+}
+
+fn page(ctx: &Ctx, title: &str, body: Markup) -> Html<String> {
+    let nav = [
+        ("/bill", "inbox", "Bills"),
+        ("/invoice", "outbox", "Invoices"),
+        ("/reconcile", "checks", "Reconcile"),
+        ("/report/pl", "chart", "Statements"),
+        ("/add", "plus", "Entry"),
+    ];
     Html(
         html! {
             (DOCTYPE)
@@ -629,10 +806,24 @@ fn page(title: &str, body: Markup) -> Html<String> {
                 head {
                     meta charset="utf-8";
                     meta name="viewport" content="width=device-width, initial-scale=1";
-                    title { (title) " — abo" }
-                    style { (STYLE) }
+                    title { (title) " · abo" }
+                    // PreEscaped: maud escapes interpolated text, and an escaped `>` in a
+                    // child combinator silently kills the rule.
+                    style { (PreEscaped(STYLE)) }
                 }
-                body { main { (body) } }
+                body {
+                    header.topbar {
+                        div.container.topbar-inner {
+                            a.brand href="/" { (icon("book")) span { (ctx.cfg.company.name) } }
+                            nav {
+                                @for (href, ic, label) in nav {
+                                    a href=(href) { (icon(ic)) span { (label) } }
+                                }
+                            }
+                        }
+                    }
+                    main.container { (body) }
+                }
             }
         }
         .into_string(),
@@ -640,42 +831,150 @@ fn page(title: &str, body: Markup) -> Html<String> {
 }
 
 const STYLE: &str = r#"
-:root { color-scheme: light dark; --fg: #1a1a1a; --bg: #fdfdfc; --dim: #666; --line: #ddd; }
-@media (prefers-color-scheme: dark) { :root { --fg: #e8e8e6; --bg: #16161a; --dim: #999; --line: #333; } }
+:root {
+  --canvas: #ffffff; --subtle: #f6f8fa; --inset: #f6f8fa;
+  --border: #d1d9e0; --border-strong: #b7bfc7;
+  --fg: #1f2328; --muted: #59636e;
+  --accent: #0969da; --accent-soft: #ddf4ff;
+  --success: #1a7f37; --success-btn: #1f883d; --success-btn-hover: #1a7f37;
+  --danger: #d1242f; --danger-soft: #ffebe9;
+  --attention: #9a6700; --attention-soft: #fff8c5;
+  --shadow: 0 1px 0 rgba(31,35,40,.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --canvas: #0d1117; --subtle: #151b23; --inset: #010409;
+    --border: #3d444d; --border-strong: #4d545c;
+    --fg: #f0f6fc; --muted: #9198a1;
+    --accent: #4493f8; --accent-soft: #121d2f;
+    --success: #3fb950; --success-btn: #238636; --success-btn-hover: #2ea043;
+    --danger: #f85149; --danger-soft: #25171c;
+    --attention: #d29922; --attention-soft: #272115;
+    --shadow: none;
+  }
+}
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--fg);
-  font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; }
-main { max-width: 46rem; margin: 0 auto; padding: 2rem 1rem 4rem; }
-h1 { font-size: 1.4rem; margin: 0 0 1rem; }
-h2 { font-size: 1rem; color: var(--dim); font-weight: 600; margin: 2rem 0 .5rem;
-  text-transform: uppercase; letter-spacing: .06em; }
-pre { overflow-x: auto; padding: .75rem; border: 1px solid var(--line); border-radius: 4px;
-  font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
-a { color: inherit; }
-label { display: block; margin: 0 0 1rem; font-size: .85rem; color: var(--dim); }
-input, textarea, button { display: block; width: 100%; margin-top: .25rem; padding: .5rem;
-  font: inherit; color: var(--fg); background: var(--bg);
-  border: 1px solid var(--line); border-radius: 4px; }
-textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
-button { width: auto; padding: .5rem 1.25rem; cursor: pointer; border-color: var(--fg); }
-.error { color: #b00020; white-space: pre-wrap; }
-.dim { color: var(--dim); font-size: .85rem; }
-button[disabled] { opacity: .4; cursor: not-allowed; border-color: var(--line); }
-@media (prefers-color-scheme: dark) { .error { color: #ff8a80; } }
-ul.accounts { columns: 2; list-style: none; padding: 0; font-size: 13px; }
-table.figures { margin: 1.5rem 0; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-table.figures td { padding: .3rem 1.5rem .3rem 0; }
-table.figures td:last-child { text-align: right; padding-right: 0; }
-table.figures tr.total td { border-top: 1px solid var(--line); font-weight: 600; }
-table.figures { width: 100%; }
-a.current { font-weight: 600; text-decoration: none; }
-ul.items { list-style: none; padding: 0; }
-ul.items li { border-bottom: 1px solid var(--line); }
-label.row { display: grid; grid-template-columns: auto 6.5rem 7rem 1fr; gap: .75rem;
-  align-items: center; margin: 0; padding: .45rem 0; color: var(--fg); cursor: pointer; }
+body {
+  margin: 0; background: var(--canvas); color: var(--fg);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
+        Helvetica, Arial, sans-serif;
+}
+.container { max-width: 1012px; margin: 0 auto; padding: 0 16px; }
+
+/* top bar */
+.topbar { background: #1f2328; color: #f0f6fc; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .topbar { background: #151b23; border-bottom: 1px solid var(--border); } }
+.topbar-inner { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; padding-top: 12px; padding-bottom: 12px; }
+.brand { display: flex; align-items: center; gap: 8px; color: #f0f6fc; font-weight: 600; text-decoration: none; margin-right: auto; }
+.topbar nav { display: flex; flex-wrap: wrap; gap: 2px; }
+.topbar nav a {
+  display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 6px;
+  color: #d1d9e0; text-decoration: none; font-weight: 500;
+}
+.topbar nav a:hover { background: rgba(255,255,255,.08); color: #fff; }
+
+/* headings */
+main { padding-bottom: 64px; }
+h1 { font-size: 20px; font-weight: 600; margin: 24px 0 16px; }
+h2 { font-size: 14px; font-weight: 600; margin: 24px 0 8px; }
+p { margin: 0 0 16px; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--subtle); border: 1px solid var(--border); border-radius: 6px; padding: 1px 5px; }
+
+/* icons */
+.icon { flex: none; vertical-align: text-bottom; }
+
+/* cards */
+.box { border: 1px solid var(--border); border-radius: 6px; background: var(--canvas);
+  box-shadow: var(--shadow); margin: 0 0 16px; overflow: hidden; }
+.box-header { display: flex; align-items: center; gap: 8px; padding: 12px 16px;
+  background: var(--subtle); border-bottom: 1px solid var(--border); font-weight: 600; }
+.box-header .spacer { margin-left: auto; font-weight: 400; }
+.box-body { padding: 16px; }
+.box-body > :last-child { margin-bottom: 0; }
+table.list td { padding: 9px 16px; border-bottom: 1px solid var(--border); }
+table.list tr:last-child td { border-bottom: 0; }
+table.list td.date { color: var(--muted); width: 7.5rem; white-space: nowrap;
+  font-variant-numeric: tabular-nums; }
+table.list td.amt { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+pre { overflow-x: auto; margin: 0; padding: 12px 16px; background: var(--inset);
+  border: 1px solid var(--border); border-radius: 6px;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.box-body pre { border: 0; border-radius: 0; margin: -16px; }
+.box .box-body > table.figures:first-child { margin-top: -6px; }
+
+/* buttons */
+.btn, button {
+  display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px;
+  font: 500 14px/20px inherit; color: var(--fg); background: var(--subtle);
+  border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+  text-decoration: none; white-space: nowrap;
+}
+.btn:hover, button:hover { background: var(--border); text-decoration: none; }
+.btn-primary { color: #fff; background: var(--success-btn); border-color: rgba(31,35,40,.15); }
+.btn-primary:hover { background: var(--success-btn-hover); }
+button[disabled] { opacity: .5; cursor: not-allowed; }
+button[disabled]:hover { background: var(--subtle); }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+/* forms */
+label.field { display: block; margin: 0 0 16px; font-weight: 600; }
+label.field .hint { display: block; font-weight: 400; color: var(--muted); font-size: 12px; margin-top: 2px; }
+input[type=text], input[type=date], input[type=file], textarea, select {
+  display: block; width: 100%; margin-top: 6px; padding: 5px 12px;
+  font: 14px/20px inherit; color: var(--fg); background: var(--canvas);
+  border: 1px solid var(--border); border-radius: 6px;
+}
+textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+input:focus, textarea:focus { outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft); }
+
+/* callouts */
+.flash { display: flex; gap: 8px; align-items: flex-start; padding: 12px 16px;
+  border: 1px solid var(--border); border-radius: 6px; margin: 0 0 16px; background: var(--subtle); }
+.flash pre { background: none; border: 0; padding: 0; white-space: pre-wrap; }
+.flash-error { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
+.flash-warn { background: var(--attention-soft); border-color: var(--attention); color: var(--fg); }
+.flash-ok { background: var(--accent-soft); border-color: var(--accent); }
+
+/* figures */
+table { width: 100%; border-collapse: collapse; }
+table.figures td { padding: 6px 0; font-variant-numeric: tabular-nums; }
+table.figures td:last-child { text-align: right; white-space: nowrap; }
+table.figures tr.total td { border-top: 1px solid var(--border); font-weight: 600; }
+table.figures tr.grand td { border-top: 2px solid var(--border-strong); font-weight: 600; font-size: 16px; }
+
+/* checkbox rows */
+ul.items { list-style: none; margin: 0; padding: 0; }
+ul.items li { border-bottom: 1px solid var(--border); }
+ul.items li:last-child { border-bottom: 0; }
+label.row { display: grid; grid-template-columns: auto 6.5rem 8rem 1fr; gap: 12px;
+  align-items: center; margin: 0; padding: 10px 16px; cursor: pointer; font-weight: 400; }
+label.row:hover { background: var(--subtle); }
 label.row input { width: auto; margin: 0; }
-label.row .date, label.row .amt { font-variant-numeric: tabular-nums; font-size: 13px; }
-label.row .amt { text-align: right; }
+label.row .date, label.row .amt { font-variant-numeric: tabular-nums; color: var(--muted); }
+label.row .amt { text-align: right; color: var(--fg); }
+
+ul.accounts { columns: 2; list-style: none; padding: 0; margin: 0; font-size: 12px; }
+ul.accounts li { padding: 2px 0; }
+
+/* segmented nav */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 0 0 16px; }
+.tabs a { display: flex; align-items: center; gap: 6px; padding: 8px 12px;
+  color: var(--fg); border: 1px solid transparent; border-bottom: 0; border-radius: 6px 6px 0 0; }
+.tabs a:hover { background: var(--subtle); text-decoration: none; }
+.tabs a.current { background: var(--canvas); border-color: var(--border); font-weight: 600;
+  margin-bottom: -1px; padding-bottom: 9px; }
+
+@media (max-width: 620px) {
+  .brand span { display: none; }
+  label.row { grid-template-columns: auto 1fr; }
+  label.row .date, label.row .amt { grid-column: 2; text-align: left; }
+}
 "#;
 
 #[cfg(test)]

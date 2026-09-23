@@ -25,7 +25,7 @@ Status: M0-M4 built — `abo init`, `add`, `bill`, `invoice`, `reconcile`,
 | Reports | Minimal Rust parser for writing and validating; **hledger computes everything**. | Multi-commodity, elided amounts, price directives and period expressions are where a hand-rolled money parser goes quietly wrong. hledger is already installed (GPL-3+, shelled out, no licence obligation — see §9). |
 | Invoice PDF | typst template, `typst compile` shelled out | One page, fixed grid. Layout lives in a `.typ` template, not in Rust. Compiler is Apache-2.0, offline, no account. |
 | Git access | shell out to `git` | Smaller than `git2`/libgit2 by a wide margin. |
-| Web UI | axum + maud, server-rendered | No SPA, no npm, no build step, no WASM. HTML escaping comes from maud. |
+| Web UI | axum + maud, server-rendered, one hand-written stylesheet | No SPA, no npm, no build step, no WASM. HTML escaping comes from maud. The look is GitHub's, written out rather than vendored — see §7. |
 | Deployment | localhost first, reachable later | See §8. Auth goes at a reverse proxy, not in the app — until users exist. |
 | Tax | three scheme *shapes* in code (`none` / `flat` / `effective`); every rate, rule and name in config | The shape changes what a *correct booking* is, so the validator must know it. Rates and local rules differ everywhere and are data. See §6. |
 | Commodities | multi-commodity from the start | hledger already is. Cash, bank and wallet balances are all just asset accounts. |
@@ -419,9 +419,28 @@ workflow, and for `abo serve` it means the server declines to boot broken
 instead of raising an error on the first request that needs a PDF.
 
 ### Web
-axum + maud, server-rendered forms: balance and register, bill upload and
+axum + maud, server-rendered forms: balances and recent entries, bill upload and
 proposal card, invoice form, reconciliation checkboxes, statements with a PDF
-link, hand-typed entry. `abo serve --port 8801` binds
+link, hand-typed entry.
+
+The look is GitHub's — a dark top bar, bordered cards with a subtle header
+strip, 6px radii, the system font stack, and a green primary button. It is
+about 180 lines of CSS in one `STYLE` constant, not Bootstrap from a CDN and
+not a vendored copy: a CDN would mean the app stops looking like itself
+offline and quietly tells someone else when the books are opened, and
+vendoring means a megabyte to carry and upgrade for the grid and the buttons
+alone. Light and dark both come from one set of custom properties.
+
+Icons are inline SVG, drawn in `web.rs` on a 16-unit grid with one stroke
+weight. That means no icon font, no extra request, no third-party licence to
+track, and they take their colour from the text around them.
+
+```
+maud escapes interpolated text, including inside <style>, so a `>` child
+combinator in the stylesheet silently becomes &gt; and the rule is dead. The
+stylesheet is wrapped in PreEscaped for that reason. This cost an afternoon
+once; it will not be spotted by reading the CSS.
+``` `abo serve --port 8801` binds
 127.0.0.1 and
 runs until SIGINT or SIGTERM, finishing in-flight requests. TLS and any public
 name belong to nginx in front of it; the Origin check works either way because
@@ -642,6 +661,8 @@ Each with the trigger for revisiting.
 | Any abstraction over "AI provider" | There is a second provider. |
 | Database | Never, for the books. Only for users (§8). |
 | Client-side JavaScript | A workflow genuinely cannot be a form submission. |
+| Bootstrap, Tailwind, or any CSS framework | The hand-written stylesheet stops fitting on one screen, or a component needs behaviour rather than style. |
+| An icon font or an icon package | You need more than about twenty icons. |
 | JSON API | A native phone client is chosen (§7). |
 | Dated / versioned VAT config | The company switches methods and an old period must be reproduced. |
 | Currency conversion | Never at booking time. For reporting, `hledger -X`. |

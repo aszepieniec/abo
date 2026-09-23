@@ -310,6 +310,14 @@ fn is_vat_account(account: &str) -> bool {
     account.split(':').any(|s| s.eq_ignore_ascii_case("vat") || s.eq_ignore_ascii_case("mwst"))
 }
 
+/// hledger states decimals as mantissa and scale, so they convert exactly.
+/// The `floatingPoint` field sitting beside them in the JSON is never read.
+pub fn decimal(q: &serde_json::Value) -> Result<Decimal> {
+    let mantissa = q["decimalMantissa"].as_i64().context("amount has no mantissa")?;
+    let places = q["decimalPlaces"].as_u64().context("amount has no scale")? as u32;
+    Ok(Decimal::new(mantissa, places))
+}
+
 /// hledger over the books, output captured.
 pub fn hledger(ctx: &Ctx, args: &[&str]) -> Result<String> {
     let out = Command::new("hledger")

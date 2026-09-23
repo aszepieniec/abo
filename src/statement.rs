@@ -45,9 +45,9 @@ pub struct Statement {
 
 /// One commodity-keyed bag of money. Everything is summed in here rather than
 /// in strings, so nothing is ever added as text or as a float.
-type Bag = BTreeMap<String, Decimal>;
+pub type Bag = BTreeMap<String, Decimal>;
 
-fn amounts(bag: &Bag) -> Vec<Amount> {
+pub fn amounts(bag: &Bag) -> Vec<Amount> {
     let out: Vec<Amount> = bag
         .iter()
         .filter(|(_, v)| !v.is_zero())
@@ -68,8 +68,11 @@ fn add(into: &mut Bag, from: &Bag, sign: Decimal) {
 
 /// `hledger balance` over a query, as account -> bag. Extra flags let the
 /// caller ask for period movement (a P&L) or a running balance (a sheet).
-fn balances(ctx: &Ctx, query: &str, extra: &[&str]) -> Result<Vec<(String, Bag)>> {
-    let mut args = vec!["balance", query, "--flat", "-O", "json"];
+pub fn balances(ctx: &Ctx, query: &str, extra: &[&str]) -> Result<Vec<(String, Bag)>> {
+    let mut args = vec!["balance", "--flat", "-O", "json"];
+    if !query.is_empty() {
+        args.insert(1, query);
+    }
     args.extend_from_slice(extra);
     let out = journal::hledger(ctx, &args)?;
     let v: Value = serde_json::from_str(&out).context("reading hledger balance")?;
@@ -81,19 +84,11 @@ fn balances(ctx: &Ctx, query: &str, extra: &[&str]) -> Result<Vec<(String, Bag)>
         let mut bag = Bag::new();
         for a in row[3].as_array().into_iter().flatten() {
             let commodity = a["acommodity"].as_str().unwrap_or_default().to_string();
-            *bag.entry(commodity).or_default() += quantity(&a["aquantity"])?;
+            *bag.entry(commodity).or_default() += journal::decimal(&a["aquantity"])?;
         }
         result.push((account, bag));
     }
     Ok(result)
-}
-
-/// hledger states decimals as mantissa and scale, so they convert exactly.
-/// The `floatingPoint` field alongside them is never read.
-fn quantity(q: &Value) -> Result<Decimal> {
-    let mantissa = q["decimalMantissa"].as_i64().context("amount has no mantissa")?;
-    let places = q["decimalPlaces"].as_u64().context("amount has no scale")? as u32;
-    Ok(Decimal::new(mantissa, places))
 }
 
 fn top(account: &str) -> String {

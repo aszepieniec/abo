@@ -68,7 +68,7 @@ pub fn status(
             }
             for a in p["pamount"].as_array().into_iter().flatten() {
                 if a["acommodity"] == commodity {
-                    total += quantity(&a["aquantity"])?;
+                    total += journal::decimal(&a["aquantity"])?;
                 }
             }
         }
@@ -98,14 +98,6 @@ pub fn status(
         reconciled: statement.is_some_and(|s| (s - cleared).is_zero()),
         outstanding,
     })
-}
-
-/// hledger's decimals arrive as mantissa and scale, so they convert exactly.
-/// The `floatingPoint` field in the same object is not touched.
-fn quantity(q: &Value) -> Result<Decimal> {
-    let mantissa = q["decimalMantissa"].as_i64().context("amount has no mantissa")?;
-    let places = q["decimalPlaces"].as_u64().context("amount has no scale")? as u32;
-    Ok(Decimal::new(mantissa, places))
 }
 
 fn key_of(t: &Value) -> Result<String> {
