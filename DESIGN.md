@@ -1,6 +1,6 @@
 # abo — accountant back office
 
-Bookkeeping for a small Swiss company. A git repository holds the books; a CLI
+Bookkeeping for a small company. A git repository holds the books; a CLI
 operates on it; a web server wraps the same functions in a browser interface; an
 AI proposes bookings from scanned documents which a human approves.
 
@@ -9,8 +9,8 @@ different agent. It records what was decided and **why**, so the decisions are
 not re-litigated. Where something was deliberately left out, the trigger for
 adding it is stated.
 
-Status: M0, M1 and M2 built — `abo init`, `add`, `bal`, `reg`, `bill`, `serve`,
-`demo`. Next step is M3 (invoices).
+Status: M0-M3 built — `abo init`, `add`, `bill`, `invoice`, `bal`, `reg`,
+`serve`, `demo`. Next step is M4 (bank import and statements).
 
 ---
 
@@ -26,7 +26,8 @@ Status: M0, M1 and M2 built — `abo init`, `add`, `bal`, `reg`, `bill`, `serve`
 | Git access | shell out to `git` | Smaller than `git2`/libgit2 by a wide margin. |
 | Web UI | axum + maud, server-rendered | No SPA, no npm, no build step, no WASM. HTML escaping comes from maud. |
 | Deployment | localhost first, reachable later | See §8. Auth goes at a reverse proxy, not in the app — until users exist. |
-| VAT | configured per company, `effective` / `saldo` / `none` | Not a preference. It changes what a *correct booking* is. See §6. |
+| Tax | three scheme *shapes* in code (`none` / `flat` / `effective`); every rate, rule and name in config | The shape changes what a *correct booking* is, so the validator must know it. Rates and local rules differ everywhere and are data. See §6. |
+| Commodities | multi-commodity from the start | hledger already is. Cash, bank and wallet balances are all just asset accounts. |
 | Phone app | PWA over the existing server-rendered pages | See §7. |
 
 ### Crates
@@ -46,8 +47,10 @@ company-books/
     main.journal          # `include`s the rest
     accounts.journal      # account + commodity declarations
     2026.journal          # one file per year
-  bills/2026/2026-09-21-acme-inv1234.pdf
+  templates/invoice.typ   # seeded on first use, then yours to edit
+  bills/2026/2026-09-21-acme-a1b2c3d4.pdf
   invoices/2026/2026-0017.pdf
+  .abo/                   # gitignored: bills awaiting a decision, their threads
 ```
 
 Documents are linked to entries by hledger tags, never by a join table:
@@ -56,9 +59,9 @@ Documents are linked to entries by hledger tags, never by a join table:
 2026-09-21 Acme Hosting
     ; bill: bills/2026/2026-09-21-acme-inv1234.pdf
     ; sha256: 9f2a...
-    expenses:hosting        100.00 CHF
-    assets:vat:input          8.10 CHF
-    liabilities:payable    -108.10 CHF
+    expenses:hosting        100.00 EUR
+    assets:vat:input          10.00 EUR
+    liabilities:payable    -1010.00 EUR
 ```
 
 - `sha256:` is the duplicate check. Before booking a document, `hledger print tag:sha256=<hash>` must return nothing.
@@ -82,9 +85,9 @@ src/invoice.rs   fill typst template, compile
 src/web.rs       axum + maud
 ```
 
-Eight files (`bill.rs` was split out of the plan's seven so that `ai.rs` stays
-pure transport and can be swapped or stubbed without touching the workflow).
-No `lib.rs`/`bin/` split, no workspace, no crate-per-module.
+Eight files plus `invoice.typ` (`bill.rs` was split out of the plan's seven so
+that `ai.rs` stays pure transport and can be swapped or stubbed without touching
+the workflow). No `lib.rs`/`bin/` split, no workspace, no crate-per-module.
 
 ### Three invariants that keep future work cheap
 
@@ -159,7 +162,7 @@ Proposal schema:
   "date": "2026-09-21",
   "vendor": "Acme Hosting GmbH",
   "description": "Hosting September 2026",
-  "currency": "CHF",
+  "currency": "EUR",
   "postings": [{"account": "expenses:hosting", "amount": "100.00"}],
   "invoice_ref": "INV-1234",
   "confidence": "high",
@@ -192,7 +195,7 @@ property this app should have. A refusal is an error the human sees.
 
 ---
 
-## 6. Validation and VAT
+## 6. Validation, money and tax
 
 ### The validation chain
 
@@ -213,20 +216,88 @@ first failure.
 Step 6 is free and catches everything the first five miss. It is also the test.
 
 Money is `rust_decimal::Decimal`, or `i64` minor units tagged with a commodity.
-**Never `f64`.** Rates may be `Decimal`.
+**Never `f64`.** Rates may be `Decimal`. Amounts cross the AI boundary as
+decimal *strings*, because a JSON number is an `f64` by the time serde sees it.
+
+### Commodities
+
+The books are multi-commodity from the start, because hledger is. A posting
+carries an amount and a commodity, the validator balances each commodity
+separately, and nothing anywhere assumes there is only one. Bank balances, notes
+in a drawer and a wallet are all just asset accounts:
+
+```
+assets:bank      assets:cash      assets:wallet:btc
+```
+
+`abo init` seeds `assets:bank` and `assets:cash`; anything else is an `account`
+line in `accounts.journal`, and a second commodity is a `commodity` line. An
+invoice can be denominated in any of them (`abo invoice --currency BTC`), and
+`[invoice] decimals` — or `--decimals` — says how many places that commodity is
+stated in: two for most money, eight for a wallet. Rounding happens in exactly
+one place, `invoice::round`, half away from zero.
+
+`[company] payment` is free text for the same reason: bank details, a wallet
+address, "cash on collection". abo never parses it, it only prints it.
+
+Amounts are never converted between commodities. A bill in one currency against
+books in another is booked as stated and the model is told to say so. Valuing a
+report in a single commodity is `hledger -X`, at the point of reporting, where
+the rate is a reporting choice rather than a fact about the transaction.
+
+### Nothing in the code knows where you are
+
+Tax law is the one part of this that differs everywhere, so none of it is
+compiled in. What the code knows is the *shape* of three schemes, because the
+shape changes what a correct booking is:
+
+| `[vat] method` | What it means | What a bill looks like |
+|---|---|---|
+| `none` | not registered | no VAT account may be posted to at all |
+| `flat` | a flat percentage of gross turnover is remitted, no input tax deductible | one gross expense posting; an input-VAT posting is a **hard reject**, not a warning |
+| `effective` | output tax collected less input tax paid | expense + input VAT + payable |
+
+Everything else is configuration, which means changing it is not a rebuild:
+
+- **`[invoice] vat_rate`** — the rate charged to customers. Statutory, therefore
+  not in the code. `--vat-rate` overrides it per invoice, which is how an export,
+  a reduced rate or an exempt supply is issued.
+- **`[company] tax_notes`** — free text handed to the model with every bill:
+  what is deductible here, what is reverse charged, how import tax arrives, what
+  the scheme is called locally. This is where local rules live.
+- **`[company] country`** — only the model reads it.
+
+Under `flat`, an invoice still charges the ordinary rate to the customer; the
+flat percentage is what gets remitted, computed on gross turnover when the return
+is filed, not per invoice. So `flat` books the whole invoice to income and posts
+no output tax.
+
+If somewhere needs a fourth shape, add a variant — but check first whether it is
+really a shape and not just a rate under a different name.
 
 ### Config
 
 ```toml
 [company]
-name     = "Example GmbH"
-uid      = "CHE-123.456.789 MWST"
-currency = "CHF"
+name      = "Example Ltd"
+address   = "1 Example Street\n10000 Example City"
+country   = "Exampleland"
+tax_id    = ""                 # blank if not registered
+payment   = "IBAN XX00 ..."    # or a wallet address, or "cash on collection"
+currency  = "EUR"
+tax_notes = """..."""          # see Appendix A
 
 [vat]
-method  = "saldo"              # "effective" | "saldo" | "none"
-rate    = 5.3                  # saldo only: the ESTV industry rate
+method  = "flat"               # "effective" | "flat" | "none"
+rate    = 5.3                  # flat only: the percentage remitted on gross
 account = "liabilities:vat"
+
+[invoice]
+vat_rate   = 8.1               # charged to customers
+receivable = "assets:receivable"
+income     = "income:sales"
+terms_days = 30
+decimals   = 2
 ```
 
 ```rust
@@ -234,46 +305,13 @@ account = "liabilities:vat"
 #[serde(tag = "method", rename_all = "lowercase")]
 pub enum Vat {
     None,
-    Saldo { rate: Decimal, account: String },
+    Flat { rate: Decimal, account: String },
     Effective { input: String, output: String },
 }
 ```
 
-Exactly three places read it: the AI system prompt, the validator, and the
-statement generator. Nothing else needs to know.
-
-### Swiss VAT specifics
-
-Statutory rates are federal and identical for every company, so they are
-**constants in code**, not per-company config: standard **8.1%**, reduced **2.6%**
-(food, non-alcoholic drinks, books, medicines), special **3.8%** (accommodation).
-Unchanged for 2026; last changed 2024-01-01. An optional `[vat.rates]` override
-table covers the gap between a future rate change and a rebuild. The rates are
-not needed to *book* (the supplier states the VAT amount) — only to *check* that
-the stated amount equals net × rate.
-
-Four things that differ from EU VAT and must be in the system prompt:
-
-- **Saldosteuersatz.** Under the net tax rate method you pay a flat industry rate
-  on gross turnover and deduct **no input VAT at all**. A bill is a single gross
-  expense posting. Filing is semi-annual. An input-VAT posting under
-  `method = "saldo"` is a hard reject in the validator, not a warning.
-- **No intra-community anything.** Switzerland is a third country for EU VAT.
-  Goods crossing the border are imports and exports. Import VAT is assessed by
-  customs (BAZG) and arrives on a **separate customs document**, not on the
-  supplier invoice. A German supplier's invoice showing zero VAT carries no
-  reclaimable input tax — the deductible amount is on different paper. This is
-  the most likely place for the model to propose a wrong booking.
-- **Bezugsteuer** (acquisition tax) on services bought from abroad — AWS, GitHub,
-  foreign consultants. A genuine reverse charge, self-assessed, and frequent for
-  a software company. Applies under the effective method.
-- **The return** is ESTV Ziffern (200-series turnover, 300-series tax, 400-series
-  input tax) filed via ePortal, not an EU-country form. Statement config maps
-  account globs to box numbers. Period length: quarterly for effective,
-  semi-annual for saldo.
-
-Foreign-currency bills convert at the ESTV published rate, so `abo.toml` needs a
-rate source and the journal needs price directives.
+Exactly three places read the method: the AI system prompt, the validator, and
+(later) the statement generator. Nothing else needs to know.
 
 ```
 ponytail: one VAT method for all time. A report over a past period under a
@@ -289,7 +327,9 @@ this only bites if the company switches methods and then re-runs an old period.
 One binary, clap subcommands. `--json` on every read command.
 
 ### Web
-axum + maud, server-rendered forms. `abo serve --port 8801` binds 127.0.0.1 and
+axum + maud, server-rendered forms: balance and register, bill upload and
+proposal card, invoice form, hand-typed entry. `abo serve --port 8801` binds
+127.0.0.1 and
 runs until SIGINT or SIGTERM, finishing in-flight requests. TLS and any public
 name belong to nginx in front of it; the Origin check works either way because
 nginx forwards the public Host. `abo demo` is the same server over toy data.
@@ -403,15 +443,21 @@ Not legal advice, but none of this is controversial.
   `accounts.journal`, `.gitignore`, `git init`, first commit). `abo add` with the
   full validation chain. `abo bal` / `abo reg` passthrough. One test: a balanced
   entry commits; an unbalanced one is rejected; an input-VAT posting under
-  `method = "saldo"` is rejected. ~300 lines. **Done.**
+  `method = "flat"` is rejected. ~300 lines. **Done.**
 - **M1** — `abo bill <file>`: AI proposal, terminal approve/refine. **Done.**
 - **M2** — `abo serve`: balance, register, a booking form, and the bill upload
   and proposal card. **Done.** `abo demo` serves the same pages against a
   throwaway repository of toy data in the temp directory, rebuilt on every
   start, through the ordinary validated `add`.
-- **M3** — invoices: typst template, numbering from the journal. **← next**
-- **M4** — bank import and reconciliation, then statements (VAT return, P&L,
-  balance sheet).
+- **M3** — invoices: typst template, numbering from the journal. **Done.**
+  `templates/invoice.typ` is seeded into the books on first use and committed;
+  it belongs to the company, not to abo. abo writes `.abo/invoice.json` and runs
+  `typst compile`; the template does layout and never arithmetic, so rounding
+  has one home. The next number is `max(invoice:) + 1` read from the journal —
+  no counter file. The PDF is `git add`ed before the entry is committed, so both
+  land in one commit or neither does.
+- **M4** — bank import and reconciliation, then statements (tax return, P&L,
+  balance sheet). **← next**
 - **M5** — companies and users.
 - **M6** — PWA manifest, or the JSON API if native has been chosen.
 
@@ -436,5 +482,43 @@ Each with the trigger for revisiting.
 | Client-side JavaScript | A workflow genuinely cannot be a form submission. |
 | JSON API | A native phone client is chosen (§7). |
 | Dated / versioned VAT config | The company switches methods and an old period must be reproduced. |
+| Currency conversion | Never at booking time. For reporting, `hledger -X`. |
+| A customer list | You retype the same address a third time. Past invoices are already in the journal. |
+| QR or structured payment codes on invoices | A customer asks for one. It is a template change plus a QR crate, not an abo change. |
+| Statutory rates in code | Never. They are `[invoice] vat_rate` and `--vat-rate`. |
 | Auth in the application | Users exist (§8). |
 | Templating engine, ORM, workspace split | Not foreseen. |
+
+---
+
+## Appendix A — an example `tax_notes`
+
+Nothing below is in the code. It is what one company's `[company] tax_notes`
+might contain, shown because it is the kind of thing the field is for: the
+local rules a model needs in order to propose a correct booking, in prose,
+in `abo.toml`, changeable without a rebuild.
+
+```toml
+tax_notes = """
+Rates are 8.1% standard, 2.6% reduced (food, non-alcoholic drinks, books,
+medicines), 3.8% accommodation.
+
+This is a third country for EU VAT: there is no intra-community anything.
+Goods crossing the border are imports and exports. Import tax is assessed by
+customs and arrives on a SEPARATE customs document, not on the supplier
+invoice. A foreign supplier's invoice showing no VAT therefore carries no
+reclaimable input tax — the deductible amount is on different paper. This is
+the most likely place to propose a wrong booking.
+
+Services bought from abroad (hosting, SaaS, foreign consultants) are subject
+to acquisition tax, self-assessed by the buyer. Frequent for a software
+company. Flag them rather than guessing.
+
+Foreign-currency bills convert at the published rate of the tax authority, so
+the journal needs a price directive rather than a converted amount.
+
+The return is filed by box number: 200-series turnover, 300-series tax,
+400-series input tax. Quarterly under the effective method, semi-annual under
+the flat scheme.
+"""
+```

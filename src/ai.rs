@@ -151,7 +151,7 @@ fn schema() -> Value {
                      "description": "invoice date, ISO 8601"},
             "vendor": {"type": "string", "description": "supplier name as printed"},
             "description": {"type": "string", "description": "what was bought, one short line"},
-            "currency": {"type": "string", "description": "ISO 4217 code, e.g. CHF"},
+            "currency": {"type": "string", "description": "currency or commodity as printed on the document, e.g. EUR"},
             "postings": {
                 "type": "array",
                 "items": {
@@ -178,42 +178,50 @@ fn system_prompt(ctx: &Ctx) -> Result<String> {
     let accounts = crate::journal::declared_accounts(ctx)?.join("\n");
     let vat = match &ctx.cfg.vat {
         Vat::None => "\
-The company is not VAT registered. Never post to a VAT account. Book gross amounts."
+The company is not registered for VAT. Never post to a VAT account. Book gross
+amounts."
             .to_string(),
-        Vat::Saldo { rate, account } => format!("\
-The company uses the Swiss net tax rate method (Saldosteuersatz), industry rate {rate}%.
-No input VAT is deductible, ever. Book the gross amount as a single expense posting.
-Never propose a posting to an input VAT account. {account} is used only by the VAT
-return, never by a bill."),
+        Vat::Flat { rate, account } => format!("\
+The company is on a flat-rate VAT scheme: it remits {rate}% of gross turnover and
+deducts NO input VAT at all. Book the gross amount as a single expense posting.
+Never propose a posting to an input VAT account. {account} is used only when the
+return is filed, never by a bill."),
         Vat::Effective { input, .. } => format!("\
-The company uses the Swiss effective method. Deductible input VAT goes to {input}.
-Swiss VAT rates are 8.1% standard, 2.6% reduced (food, non-alcoholic drinks, books,
-medicines), 3.8% accommodation. Check that the stated VAT equals net x rate.
+The company deducts input VAT. Deductible input tax goes to {input}. Check that
+the tax shown on the bill is arithmetically consistent with the net amount.
 
-Switzerland is a third country for EU VAT, so there is no intra-community anything.
-A foreign supplier's invoice showing no VAT carries NO deductible input tax: Swiss
-import VAT is assessed by customs (BAZG) and arrives on a separate document. Book
-the full invoice as expense and post no input VAT.
+Do not assume a tax line on a foreign supplier's invoice is deductible, and do
+not assume its absence means none is due. Cross-border purchases are commonly
+taxed some other way — on a separate import document, or by reverse charge the
+buyer self-assesses. If the supplier is not in {country} and you cannot tell
+from the document which applies, say so in questions instead of guessing.",
+            country = if c.country.is_empty() { "the company's own country".into() } else { c.country.clone() }),
+    };
 
-Services bought from abroad (hosting, SaaS, foreign consultants) are subject to
-acquisition tax (Bezugsteuer), self-assessed. If this bill looks like one, say so
-in questions rather than guessing the postings."),
+    let notes = if c.tax_notes.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\n\nRules that apply to this company:\n{}", c.tax_notes.trim())
     };
 
     Ok(format!("\
-You are booking a supplier bill for {name}{uid}, a company in Switzerland.
+You are booking a supplier bill for {name}{tax_id}{located}.
 Its books are in hledger format and its currency is {currency}.
 
 Read the attached document and propose one journal entry.
 
-{vat}
+{vat}{notes}
 
 Rules:
 - Use ONLY accounts from this list. Never invent one. If nothing fits, leave the
   posting out and ask in questions.
 - Postings must sum to exactly zero in each currency.
-- An unpaid bill credits liabilities:payable. A bill already paid from the bank
-  credits assets:bank. If you cannot tell from the document, ask.
+- An unpaid bill credits liabilities:payable. A bill already settled credits
+  whatever it was paid from — a bank account, cash, a wallet. If you cannot tell
+  from the document which, ask.
+- Amounts keep the commodity they are stated in. Do not convert between
+  currencies or commodities; if a bill is in one and the books are in another,
+  book it as stated and say so in questions.
 - Amounts are decimal strings exactly as printed, e.g. \"1234.55\". Credits are
   negative.
 - If the document is not a bill, or you cannot read the total, say so in questions
@@ -222,7 +230,8 @@ Rules:
 Declared accounts:
 {accounts}",
         name = c.name,
-        uid = if c.uid.is_empty() { String::new() } else { format!(" (VAT no. {})", c.uid) },
+        tax_id = if c.tax_id.is_empty() { String::new() } else { format!(" ({})", c.tax_id) },
+        located = if c.country.is_empty() { String::new() } else { format!(", a company in {}", c.country) },
         currency = c.currency,
     ))
 }

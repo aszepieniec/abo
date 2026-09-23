@@ -162,8 +162,9 @@ fn build(sha256: &str, ext: &str, p: &Proposal) -> Result<(Entry, String)> {
     Ok((Entry { date: p.date.clone(), description, tags, postings }, rel))
 }
 
-/// Swiss invoices print 1'234.55. Everything else is rejected rather than
-/// guessed at — a misread amount is worse than a failed booking.
+/// Some places print 1'234.55, so the group separator is dropped. Anything
+/// else is rejected rather than guessed at: a misread amount is worse than a
+/// failed booking.
 fn amount(s: &str) -> Result<Decimal> {
     let cleaned: String = s.chars().filter(|c| !matches!(c, '\'' | ' ' | '\u{2019}')).collect();
     Decimal::from_str_exact(&cleaned).with_context(|| format!("amount {s:?} is not a decimal"))
@@ -244,7 +245,7 @@ mod tests {
             date: "2026-09-21".into(),
             vendor: vendor.into(),
             description: "Hosting".into(),
-            currency: "CHF".into(),
+            currency: "EUR".into(),
             postings: vec![crate::ai::ProposedPosting {
                 account: "expenses:hosting".into(),
                 amount: amount.into(),

@@ -162,10 +162,10 @@ pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
                  (vat.method = \"none\")",
                 p.account
             ),
-            // Under the Saldosteuersatz method no input VAT is deductible at all:
-            // a bill is one gross expense posting. Hard reject, not a warning.
-            Vat::Saldo { account, .. } if &p.account != account => bail!(
-                "posting to {:?} under vat.method = \"saldo\": no input VAT is \
+            // Under a flat-rate scheme no input VAT is deductible at all: a
+            // bill is one gross expense posting. Hard reject, not a warning.
+            Vat::Flat { account, .. } if &p.account != account => bail!(
+                "posting to {:?} under vat.method = \"flat\": no input VAT is \
                  deductible; book the gross amount. Only {account:?} is allowed.",
                 p.account
             ),

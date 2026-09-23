@@ -3,6 +3,7 @@
 //! the CLI and never talk to themselves over HTTP.
 
 use crate::bill;
+use crate::invoice;
 use crate::journal::{self, Entry, Posting};
 use crate::repo::Ctx;
 use anyhow::{bail, Result};
@@ -26,6 +27,8 @@ pub async fn serve(ctx: Ctx, port: u16) -> Result<()> {
     let app = Router::new()
         .route("/", get(index))
         .route("/add", get(add_form).post(add_submit))
+        .route("/invoice", get(invoice_form).post(invoice_submit))
+        .route("/invoice/{number}", get(invoice_pdf))
         .route("/bill", get(upload_form).post(upload))
         .route("/bill/{sha}", get(card))
         .route("/bill/{sha}/document", get(document))
@@ -84,7 +87,11 @@ async fn index(State(ctx): State<Arc<Ctx>>) -> Response {
         let waiting = bill::waiting(&ctx)?;
         Ok(html! {
             h1 { (ctx.cfg.company.name) }
-            p { a href="/bill" { "Book a bill" } " · " a href="/add" { "Book an entry by hand" } }
+            p {
+                a href="/bill" { "Book a bill" } " · "
+                a href="/invoice" { "Issue an invoice" } " · "
+                a href="/add" { "Book an entry by hand" }
+            }
             @if !waiting.is_empty() {
                 h2 { "Waiting for you" }
                 ul {
@@ -144,6 +151,104 @@ async fn add_submit(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Form(f): Fo
         Err(e) => or_error("Book an entry", || {
             form(&ctx, &f.date, &f.description, &f.postings, Some(&e.to_string()))
         }),
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct InvoiceForm {
+    to: String,
+    items: String,
+    date: String,
+    reference: String,
+    note: String,
+    vat_rate: String,
+    currency: String,
+}
+
+async fn invoice_form(State(ctx): State<Arc<Ctx>>) -> Response {
+    or_error("Issue an invoice", || invoice_page(&ctx, &InvoiceForm::default(), None))
+}
+
+async fn invoice_submit(
+    State(ctx): State<Arc<Ctx>>,
+    headers: HeaderMap,
+    Form(f): Form<InvoiceForm>,
+) -> Response {
+    if let Err(e) = same_origin(&headers) {
+        warn!(%e, "rejected cross-origin POST");
+        return (StatusCode::FORBIDDEN, "cross-origin request").into_response();
+    }
+    let issued = (|| -> Result<_> {
+        let args = invoice::IssueArgs {
+            customer: f.to.replace("\r\n", "\n"),
+            items: f.items.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect(),
+            date: (!f.date.is_empty()).then(|| f.date.clone()),
+            due_days: None,
+            vat_rate: match f.vat_rate.trim() {
+                "" => None,
+                r => Some(rust_decimal::Decimal::from_str_exact(r)?),
+            },
+            currency: (!f.currency.trim().is_empty()).then(|| f.currency.trim().to_owned()),
+            decimals: None,
+            reference: f.reference.clone(),
+            note: f.note.clone(),
+        };
+        invoice::issue(&ctx, &args)
+    })();
+    match issued {
+        Ok(r) => {
+            info!(number = %r.number, commit = %r.commit, "invoiced");
+            Redirect::to(&format!("/invoice/{}", r.number)).into_response()
+        }
+        Err(e) => or_error("Issue an invoice", || invoice_page(&ctx, &f, Some(&e.to_string()))),
+    }
+}
+
+fn invoice_page(ctx: &Ctx, f: &InvoiceForm, error: Option<&str>) -> Result<Markup> {
+    let year = jiff::Zoned::now().date().year().to_string();
+    let next = invoice::next_number(ctx, &year)?;
+    Ok(html! {
+        h1 { "Issue an invoice" }
+        p.dim { "This will be invoice " (next) "." }
+        @if let Some(e) = error {
+            p.error { "Rejected: " (e) }
+        }
+        form method="post" action="/invoice" {
+            label { "Customer, one line each" textarea name="to" rows="4" required { (f.to) } }
+            label {
+                "Lines, one per line: " code { "quantity|unit price|description" }
+                textarea name="items" rows="4" required placeholder="10|150.00|Consulting, September" { (f.items) }
+            }
+            label { "Date (blank for today)" input type="date" name="date" value=(f.date); }
+            label { "VAT rate, percent (blank for the configured rate)" input type="text" name="vat_rate" value=(f.vat_rate); }
+            label { "Commodity (blank for " (ctx.cfg.company.currency) ")" input type="text" name="currency" value=(f.currency); }
+            label { "Their reference" input type="text" name="reference" value=(f.reference); }
+            label { "Note" input type="text" name="note" value=(f.note); }
+            button type="submit" { "Issue it" }
+        }
+        p { a href="/" { "Back" } }
+    })
+}
+
+/// Serves an issued invoice. The number is checked against the numbering
+/// format before it touches a path, so nothing else in the repository is
+/// reachable through this route.
+async fn invoice_pdf(State(ctx): State<Arc<Ctx>>, Path(number): Path<String>) -> Response {
+    let number = number.strip_suffix(".pdf").unwrap_or(&number);
+    let well_formed = matches!(number.split_once('-'), Some((y, n))
+        if y.len() == 4 && n.len() == 4
+            && y.chars().chain(n.chars()).all(|c| c.is_ascii_digit()));
+    if !well_formed {
+        return (StatusCode::NOT_FOUND, "no such invoice").into_response();
+    }
+    let path = ctx.root.join(format!("invoices/{}/{number}.pdf", &number[..4]));
+    match std::fs::read(&path) {
+        Ok(bytes) => (
+            [("content-type", "application/pdf"), ("x-content-type-options", "nosniff")],
+            bytes,
+        )
+            .into_response(),
+        Err(e) => or_error("Invoice", || Err(e.into())),
     }
 }
 

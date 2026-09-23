@@ -1,5 +1,6 @@
 mod ai;
 mod bill;
+mod invoice;
 mod journal;
 mod report;
 mod repo;
@@ -57,6 +58,36 @@ enum Cmd {
         #[arg(long)]
         yes: bool,
     },
+    /// Issue an invoice: render the PDF and book the receivable.
+    Invoice {
+        /// Customer name and address. Use \n between lines.
+        #[arg(long)]
+        to: String,
+        /// `quantity|unit price|description`, repeatable.
+        #[arg(long = "item", required = true)]
+        items: Vec<String>,
+        /// Invoice date. Defaults to today.
+        #[arg(long)]
+        date: Option<String>,
+        /// Payment terms. Defaults to [invoice] terms_days in abo.toml.
+        #[arg(long)]
+        due_days: Option<i64>,
+        /// Percent. Defaults to [invoice] vat_rate in abo.toml.
+        #[arg(long)]
+        vat_rate: Option<Decimal>,
+        /// Commodity to invoice in. Defaults to the company currency; any
+        /// commodity the books use will do.
+        #[arg(long)]
+        currency: Option<String>,
+        /// Decimal places for that commodity. Defaults to [invoice] decimals.
+        #[arg(long)]
+        decimals: Option<u32>,
+        /// The customer's own order reference.
+        #[arg(long, default_value = "")]
+        reference: String,
+        #[arg(long, default_value = "")]
+        note: String,
+    },
     /// Serve the web interface on localhost. Put nginx in front for TLS.
     Serve {
         #[arg(long, default_value_t = 8801)]
@@ -82,8 +113,8 @@ async fn main() -> Result<()> {
 
     match cli.cmd {
         Cmd::Init => {
-            let (name, uid, currency, vat) = ask()?;
-            let r = repo::init(&here, &name, &uid, &currency, &vat)?;
+            let (company, vat, sales_rate) = ask()?;
+            let r = repo::init(&here, &company, &vat, &sales_rate)?;
             emit(cli.json, &r, || {
                 format!("Books opened in {} ({}).\nNext: edit journal/accounts.journal, then `abo add`.", r.root, r.commit)
             })
@@ -148,6 +179,24 @@ async fn main() -> Result<()> {
                 return emit(cli.json, &r, || format!("Committed {} to {}.", r.commit, r.file));
             }
         }
+        Cmd::Invoice { to, items, date, due_days, vat_rate, currency, decimals, reference, note } => {
+            let ctx = Ctx::open(&here)?;
+            let args = invoice::IssueArgs {
+                customer: to.replace("\\n", "\n"),
+                items,
+                date,
+                due_days,
+                vat_rate,
+                currency,
+                decimals,
+                reference,
+                note,
+            };
+            let r = invoice::issue(&ctx, &args)?;
+            emit(cli.json, &r, || {
+                format!("Invoice {} for {} — {}\nCommitted {}.", r.number, r.total, r.pdf, r.commit)
+            })
+        }
         Cmd::Bal { args } => passthrough(&here, "balance", &args, cli.json),
         Cmd::Reg { args } => passthrough(&here, "register", &args, cli.json),
         Cmd::Serve { port } => {
@@ -201,15 +250,20 @@ fn prompt(question: &str, default: &str) -> Result<String> {
     Ok(if s.is_empty() { default.to_string() } else { s.to_string() })
 }
 
-fn ask() -> Result<(String, String, String, Vat)> {
+fn ask() -> Result<(repo::Company, Vat, String)> {
     let name = prompt("Company name", "")?;
-    let uid = prompt("UID (CHE-123.456.789 MWST, blank if not registered)", "")?;
-    let currency = prompt("Currency", "CHF")?;
-    let method = prompt("VAT method (effective / saldo / none)", "none")?;
+    let address = prompt("Address, one line (use \\n between lines)", "")?.replace("\\n", "\n");
+    let country = prompt("Country", "")?;
+    let tax_id = prompt("Tax registration number (blank if not registered)", "")?;
+    let payment = prompt("How customers pay you (bank details, wallet, cash)", "")?;
+    let currency = prompt("Currency", "")?;
+    let method = prompt("VAT method (effective / flat / none)", "none")?;
     let vat = match method.as_str() {
         "none" => Vat::None,
-        "saldo" => Vat::Saldo {
-            rate: Decimal::from_str(&prompt("Saldosteuersatz, percent (ESTV industry rate)", "5.3")?)?,
+        // A flat percentage of gross turnover with no input deduction. Sold
+        // under different names in different places.
+        "flat" => Vat::Flat {
+            rate: Decimal::from_str(&prompt("Flat rate remitted on gross turnover, percent", "")?)?,
             account: prompt("VAT account", "liabilities:vat")?,
         },
         "effective" => Vat::Effective {
@@ -218,5 +272,22 @@ fn ask() -> Result<(String, String, String, Vat)> {
         },
         other => bail!("unknown VAT method {other:?}"),
     };
-    Ok((name, uid, currency, vat))
+    let sales_rate = match vat {
+        Vat::None => "0".to_string(),
+        _ => prompt("VAT rate charged to customers, percent", "0")?,
+    };
+    Ok((
+        repo::Company {
+            name,
+            address,
+            country,
+            tax_id,
+            payment,
+            currency,
+            tax_notes: String::new(),
+            closed_through: None,
+        },
+        vat,
+        sales_rate,
+    ))
 }
