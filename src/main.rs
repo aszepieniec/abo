@@ -3,6 +3,7 @@ mod bill;
 mod invoice;
 mod journal;
 mod report;
+mod reconcile;
 mod repo;
 mod web;
 
@@ -87,6 +88,29 @@ enum Cmd {
         reference: String,
         #[arg(long, default_value = "")]
         note: String,
+    },
+    /// Tick booked transactions off against a statement.
+    Reconcile {
+        #[arg(long, default_value = "assets:bank")]
+        account: String,
+        /// Which commodity to reconcile. Defaults to the company currency.
+        #[arg(long)]
+        commodity: Option<String>,
+        /// Statement date. Defaults to today.
+        #[arg(long)]
+        date: Option<String>,
+        /// The closing balance printed on the statement.
+        #[arg(long)]
+        balance: Option<Decimal>,
+        /// Book the reconciled balance as an assertion. Refuses unless the
+        /// difference is zero.
+        #[arg(long)]
+        record: bool,
+    },
+    /// Mark transactions cleared. Keys come from `abo reconcile`.
+    Clear {
+        #[arg(required = true)]
+        keys: Vec<String>,
     },
     /// Serve the web interface on localhost. Put nginx in front for TLS.
     Serve {
@@ -196,6 +220,50 @@ async fn main() -> Result<()> {
             emit(cli.json, &r, || {
                 format!("Invoice {} for {} — {}\nCommitted {}.", r.number, r.total, r.pdf, r.commit)
             })
+        }
+        Cmd::Reconcile { account, commodity, date, balance, record } => {
+            let ctx = Ctx::open(&here)?;
+            let commodity = commodity.unwrap_or_else(|| ctx.cfg.company.currency.clone());
+            let date = date.unwrap_or_else(|| jiff::Zoned::now().date().to_string());
+            let r = reconcile::status(&ctx, &account, &commodity, &date, balance)?;
+            if record {
+                let Some(b) = balance else { bail!("--record needs --balance") };
+                if !r.reconciled {
+                    bail!("not reconciled: off by {} {commodity}", r.difference.unwrap_or_default());
+                }
+                let asserts = reconcile::asserts(&r);
+                let a = reconcile::record(&ctx, &r, b)?;
+                return emit(cli.json, &a, || {
+                    let how = if asserts {
+                        "as a balance assertion hledger will re-check"
+                    } else {
+                        "as a note without an assertion, since items are still outstanding"
+                    };
+                    format!("Recorded {b} {commodity} in {account} at {date} {how}.\nCommitted {}.", a.commit)
+                });
+            }
+            emit(cli.json, &r, || {
+                let mut s = format!("{} at {} ({})\n", r.account, r.date, r.commodity);
+                s += &format!("  cleared per the books  {:>14}\n", r.cleared);
+                if let (Some(b), Some(d)) = (&r.statement, &r.difference) {
+                    s += &format!("  per the statement     {b:>14}\n");
+                    s += &format!("  difference            {d:>14}\n");
+                }
+                if r.outstanding.is_empty() {
+                    s += "\nNothing outstanding.";
+                } else {
+                    s += "\nOutstanding — `abo clear <key>` once the statement shows it:\n";
+                    for i in &r.outstanding {
+                        s += &format!("  {:<22} {} {:>12}  {}\n", i.key, i.date, i.amount, i.description);
+                    }
+                }
+                s
+            })
+        }
+        Cmd::Clear { keys } => {
+            let ctx = Ctx::open(&here)?;
+            let r = reconcile::clear(&ctx, &keys)?;
+            emit(cli.json, &r, || format!("Marked {} cleared. Committed {}.", r.marked.len(), r.commit))
         }
         Cmd::Bal { args } => passthrough(&here, "balance", &args, cli.json),
         Cmd::Reg { args } => passthrough(&here, "register", &args, cli.json),

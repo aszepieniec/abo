@@ -17,6 +17,11 @@ pub struct Posting {
     /// None means elided; hledger infers it. At most one per entry.
     pub amount: Option<Decimal>,
     pub commodity: String,
+    /// A balance assertion: what this account must total after the posting.
+    /// hledger verifies it on every parse from then on, so a reconciled
+    /// balance stays reconciled or the books stop loading.
+    #[serde(default)]
+    pub assertion: Option<Decimal>,
 }
 
 impl Posting {
@@ -41,7 +46,7 @@ impl Posting {
                 (Some(d), com)
             }
         };
-        Ok(Posting { account: account.to_string(), amount, commodity })
+        Ok(Posting { account: account.to_string(), amount, commodity, assertion: None })
     }
 }
 
@@ -62,9 +67,13 @@ impl Entry {
         }
         for p in &self.postings {
             match p.amount {
-                Some(a) => s.push_str(&format!("    {:<32}{} {}\n", p.account, a, p.commodity)),
-                None => s.push_str(&format!("    {}\n", p.account)),
+                Some(a) => s.push_str(&format!("    {:<32}{} {}", p.account, a, p.commodity)),
+                None => s.push_str(&format!("    {}", p.account)),
             }
+            if let Some(x) = p.assertion {
+                s.push_str(&format!(" = {} {}", x, p.commodity));
+            }
+            s.push('\n');
         }
         s
     }
@@ -124,7 +133,11 @@ pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
     if elided > 1 {
         bail!("{elided} postings have no amount; at most one may be elided");
     }
-    if e.postings.len() < 2 {
+    // One exception to needing two postings: an entry that moves nothing and
+    // exists to record a balance, with or without an assertion on it.
+    let moves_nothing =
+        e.postings.len() == 1 && e.postings[0].amount.is_some_and(|a| a.is_zero());
+    if e.postings.len() < 2 && !moves_nothing {
         bail!("an entry needs at least two postings");
     }
     if elided == 0 {
@@ -218,7 +231,7 @@ pub fn add(ctx: &Ctx, e: &Entry) -> Result<AddReport> {
     let tmp = std::env::temp_dir().join(format!("abo-check-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     copy_dir(&ctx.journal_dir(), &tmp)?;
-    stage(&tmp, &name, &e.render())?;
+    stage(&tmp, &name, &e.date, &e.render())?;
     let check = Command::new("hledger")
         .args(["-f", &tmp.join("main.journal").to_string_lossy(), "check", "accounts", "balanced", "ordereddates"])
         .output()
@@ -228,7 +241,7 @@ pub fn add(ctx: &Ctx, e: &Entry) -> Result<AddReport> {
         bail!("hledger rejected the entry:\n{}", String::from_utf8_lossy(&check.stderr).trim());
     }
 
-    stage(&ctx.journal_dir(), &name, &e.render())?;
+    stage(&ctx.journal_dir(), &name, &e.date, &e.render())?;
     let commit = ctx.commit(
         &[&target, &ctx.main_journal()],
         &format!("{} {}", e.date, e.description),
@@ -243,8 +256,10 @@ pub fn add(ctx: &Ctx, e: &Entry) -> Result<AddReport> {
     })
 }
 
-/// Append to the year file, creating it and its `include` line if needed.
-fn stage(dir: &Path, name: &str, rendered: &str) -> Result<()> {
+/// Write into the year file in date order, creating it and its `include` line
+/// if needed. In date order rather than appended, because a bill that arrives
+/// late is ordinary and `hledger check ordereddates` would refuse it otherwise.
+fn stage(dir: &Path, name: &str, date: &str, rendered: &str) -> Result<()> {
     use std::io::Write as _;
     let main = dir.join("main.journal");
     let text = std::fs::read_to_string(&main).with_context(|| format!("{}", main.display()))?;
@@ -252,8 +267,31 @@ fn stage(dir: &Path, name: &str, rendered: &str) -> Result<()> {
     if !text.lines().any(|l| l.trim() == include) {
         writeln!(std::fs::OpenOptions::new().append(true).open(&main)?, "{include}")?;
     }
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(dir.join(name))?;
-    write!(f, "\n{rendered}")?;
+
+    let path = dir.join(name);
+    let mut lines: Vec<String> = std::fs::read_to_string(&path)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    // A transaction starts at column 0 with its date; everything else in the
+    // file is indented, a directive, or blank.
+    let at = lines.iter().position(|l| {
+        l.starts_with(|c: char| c.is_ascii_digit())
+            && l.split_whitespace().next().is_some_and(|d| d > date)
+    });
+    let entry = rendered.lines().map(str::to_owned);
+    match at {
+        Some(i) => {
+            let block: Vec<String> = entry.chain(std::iter::once(String::new())).collect();
+            lines.splice(i..i, block);
+        }
+        None => {
+            lines.push(String::new());
+            lines.extend(entry);
+        }
+    }
+    std::fs::write(&path, lines.join("\n") + "\n")?;
     Ok(())
 }
 

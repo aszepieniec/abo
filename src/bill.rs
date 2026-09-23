@@ -149,6 +149,7 @@ fn build(sha256: &str, ext: &str, p: &Proposal) -> Result<(Entry, String)> {
                 account: pp.account.clone(),
                 amount: Some(amount(&pp.amount)?),
                 commodity: p.currency.clone(),
+                assertion: None,
             })
         })
         .collect::<Result<Vec<_>>>()?;

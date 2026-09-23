@@ -198,6 +198,7 @@ fn entry(
         account: account.to_string(),
         amount: Some(amount),
         commodity: currency.clone(),
+        assertion: None,
     };
 
     let mut postings = vec![p(&ctx.cfg.invoice.receivable, total)];

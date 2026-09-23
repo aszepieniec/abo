@@ -180,3 +180,108 @@ fn invoices() {
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// Manual reconciliation: tick booked items off against a statement, then
+/// freeze the agreed balance as an assertion hledger re-checks forever.
+#[test]
+fn reconciliation() {
+    let dir = std::env::temp_dir().join(format!("abo-rec-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let o = abo(&dir, &["init"], "Test Ltd\n\n\n\n\nEUR\nnone\n");
+    assert!(o.status.success(), "init failed: {}", err(&o));
+
+    let book = |date: &str, desc: &str, amount: &str| {
+        let o = abo(
+            &dir,
+            &["add", "--date", date, "--desc", desc,
+              &format!("assets:bank={amount}"), "equity:opening"],
+            "",
+        );
+        assert!(o.status.success(), "{desc}: {}", err(&o));
+    };
+    book("2026-01-10", "One", "1000.00");
+    book("2026-02-10", "Two", "-250.00");
+    book("2026-03-10", "Three", "-40.00");
+
+    let keys = |balance: Option<&str>| -> serde_json::Value {
+        let mut args = vec!["reconcile", "--account", "assets:bank", "--date", "2026-03-31", "--json"];
+        if let Some(b) = balance {
+            args.extend(["--balance", b]);
+        }
+        let o = abo(&dir, &args, "");
+        assert!(o.status.success(), "reconcile failed: {}", err(&o));
+        serde_json::from_slice(&o.stdout).unwrap()
+    };
+
+    let r = keys(Some("750.00"));
+    assert_eq!(r["cleared"], "0");
+    assert_eq!(r["difference"], "750.00");
+    assert_eq!(r["outstanding"].as_array().unwrap().len(), 3);
+
+    // the statement shows the first two but not the third
+    let first_two: Vec<String> = r["outstanding"].as_array().unwrap()[..2]
+        .iter()
+        .map(|i| i["key"].as_str().unwrap().to_string())
+        .collect();
+    let mut args = vec!["clear"];
+    args.extend(first_two.iter().map(String::as_str));
+    let o = abo(&dir, &args, "");
+    assert!(o.status.success(), "clear failed: {}", err(&o));
+
+    let r = keys(Some("750.00"));
+    assert_eq!(r["cleared"], "750.00");
+    assert_eq!(r["difference"], "0.00");
+    assert_eq!(r["reconciled"], true);
+    assert_eq!(r["outstanding"].as_array().unwrap().len(), 1);
+
+    // a stale key marks nothing rather than marking the wrong thing
+    let stale = first_two[0].rsplit_once(':').unwrap().0.to_string() + ":2026-12-31";
+    let o = abo(&dir, &["clear", &stale], "");
+    assert!(err(&o).contains("stale"), "stale key not caught: {}", err(&o));
+
+    // recording refuses until the books agree
+    let o = abo(&dir, &["reconcile", "--account", "assets:bank", "--date", "2026-03-31",
+                        "--balance", "700.00", "--record"], "");
+    assert!(err(&o).contains("not reconciled"), "{}", err(&o));
+
+    // with an item still outstanding, the statement balance is NOT the
+    // account's balance, so it is recorded as a note and not asserted
+    let o = abo(&dir, &["reconcile", "--account", "assets:bank", "--date", "2026-03-31",
+                        "--balance", "750.00", "--record"], "");
+    assert!(o.status.success(), "record failed: {}", err(&o));
+    let text = std::fs::read_to_string(dir.join("journal/2026.journal")).unwrap();
+    assert!(text.contains("statement: 750.00 EUR"), "{text}");
+    assert!(!text.contains("= 750.00 EUR"), "asserted a balance that is not true:\n{text}");
+
+    // clear the last one and the two numbers agree, so now it is asserted
+    let r = keys(None);
+    let last = r["outstanding"].as_array().unwrap()[0]["key"].as_str().unwrap().to_string();
+    let o = abo(&dir, &["clear", &last], "");
+    assert!(o.status.success(), "clear failed: {}", err(&o));
+    let o = abo(&dir, &["reconcile", "--account", "assets:bank", "--date", "2026-03-31",
+                        "--balance", "710.00", "--record"], "");
+    assert!(o.status.success(), "record failed: {}", err(&o));
+    let text = std::fs::read_to_string(dir.join("journal/2026.journal")).unwrap();
+    assert!(text.contains("= 710.00 EUR"), "no assertion written:\n{text}");
+
+    // a back-dated entry lands in date order, so the assertion still holds
+    // and hledger still loads the books
+    let o = abo(&dir, &["add", "--date", "2026-02-20", "--desc", "Late arrival",
+                        "expenses:general=15.00", "liabilities:payable=-15.00"], "");
+    assert!(o.status.success(), "back-dated entry rejected: {}", err(&o));
+    let text = std::fs::read_to_string(dir.join("journal/2026.journal")).unwrap();
+    let dates: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("2026"))
+        .map(|l| l.split_whitespace().next().unwrap())
+        .collect();
+    let mut sorted = dates.clone();
+    sorted.sort();
+    assert_eq!(dates, sorted, "entries are not in date order: {dates:?}");
+
+    let o = abo(&dir, &["bal", "assets:bank"], "");
+    assert!(o.status.success(), "assertion broke the books: {}", err(&o));
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}

@@ -5,9 +5,10 @@
 use crate::bill;
 use crate::invoice;
 use crate::journal::{self, Entry, Posting};
+use crate::reconcile;
 use crate::repo::Ctx;
-use anyhow::{bail, Result};
-use axum::extract::{DefaultBodyLimit, Form, Multipart, Path, State};
+use anyhow::{bail, Context as _, Result};
+use axum::extract::{DefaultBodyLimit, Form, Multipart, Path, Query, State};
 use axum::http::header::{HOST, ORIGIN};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -27,6 +28,7 @@ pub async fn serve(ctx: Ctx, port: u16) -> Result<()> {
     let app = Router::new()
         .route("/", get(index))
         .route("/add", get(add_form).post(add_submit))
+        .route("/reconcile", get(reconcile_view).post(reconcile_act))
         .route("/invoice", get(invoice_form).post(invoice_submit))
         .route("/invoice/{number}", get(invoice_pdf))
         .route("/bill", get(upload_form).post(upload))
@@ -90,6 +92,7 @@ async fn index(State(ctx): State<Arc<Ctx>>) -> Response {
             p {
                 a href="/bill" { "Book a bill" } " · "
                 a href="/invoice" { "Issue an invoice" } " · "
+                a href="/reconcile" { "Reconcile" } " · "
                 a href="/add" { "Book an entry by hand" }
             }
             @if !waiting.is_empty() {
@@ -163,6 +166,118 @@ struct InvoiceForm {
     note: String,
     vat_rate: String,
     currency: String,
+}
+
+type Fields = std::collections::BTreeMap<String, String>;
+
+async fn reconcile_view(State(ctx): State<Arc<Ctx>>, Query(q): Query<Fields>) -> Response {
+    or_error("Reconcile", || reconcile_page(&ctx, &q, None))
+}
+
+/// One form, two buttons: tick things off, or record the agreed balance.
+async fn reconcile_act(
+    State(ctx): State<Arc<Ctx>>,
+    headers: HeaderMap,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> Response {
+    if let Err(e) = same_origin(&headers) {
+        warn!(%e, "rejected cross-origin POST");
+        return (StatusCode::FORBIDDEN, "cross-origin request").into_response();
+    }
+    let keys: Vec<String> = pairs.iter().filter(|(k, _)| k == "key").map(|(_, v)| v.clone()).collect();
+    let f: Fields = pairs.into_iter().filter(|(k, _)| k != "key").collect();
+
+    let done = (|| -> Result<()> {
+        let (account, commodity, date) = params(&ctx, &f);
+        match f.get("action").map(String::as_str) {
+            Some("record") => {
+                let balance = rust_decimal::Decimal::from_str_exact(f.get("balance").map_or("", |s| s.trim()))
+                    .context("a statement balance is needed to record one")?;
+                let r = reconcile::status(&ctx, &account, &commodity, &date, Some(balance))?;
+                if !r.reconciled {
+                    bail!("not reconciled: off by {} {commodity}", r.difference.unwrap_or_default());
+                }
+                let a = reconcile::record(&ctx, &r, balance)?;
+                info!(commit = %a.commit, %account, %date, "reconciled");
+            }
+            _ => {
+                let c = reconcile::clear(&ctx, &keys)?;
+                info!(commit = %c.commit, marked = c.marked.len(), "cleared");
+            }
+        }
+        Ok(())
+    })();
+
+    match done {
+        Ok(()) => or_error("Reconcile", || reconcile_page(&ctx, &f, None)),
+        Err(e) => or_error("Reconcile", || reconcile_page(&ctx, &f, Some(&e.to_string()))),
+    }
+}
+
+fn params(ctx: &Ctx, f: &Fields) -> (String, String, String) {
+    let pick = |k: &str, d: &str| match f.get(k) {
+        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => d.to_string(),
+    };
+    (
+        pick("account", "assets:bank"),
+        pick("commodity", &ctx.cfg.company.currency),
+        pick("date", &jiff::Zoned::now().date().to_string()),
+    )
+}
+
+fn reconcile_page(ctx: &Ctx, f: &Fields, error: Option<&str>) -> Result<Markup> {
+    let (account, commodity, date) = params(ctx, f);
+    let raw = f.get("balance").map(|s| s.trim()).unwrap_or("");
+    let balance = if raw.is_empty() { None } else { rust_decimal::Decimal::from_str_exact(raw).ok() };
+    let r = reconcile::status(ctx, &account, &commodity, &date, balance)?;
+
+    Ok(html! {
+        h1 { "Reconcile" }
+        @if let Some(e) = error {
+            p.error { (e) }
+        }
+        form method="post" action="/reconcile" {
+            label { "Account" input type="text" name="account" value=(account); }
+            label { "Commodity" input type="text" name="commodity" value=(commodity); }
+            label { "Statement date" input type="date" name="date" value=(date); }
+            label { "Closing balance on the statement" input type="text" name="balance" value=(raw); }
+
+            table.figures {
+                tr { td { "Cleared per the books" } td { (r.cleared) " " (commodity) } }
+                @if let (Some(b), Some(d)) = (&r.statement, &r.difference) {
+                    tr { td { "Per the statement" } td { (b) " " (commodity) } }
+                    tr.total { td { "Difference" } td { (d) " " (commodity) } }
+                }
+            }
+
+            @if r.outstanding.is_empty() {
+                p.dim { "Nothing outstanding." }
+            } @else {
+                h2 { "Outstanding" }
+                p.dim { "Tick what the statement shows." }
+                ul.items {
+                    @for i in &r.outstanding {
+                        li {
+                            label.row {
+                                input type="checkbox" name="key" value=(i.key);
+                                span.date { (i.date) }
+                                span.amt { (i.amount) }
+                                span { (i.description) }
+                            }
+                        }
+                    }
+                }
+                button type="submit" name="action" value="clear" { "Mark ticked as cleared" }
+            }
+
+            @if r.reconciled {
+                p.dim { "The books agree with the statement." }
+                button type="submit" name="action" value="record" { "Record this balance" }
+            }
+        }
+        p { a href="/" { "Back" } }
+    })
 }
 
 async fn invoice_form(State(ctx): State<Arc<Ctx>>) -> Response {
@@ -459,6 +574,17 @@ button { width: auto; padding: .5rem 1.25rem; cursor: pointer; border-color: var
 button[disabled] { opacity: .4; cursor: not-allowed; border-color: var(--line); }
 @media (prefers-color-scheme: dark) { .error { color: #ff8a80; } }
 ul.accounts { columns: 2; list-style: none; padding: 0; font-size: 13px; }
+table.figures { margin: 1.5rem 0; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+table.figures td { padding: .3rem 1.5rem .3rem 0; }
+table.figures td:last-child { text-align: right; padding-right: 0; }
+table.figures tr.total td { border-top: 1px solid var(--line); font-weight: 600; }
+ul.items { list-style: none; padding: 0; }
+ul.items li { border-bottom: 1px solid var(--line); }
+label.row { display: grid; grid-template-columns: auto 6.5rem 7rem 1fr; gap: .75rem;
+  align-items: center; margin: 0; padding: .45rem 0; color: var(--fg); cursor: pointer; }
+label.row input { width: auto; margin: 0; }
+label.row .date, label.row .amt { font-variant-numeric: tabular-nums; font-size: 13px; }
+label.row .amt { text-align: right; }
 "#;
 
 #[cfg(test)]

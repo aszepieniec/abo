@@ -9,8 +9,9 @@ different agent. It records what was decided and **why**, so the decisions are
 not re-litigated. Where something was deliberately left out, the trigger for
 adding it is stated.
 
-Status: M0-M3 built — `abo init`, `add`, `bill`, `invoice`, `bal`, `reg`,
-`serve`, `demo`. Next step is M4 (bank import and statements).
+Status: M0-M3 built, plus manual reconciliation — `abo init`, `add`, `bill`,
+`invoice`, `reconcile`, `clear`, `bal`, `reg`, `serve`, `demo`. Next step is
+the rest of M4 (statements).
 
 ---
 
@@ -85,7 +86,7 @@ src/invoice.rs   fill typst template, compile
 src/web.rs       axum + maud
 ```
 
-Eight files plus `invoice.typ` (`bill.rs` was split out of the plan's seven so
+Nine files plus `invoice.typ` (`bill.rs` was split out of the plan's seven so
 that `ai.rs` stays pure transport and can be swapped or stubbed without touching
 the workflow). No `lib.rs`/`bin/` split, no workspace, no crate-per-module.
 
@@ -245,6 +246,46 @@ books in another is booked as stated and the model is told to say so. Valuing a
 report in a single commodity is `hledger -X`, at the point of reporting, where
 the rate is a reporting choice rather than a fact about the transaction.
 
+### Reconciliation
+
+Agreeing the books with what a bank, a cash box or a wallet actually holds is
+manual, and it needs no state of its own: hledger already says a transaction is
+unmarked, pending or cleared, so marking one cleared means writing a `*` into
+the journal, which is a commit like any other.
+
+```
+abo reconcile --account assets:bank --date 2026-04-30 --balance 24390.00
+abo clear 2026.journal:11:2026-02-28 ...
+abo reconcile ... --record
+```
+
+`reconcile` prints three numbers and a list: what the books say has cleared by
+that date, what the statement says, the difference, and every booked item not
+yet ticked off. Ticking items until the difference is zero *is* the
+reconciliation. The browser shows the same thing with checkboxes.
+
+Two details that are easy to get wrong:
+
+- **A key is `file:line:date`.** Line numbers come from hledger's own
+  `tsourcepos`, and entries are written in date order, so a booking made
+  between listing and marking shifts the lines below it. Carrying the date
+  means a stale key is refused instead of silently marking the wrong
+  transaction. Keys also arrive from a browser form, so the file part is
+  checked to be a plain `*.journal` name inside `journal/`.
+- **`--record` asserts only when nothing is outstanding.** hledger's balance
+  assertions are computed over every posting regardless of status, so there is
+  no way to assert a cleared-only balance. With nothing outstanding the two
+  numbers are the same and the assertion is exactly true, so it is written and
+  hledger re-checks it on every read from then on — an edit that changes
+  history before that date stops the books loading. With something still
+  outstanding the statement figure is *not* the account balance, so the entry
+  is recorded with its tags and no assertion rather than asserting something
+  untrue.
+
+Entries are inserted in date order rather than appended, which is what makes a
+late-arriving bill ordinary rather than a failure of `hledger check
+ordereddates`. That applies to every write, not just this one.
+
 ### Nothing in the code knows where you are
 
 Tax law is the one part of this that differs everywhere, so none of it is
@@ -328,7 +369,7 @@ One binary, clap subcommands. `--json` on every read command.
 
 ### Web
 axum + maud, server-rendered forms: balance and register, bill upload and
-proposal card, invoice form, hand-typed entry. `abo serve --port 8801` binds
+proposal card, invoice form, reconciliation checkboxes, hand-typed entry. `abo serve --port 8801` binds
 127.0.0.1 and
 runs until SIGINT or SIGTERM, finishing in-flight requests. TLS and any public
 name belong to nginx in front of it; the Origin check works either way because
@@ -456,17 +497,17 @@ Not legal advice, but none of this is controversial.
   has one home. The next number is `max(invoice:) + 1` read from the journal —
   no counter file. The PDF is `git add`ed before the entry is committed, so both
   land in one commit or neither does.
-- **M4** — bank import and reconciliation, then statements (tax return, P&L,
-  balance sheet), on screen and as PDFs. **← next**
+- **M4** — **manual reconciliation done**: `abo reconcile` / `abo clear`, and
+  the same as a page of checkboxes. Bank import moved to §11 — the point of
+  reconciliation is to notice what is wrong, and typing a closing balance is
+  enough to do that. Remaining: statements (tax return, P&L, balance sheet),
+  on screen and as PDFs. **← next**
 - **M5** — companies and users.
 - **M6** — PWA manifest, or the JSON API if native has been chosen.
 
-**Bank import was not in the original list and should not be dropped.** Bills
-arrive a few at a time; the statement arrives all at once and has to tie out.
-Matching statement lines against booked payables is the recurring monthly work,
-and it is where the AI is worth more than in bill entry, because there is genuine
-ambiguity to resolve. `hledger import` already handles CSV → journal via rules
-files.
+Reconciliation was not in the original list of workflows and is the one that
+recurs most: bills arrive a few at a time, the statement arrives all at once and
+has to tie out.
 
 ---
 
@@ -512,6 +553,22 @@ Open questions, to settle before this becomes a milestone:
   bare `--pdf` just hands it to you.
 
 ---
+
+### Bank import
+
+Reading a bank's CSV export straight into the journal, `hledger import` with a
+rules file, matching statement lines against booked payables automatically.
+
+Deliberately **not** next. Manual reconciliation covers the thing that actually
+matters — noticing that the books and the bank disagree — and it does so with
+one number typed in, no per-bank CSV dialect, no rules file to maintain, and no
+new way for the books to acquire entries nobody looked at. Import is worth
+building when the volume makes ticking boxes tedious, and by then the
+reconciliation view already says exactly what it has to produce.
+
+The AI is worth more here than in bill entry when it does arrive, because
+matching a statement line to a booked payable has genuine ambiguity in it,
+where reading a total off an invoice does not.
 
 ### Payroll, with configurable deductions
 
