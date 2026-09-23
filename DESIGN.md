@@ -408,6 +408,14 @@ this only bites if the company switches methods and then re-runs an old period.
 ### CLI
 One binary, clap subcommands. `--json` on every read command.
 
+abo shells out to three programs and owns none of them, so `main` checks for
+all three before dispatching anything. `git` and `hledger` are required and a
+missing one is a startup error naming what it is for and where to get it;
+`typst` is optional, needed only for PDFs, and a missing one is a warning on
+stderr rather than a refusal. Better than a puzzling failure three steps into a
+workflow, and for `abo serve` it means the server declines to boot broken
+instead of raising an error on the first request that needs a PDF.
+
 ### Web
 axum + maud, server-rendered forms: balance and register, bill upload and
 proposal card, invoice form, reconciliation checkboxes, statements with a PDF
