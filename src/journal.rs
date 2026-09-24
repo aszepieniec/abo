@@ -306,7 +306,7 @@ fn copy_dir(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-fn is_vat_account(account: &str) -> bool {
+pub fn is_vat_account(account: &str) -> bool {
     account.split(':').any(|s| s.eq_ignore_ascii_case("vat") || s.eq_ignore_ascii_case("mwst"))
 }
 

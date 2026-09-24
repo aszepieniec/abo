@@ -7,7 +7,7 @@ use crate::invoice;
 use crate::journal::{self, Entry, Posting};
 use crate::reconcile;
 use crate::statement::{self, money};
-use crate::repo::Ctx;
+use crate::repo::{Ctx, Vat};
 use anyhow::{bail, Context as _, Result};
 use axum::extract::{DefaultBodyLimit, Form, Multipart, Path, Query, State};
 use axum::http::header::{HOST, ORIGIN};
@@ -67,10 +67,16 @@ async fn shutdown() {
     info!("shutting down");
 }
 
+tokio::task_local! {
+    /// The path being served, so `page` can mark the sidebar's current item
+    /// without every handler passing it down.
+    static PATH: String;
+}
+
 async fn log(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
     let (method, path) = (req.method().clone(), req.uri().path().to_string());
     let start = Instant::now();
-    let res = next.run(req).await;
+    let res = PATH.scope(path.clone(), next.run(req)).await;
     let (status, ms) = (res.status().as_u16(), start.elapsed().as_millis());
     if status >= 500 {
         error!(%method, %path, status, ms, "request");
@@ -98,67 +104,101 @@ async fn index(State(ctx): State<Arc<Ctx>>) -> Response {
         let accounts = statement::balances(&ctx, "", &[])?;
         let recent = recent_entries(&ctx, 12)?;
         let waiting = bill::waiting(&ctx)?;
+        let tiles = tiles(&ctx, &accounts);
         Ok(html! {
-            h1 { (ctx.cfg.company.name) }
-            div.actions style="margin-bottom:24px" {
-                a.btn.btn-primary href="/bill" { (icon("camera")) " Book a bill" }
-                a.btn href="/invoice" { (icon("outbox")) " Issue an invoice" }
-                a.btn href="/reconcile" { (icon("checks")) " Reconcile" }
+            div.head {
+                h1 { "Books" }
+                div.actions {
+                    a.btn href="/reconcile" { (icon("checks")) " Reconcile" }
+                    a.btn href="/invoice" { (icon("outbox")) " Issue an invoice" }
+                    a.btn.btn-primary href="/bill" { (icon("camera")) " Book a bill" }
+                }
+            }
+            @if !tiles.is_empty() {
+                div.tiles {
+                    @for (label, bag) in &tiles {
+                        div.tile {
+                            span.muted.small { (label) }
+                            @for a in statement::amounts(bag) {
+                                span.figure { (a.quantity) " " span.muted.small { (a.commodity) } }
+                            }
+                        }
+                    }
+                }
             }
             @if !waiting.is_empty() {
-                div.box {
-                    div.box-header { (icon("clock")) "Waiting for you"
-                        span.spacer.muted.small { (waiting.len()) }
-                    }
-                    table.list {
-                        @for sha in &waiting {
-                            tr {
-                                @match bill::review(&ctx, sha) {
-                                    Ok(p) => {
-                                        td.date { (p.proposal.date) }
-                                        td { a href={"/bill/" (sha)} { (p.proposal.vendor) } }
-                                        td.amt { (p.proposal.confidence) }
-                                    },
-                                    Err(_) => {
-                                        td.date {}
-                                        td { a href={"/bill/" (sha)} { (sha.get(..8).unwrap_or(sha)) } }
-                                        td.amt {}
-                                    },
+                div.flash.flash-info {
+                    (icon("info"))
+                    div {
+                        strong { (waiting.len()) @if waiting.len() == 1 { " bill" } @else { " bills" } " waiting for you" }
+                        ul.plain {
+                            @for sha in &waiting {
+                                li {
+                                    @match bill::review(&ctx, sha) {
+                                        Ok(p) => {
+                                            a href={"/bill/" (sha)} { (p.proposal.vendor) }
+                                            " · " (p.proposal.date) " · confidence " (p.proposal.confidence)
+                                        },
+                                        Err(_) => a href={"/bill/" (sha)} { (sha.get(..8).unwrap_or(sha)) },
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-            div.box {
-                div.box-header { (icon("coins")) "Balances"
-                    span.spacer { a.small href="/report/bs" { "Balance sheet" } }
-                }
-                table.list {
-                    @for (account, bag) in &accounts {
-                        tr {
-                            td { code { (account) } }
-                            td.amt { (money(&statement::amounts(bag))) }
+            div.grid2 {
+                div.box {
+                    div.box-header { "Balances"
+                        span.spacer { a.small href="/report/bs" { "Balance sheet" } }
+                    }
+                    table.list {
+                        @for (account, bag) in &accounts {
+                            tr {
+                                td { code { (account) } }
+                                td.amt { (money(&statement::amounts(bag))) }
+                            }
                         }
                     }
                 }
-            }
-            div.box {
-                div.box-header { (icon("book")) "Recent entries"
-                    span.spacer { a.small href="/report/pl" { "Profit and loss" } }
-                }
-                table.list {
-                    @for e in &recent {
-                        tr {
-                            td.date { (e.0) }
-                            td { (e.1) }
-                            td.amt { (e.2) }
+                div.box {
+                    div.box-header { "Recent entries"
+                        span.spacer { a.small href="/report/pl" { "Profit and loss" } }
+                    }
+                    table.list {
+                        @for e in &recent {
+                            tr {
+                                td.date { (e.0) }
+                                td { (e.1) }
+                                td.amt { (e.2) }
+                            }
                         }
                     }
                 }
             }
         })
     })
+}
+
+/// The figures across the top of the front page: every asset account holding
+/// something, bar the VAT ones, and the VAT position when input tax is
+/// deductible, since that is the figure the next return will ask for.
+fn tiles(ctx: &Ctx, accounts: &[(String, statement::Bag)]) -> Vec<(String, statement::Bag)> {
+    let mut t: Vec<_> = accounts
+        .iter()
+        .filter(|(a, b)| a.starts_with("assets:") && !journal::is_vat_account(a) && b.values().any(|v| !v.is_zero()))
+        .map(|(a, b)| (a["assets:".len()..].to_string(), b.clone()))
+        .collect();
+    if let Vat::Effective { input, output } = &ctx.cfg.vat {
+        let mut due = statement::Bag::new();
+        for (_, b) in accounts.iter().filter(|(a, _)| a == input || a == output) {
+            for (c, v) in b {
+                *due.entry(c.clone()).or_default() -= v;
+            }
+        }
+        t.push(("VAT, output less input".into(), due));
+    }
+    t
 }
 
 /// The last few transactions as date, description and size, where size is the
@@ -333,7 +373,8 @@ async fn reconcile_act(
     let keys: Vec<String> = pairs.iter().filter(|(k, _)| k == "key").map(|(_, v)| v.clone()).collect();
     let f: Fields = pairs.into_iter().filter(|(k, _)| k != "key").collect();
 
-    let done = (|| -> Result<()> {
+    // (what happened, to what)
+    let done = (|| -> Result<(String, String)> {
         let (account, commodity, date) = params(&ctx, &f);
         match f.get("action").map(String::as_str) {
             Some("record") => {
@@ -342,19 +383,21 @@ async fn reconcile_act(
                 let r = reconcile::status(&ctx, &account, &commodity, &date, Some(balance))?;
                 let a = reconcile::record(&ctx, &r, balance)?;
                 info!(commit = %a.commit, %account, %date, "reconciled");
+                Ok((format!("Committed {}", a.commit), format!("{balance} {commodity} recorded as at {date}.")))
             }
             _ => {
                 let c = reconcile::clear(&ctx, &keys)?;
                 info!(commit = %c.commit, marked = c.marked.len(), "cleared");
+                Ok((format!("Committed {}", c.commit), format!("{} marked cleared.", c.marked.len())))
             }
         }
-        Ok(())
     })();
 
-    match done {
-        Ok(()) => or_error(&ctx, "Reconcile", || reconcile_page(&ctx, &f, None)),
-        Err(e) => or_error(&ctx, "Reconcile", || reconcile_page(&ctx, &f, Some(&e.to_string()))),
-    }
+    let notice = match &done {
+        Ok((what, detail)) => html! { div.flash.flash-change { (icon("commit")) div { strong { (what) } (detail) } } },
+        Err(e) => html! { div.flash.flash-error { (icon("error")) div { (e) } } },
+    };
+    or_error(&ctx, "Reconcile", || reconcile_page(&ctx, &f, Some(notice)))
 }
 
 fn params(ctx: &Ctx, f: &Fields) -> (String, String, String) {
@@ -369,7 +412,7 @@ fn params(ctx: &Ctx, f: &Fields) -> (String, String, String) {
     )
 }
 
-fn reconcile_page(ctx: &Ctx, f: &Fields, error: Option<&str>) -> Result<Markup> {
+fn reconcile_page(ctx: &Ctx, f: &Fields, notice: Option<Markup>) -> Result<Markup> {
     let (account, commodity, date) = params(ctx, f);
     let raw = f.get("balance").map(|s| s.trim()).unwrap_or("");
     let balance = if raw.is_empty() { None } else { rust_decimal::Decimal::from_str_exact(raw).ok() };
@@ -377,9 +420,7 @@ fn reconcile_page(ctx: &Ctx, f: &Fields, error: Option<&str>) -> Result<Markup> 
 
     Ok(html! {
         h1 { "Reconcile" }
-        @if let Some(e) = error {
-            div.flash.flash-error { (icon("alert")) div { (e) } }
-        }
+        @if let Some(n) = notice { (n) }
         form method="post" action="/reconcile" {
             div.box {
                 div.box-header { (icon("checks")) "Against the statement" }
@@ -401,7 +442,7 @@ fn reconcile_page(ctx: &Ctx, f: &Fields, error: Option<&str>) -> Result<Markup> 
             }
 
             @if r.outstanding.is_empty() {
-                div.flash.flash-ok { (icon("check")) div { "Nothing outstanding." } }
+                div.flash.flash-ok { (icon("success")) div { "Nothing outstanding." } }
             } @else {
                 div.box {
                     div.box-header { (icon("clock")) "Outstanding"
@@ -496,7 +537,7 @@ fn invoice_page(ctx: &Ctx, f: &InvoiceForm, error: Option<&str>) -> Result<Marku
     Ok(html! {
         h1 { "Issue an invoice" }
         @if let Some(e) = error {
-            div.flash.flash-error { (icon("alert")) div { "Rejected: " (e) } }
+            div.flash.flash-error { (icon("error")) div { "Rejected: " (e) } }
         }
         form method="post" action="/invoice" {
             div.box {
@@ -581,13 +622,13 @@ async fn card(State(ctx): State<Arc<Ctx>>, Path(sha): Path<String>) -> Response 
                 a href={"/bill/" (sha) "/document"} { (icon("doc")) " the document" }
             }
             @if let Some(problem) = &p.problem {
-                div.flash.flash-error { (icon("alert")) div { "The validator rejects this: " (problem) } }
+                div.flash.flash-error { (icon("error")) div { strong { "The validator rejects this" } (problem) } }
             }
             @if !p.proposal.questions.is_empty() {
                 div.flash.flash-warn {
                     (icon("alert"))
                     div {
-                        "The model is asking:"
+                        strong { "The model is asking" }
                         ul { @for q in &p.proposal.questions { li { (q) } } }
                     }
                 }
@@ -661,7 +702,7 @@ fn form(ctx: &Ctx, date: &str, description: &str, postings: &str, error: Option<
     Ok(html! {
         h1 { "Book an entry" }
         @if let Some(e) = error {
-            div.flash.flash-error { (icon("alert")) div { "Rejected: " (e) } }
+            div.flash.flash-error { (icon("error")) div { "Rejected: " (e) } }
         }
         form method="post" action="/add" {
             div.box {
@@ -721,6 +762,10 @@ fn icon(name: &str) -> Markup {
         "plus" => &["M8 3.5v9", "M3.5 8h9"],
         "check" => &["M3.5 8.5 6.5 11.5 12.5 4.5"],
         "alert" => &["M8 2 14.5 13.5h-13z", "M8 6.5v3", "M8 11.4v.3"],
+        "error" => &["M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12z", "M6 6l4 4", "M10 6l-4 4"],
+        "info" => &["M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12z", "M8 7.5v4", "M8 5v.3"],
+        "commit" => &["M8 10.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z", "M1.5 8h4", "M10.5 8h4"],
+        "success" => &["M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12z", "M5.5 8.2 7.3 10 10.5 6.3"],
         "left" => &["M12.5 8h-9", "M7 4 3.5 8 7 12"],
         "download" => &["M8 2.5v8", "M4.5 7.5 8 11 11.5 7.5", "M2.5 13.5h11"],
         "camera" => &["M2.5 5.5h2l1-1.5h5l1 1.5h2a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-.5.5h-11a.5.5 0 0 1-.5-.5v-7a.5.5 0 0 1 .5-.5z",
@@ -752,7 +797,7 @@ fn or_error(ctx: &Ctx, title: &str, body: impl FnOnce() -> Result<Markup>) -> Re
                 "Error",
                 html! {
                     h1 { "Something went wrong" }
-                    div.flash.flash-error { (icon("alert")) pre { (e) } }
+                    div.flash.flash-error { (icon("error")) pre { (e) } }
                     p { a.btn href="/" { (icon("left")) " Back to the books" } }
                 },
             )
@@ -762,13 +807,18 @@ fn or_error(ctx: &Ctx, title: &str, body: impl FnOnce() -> Result<Markup>) -> Re
 }
 
 fn page(ctx: &Ctx, title: &str, body: Markup) -> Html<String> {
+    // (link, icon, label, the paths that count as being there)
     let nav = [
-        ("/bill", "inbox", "Bills"),
-        ("/invoice", "outbox", "Invoices"),
-        ("/reconcile", "checks", "Reconcile"),
-        ("/report/pl", "chart", "Statements"),
-        ("/add", "plus", "Entry"),
+        ("/", "book", "Books", "/"),
+        ("/bill", "inbox", "Bills", "/bill"),
+        ("/invoice", "outbox", "Invoices", "/invoice"),
+        ("/reconcile", "checks", "Reconcile", "/reconcile"),
+        ("/report/pl", "chart", "Statements", "/report"),
+        ("/add", "plus", "Entry", "/add"),
     ];
+    let here = PATH.try_with(String::clone).unwrap_or_default();
+    let current = |section: &str| if section == "/" { here == "/" } else { here.starts_with(section) };
+    let waiting = bill::waiting(ctx).map_or(0, |w| w.len());
     Html(
         html! {
             (DOCTYPE)
@@ -782,17 +832,18 @@ fn page(ctx: &Ctx, title: &str, body: Markup) -> Html<String> {
                     style { (PreEscaped(STYLE)) }
                 }
                 body {
-                    header.topbar {
-                        div.container.topbar-inner {
-                            a.brand href="/" { (icon("book")) span { (ctx.cfg.company.name) } }
-                            nav {
-                                @for (href, ic, label) in nav {
-                                    a href=(href) { (icon(ic)) span { (label) } }
+                    aside.side {
+                        a.brand href="/" { span.mark { "abo" } span.name { (ctx.cfg.company.name) } }
+                        nav {
+                            @for (href, ic, label, section) in nav {
+                                a href=(href) class=[current(section).then_some("current")] {
+                                    (icon(ic)) span { (label) }
+                                    @if href == "/bill" && waiting > 0 { span.badge { (waiting) } }
                                 }
                             }
                         }
                     }
-                    main.container { (body) }
+                    main.content { (body) }
                 }
             }
         }
@@ -800,148 +851,198 @@ fn page(ctx: &Ctx, title: &str, body: Markup) -> Html<String> {
     )
 }
 
+/// The palette is indigo on warm stone, and "dim" in the dark. Notices are a
+/// separate set, one per kind and one per mode, and never follow the palette:
+/// the colour of a notice says what kind of message it is.
+///
+/// IBM Plex is named first and used when it is installed; otherwise the
+/// system face. Fetching it from a font service would mean the app looks
+/// different offline and tells someone else whenever the books are opened.
 const STYLE: &str = r#"
 :root {
-  --canvas: #ffffff; --subtle: #f6f8fa; --inset: #f6f8fa;
-  --border: #d1d9e0; --border-strong: #b7bfc7;
-  --fg: #1f2328; --muted: #59636e;
-  --accent: #0969da; --accent-soft: #ddf4ff;
-  --success: #1a7f37; --success-btn: #1f883d; --success-btn-hover: #1a7f37;
-  --danger: #d1242f; --danger-soft: #ffebe9;
-  --attention: #9a6700; --attention-soft: #fff8c5;
-  --shadow: 0 1px 0 rgba(31,35,40,.04);
+  --bg: #F7F6F2; --side: #EFEBE4; --side-border: #E0DAD0; --side-text: #4A453E;
+  --active: #FFFFFF; --card: #FFFFFF; --card-border: #E8E3DA; --rule: #F0ECE5;
+  --btn: #FFFFFF; --btn-border: #E0DAD0; --inset: #F3F1EC;
+  --fg: #1C1A17; --sub: #4A453E; --muted: #6B665E;
+  --accent: #4338CA; --accent-hover: #3730A3; --link: #4338CA; --focus: rgba(67,56,202,.18);
+  --shadow: 0 1px 2px rgba(0,0,0,.08);
+  --notice-text: #22201C;
+  --error-bg: #FCEBEA; --error-border: #EFB3AE; --error: #B42318;
+  --warn-bg: #FDF3DC; --warn-border: #EDCB7F; --warn: #8A5100;
+  --info-bg: #E6F0FA; --info-border: #AFCBEB; --info: #1D5A9E;
+  --change-bg: #F0EBF9; --change-border: #CDBDEA; --change: #5E3796;
+  --ok-bg: #E5F4EA; --ok-border: #A9D8B9; --ok: #17693A;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --canvas: #0d1117; --subtle: #151b23; --inset: #010409;
-    --border: #3d444d; --border-strong: #4d545c;
-    --fg: #f0f6fc; --muted: #9198a1;
-    --accent: #4493f8; --accent-soft: #121d2f;
-    --success: #3fb950; --success-btn: #238636; --success-btn-hover: #2ea043;
-    --danger: #f85149; --danger-soft: #25171c;
-    --attention: #d29922; --attention-soft: #272115;
+    --bg: #23252C; --side: #1E2026; --side-border: #30333B; --side-text: #AEB3BF;
+    --active: #2F323A; --card: #2A2D35; --card-border: #383C45; --rule: #33363F;
+    --btn: #2A2D35; --btn-border: #3D414B; --inset: #1E2026;
+    --fg: #E8EAEE; --sub: #C0C4CD; --muted: #9BA1AD;
+    --accent: #5B57E0; --accent-hover: #6C68EA; --link: #B3B5FF; --focus: rgba(179,181,255,.25);
     --shadow: none;
+    --notice-text: #E9E6E0;
+    --error-bg: #3A1D1D; --error-border: #7A3431; --error: #FF8A80;
+    --warn-bg: #372A12; --warn-border: #7A5A1E; --warn: #F2C063;
+    --info-bg: #172A40; --info-border: #2F5680; --info: #86B8F0;
+    --change-bg: #2A2140; --change-border: #5B4690; --change: #C3A8F5;
+    --ok-bg: #15301F; --ok-border: #2E6B45; --ok: #7ED69E;
   }
 }
 * { box-sizing: border-box; }
 body {
-  margin: 0; background: var(--canvas); color: var(--fg);
-  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
-        Helvetica, Arial, sans-serif;
+  margin: 0; min-height: 100vh; display: flex; background: var(--bg); color: var(--fg);
+  font: 14px/1.5 "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
 }
-.container { max-width: 1012px; margin: 0 auto; padding: 0 16px; }
-
-/* top bar */
-.topbar { background: #1f2328; color: #f0f6fc; }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .topbar { background: #151b23; border-bottom: 1px solid var(--border); } }
-.topbar-inner { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; padding-top: 12px; padding-bottom: 12px; }
-.brand { display: flex; align-items: center; gap: 8px; color: #f0f6fc; font-weight: 600; text-decoration: none; margin-right: auto; }
-.topbar nav { display: flex; flex-wrap: wrap; gap: 2px; }
-.topbar nav a {
-  display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 6px;
-  color: #d1d9e0; text-decoration: none; font-weight: 500;
+code, pre, textarea, .figure, table.list td.amt, table.list td.date, table.figures td:last-child {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-.topbar nav a:hover { background: rgba(255,255,255,.08); color: #fff; }
 
-/* headings */
-main { padding-bottom: 64px; }
-h1 { font-size: 20px; font-weight: 600; margin: 24px 0 16px; }
-h2 { font-size: 14px; font-weight: 600; margin: 24px 0 8px; }
+/* sidebar */
+.side { width: 232px; flex: none; padding: 24px 16px; background: var(--side);
+  border-right: 1px solid var(--side-border); display: flex; flex-direction: column; gap: 28px; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 0 8px; color: var(--fg);
+  font-weight: 600; text-decoration: none; }
+.brand .mark { width: 32px; height: 32px; flex: none; border-radius: 8px; background: var(--accent);
+  color: #fff; display: flex; align-items: center; justify-content: center;
+  font: 500 13px "IBM Plex Mono", ui-monospace, monospace; }
+.side nav { display: flex; flex-direction: column; gap: 2px; }
+.side nav a { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 10px;
+  border-radius: 8px; color: var(--side-text); text-decoration: none; }
+.side nav a:hover { background: var(--active); color: var(--fg); }
+.side nav a.current { background: var(--active); color: var(--fg); font-weight: 600; box-shadow: var(--shadow); }
+.side nav a.current .icon { color: var(--link); }
+.badge { margin-left: auto; font-size: 12px; font-weight: 600; color: #fff; background: var(--accent);
+  border-radius: 10px; padding: 0 7px; }
+.content { flex: 1; min-width: 0; max-width: 1100px; padding: 32px 40px 64px; }
+
+/* text */
+h1 { font-size: 26px; font-weight: 600; margin: 0 0 20px; }
+h2 { font-size: 15px; font-weight: 600; margin: 24px 0 8px; }
 p { margin: 0 0 16px; }
-a { color: var(--accent); text-decoration: none; }
+a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
-code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
-  background: var(--subtle); border: 1px solid var(--border); border-radius: 6px; padding: 1px 5px; }
-
-/* icons */
+code { font-size: 13px; }
 .icon { flex: none; vertical-align: text-bottom; }
+.head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 24px; }
+.head h1 { margin: 0; }
+
+/* figures across the top */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin: 0 0 24px; }
+.tile { padding: 16px 18px; border-radius: 12px; background: var(--card); border: 1px solid var(--card-border);
+  display: flex; flex-direction: column; gap: 4px; }
+.figure { font-size: 22px; font-weight: 500; }
 
 /* cards */
-.box { border: 1px solid var(--border); border-radius: 6px; background: var(--canvas);
-  box-shadow: var(--shadow); margin: 0 0 16px; overflow: hidden; }
-.box-header { display: flex; align-items: center; gap: 8px; padding: 12px 16px;
-  background: var(--subtle); border-bottom: 1px solid var(--border); font-weight: 600; }
+.grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.box { border: 1px solid var(--card-border); border-radius: 12px; background: var(--card);
+  margin: 0 0 16px; overflow: hidden; }
+.grid2 > .box { margin: 0; }
+.box-header { display: flex; align-items: center; gap: 8px; padding: 14px 20px 6px; font-size: 15px; font-weight: 600; }
 .box-header .spacer { margin-left: auto; font-weight: 400; }
-.box-body { padding: 16px; }
+.box-body { padding: 16px 20px; }
 .box-body > :last-child { margin-bottom: 0; }
-table.list td { padding: 9px 16px; border-bottom: 1px solid var(--border); }
-table.list tr:last-child td { border-bottom: 0; }
-table.list td.date { color: var(--muted); width: 7.5rem; white-space: nowrap;
-  font-variant-numeric: tabular-nums; }
-table.list td.amt { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+table.list td { padding: 8px 20px; border-top: 1px solid var(--rule); }
+table.list td + td { padding-left: 0; }
+table.list code { color: var(--sub); }
+table.list td.date { color: var(--muted); width: 7rem; white-space: nowrap; font-size: 13px; }
+table.list td.amt { text-align: right; white-space: nowrap; font-size: 13px; }
 pre { overflow-x: auto; margin: 0; padding: 12px 16px; background: var(--inset);
-  border: 1px solid var(--border); border-radius: 6px;
-  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
-.box-body pre { border: 0; border-radius: 0; margin: -16px; }
+  border: 1px solid var(--card-border); border-radius: 8px; font-size: 12px; line-height: 1.5; }
+.box .box-body > pre { border: 0; border-radius: 0; margin: -16px -20px; }
 .box .box-body > table.figures:first-child { margin-top: -6px; }
 
 /* buttons */
 .btn, button {
-  display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px;
-  font: 500 14px/20px inherit; color: var(--fg); background: var(--subtle);
-  border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 16px;
+  font: inherit; font-weight: 500; color: var(--fg); background: var(--btn);
+  border: 1px solid var(--btn-border); border-radius: 8px; cursor: pointer;
   text-decoration: none; white-space: nowrap;
 }
-.btn:hover, button:hover { background: var(--border); text-decoration: none; }
-.btn-primary { color: #fff; background: var(--success-btn); border-color: rgba(31,35,40,.15); }
-.btn-primary:hover { background: var(--success-btn-hover); }
+.btn:hover, button:hover { border-color: var(--muted); text-decoration: none; }
+.btn-primary { color: #fff; background: var(--accent); border-color: var(--accent); font-weight: 600; }
+.btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 button[disabled] { opacity: .5; cursor: not-allowed; }
-button[disabled]:hover { background: var(--subtle); }
+button[disabled]:hover { border-color: var(--btn-border); }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 
 /* forms */
 label.field { display: block; margin: 0 0 16px; font-weight: 600; }
 label.field .hint { display: block; font-weight: 400; color: var(--muted); font-size: 12px; margin-top: 2px; }
 input[type=text], input[type=date], input[type=file], textarea, select {
-  display: block; width: 100%; margin-top: 6px; padding: 5px 12px;
-  font: 14px/20px inherit; color: var(--fg); background: var(--canvas);
-  border: 1px solid var(--border); border-radius: 6px;
+  display: block; width: 100%; margin-top: 6px; padding: 8px 12px;
+  font: inherit; font-weight: 400; color: var(--fg); background: var(--card);
+  border: 1px solid var(--btn-border); border-radius: 8px;
 }
-textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-input:focus, textarea:focus { outline: none; border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft); }
+textarea { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }
+input:focus, textarea:focus { outline: none; border-color: var(--link); box-shadow: 0 0 0 3px var(--focus); }
 
-/* callouts */
-.flash { display: flex; gap: 8px; align-items: flex-start; padding: 12px 16px;
-  border: 1px solid var(--border); border-radius: 6px; margin: 0 0 16px; background: var(--subtle); }
+/* notices: one colour per kind, whatever the palette */
+.flash { display: flex; gap: 10px; align-items: flex-start; padding: 12px 16px; border: 1px solid;
+  border-radius: 12px; margin: 0 0 16px; color: var(--notice-text); }
+.flash > .icon { margin-top: 2px; }
+.flash strong { display: block; }
 .flash pre { background: none; border: 0; padding: 0; white-space: pre-wrap; }
-.flash-error { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
-.flash-warn { background: var(--attention-soft); border-color: var(--attention); color: var(--fg); }
-.flash-ok { background: var(--accent-soft); border-color: var(--accent); }
+.flash ul { margin: 4px 0 0; padding-left: 18px; }
+.flash ul.plain { list-style: none; padding: 0; }
+.flash-error { background: var(--error-bg); border-color: var(--error-border); }
+.flash-error > .icon, .flash-error strong { color: var(--error); }
+.flash-warn { background: var(--warn-bg); border-color: var(--warn-border); }
+.flash-warn > .icon, .flash-warn strong { color: var(--warn); }
+.flash-info { background: var(--info-bg); border-color: var(--info-border); }
+.flash-info > .icon, .flash-info strong, .flash-info a { color: var(--info); }
+.flash-change { background: var(--change-bg); border-color: var(--change-border); }
+.flash-change > .icon, .flash-change strong { color: var(--change); }
+.flash-ok { background: var(--ok-bg); border-color: var(--ok-border); }
+.flash-ok > .icon, .flash-ok strong { color: var(--ok); }
 
 /* figures */
 table { width: 100%; border-collapse: collapse; }
 table.figures td { padding: 6px 0; font-variant-numeric: tabular-nums; }
-table.figures td:last-child { text-align: right; white-space: nowrap; }
-table.figures tr.total td { border-top: 1px solid var(--border); font-weight: 600; }
-table.figures tr.grand td { border-top: 2px solid var(--border-strong); font-weight: 600; font-size: 16px; }
+table.figures td:last-child { text-align: right; white-space: nowrap; font-size: 13px; }
+table.figures tr.total td { border-top: 1px solid var(--card-border); font-weight: 600; }
+table.figures tr.grand td { border-top: 2px solid var(--muted); font-weight: 600; font-size: 16px; }
 
 /* checkbox rows */
 ul.items { list-style: none; margin: 0; padding: 0; }
-ul.items li { border-bottom: 1px solid var(--border); }
-ul.items li:last-child { border-bottom: 0; }
+ul.items li { border-top: 1px solid var(--rule); }
 label.row { display: grid; grid-template-columns: auto 6.5rem 8rem 1fr; gap: 12px;
-  align-items: center; margin: 0; padding: 10px 16px; cursor: pointer; font-weight: 400; }
-label.row:hover { background: var(--subtle); }
+  align-items: center; margin: 0; padding: 10px 20px; cursor: pointer; font-weight: 400; }
+label.row:hover { background: var(--bg); }
 label.row input { width: auto; margin: 0; }
-label.row .date, label.row .amt { font-variant-numeric: tabular-nums; color: var(--muted); }
+label.row .date, label.row .amt { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; color: var(--muted); }
 label.row .amt { text-align: right; color: var(--fg); }
 
 ul.accounts { columns: 2; list-style: none; padding: 0; margin: 0; font-size: 12px; }
 ul.accounts li { padding: 2px 0; }
 
-/* segmented nav */
-.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 0 0 16px; }
-.tabs a { display: flex; align-items: center; gap: 6px; padding: 8px 12px;
-  color: var(--fg); border: 1px solid transparent; border-bottom: 0; border-radius: 6px 6px 0 0; }
-.tabs a:hover { background: var(--subtle); text-decoration: none; }
-.tabs a.current { background: var(--canvas); border-color: var(--border); font-weight: 600;
-  margin-bottom: -1px; padding-bottom: 9px; }
+/* statement tabs */
+.tabs { display: flex; gap: 4px; margin: 0 0 16px; padding: 4px; background: var(--side);
+  border-radius: 10px; width: fit-content; max-width: 100%; overflow-x: auto; }
+.tabs a { display: flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px;
+  border-radius: 8px; color: var(--side-text); white-space: nowrap; }
+.tabs a:hover { text-decoration: none; color: var(--fg); }
+.tabs a.current { background: var(--active); color: var(--fg); font-weight: 600; box-shadow: var(--shadow); }
 
-@media (max-width: 620px) {
-  .brand span { display: none; }
+/* a phone: the sidebar becomes a bar across the top */
+@media (max-width: 760px) {
+  body { flex-direction: column; }
+  .side { width: auto; flex-direction: row; align-items: center; padding: 8px 12px; gap: 8px; border-right: 0; border-bottom: 1px solid var(--side-border); }
+  .brand { padding: 0; }
+  .brand .name { display: none; }
+  .side nav { flex-direction: row; overflow-x: auto; }
+  .side nav a { flex: none; }
+  .side nav a span:not(.badge) { display: none; }
+  .content { padding: 20px 16px 48px; }
+  .grid2 { grid-template-columns: minmax(0, 1fr); }
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .tile { padding: 12px 14px; }
+  .figure { font-size: 18px; }
+  table.list td { padding: 8px 12px; }
+  .box-header { padding: 12px 12px 6px; }
+  table.list td.amt { white-space: normal; }
   label.row { grid-template-columns: auto 1fr; }
   label.row .date, label.row .amt { grid-column: 2; text-align: left; }
 }

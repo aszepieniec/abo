@@ -25,7 +25,7 @@ Status: M0-M4 built — `abo init`, `add`, `bill`, `invoice`, `reconcile`,
 | Reports | Minimal Rust parser for writing and validating; **hledger computes everything**. | Multi-commodity, elided amounts, price directives and period expressions are where a hand-rolled money parser goes quietly wrong. hledger is already installed (GPL-3+, shelled out, no licence obligation — see §9). |
 | Invoice PDF | typst template, `typst compile` shelled out | One page, fixed grid. Layout lives in a `.typ` template, not in Rust. Compiler is Apache-2.0, offline, no account. |
 | Git access | shell out to `git` | Smaller than `git2`/libgit2 by a wide margin. |
-| Web UI | axum + maud, server-rendered, one hand-written stylesheet | No SPA, no npm, no build step, no WASM. HTML escaping comes from maud. The look is GitHub's, written out rather than vendored — see §7. |
+| Web UI | axum + maud, server-rendered, one hand-written stylesheet | No SPA, no npm, no build step, no WASM. HTML escaping comes from maud. One hand-written stylesheet, not a framework — see §7. |
 | Deployment | localhost first, reachable later | See §8. Auth goes at a reverse proxy, not in the app — until users exist. |
 | Tax | three scheme *shapes* in code (`none` / `flat` / `effective`); every rate, rule and name in config | The shape changes what a *correct booking* is, so the validator must know it. Rates and local rules differ everywhere and are data. See §6. |
 | Commodities | multi-commodity from the start | hledger already is. Cash, bank and wallet balances are all just asset accounts. |
@@ -423,13 +423,25 @@ axum + maud, server-rendered forms: balances and recent entries, bill upload and
 proposal card, invoice form, reconciliation checkboxes, statements with a PDF
 link, hand-typed entry.
 
-The look is GitHub's — a dark top bar, bordered cards with a subtle header
-strip, 6px radii, the system font stack, and a green primary button. It is
-about 180 lines of CSS in one `STYLE` constant, not Bootstrap from a CDN and
-not a vendored copy: a CDN would mean the app stops looking like itself
-offline and quietly tells someone else when the books are opened, and
-vendoring means a megabyte to carry and upgrade for the grid and the buttons
-alone. Light and dark both come from one set of custom properties.
+A sidebar on the left, white cards with 12px radii on a warm stone ground,
+and indigo for the primary button, links and the current page. The dark
+palette is a dim blue-grey rather than near-black, with the sidebar only a
+shade darker than the page. The figures along the top of the front page are
+every asset account holding something, bar the VAT ones, and output less input
+VAT when input tax is deductible. On a phone the sidebar becomes a bar of
+icons across the top.
+
+Notices come in five kinds — error, warning, information, change, success —
+and each has its own colour and icon, one set for light and one for dark.
+They never follow the palette: the colour says what kind of message it is, so
+a palette change must not move an accent onto one of them.
+
+IBM Plex Sans and Mono are named first and used where installed; otherwise
+the system face. It is all one `STYLE` constant of custom properties, not
+Bootstrap and not a font service: either from a CDN would mean the app stops
+looking like itself offline and quietly tells someone else when the books are
+opened, and vendoring means carrying and upgrading a framework for a grid and
+some buttons.
 
 Icons are inline SVG, drawn in `web.rs` on a 16-unit grid with one stroke
 weight. That means no icon font, no extra request, no third-party licence to
