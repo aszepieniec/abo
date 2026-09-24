@@ -21,6 +21,10 @@ pub struct Pending {
     pub entry: String,
     /// Why the validator would reject it, if it would. Refine until this is null.
     pub problem: Option<String>,
+    /// What the person has told the model so far, oldest first.
+    pub corrections: Vec<String>,
+    /// Picked up from an earlier upload of the same document: no request was made.
+    pub resumed: bool,
 }
 
 /// Content type from the bytes themselves. A client-supplied filename never
@@ -54,7 +58,7 @@ async fn propose_new(ctx: &Ctx, bytes: Vec<u8>, sha256: &str) -> Result<Pending>
     // Re-offering the same document resumes its conversation rather than
     // paying for a fresh proposal and throwing away the refinements.
     if thread_path(ctx, sha256).is_file() {
-        return review(ctx, sha256);
+        return review(ctx, sha256).map(|p| Pending { resumed: true, ..p });
     }
 
     let mut thread = Thread {
@@ -109,6 +113,9 @@ pub fn review(ctx: &Ctx, sha256: &str) -> Result<Pending> {
         entry: entry.render(),
         problem: journal::validate(ctx, &entry).err().map(|e| e.to_string()),
         proposal,
+        // the first user turn is abo's own instruction
+        corrections: thread.turns.iter().filter(|t| t.role == "user").skip(1).map(|t| t.text.clone()).collect(),
+        resumed: false,
     })
 }
 

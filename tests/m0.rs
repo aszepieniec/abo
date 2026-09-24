@@ -368,7 +368,8 @@ fn statements() {
     assert_eq!(bs["sections"][0]["total"][0]["quantity"], "1120.00");
     assert_eq!(bs["sections"][1]["total"][0]["quantity"], "320.00");
     assert_eq!(bs["sections"][2]["total"][0]["quantity"], "800.00");
-    assert_eq!(bs["bottom"]["amounts"][0]["quantity"], "0");
+    assert_eq!(bs["bottom"]["amounts"][0]["quantity"], "0.00");
+    assert_eq!(bs["bottom"]["amounts"][0]["commodity"], "EUR");
 
     // no configured return is an error that says what to write, not a wrong answer
     let o = abo(&dir, &["vat", "--period", "2026"], "");
@@ -410,10 +411,13 @@ sum   = ["2", "-3"]
 
     if Command::new("typst").arg("--version").output().is_ok() {
         let pdf = dir.join("out.pdf");
+        let before = commits(&dir);
         let o = abo(&dir, &["vat", "--period", "2026", "--pdf", pdf.to_str().unwrap()], "");
         assert!(o.status.success(), "pdf failed: {}", err(&o));
         assert_eq!(&std::fs::read(&pdf).unwrap()[..5], b"%PDF-");
-        assert!(dir.join("templates/report.typ").is_file());
+        // a PDF is read-only as far as the books go: abo's template, from .abo/
+        assert_eq!(commits(&dir), before);
+        assert!(!dir.join("templates/report.typ").exists());
     }
 
     std::fs::remove_dir_all(&dir).unwrap();

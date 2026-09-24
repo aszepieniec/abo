@@ -235,7 +235,12 @@ async fn run(cli: Cli) -> Result<()> {
     // The long-running commands report it through the log, beside the line
     // saying where the server is, because that is where someone starting a
     // server reads. Everything else says it on stderr before it does anything.
-    if !matches!(cli.cmd, Cmd::Serve { .. } | Cmd::Demo { .. }) {
+    // The only optional program is typst, so the others say nothing about it.
+    let makes_pdf = matches!(
+        &cli.cmd,
+        Cmd::Invoice { .. } | Cmd::Pl { pdf: Some(_), .. } | Cmd::Bs { pdf: Some(_), .. } | Cmd::Vat { pdf: Some(_), .. }
+    );
+    if makes_pdf {
         for d in &missing {
             eprintln!(
                 "warning: {} is not installed, so {} will not work.\n         Install it from {}",
@@ -285,7 +290,13 @@ async fn run(cli: Cli) -> Result<()> {
             if cli.json {
                 return emit(true, &p, String::new);
             }
+            if p.resumed {
+                println!("Picked up where you left off; nothing new was asked of the model.");
+            }
             loop {
+                for c in &p.corrections {
+                    println!("  you said: {c}");
+                }
                 println!("\n{}", p.entry);
                 println!("confidence: {}", p.proposal.confidence);
                 for q in &p.proposal.questions {

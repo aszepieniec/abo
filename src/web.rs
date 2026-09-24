@@ -10,7 +10,7 @@ use crate::statement::{self, money};
 use crate::repo::{Ctx, Vat};
 use anyhow::{bail, Context as _, Result};
 use axum::extract::{DefaultBodyLimit, Form, Multipart, Path, Query};
-use axum::http::header::{HOST, ORIGIN};
+use axum::http::header::{HOST, ORIGIN, REFERER};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -90,12 +90,26 @@ tokio::task_local! {
     /// The path being served, so `page` can mark the sidebar's current item
     /// without every handler passing it down.
     static PATH: String;
+    /// The page this request came from, when it came from one of ours: where
+    /// **Back** goes after a refusal.
+    static BACK: Option<String>;
+}
+
+/// The path of a same-site Referer, or None. Anything from another host is
+/// ignored, so a refusal page never links off-site.
+fn referer_path(h: &HeaderMap) -> Option<String> {
+    let referer = h.get(REFERER)?.to_str().ok()?;
+    let host = h.get(HOST)?.to_str().ok()?;
+    let rest = referer.strip_prefix("http://").or_else(|| referer.strip_prefix("https://"))?;
+    let path = rest.strip_prefix(host)?;
+    path.starts_with('/').then(|| path.to_string())
 }
 
 async fn log(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
     let (method, path) = (req.method().clone(), req.uri().path().to_string());
     let start = Instant::now();
-    let res = PATH.scope(path.clone(), next.run(req)).await;
+    let back = referer_path(req.headers());
+    let res = PATH.scope(path.clone(), BACK.scope(back, next.run(req))).await;
     let (status, ms) = (res.status().as_u16(), start.elapsed().as_millis());
     if status >= 500 {
         error!(%method, %path, status, ms, "request");
@@ -120,7 +134,8 @@ async fn csrf(req: axum::extract::Request, next: axum::middleware::Next) -> Resp
 
 async fn index(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
     or_error(&ctx, "Books", || {
-        let accounts = statement::balances(&ctx, "", &[])?;
+        // -E: an account that has come back to zero stays listed, at 0.00
+        let accounts = statement::balances(&ctx, "", &["-E"])?;
         let recent = recent_entries(&ctx, 12)?;
         let waiting = bill::waiting(&ctx)?;
         let tiles = tiles(&ctx, &accounts);
@@ -196,9 +211,12 @@ async fn index(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
                         tbody {
                             @for e in &recent {
                                 tr {
-                                    td.date { (e.0) }
-                                    td { (e.1) }
-                                    td.amt { (e.2) }
+                                    td.date { (e.date) }
+                                    td {
+                                        @if let Some(pdf) = &e.pdf { a href=(pdf) { (e.description) } }
+                                        @else { (e.description) }
+                                    }
+                                    td.amt { (e.debits) }
                                 }
                             }
                         }
@@ -270,6 +288,15 @@ async fn activity(Books(ctx): Books) -> Response {
         let lines: Vec<serde_json::Value> =
             text.lines().rev().take(50).filter_map(|l| serde_json::from_str(l).ok()).collect();
         let pretty = |v: &serde_json::Value| serde_json::to_string_pretty(v).unwrap_or_default();
+        // `git revert` leaves "This reverts commit <hash>." in the new commit's
+        // message; one pass over the history finds every commit undone that way.
+        let messages = ctx.git(&["log", "--grep=This reverts commit", "--format=%B"]).unwrap_or_default();
+        let reverted: Vec<&str> = messages
+            .split("This reverts commit ")
+            .skip(1)
+            .filter_map(|rest| rest.get(..40))
+            .collect();
+        let was_reverted = |h: &str| reverted.iter().any(|full| full.starts_with(h));
         Ok(html! {
             h1 { "Log" }
             @if lines.is_empty() {
@@ -305,6 +332,9 @@ async fn activity(Books(ctx): Books) -> Response {
                                     }
                                     td.amt {
                                         @if error.is_some() { span.failed { "failed" } }
+                                        @else if let Some(h) = commit.filter(|h| was_reverted(h)) {
+                                            code.reverted { (h) } br; span.muted.small { "reverted since" }
+                                        }
                                         @else if let Some(h) = commit { code { (h) } }
                                         @else { span.muted { "done" } }
                                     }
@@ -341,7 +371,15 @@ fn tiles(ctx: &Ctx, accounts: &[(String, statement::Bag)]) -> Vec<(String, state
 
 /// The last few transactions as date, description and size, where size is the
 /// debit total — the figure a person recognises the entry by.
-fn recent_entries(ctx: &Ctx, n: usize) -> Result<Vec<(String, String, String)>> {
+struct Recent {
+    date: String,
+    description: String,
+    debits: String,
+    /// An invoice's PDF, when there is one.
+    pdf: Option<String>,
+}
+
+fn recent_entries(ctx: &Ctx, n: usize) -> Result<Vec<Recent>> {
     let out = journal::hledger(ctx, &["print", "-O", "json"])?;
     let txns: Vec<serde_json::Value> = serde_json::from_str(&out)?;
     let mut rows = Vec::new();
@@ -356,11 +394,17 @@ fn recent_entries(ctx: &Ctx, n: usize) -> Result<Vec<(String, String, String)>> 
                 }
             }
         }
-        rows.push((
-            t["tdate"].as_str().unwrap_or_default().to_string(),
-            t["tdescription"].as_str().unwrap_or_default().to_string(),
-            money(&statement::amounts(&bag)),
-        ));
+        let pdf = t["ttags"].as_array().into_iter().flatten().find_map(|tag| {
+            let number = tag[1].as_str().filter(|_| tag[0] == "invoice")?;
+            let year = number.get(..4)?;
+            ctx.root.join(format!("invoices/{year}/{number}.pdf")).is_file().then(|| format!("/invoice/{number}"))
+        });
+        rows.push(Recent {
+            date: t["tdate"].as_str().unwrap_or_default().to_string(),
+            description: t["tdescription"].as_str().unwrap_or_default().to_string(),
+            debits: money(&statement::amounts(&bag)),
+            pdf,
+        });
     }
     Ok(rows)
 }
@@ -742,26 +786,33 @@ fn invoice_page(ctx: &Ctx, f: &InvoiceForm, error: Option<&str>) -> Result<Marku
 }
 
 async fn upload_form(Books(ctx): Books) -> Response {
-    or_error(&ctx, "Book a bill", || {
-        Ok(html! {
-            h1 { "Book a bill" }
-            form method="post" action="/bill" enctype="multipart/form-data" {
-                div.box {
-                    div.box-body {
-                        label.field { "The bill"
-                            span.hint { "A PDF, or a photograph. On a phone this opens the camera." }
-                            // capture= is why this works as a phone app without
-                            // one line of JavaScript.
-                            input type="file" name="document" accept="image/*,application/pdf"
-                                  capture="environment" required;
-                        }
-                        div.actions { button.btn-primary type="submit" { (icon("camera")) " Read it" } }
+    or_error(&ctx, "Book a bill", || upload_page(None))
+}
+
+fn upload_page(notice: Option<Markup>) -> Result<Markup> {
+    Ok(html! {
+        h1 { "Book a bill" }
+        @if let Some(n) = notice { (n) }
+        form method="post" action="/bill" enctype="multipart/form-data" {
+            div.box {
+                div.box-body {
+                    label.field { "The bill"
+                        span.hint { "A PDF, or a photograph. On a phone this opens the camera." }
+                        // capture= is why this works as a phone app without
+                        // one line of JavaScript.
+                        input type="file" name="document" accept="image/*,application/pdf"
+                              capture="environment" required;
                     }
+                    div.actions { button.btn-primary type="submit" { (icon("camera")) " Read it" } }
                 }
             }
-            p { a.btn href="/" { (icon("left")) " Back" } }
-        })
+        }
+        p { a.btn href="/" { (icon("left")) " Back" } }
     })
+}
+
+fn refused(e: &anyhow::Error) -> Markup {
+    html! { div.flash.flash-error { (icon("error")) div { strong { "Not done" } pre { (e) } } } }
 }
 
 async fn upload(Books(ctx): Books, mut mp: Multipart) -> Response {
@@ -771,59 +822,87 @@ async fn upload(Books(ctx): Books, mut mp: Multipart) -> Response {
         _ => None,
     };
     let Some(bytes) = bytes else {
-        return or_error(&ctx, "Book a bill", || bail!("no document in the upload"));
+        let e = anyhow::anyhow!("no document in the upload");
+        return or_error(&ctx, "Book a bill", || upload_page(Some(refused(&e))));
     };
     match bill::propose(&ctx, bytes.to_vec()).await {
+        Ok(p) if p.resumed => Redirect::to(&format!("/bill/{}?resumed=1", p.sha256)).into_response(),
         Ok(p) => Redirect::to(&format!("/bill/{}", p.sha256)).into_response(),
-        Err(e) => or_error(&ctx, "Book a bill", || Err(e)),
+        Err(e) => or_error(&ctx, "Book a bill", || upload_page(Some(refused(&e)))),
     }
 }
 
-async fn card(Books(ctx): Books, Path(sha): Path<String>) -> Response {
-    or_error(&ctx, "Proposal", || {
-        let p = bill::review(&ctx, &sha)?;
-        let ready = p.problem.is_none() && p.proposal.questions.is_empty();
-        Ok(html! {
-            h1 { (p.proposal.vendor) }
-            p.muted.small {
-                "Confidence: " (p.proposal.confidence) " · "
-                a href={"/bill/" (sha) "/document"} { (icon("doc")) " the document" }
-            }
-            @if let Some(problem) = &p.problem {
-                div.flash.flash-error { (icon("error")) div { strong { "The validator rejects this" } (problem) } }
-            }
-            @if !p.proposal.questions.is_empty() {
-                div.flash.flash-warn {
-                    (icon("alert"))
-                    div {
-                        strong { "The model is asking" }
-                        ul { @for q in &p.proposal.questions { li { (q) } } }
-                    }
+async fn card(Books(ctx): Books, Path(sha): Path<String>, Query(q): Query<Fields>) -> Response {
+    let notice = q.contains_key("resumed").then(|| html! {
+        div.flash.flash-info { (icon("info")) div {
+            strong { "Picked up where you left off" }
+            "This is the proposal from before, with your corrections. Nothing new was asked of the model."
+        } }
+    });
+    or_error(&ctx, "Proposal", || card_page(&ctx, &sha, notice))
+}
+
+/// A bill's proposal. A refused approval or correction comes back here, with
+/// the reason on top, rather than on a page of its own.
+fn card_page(ctx: &Ctx, sha: &str, notice: Option<Markup>) -> Result<Markup> {
+    let p = bill::review(ctx, sha)?;
+    let ready = p.problem.is_none() && p.proposal.questions.is_empty();
+    // said beside the button, not only at the top of the page
+    let blocked = if !p.proposal.questions.is_empty() {
+        Some("Answer the model's question first: send it a correction.")
+    } else if p.problem.is_some() {
+        Some("Fix what the validator rejects first: send a correction.")
+    } else {
+        None
+    };
+    Ok(html! {
+        h1 { (p.proposal.vendor) }
+        p.muted.small {
+            "Confidence: " (p.proposal.confidence) " · "
+            a href={"/bill/" (sha) "/document"} { (icon("doc")) " the document" }
+        }
+        @if let Some(n) = notice { (n) }
+        @if let Some(problem) = &p.problem {
+            div.flash.flash-error { (icon("error")) div { strong { "The validator rejects this" } (problem) } }
+        }
+        @if !p.proposal.questions.is_empty() {
+            div.flash.flash-warn {
+                (icon("alert"))
+                div {
+                    strong { "The model is asking" }
+                    ul { @for q in &p.proposal.questions { li { (q) } } }
                 }
             }
+        }
+        div.box {
+            div.box-header { (icon("book")) "The entry it proposes" }
+            div.box-body { pre { (p.entry) } }
+        }
+        @if !p.corrections.is_empty() {
             div.box {
-                div.box-header { (icon("book")) "The entry it proposes" }
-                div.box-body { pre { (p.entry) } }
+                div.box-header { (icon("pencil")) "What you have told it" }
+                div.box-body { ol.said { @for c in &p.corrections { li { (c) } } } }
             }
-            form method="post" action={"/bill/" (sha) "/refine"} {
-                div.box {
-                    div.box-body {
-                        label.field { "Correct it in your own words"
-                            span.hint { "This goes back to the model with the document and it proposes again." }
-                            textarea name="correction" rows="3" required
-                                     placeholder="That is hosting, not general expenses." {}
-                        }
-                        div.actions { button type="submit" { (icon("pencil")) " Send the correction" } }
+        }
+        form method="post" action={"/bill/" (sha) "/refine"} {
+            div.box {
+                div.box-body {
+                    label.field { "Correct it in your own words"
+                        span.hint { "This goes back to the model with the document and it proposes again." }
+                        textarea name="correction" rows="3" required
+                                 placeholder="That is hosting, not general expenses." {}
                     }
+                    div.actions { button type="submit" { (icon("pencil")) " Send the correction" } }
                 }
             }
-            div.actions {
-                form method="post" action={"/bill/" (sha) "/approve"} {
-                    button.btn-primary type="submit" disabled[!ready] { (icon("check")) " Approve and commit" }
-                }
-                a.btn href="/" { (icon("left")) " Back" }
+        }
+        div.actions {
+            form method="post" action={"/bill/" (sha) "/approve"} {
+                button.btn-primary type="submit" disabled[!ready] { (icon("check")) " Approve and commit" }
             }
-        })
+            a.btn href="/" { (icon("left")) " Back" }
+            @if let Some(why) = blocked { span.muted.small { (why) } }
+        }
     })
 }
 
@@ -850,7 +929,7 @@ async fn refine(
 ) -> Response {
     match bill::refine(&ctx, &sha, &f.correction).await {
         Ok(_) => Redirect::to(&format!("/bill/{sha}")).into_response(),
-        Err(e) => or_error(&ctx, "Proposal", || Err(e)),
+        Err(e) => or_error(&ctx, "Proposal", || card_page(&ctx, &sha, Some(refused(&e)))),
     }
 }
 
@@ -860,7 +939,7 @@ async fn approve(Books(ctx): Books, Path(sha): Path<String>) -> Response {
             info!(commit = %r.commit, "approved");
             Redirect::to(&format!("/?booked={}", r.commit)).into_response()
         }
-        Err(e) => or_error(&ctx, "Proposal", || Err(e)),
+        Err(e) => or_error(&ctx, "Proposal", || card_page(&ctx, &sha, Some(refused(&e)))),
     }
 }
 
@@ -961,13 +1040,17 @@ fn or_error(ctx: &Ctx, title: &str, body: impl FnOnce() -> Result<Markup>) -> Re
         Ok(m) => page(ctx, title, m).into_response(),
         Err(e) => {
             error!(%e, "request failed");
+            let back = BACK.try_with(Clone::clone).ok().flatten();
             page(
                 ctx,
-                "Error",
+                "Not done",
                 html! {
-                    h1 { "Something went wrong" }
+                    h1 { "That did not go through" }
                     div.flash.flash-error { (icon("error")) pre { (e) } }
-                    p { a.btn href="/" { (icon("left")) " Back to the books" } }
+                    div.actions {
+                        @if let Some(b) = back { a.btn href=(b) { (icon("left")) " Back" } }
+                        a.btn href="/" { (icon("book")) " Books" }
+                    }
                 },
             )
             .into_response()
@@ -1199,6 +1282,8 @@ table.log details[open] summary { white-space: normal; }
 table.log h2 { font-size: 12px; margin: 12px 0 4px; color: var(--sub); }
 table.log pre { max-height: 360px; }
 .failed { color: var(--error); font-weight: 600; }
+ol.said { margin: 0; padding-left: 20px; }
+code.reverted { text-decoration: line-through; }
 
 ul.accounts { columns: 2; list-style: none; padding: 0; margin: 0; font-size: 12px; }
 ul.accounts li { padding: 2px 0; }

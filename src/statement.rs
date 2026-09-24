@@ -47,11 +47,17 @@ pub struct Statement {
 /// in strings, so nothing is ever added as text or as a float.
 pub type Bag = BTreeMap<String, Decimal>;
 
+/// The non-zero amounts; if all are zero, the zeros, so a settled account
+/// reads `0.00 EUR`; a bare `0` only for an empty bag.
 pub fn amounts(bag: &Bag) -> Vec<Amount> {
+    let all_zero = bag.values().all(|v| v.is_zero());
     let out: Vec<Amount> = bag
         .iter()
-        .filter(|(_, v)| !v.is_zero())
-        .map(|(c, v)| Amount { quantity: v.to_string(), commodity: c.clone() })
+        .filter(|(_, v)| all_zero || !v.is_zero())
+        .map(|(c, v)| {
+            let v = if v.is_zero() { v.abs() } else { *v }; // never "-0.00"
+            Amount { quantity: v.to_string(), commodity: c.clone() }
+        })
         .collect();
     if out.is_empty() {
         vec![Amount { quantity: "0".into(), commodity: String::new() }]
@@ -307,12 +313,23 @@ pub fn pdf(ctx: &Ctx, s: &Statement, out: &std::path::Path) -> Result<()> {
     ctx.logged("pdf", &what, serde_json::json!({ "out": out.display().to_string() }), render(ctx, s, out))
 }
 
+/// The books' own `templates/report.typ` if they have one; otherwise abo's,
+/// written into `.abo/` fresh each time. A PDF is asked for with a GET — a
+/// download link, a browser prefetching it — so making one must never write
+/// to the books. To change the layout, copy `.abo/report.typ` into
+/// `templates/` and commit it; from then on that one is used.
 fn render(ctx: &Ctx, s: &Statement, out: &std::path::Path) -> Result<()> {
-    if compile(ctx, TEMPLATE_REL, TEMPLATE, DATA_REL, s, out)? {
-        ctx.commit(&[&ctx.root.join(TEMPLATE_REL)], "Seed the report template")?;
+    let own = ctx.root.join(TEMPLATE_REL).is_file();
+    if !own {
+        let builtin = ctx.root.join(BUILTIN_REL);
+        std::fs::create_dir_all(builtin.parent().unwrap())?;
+        std::fs::write(&builtin, TEMPLATE)?;
     }
-    Ok(())
+    let template = if own { TEMPLATE_REL } else { BUILTIN_REL };
+    compile(ctx, template, TEMPLATE, DATA_REL, s, out).map(|_| ())
 }
+
+const BUILTIN_REL: &str = ".abo/report.typ";
 
 /// Write `data` where the template reads it and compile the template to `out`,
 /// seeding the template into the books first if it is not there yet. Returns

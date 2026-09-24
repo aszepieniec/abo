@@ -318,9 +318,13 @@ Two things are decided here rather than by hledger:
   assets less liabilities and equity — is nil. Without it the difference looks
   like a bug rather than the year's profit.
 
-PDFs follow M3 exactly: abo writes `.abo/report.json`, `templates/report.typ`
-lays it out, and the template does no arithmetic. It is seeded into the books on
-first use and committed, so it belongs to the company.
+PDFs follow M3: abo writes `.abo/report.json`, a typst template lays it out,
+and the template does no arithmetic. Unlike the invoice's, the report template
+is not seeded into the books: a PDF is asked for with a GET — a download link,
+which a browser may prefetch — and a GET must never write to the books. So
+abo uses `templates/report.typ` if the company has put one there, and
+otherwise its own, written fresh into `.abo/report.typ` each time. To change
+the layout, copy that file into `templates/` and commit it.
 
 ```
 ponytail: rendered statements are handed to you, not committed. A filed return

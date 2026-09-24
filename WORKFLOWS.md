@@ -74,7 +74,9 @@ general expenses") and send it; the model proposes again. Approval is blocked
 while the model is asking a question or the validator objects, and the reason
 is shown.
 **Done when** the new proposal reflects the correction, and nothing was
-committed before approval. A correction with no words in it is refused without
+committed before approval. While approval is blocked, the reason is given
+beside the button; a refused approval or correction comes back on the bill's
+own page. A correction with no words in it is refused without
 asking the model.
 
 ### B4. Come back to a bill later — Supported (browser, CLI)
@@ -82,7 +84,8 @@ A proposal not yet approved waits. The front page lists it under
 **waiting for you** and Bills shows a count; uploading the same document again,
 or re-running `abo bill` on it, resumes the same conversation.
 **Done when** the resumed proposal is the one left, with its corrections, and no
-second request was paid for.
+second request was paid for. The page says it was picked up from before, and
+lists what you have told the model so far.
 
 ### B5. The same bill twice — Supported
 Uploading a document already booked is refused before any request to the model.
@@ -91,7 +94,8 @@ Uploading a document already booked is refused before any request to the model.
 ### B6. Record a payment or a receipt — Supported (as B1)
 Paying a bill, a customer paying an invoice, moving cash: an ordinary entry
 (B1) between the bank or cash account and payables or receivables.
-**Done when** the payable or receivable it settles goes to zero.
+**Done when** the payable or receivable it settles goes to zero, and shows
+as `0.00` on the front page.
 
 ---
 
@@ -111,8 +115,10 @@ the number unused.
 
 ### C2. Find an issued invoice again — Partial
 `/invoice/<number>` serves its PDF, and the browser opens it right after
-issuing; a number with no PDF is a plain "not found". **Gap:** nothing in the interface lists issued invoices; today they
-are found through recent entries, or in `invoices/<year>/`.
+issuing; a number with no PDF is a plain "not found". An invoice among the
+recent entries on the front page links to its PDF.
+**Gap:** nothing lists all issued invoices; older ones are found in
+`invoices/<year>/`.
 
 ### C3. Invoice in another commodity — Supported
 The commodity field (`--currency`) and `[invoice] decimals` (`--decimals`).
@@ -146,7 +152,8 @@ Any asset account and any commodity.
 **Statements**, Profit and loss, a period (`2026`, `2026q1`, `last month`).
 CLI: `abo pl --period …`, with `--json` or `--pdf`.
 **Done when** income and expenses are listed with totals and the profit for
-the period, matching `hledger balance` over the same period.
+the period, matching `hledger balance` over the same period. Downloading a PDF
+changes nothing in the books.
 
 ### E2. Balance sheet at a date — Supported
 **Done when** assets, liabilities and equity are listed, unclosed profit shows
@@ -171,7 +178,8 @@ leaving the amount out.
 
 ### F1. See what was done — Supported (browser)
 **Log**: every operation asked for, newest first, including refusals. Each
-opens to its input and, for a commit, the diff it made.
+opens to its input and, for a commit, the diff it made. A commit undone since
+with `git revert` is struck through and says so.
 **Done when** the last action appears with the right input and outcome.
 
 ### F2. Undo a booking made by mistake — Missing
@@ -244,22 +252,13 @@ DESIGN §5). No API key on that machine; typst for the last of the four.
 | G1 | Partial, as documented |
 | F2–F5 | Missing, as documented |
 
-Seen and not yet acted on:
-
-- A refused action lands on a page headed "Something went wrong" whose only
-  way on is the front page, not back to the bill or the form.
-- Nothing beside a disabled **Approve** says why it is disabled; the reason is
-  at the top of the page.
-- A bill's past corrections are not shown, and nothing says a proposal was
-  resumed rather than requested afresh.
-- An account whose balance reaches zero disappears from the balances rather
-  than showing 0.00.
-- The typst warning is printed by every CLI command, including ones that make
-  no PDF.
-- A commit undone with `git revert` still shows as a success in the Log (F2).
-- The first statement PDF commits the report template from a GET request, so a
-  prefetch of the download link would write to the books.
-- Recent entries do not link an invoice to its PDF.
+Seen in that run and fixed since: a refusal now stays on its own page (the
+bill, the upload form) or offers **Back** to the page it came from; a disabled
+**Approve** says why beside it; a bill shows its corrections and says when it
+was resumed; a settled account shows 0.00 instead of vanishing; the typst
+warning comes only from commands that make a PDF; the Log marks a reverted
+commit; a statement PDF no longer commits anything; and recent entries link an
+invoice to its PDF.
 
 On the invoice as a document, for whoever owns the template and the rules:
 
