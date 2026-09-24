@@ -212,8 +212,25 @@ fn preflight() -> Result<Vec<&'static Dep>> {
 // once; the handlers are synchronous between awaits. Per-repo locks if it ever
 // has to serve more than one person.
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
+async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
+    let json = cli.json;
+    match run(cli).await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            // Under --json a refusal is part of the API too, so it is JSON on
+            // stdout like everything else; otherwise anyhow's usual report.
+            if json {
+                println!("{}", serde_json::json!({ "error": format!("{e:#}") }));
+            } else {
+                eprintln!("Error: {e:?}");
+            }
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run(cli: Cli) -> Result<()> {
     let missing = preflight()?;
     // The long-running commands report it through the log, beside the line
     // saying where the server is, because that is where someone starting a
@@ -230,6 +247,10 @@ async fn main() -> Result<()> {
 
     match cli.cmd {
         Cmd::Init => {
+            // Before the questions, not after them.
+            if here.join("abo.toml").exists() {
+                bail!("{} is already a books repository", here.display());
+            }
             let (company, vat, sales_rate) = ask()?;
             let r = repo::init(&here, &company, &vat, sales_rate)?;
             emit(cli.json, &r, || {

@@ -70,6 +70,23 @@ fn m0() {
     assert!(lines[0]["ok"]["commit"].is_string(), "{log}");
     assert!(lines[1]["error"].as_str().unwrap().contains("already booked"), "{log}");
 
+    // a commit that fails leaves the journal as it was, so the next commit
+    // cannot sweep up an entry nobody saw booked
+    let journal = std::fs::read_to_string(dir.join("journal/2026.journal")).unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_abo"))
+        .args(["add", "--date", "2026-09-23", "--desc", "Uncommitted",
+               "expenses:general=5.00", "liabilities:payable=-5.00"])
+        .current_dir(&dir)
+        .env("GIT_AUTHOR_NAME", "abo test").env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+        .env("GIT_COMMITTER_NAME", "").env("GIT_COMMITTER_EMAIL", "")
+        .output()
+        .unwrap();
+    assert!(!o.status.success(), "commit with an empty identity succeeded");
+    assert_eq!(std::fs::read_to_string(dir.join("journal/2026.journal")).unwrap(), journal);
+    assert_eq!(commits(&dir), 2);
+    let status = Command::new("git").args(["status", "--porcelain"]).current_dir(&dir).output().unwrap();
+    assert!(!String::from_utf8_lossy(&status.stdout).contains("journal"), "journal left staged or modified");
+
     // unbalanced: rejected
     let o = abo(
         &dir,
@@ -244,7 +261,8 @@ fn reconciliation() {
     assert_eq!(r["outstanding"].as_array().unwrap().len(), 1);
 
     // a stale key marks nothing rather than marking the wrong thing
-    let stale = first_two[0].rsplit_once(':').unwrap().0.to_string() + ":2026-12-31";
+    let k: Vec<&str> = first_two[0].splitn(4, ':').collect();
+    let stale = format!("{}:{}:2026-12-31:{}", k[0], k[1], k[3]);
     let o = abo(&dir, &["clear", &stale], "");
     assert!(err(&o).contains("stale"), "stale key not caught: {}", err(&o));
 
@@ -290,6 +308,23 @@ fn reconciliation() {
 
     let o = abo(&dir, &["bal", "assets:bank"], "");
     assert!(o.status.success(), "assertion broke the books: {}", err(&o));
+
+    // a transfer ticked off against the cash box is still outstanding against
+    // the bank, whose statement has not shown it yet
+    let o = abo(&dir, &["add", "--date", "2026-04-02", "--desc", "Petty cash",
+                        "assets:cash=100.00", "assets:bank=-100.00"], "");
+    assert!(o.status.success(), "{}", err(&o));
+    let outstanding = |account: &str| -> Vec<String> {
+        let o = abo(&dir, &["reconcile", "--account", account, "--date", "2026-04-30", "--json"], "");
+        let r: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        r["outstanding"].as_array().unwrap().iter().map(|i| i["key"].as_str().unwrap().to_string()).collect()
+    };
+    let cash = outstanding("assets:cash");
+    assert_eq!(cash.len(), 1);
+    let o = abo(&dir, &["clear", &cash[0]], "");
+    assert!(o.status.success(), "{}", err(&o));
+    assert!(outstanding("assets:cash").is_empty());
+    assert_eq!(outstanding("assets:bank").len(), 1, "clearing cash cleared the bank side too");
 
     std::fs::remove_dir_all(&dir).unwrap();
 }

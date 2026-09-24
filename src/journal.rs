@@ -34,6 +34,15 @@ impl Posting {
         if account.is_empty() {
             bail!("empty account in posting {s:?}");
         }
+        // `expenses:general 12.00` is an amount with its `=` forgotten, not an
+        // account with a space in its name.
+        if rest.is_none() {
+            if let Some((a, n)) = account.rsplit_once(char::is_whitespace) {
+                if Decimal::from_str_exact(n.trim()).is_ok() {
+                    bail!("posting {s:?} has no `=`; write it as `{}={}`", a.trim(), n.trim());
+                }
+            }
+        }
         let (amount, commodity) = match rest {
             None | Some("") => (None, default_commodity.to_string()),
             Some(r) => {
@@ -67,7 +76,8 @@ impl Entry {
         }
         for p in &self.postings {
             match p.amount {
-                Some(a) => s.push_str(&format!("    {:<32}{} {}", p.account, a, p.commodity)),
+                // at least two spaces: hledger ends an account name there
+                Some(a) => s.push_str(&format!("    {:<30}  {} {}", p.account, a, p.commodity)),
                 None => s.push_str(&format!("    {}", p.account)),
             }
             if let Some(x) = p.assertion {
@@ -247,11 +257,28 @@ pub fn add(ctx: &Ctx, e: &Entry) -> Result<AddReport> {
         bail!("hledger rejected the entry:\n{}", String::from_utf8_lossy(&check.stderr).trim());
     }
 
-    stage(&ctx.journal_dir(), &name, &e.date, &e.render())?;
-    let commit = ctx.commit(
-        &[&target, &ctx.main_journal()],
-        &format!("{} {}", e.date, e.description),
-    )?;
+    // An entry is in the journal only if it is in a commit. If the commit
+    // fails — no git identity, a full disk — the files go back exactly as they
+    // were; otherwise the next commit would sweep up an entry nobody saw
+    // booked, and for an invoice, one whose PDF has already been removed.
+    let main = ctx.main_journal();
+    let before = [(&target, std::fs::read_to_string(&target).ok()), (&main, std::fs::read_to_string(&main).ok())];
+    let committed = stage(&ctx.journal_dir(), &name, &e.date, &e.render())
+        .and_then(|()| ctx.commit(&[&target, &main], &format!("{} {}", e.date, e.description)));
+    let commit = match committed {
+        Ok(c) => c,
+        Err(err) => {
+            for (path, text) in &before {
+                let _ = match text {
+                    Some(t) => std::fs::write(path, t),
+                    None => std::fs::remove_file(path),
+                };
+                let rel = path.strip_prefix(&ctx.root).unwrap_or(path);
+                let _ = ctx.git(&["reset", "-q", "--", &rel.to_string_lossy()]);
+            }
+            return Err(err);
+        }
+    };
 
     tracing::info!(%commit, date = %e.date, description = %e.description, "booked");
 

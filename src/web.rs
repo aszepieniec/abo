@@ -9,7 +9,7 @@ use crate::reconcile;
 use crate::statement::{self, money};
 use crate::repo::{Ctx, Vat};
 use anyhow::{bail, Context as _, Result};
-use axum::extract::{DefaultBodyLimit, Form, Multipart, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Form, Multipart, Path, Query};
 use axum::http::header::{HOST, ORIGIN};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -18,9 +18,27 @@ use axum::Router;
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 use serde::Deserialize;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{error, info, warn};
+
+/// The books, opened afresh for every request, so an edit to abo.toml —
+/// closing a period, a new rate — applies at once rather than after a restart.
+struct Books(Ctx);
+
+impl axum::extract::FromRequestParts<Arc<PathBuf>> for Books {
+    type Rejection = Response;
+
+    async fn from_request_parts(
+        _: &mut axum::http::request::Parts,
+        root: &Arc<PathBuf>,
+    ) -> Result<Self, Response> {
+        Ctx::open(root)
+            .map(Books)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response())
+    }
+}
 
 pub async fn serve(ctx: Ctx, port: u16) -> Result<()> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -44,7 +62,7 @@ pub async fn serve(ctx: Ctx, port: u16) -> Result<()> {
         .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
         .layer(axum::middleware::from_fn(csrf))
         .layer(axum::middleware::from_fn(log))
-        .with_state(Arc::new(ctx));
+        .with_state(Arc::new(ctx.root.clone()));
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     info!(%company, books = %root.display(), "http://{addr}");
@@ -100,7 +118,7 @@ async fn csrf(req: axum::extract::Request, next: axum::middleware::Next) -> Resp
     next.run(req).await
 }
 
-async fn index(State(ctx): State<Arc<Ctx>>, Query(q): Query<Fields>) -> Response {
+async fn index(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
     or_error(&ctx, "Books", || {
         let accounts = statement::balances(&ctx, "", &[])?;
         let recent = recent_entries(&ctx, 12)?;
@@ -203,6 +221,40 @@ fn booked(ctx: &Ctx, hash: &str) -> Option<(String, String)> {
     Some((hash.to_string(), subject.trim().to_string()))
 }
 
+/// Forms carry a one-time token. Sending again one that already succeeded — a
+/// double click, a refresh, the back button — goes where the first one went
+/// instead of doing it twice. A failed attempt spends nothing, so it can be
+/// retried. The handlers are synchronous and the runtime has one thread, so
+/// the first of two sends has finished before the second is looked at.
+/// ponytail: kept in memory and never trimmed; a restart forgets them, after
+/// which a form opened before it would be accepted once more.
+fn once(token: &str, act: impl FnOnce() -> Result<String>) -> Result<String> {
+    static DONE: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
+        std::sync::Mutex::new(std::collections::BTreeMap::new());
+    if let Some(to) = DONE.lock().unwrap().get(token) {
+        return Ok(to.clone());
+    }
+    let to = act()?;
+    if !token.is_empty() {
+        DONE.lock().unwrap().insert(token.to_string(), to.clone());
+    }
+    Ok(to)
+}
+
+fn token() -> Markup {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+    html! { input type="hidden" name="token" value={ (format!("{t:x}-{n:x}")) }; }
+}
+
+/// A query-string value, percent-encoded.
+fn enc(s: &str) -> String {
+    s.bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-._~:".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect()
+}
+
 fn is_hash(s: &str) -> bool {
     (4..=40).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -212,7 +264,7 @@ fn is_hash(s: &str) -> bool {
 /// made, which is the thing to check.
 /// ponytail: one `git show` per row with a commit, so 50 rows; page it if more
 /// are ever needed.
-async fn activity(State(ctx): State<Arc<Ctx>>) -> Response {
+async fn activity(Books(ctx): Books) -> Response {
     or_error(&ctx, "Log", || {
         let text = std::fs::read_to_string(ctx.log_path()).unwrap_or_default();
         let lines: Vec<serde_json::Value> =
@@ -313,7 +365,7 @@ fn recent_entries(ctx: &Ctx, n: usize) -> Result<Vec<(String, String, String)>> 
     Ok(rows)
 }
 
-async fn add_form(State(ctx): State<Arc<Ctx>>) -> Response {
+async fn add_form(Books(ctx): Books) -> Response {
     or_error(&ctx, "Book an entry", || form(&ctx, "", "", "", None))
 }
 
@@ -322,10 +374,12 @@ struct AddForm {
     date: String,
     description: String,
     postings: String,
+    #[serde(default)]
+    token: String,
 }
 
-async fn add_submit(State(ctx): State<Arc<Ctx>>, Form(f): Form<AddForm>) -> Response {
-    let booked = (|| -> Result<_> {
+async fn add_submit(Books(ctx): Books, Form(f): Form<AddForm>) -> Response {
+    let booked = once(&f.token, || {
         let postings: Vec<Posting> = f
             .postings
             .lines()
@@ -333,14 +387,15 @@ async fn add_submit(State(ctx): State<Arc<Ctx>>, Form(f): Form<AddForm>) -> Resp
             .filter(|l| !l.is_empty())
             .map(|l| Posting::parse(l, &ctx.cfg.company.currency))
             .collect::<Result<_>>()?;
-        journal::book(
+        let r = journal::book(
             &ctx,
             &Entry { date: f.date.clone(), description: f.description.clone(), tags: vec![], postings },
-        )
-    })();
+        )?;
+        Ok(format!("/?booked={}", r.commit))
+    });
 
     match booked {
-        Ok(r) => Redirect::to(&format!("/?booked={}", r.commit)).into_response(),
+        Ok(to) => Redirect::to(&to).into_response(),
         // The form comes back filled in with the reason. Nothing is lost.
         Err(e) => or_error(&ctx, "Book an entry", || {
             form(&ctx, &f.date, &f.description, &f.postings, Some(&e.to_string()))
@@ -357,12 +412,14 @@ struct InvoiceForm {
     note: String,
     vat_rate: String,
     currency: String,
+    #[serde(default)]
+    token: String,
 }
 
 type Fields = std::collections::BTreeMap<String, String>;
 
 /// One page for all three statements, and the same page as a PDF with ?pdf=1.
-async fn report(State(ctx): State<Arc<Ctx>>, Path(kind): Path<String>, Query(q): Query<Fields>) -> Response {
+async fn report(Books(ctx): Books, Path(kind): Path<String>, Query(q): Query<Fields>) -> Response {
     let period = q.get("period").cloned().unwrap_or_default();
     let date = match q.get("date") {
         Some(d) if !d.trim().is_empty() => d.trim().to_string(),
@@ -450,43 +507,52 @@ async fn report(State(ctx): State<Arc<Ctx>>, Path(kind): Path<String>, Query(q):
     })
 }
 
-async fn reconcile_view(State(ctx): State<Arc<Ctx>>, Query(q): Query<Fields>) -> Response {
-    or_error(&ctx, "Reconcile", || reconcile_page(&ctx, &q, None))
+async fn reconcile_view(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
+    let notice = q.get("committed").and_then(|h| booked(&ctx, h)).map(|(hash, subject)| {
+        html! { div.flash.flash-change { (icon("commit")) div { strong { "Committed " (hash) } (subject) } } }
+    });
+    or_error(&ctx, "Reconcile", || reconcile_page(&ctx, &q, notice))
 }
 
 /// One form, two buttons: tick things off, or record the agreed balance.
 async fn reconcile_act(
-    State(ctx): State<Arc<Ctx>>,
+    Books(ctx): Books,
     Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
     let keys: Vec<String> = pairs.iter().filter(|(k, _)| k == "key").map(|(_, v)| v.clone()).collect();
     let f: Fields = pairs.into_iter().filter(|(k, _)| k != "key").collect();
 
-    // (what happened, to what)
-    let done = (|| -> Result<(String, String)> {
+    let done = once(f.get("token").map_or("", String::as_str), || {
         let (account, commodity, date) = params(&ctx, &f);
-        match f.get("action").map(String::as_str) {
+        let commit = match f.get("action").map(String::as_str) {
             Some("record") => {
                 let balance = rust_decimal::Decimal::from_str_exact(f.get("balance").map_or("", |s| s.trim()))
                     .context("a statement balance is needed to record one")?;
                 let r = reconcile::status(&ctx, &account, &commodity, &date, Some(balance))?;
                 let a = reconcile::record(&ctx, &r, balance)?;
                 info!(commit = %a.commit, %account, %date, "reconciled");
-                Ok((format!("Committed {}", a.commit), format!("{balance} {commodity} recorded as at {date}.")))
+                a.commit
             }
             _ => {
                 let c = reconcile::clear(&ctx, &keys)?;
                 info!(commit = %c.commit, marked = c.marked.len(), "cleared");
-                Ok((format!("Committed {}", c.commit), format!("{} marked cleared.", c.marked.len())))
+                c.commit
             }
-        }
-    })();
+        };
+        let balance = f.get("balance").map_or("", |s| s.trim());
+        Ok(format!(
+            "/reconcile?account={}&commodity={}&date={}&balance={}&committed={commit}",
+            enc(&account), enc(&commodity), enc(&date), enc(balance)
+        ))
+    });
 
-    let notice = match &done {
-        Ok((what, detail)) => html! { div.flash.flash-change { (icon("commit")) div { strong { (what) } (detail) } } },
-        Err(e) => html! { div.flash.flash-error { (icon("error")) div { (e) } } },
-    };
-    or_error(&ctx, "Reconcile", || reconcile_page(&ctx, &f, Some(notice)))
+    match done {
+        Ok(to) => Redirect::to(&to).into_response(),
+        Err(e) => {
+            let notice = html! { div.flash.flash-error { (icon("error")) div { (e) } } };
+            or_error(&ctx, "Reconcile", || reconcile_page(&ctx, &f, Some(notice)))
+        }
+    }
 }
 
 fn params(ctx: &Ctx, f: &Fields) -> (String, String, String) {
@@ -511,6 +577,7 @@ fn reconcile_page(ctx: &Ctx, f: &Fields, notice: Option<Markup>) -> Result<Marku
         h1 { "Reconcile" }
         @if let Some(n) = notice { (n) }
         form method="post" action="/reconcile" {
+            (token())
             div.box {
                 div.box-header { (icon("checks")) "Against the statement" }
                 div.box-body {
@@ -520,6 +587,9 @@ fn reconcile_page(ctx: &Ctx, f: &Fields, notice: Option<Markup>) -> Result<Marku
                     label.field { "Closing balance on the statement"
                         input type="text" name="balance" value=(raw);
                     }
+                    // A plain GET: it only looks. First in the form, so Enter
+                    // in a field does this rather than commit anything.
+                    div.actions { button type="submit" formmethod="get" { (icon("chart")) " Show" } }
                 }
                 table.figures {
                     thead { tr { th { "Balance" } th.amt { (commodity) } } }
@@ -573,15 +643,15 @@ fn reconcile_page(ctx: &Ctx, f: &Fields, notice: Option<Markup>) -> Result<Marku
     })
 }
 
-async fn invoice_form(State(ctx): State<Arc<Ctx>>) -> Response {
+async fn invoice_form(Books(ctx): Books) -> Response {
     or_error(&ctx, "Issue an invoice", || invoice_page(&ctx, &InvoiceForm::default(), None))
 }
 
 async fn invoice_submit(
-    State(ctx): State<Arc<Ctx>>,
+    Books(ctx): Books,
     Form(f): Form<InvoiceForm>,
 ) -> Response {
-    let issued = (|| -> Result<_> {
+    let issued = once(&f.token, || {
         let args = invoice::IssueArgs {
             customer: f.to.replace("\r\n", "\n"),
             items: f.items.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect(),
@@ -596,18 +666,17 @@ async fn invoice_submit(
             reference: f.reference.clone(),
             note: f.note.clone(),
         };
-        invoice::issue(&ctx, &args)
-    })();
+        let r = invoice::issue(&ctx, &args)?;
+        info!(number = %r.number, commit = %r.commit, "invoiced");
+        Ok(format!("/invoice/{}", r.number))
+    });
     match issued {
-        Ok(r) => {
-            info!(number = %r.number, commit = %r.commit, "invoiced");
-            Redirect::to(&format!("/invoice/{}", r.number)).into_response()
-        }
+        Ok(to) => Redirect::to(&to).into_response(),
         Err(e) => or_error(&ctx, "Issue an invoice", || invoice_page(&ctx, &f, Some(&e.to_string()))),
     }
 }
 
-async fn invoice_pdf(State(ctx): State<Arc<Ctx>>, Path(number): Path<String>) -> Response {
+async fn invoice_pdf(Books(ctx): Books, Path(number): Path<String>) -> Response {
     let number = number.strip_suffix(".pdf").unwrap_or(&number);
     let well_formed = matches!(number.split_once('-'), Some((y, n))
         if y.len() == 4 && n.len() == 4
@@ -622,6 +691,9 @@ async fn invoice_pdf(State(ctx): State<Arc<Ctx>>, Path(number): Path<String>) ->
             bytes,
         )
             .into_response(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            (StatusCode::NOT_FOUND, format!("no PDF for invoice {number}")).into_response()
+        }
         Err(e) => or_error(&ctx, "Invoice", || Err(e.into())),
     }
 }
@@ -635,6 +707,7 @@ fn invoice_page(ctx: &Ctx, f: &InvoiceForm, error: Option<&str>) -> Result<Marku
             div.flash.flash-error { (icon("error")) div { "Rejected: " (e) } }
         }
         form method="post" action="/invoice" {
+            (token())
             div.box {
                 div.box-header { (icon("outbox")) "Invoice " (next) }
                 div.box-body {
@@ -668,7 +741,7 @@ fn invoice_page(ctx: &Ctx, f: &InvoiceForm, error: Option<&str>) -> Result<Marku
     })
 }
 
-async fn upload_form(State(ctx): State<Arc<Ctx>>) -> Response {
+async fn upload_form(Books(ctx): Books) -> Response {
     or_error(&ctx, "Book a bill", || {
         Ok(html! {
             h1 { "Book a bill" }
@@ -691,7 +764,7 @@ async fn upload_form(State(ctx): State<Arc<Ctx>>) -> Response {
     })
 }
 
-async fn upload(State(ctx): State<Arc<Ctx>>, mut mp: Multipart) -> Response {
+async fn upload(Books(ctx): Books, mut mp: Multipart) -> Response {
     // The filename is deliberately not read: the path comes from the hash (§8).
     let bytes = match mp.next_field().await {
         Ok(Some(f)) => f.bytes().await.ok(),
@@ -706,7 +779,7 @@ async fn upload(State(ctx): State<Arc<Ctx>>, mut mp: Multipart) -> Response {
     }
 }
 
-async fn card(State(ctx): State<Arc<Ctx>>, Path(sha): Path<String>) -> Response {
+async fn card(Books(ctx): Books, Path(sha): Path<String>) -> Response {
     or_error(&ctx, "Proposal", || {
         let p = bill::review(&ctx, &sha)?;
         let ready = p.problem.is_none() && p.proposal.questions.is_empty();
@@ -754,7 +827,7 @@ async fn card(State(ctx): State<Arc<Ctx>>, Path(sha): Path<String>) -> Response 
     })
 }
 
-async fn document(State(ctx): State<Arc<Ctx>>, Path(sha): Path<String>) -> Response {
+async fn document(Books(ctx): Books, Path(sha): Path<String>) -> Response {
     match bill::document(&ctx, &sha) {
         Ok((media_type, bytes)) => (
             [("content-type", media_type), ("x-content-type-options", "nosniff".into())],
@@ -771,7 +844,7 @@ struct Correction {
 }
 
 async fn refine(
-    State(ctx): State<Arc<Ctx>>,
+    Books(ctx): Books,
     Path(sha): Path<String>,
     Form(f): Form<Correction>,
 ) -> Response {
@@ -781,7 +854,7 @@ async fn refine(
     }
 }
 
-async fn approve(State(ctx): State<Arc<Ctx>>, Path(sha): Path<String>) -> Response {
+async fn approve(Books(ctx): Books, Path(sha): Path<String>) -> Response {
     match bill::approve(&ctx, &sha) {
         Ok(r) => {
             info!(commit = %r.commit, "approved");
@@ -800,6 +873,7 @@ fn form(ctx: &Ctx, date: &str, description: &str, postings: &str, error: Option<
             div.flash.flash-error { (icon("error")) div { "Rejected: " (e) } }
         }
         form method="post" action="/add" {
+            (token())
             div.box {
                 div.box-body {
                     label.field { "Date"

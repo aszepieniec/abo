@@ -73,6 +73,10 @@ pub async fn refine(ctx: &Ctx, sha256: &str, correction: &str) -> Result<Pending
 }
 
 async fn refine_thread(ctx: &Ctx, sha256: &str, correction: &str) -> Result<Pending> {
+    // Spaces pass the browser's `required`, and each request costs money.
+    if correction.trim().is_empty() {
+        bail!("a correction needs some words; nothing was sent to the model");
+    }
     let mut thread = load_thread(ctx, sha256)?;
     let previous = thread.proposal.as_ref().context("no proposal to refine yet")?;
     thread.turns.push(Turn { role: "assistant".into(), text: serde_json::to_string(previous)? });

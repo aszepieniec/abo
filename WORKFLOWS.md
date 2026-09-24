@@ -23,9 +23,13 @@ last such run.
 ## A. Setting up
 
 ### A1. Open the books — Supported (CLI)
-`abo init` in an empty directory asks for the company's name, address, country,
-tax number, payment details, currency, VAT method and the rate charged to
-customers.
+`abo init` in an empty directory asks, one per line: the company's name,
+address, country, tax number, payment details, currency and VAT method; then
+what the method needs — for `effective` the input and the output VAT accounts,
+for `flat` the rate remitted and the VAT account, for `none` nothing — and,
+unless the method is `none`, the rate charged to customers. Blank takes the
+default shown in brackets. A directory that already holds books is refused
+before any question is asked.
 **Done when** the directory is a git repository with one commit holding
 `abo.toml`, `journal/main.journal`, `journal/accounts.journal` (the default
 accounts, plus the VAT accounts the method needs) and `.gitignore`.
@@ -39,7 +43,9 @@ with a message saying where to declare it.
 ### A3. Start the web interface — Supported
 `abo serve` for the books in the current directory, `abo demo` for throwaway
 toy books. A missing `git` or `hledger` stops startup with a message naming
-what it is for; a missing `typst` is a warning.
+what it is for; a missing `typst` is a warning. The server reads `abo.toml` and
+the journal afresh on every request, so an edit to either — a closed period, a
+new rate, a declared account — applies without a restart.
 **Done when** the front page shows the company, its balances and recent entries.
 
 ---
@@ -53,7 +59,8 @@ Browser: **Entry**, fill in date, description and one posting per line
 holds it, and the front page says **Booked** with that commit. An entry that
 does not balance, names an undeclared account, posts to a VAT account the
 method forbids, or falls in a closed period is refused with the reason, and the
-form comes back filled in.
+form comes back filled in. Sending the same form twice — a double click, a
+reload — books it once.
 
 ### B2. Book a supplier bill from a document — Supported (browser, CLI)
 Browser: **Book a bill**, choose a PDF or take a photograph, read the proposed
@@ -67,7 +74,8 @@ general expenses") and send it; the model proposes again. Approval is blocked
 while the model is asking a question or the validator objects, and the reason
 is shown.
 **Done when** the new proposal reflects the correction, and nothing was
-committed before approval.
+committed before approval. A correction with no words in it is refused without
+asking the model.
 
 ### B4. Come back to a bill later — Supported (browser, CLI)
 A proposal not yet approved waits. The front page lists it under
@@ -89,7 +97,7 @@ Paying a bill, a customer paying an invoice, moving cash: an ordinary entry
 
 ## C. Invoicing
 
-### C1. Issue an invoice — Supported (browser, CLI); needs typst
+### C1. Issue an invoice — Supported (browser, CLI)
 **Issue an invoice**: customer, one line per item
 (`quantity|unit price|description`), optionally date, VAT rate, commodity,
 their reference and a note. CLI: `abo invoice`.
@@ -97,14 +105,16 @@ their reference and a note. CLI: `abo invoice`.
 its year, its PDF is under `invoices/<year>/`, the receivable, income and (under
 the effective method) output VAT are booked, and the PDF and entry are in one
 commit. VAT follows the configured method: none charged when not registered,
-the gross booked to income under a flat scheme.
+the gross booked to income under a flat scheme. Sending the form twice issues
+one invoice. A failure — typst missing, say — leaves no commit, no files and
+the number unused.
 
 ### C2. Find an issued invoice again — Partial
 `/invoice/<number>` serves its PDF, and the browser opens it right after
-issuing. **Gap:** nothing in the interface lists issued invoices; today they
+issuing; a number with no PDF is a plain "not found". **Gap:** nothing in the interface lists issued invoices; today they
 are found through recent entries, or in `invoices/<year>/`.
 
-### C3. Invoice in another commodity — Supported; needs typst
+### C3. Invoice in another commodity — Supported
 The commodity field (`--currency`) and `[invoice] decimals` (`--decimals`).
 **Done when** the entry and the PDF are in that commodity with its places.
 
@@ -117,9 +127,13 @@ The commodity field (`--currency`) and `[invoice] decimals` (`--decimals`).
 the statement. Tick every outstanding item the statement shows and
 **Mark ticked as cleared**; when the difference is nil, **Record this balance**.
 CLI: `abo reconcile`, `abo clear`, `abo reconcile --record`.
-**Done when** the ticked transactions carry `*` in the journal, each marking is
-a commit, and recording writes a dated entry — with a balance assertion when
-nothing is outstanding, without one otherwise.
+**Show** updates the figures without changing anything.
+**Done when** each ticked item's posting to that account carries `*` in the
+journal — the posting, not the whole transaction, so a transfer ticked off
+against the cash box stays outstanding against the bank — each marking is a
+commit, and recording writes a dated entry, with a balance assertion when
+nothing is outstanding and without one otherwise. After a marking or a
+recording the page is reloaded fresh, so reloading it does not do it again.
 
 ### D2. Reconcile cash or a wallet — Supported (as D1)
 Any asset account and any commodity.
@@ -128,21 +142,25 @@ Any asset account and any commodity.
 
 ## E. Reports
 
-### E1. Profit and loss for a period — Supported (browser, CLI); PDF needs typst
+### E1. Profit and loss for a period — Supported (browser, CLI)
 **Statements**, Profit and loss, a period (`2026`, `2026q1`, `last month`).
 CLI: `abo pl --period …`, with `--json` or `--pdf`.
 **Done when** income and expenses are listed with totals and the profit for
 the period, matching `hledger balance` over the same period.
 
-### E2. Balance sheet at a date — Supported; PDF needs typst
+### E2. Balance sheet at a date — Supported
 **Done when** assets, liabilities and equity are listed, unclosed profit shows
 as an equity line, and the bottom line (assets less liabilities and equity) is
 nil.
 
-### E3. Tax return for a period — Supported once configured; PDF needs typst
+### E3. Tax return for a period — Supported once configured
 Needs `[[report.vat]]` lines in `abo.toml` (DESIGN §6). Without them the page
 says what to write.
-**Done when** each configured box shows its figure for the period.
+**Done when** each configured box shows its figure for the period, in the
+company currency. Amounts in another commodity are valued at the price on the
+day of the posting, from `P` directives in the journal; with no price the
+return is refused, naming the box and the directive to add, rather than
+leaving the amount out.
 
 ### E4. Ask hledger anything — Supported (CLI)
 `abo bal …` and `abo reg …` pass their arguments to hledger.
@@ -203,3 +221,53 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 - **Bank import** (§11) — statement lines matched against booked items.
 - **Payroll** (§11) — gross to net, payslips.
 - **Year-end closing entries** (§12) — until then unclosed profit is a computed equity line.
+
+---
+
+## Last verified: 2026-09-24
+
+Four fresh agents, each with its own copy of the demo books and its own
+server, the bill workflows against a stand-in for the model (`ABO_STAND_IN`,
+DESIGN §5). No API key on that machine; typst for the last of the four.
+
+| Workflow | Result |
+|---|---|
+| A1 | Verified after the fix: the documentation had left out the VAT-account questions |
+| A2, A3, B1–B6, D2, E1, E2, E4, F1 | Verified |
+| D1 | Verified after two fixes: clearing marked the whole transaction, and a resent form recorded twice |
+| E3 | Verified after the fix: income in another commodity was silently left out |
+| F6 | Verified after the fix: a running server ignored a newly closed period |
+| C1, C3 | Verified, with PDFs read back and checked, after two fixes: line amounts were not stated to the commodity's places ("0.0005 BTC", "EUR 0"), and a refused line did not say which line or everything wrong with it. Without typst the failure is clear and leaves nothing behind |
+| C2 | Partial, as documented; an unknown number now answers "not found" instead of an I/O error |
+| Statement PDFs | Verified against the screen and hledger; the template is committed with the first one only |
+| Any commit | Fixed in passing: a commit that failed (no git identity) left its entry in the journal, and the next commit swept it up — two invoices entered the books without PDFs. A failed commit now puts the journal back |
+| G1 | Partial, as documented |
+| F2–F5 | Missing, as documented |
+
+Seen and not yet acted on:
+
+- A refused action lands on a page headed "Something went wrong" whose only
+  way on is the front page, not back to the bill or the form.
+- Nothing beside a disabled **Approve** says why it is disabled; the reason is
+  at the top of the page.
+- A bill's past corrections are not shown, and nothing says a proposal was
+  resumed rather than requested afresh.
+- An account whose balance reaches zero disappears from the balances rather
+  than showing 0.00.
+- The typst warning is printed by every CLI command, including ones that make
+  no PDF.
+- A commit undone with `git revert` still shows as a success in the Log (F2).
+- The first statement PDF commits the report template from a GET request, so a
+  prefetch of the download link would write to the books.
+- Recent entries do not link an invoice to its PDF.
+
+On the invoice as a document, for whoever owns the template and the rules:
+
+- An invoice in BTC still gives the bank details as the way to pay, and states
+  its VAT in BTC only; VAT law usually wants it in the national currency too.
+- A 0% invoice says nothing about why; the reason (export, exemption) has to be
+  typed into the note.
+- There is no field for the customer's tax number, which cross-border B2B
+  invoices usually need.
+- An invoice may be dated before the one numbered ahead of it; many places
+  require numbers to follow dates.

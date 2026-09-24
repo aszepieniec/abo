@@ -375,10 +375,11 @@ sum   = ["2", "-3"]
     let extra = ["expenses:hosting", "expenses:salary", "assets:wallet:btc"];
     let decls: String = extra.iter().map(|a| format!("account {a}\n")).collect();
     let acc = ctx.accounts_journal();
-    // A second commodity, to show that the books are not single-currency.
-    let decls = format!("commodity 0.00000001 BTC\n{decls}");
+    // A second commodity, to show that the books are not single-currency, and
+    // its price on the day it was received, which the tax return values it by.
+    let decls = format!("commodity 0.00000001 BTC\nP 2026-05-10 BTC 60000.00 EUR\n\n{decls}");
     std::fs::write(&acc, std::fs::read_to_string(&acc)? + &decls)?;
-    ctx.commit(&[&acc], "Declare hosting and salary accounts")?;
+    ctx.commit(&[&acc, &dir.join("abo.toml")], "Declare the demo's accounts, BTC price and tax return")?;
 
     let cur = "EUR";
     let p = |a: &str, n: &str| Posting::parse(&format!("{a}={n}"), cur).unwrap();

@@ -17,13 +17,21 @@
   [
     #text(size: 14pt, weight: "bold")[#d.company.name] \
     #multi(d.company.address)
-    #if d.company.tax_id != "" [ \ #d.company.tax_id ]
+    #if d.company.country != "" [ \ #d.company.country ]
+    #if d.company.tax_id != "" [ \ Tax no. #d.company.tax_id ]
   ],
   [
-    #text(size: 14pt, weight: "bold")[Invoice] \
-    #d.number \
-    #d.date
-    #if d.reference != "" [ \ Ref. #d.reference ]
+    #text(size: 14pt, weight: "bold")[Invoice #d.number]
+    #v(0.2cm)
+    #grid(
+      columns: (auto, auto),
+      column-gutter: 1em,
+      row-gutter: 0.45em,
+      align: (left, right),
+      [Date], d.date,
+      [Due], d.due,
+      ..if d.reference != "" { ([Your reference], d.reference) } else { () },
+    )
   ],
 )
 

@@ -56,6 +56,7 @@ struct Data {
 #[derive(Serialize)]
 struct CompanyOut {
     name: String,
+    country: String,
     address: String,
     tax_id: String,
     payment: String,
@@ -104,14 +105,26 @@ fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
 
     let mut items = Vec::new();
     let mut net = Decimal::ZERO;
-    for raw in &args.items {
+    for (n, raw) in args.items.iter().enumerate() {
+        let n = n + 1;
         let mut parts = raw.splitn(3, '|');
         let (q, u, d) = match (parts.next(), parts.next(), parts.next()) {
             (Some(q), Some(u), Some(d)) => (q.trim(), u.trim(), d.trim()),
-            _ => bail!("item {raw:?} is not `quantity|unit price|description`"),
+            _ => bail!("line {n}, {raw:?}, is not `quantity|unit price|description`"),
         };
-        let quantity = Decimal::from_str_exact(q).with_context(|| format!("quantity {q:?}"))?;
-        let unit = Decimal::from_str_exact(u).with_context(|| format!("unit price {u:?}"))?;
+        // Say everything that is wrong with the line, not the first thing.
+        let (quantity, unit) = match (Decimal::from_str_exact(q), Decimal::from_str_exact(u)) {
+            (Ok(q), Ok(u)) => (q, u),
+            (qr, ur) => {
+                let bad: Vec<String> = [(qr.is_err(), "quantity", q), (ur.is_err(), "unit price", u)]
+                    .into_iter()
+                    .filter(|(e, ..)| *e)
+                    .map(|(_, what, v)| format!("the {what} {v:?}"))
+                    .collect();
+                let verb = if bad.len() == 1 { "is not a number" } else { "are not numbers" };
+                bail!("line {n}, {raw:?}: {} {verb}", bad.join(" and "));
+            }
+        };
         let amount = round(quantity * unit, dp);
         net += amount;
         items.push(ItemOut {
@@ -132,6 +145,7 @@ fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
     let data = Data {
         company: CompanyOut {
             name: c.name.clone(),
+            country: c.country.clone(),
             address: c.address.clone(),
             tax_id: c.tax_id.clone(),
             payment: c.payment.clone(),
@@ -235,24 +249,17 @@ fn entry(
 const TEMPLATE_REL: &str = "templates/invoice.typ";
 const DATA_REL: &str = ".abo/invoice.json";
 
+/// The template is committed with the invoice, by `issue`.
 fn render(ctx: &Ctx, data: &Data, rel: &str) -> Result<()> {
-    let template = ctx.root.join(TEMPLATE_REL);
-    if !template.exists() {
-        std::fs::create_dir_all(template.parent().unwrap())?;
-        std::fs::write(&template, TEMPLATE)?;
-    }
-    let json = ctx.root.join(DATA_REL);
-    std::fs::create_dir_all(json.parent().unwrap())?;
-    std::fs::write(&json, serde_json::to_vec_pretty(data)?)?;
-
-    let out = ctx.root.join(rel);
-    std::fs::create_dir_all(out.parent().unwrap())?;
-
-    crate::statement::typst(ctx, &template, &out)
+    crate::statement::compile(ctx, TEMPLATE_REL, TEMPLATE, DATA_REL, data, &ctx.root.join(rel)).map(|_| ())
 }
 
+/// Rounded, and stated to exactly `dp` places: 0.0005 BTC is 0.00050000 on
+/// the invoice, and nothing is "EUR 0".
 fn round(d: Decimal, dp: u32) -> Decimal {
-    d.round_dp_with_strategy(dp, RoundingStrategy::MidpointAwayFromZero)
+    let mut r = d.round_dp_with_strategy(dp, RoundingStrategy::MidpointAwayFromZero);
+    r.rescale(dp);
+    r
 }
 
 const TEMPLATE: &str = include_str!("invoice.typ");

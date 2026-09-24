@@ -190,6 +190,11 @@ request, so one copy of the bytes exists and the thread stays small. Re-running
 `abo bill` on the same file resumes that conversation instead of paying for a
 fresh proposal. Nothing is written until a call succeeds.
 
+`ABO_STAND_IN=<file>` replaces the call: every request returns the proposal in
+that file, so the bill workflow can be exercised with no key and no network,
+and a tester edits the file to play the model's next answer. Everything after
+the call — validation, filing, the commit — is the real code.
+
 Server-side refusal fallbacks (`fallbacks` + its beta header) are deliberately
 not enabled: silently re-running a booking on a different model is not a
 property this app should have. A refusal is an error the human sees.
@@ -249,9 +254,13 @@ the rate is a reporting choice rather than a fact about the transaction.
 ### Reconciliation
 
 Agreeing the books with what a bank, a cash box or a wallet actually holds is
-manual, and it needs no state of its own: hledger already says a transaction is
-unmarked, pending or cleared, so marking one cleared means writing a `*` into
-the journal, which is a commit like any other.
+manual, and it needs no state of its own: hledger already says a posting is
+unmarked, pending or cleared, so marking one cleared means writing a `*` in
+front of its account in the journal, which is a commit like any other. It is
+the posting that is marked, not the transaction: a transfer from the bank to
+the cash box is seen by two statements, often on different days, and ticking
+it off against one must leave it outstanding against the other. A `*` on the
+transaction line, as older books may have, still counts for all its postings.
 
 ```
 abo reconcile --account assets:bank --date 2026-04-30 --balance 24390.00
@@ -266,12 +275,14 @@ reconciliation. The browser shows the same thing with checkboxes.
 
 Two details that are easy to get wrong:
 
-- **A key is `file:line:date`.** Line numbers come from hledger's own
+- **A key is `file:line:date:account`.** Line numbers come from hledger's own
   `tsourcepos`, and entries are written in date order, so a booking made
   between listing and marking shifts the lines below it. Carrying the date
   means a stale key is refused instead of silently marking the wrong
   transaction. Keys also arrive from a browser form, so the file part is
-  checked to be a plain `*.journal` name inside `journal/`.
+  checked to be a plain `*.journal` name inside `journal/`. The account comes
+  last because it has colons of its own, and names which of the transaction's
+  postings to mark.
 - **`--record` asserts only when nothing is outstanding.** hledger's balance
   assertions are computed over every posting regardless of status, so there is
   no way to assert a cleared-only balance. With nothing outstanding the two
@@ -347,7 +358,11 @@ Everything else is configuration, which means changing it is not a rebuild:
   evaluator in `statement.rs` and still not a rate in the code.
 
 `abo vat` with nothing configured is an error that says what to write, rather
-than a plausible wrong answer.
+than a plausible wrong answer. The same rule covers other commodities: a return
+is in the company currency, so each box is `hledger balance --value=then,<cur>`,
+valuing anything else at the price on the day of the posting from the books'
+own `P` directives, and a box that still holds another commodity — no price to
+value it with — is refused, naming the directive to add.
 
 Under `flat`, an invoice still charges the ordinary rate to the customer; the
 flat percentage is what gets remitted, computed on gross turnover when the return
@@ -457,6 +472,16 @@ once; it will not be spotted by reading the CSS.
 runs until SIGINT or SIGTERM, finishing in-flight requests. TLS and any public
 name belong to nginx in front of it; the Origin check works either way because
 nginx forwards the public Host. `abo demo` is the same server over toy data.
+
+Each request opens the books afresh — `abo.toml` and all — so an edit made
+while the server runs, closing a period or changing a rate, applies to the
+next request instead of after a restart. It is a small file read per request.
+
+Forms that change the books carry a one-time token. A second send of one that
+succeeded — a double click, a reload, the back button — is sent where the first
+went rather than done again; a failed attempt spends nothing. Reconciling
+redirects after each commit for the same reason, so reloading its page only
+looks.
 
 Logging is `tracing`, off for the short-lived commands and `abo=info` for these
 two. `RUST_LOG` overrides it.

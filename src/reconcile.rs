@@ -14,10 +14,13 @@ use serde_json::Value;
 
 #[derive(Serialize, Clone)]
 pub struct Item {
-    /// `<journal file>:<line>:<date>`, from hledger's own source positions.
-    /// The date is carried so that a key which has gone stale — entries are
-    /// written in date order, so an intervening booking shifts the lines
-    /// below it — is refused rather than marking the wrong transaction.
+    /// `<journal file>:<line>:<date>:<account>`, from hledger's own source
+    /// positions. The date is carried so that a key which has gone stale —
+    /// entries are written in date order, so an intervening booking shifts
+    /// the lines below it — is refused rather than marking the wrong
+    /// transaction. The account says which of its postings is being ticked
+    /// off: a transfer from the bank to the cash box is seen by two
+    /// statements on two different days.
     pub key: String,
     pub date: String,
     pub description: String,
@@ -64,29 +67,28 @@ pub fn status(
     let mut cleared = Decimal::ZERO;
     let mut outstanding = Vec::new();
     for t in &txns {
-        let marked = t["tstatus"] == "Cleared";
-        let mut total = Decimal::ZERO;
+        // Cleared is per posting. A `*` on the transaction line, as older
+        // books have it, counts for all of its postings.
+        let whole = t["tstatus"] == "Cleared";
+        let (mut seen, mut unseen) = (Decimal::ZERO, Decimal::ZERO);
         for p in t["tpostings"].as_array().into_iter().flatten() {
             if p["paccount"] != account {
                 continue;
             }
+            let ticked = whole || p["pstatus"] == "Cleared";
             for a in p["pamount"].as_array().into_iter().flatten() {
                 if a["acommodity"] == commodity {
-                    total += journal::decimal(&a["aquantity"])?;
+                    *if ticked { &mut seen } else { &mut unseen } += journal::decimal(&a["aquantity"])?;
                 }
             }
         }
-        if total.is_zero() {
-            continue;
-        }
-        if marked {
-            cleared += total;
-        } else {
+        cleared += seen;
+        if !unseen.is_zero() {
             outstanding.push(Item {
-                key: key_of(t)?,
+                key: format!("{}:{account}", key_of(t)?),
                 date: t["tdate"].as_str().unwrap_or_default().to_string(),
                 description: t["tdescription"].as_str().unwrap_or_default().to_string(),
-                amount: total.to_string(),
+                amount: unseen.to_string(),
                 status: t["tstatus"].as_str().unwrap_or("Unmarked").to_string(),
             });
         }
@@ -122,7 +124,9 @@ pub struct ClearReport {
     pub commit: String,
 }
 
-/// Mark transactions cleared by writing `*` into the journal.
+/// Mark postings cleared by writing `*` in front of their account in the
+/// journal — the posting, not the transaction, so a transfer ticked off
+/// against one account stays outstanding against the other.
 pub fn clear(ctx: &Ctx, keys: &[String]) -> Result<ClearReport> {
     ctx.logged("clear", &plural(keys.len()), serde_json::json!({ "keys": keys }), mark(ctx, keys))
 }
@@ -135,10 +139,11 @@ fn mark(ctx: &Ctx, keys: &[String]) -> Result<ClearReport> {
     let mut marked = Vec::new();
 
     for key in keys {
-        let mut parts = key.splitn(3, ':');
-        let (name, line, expected) = match (parts.next(), parts.next(), parts.next()) {
-            (Some(n), Some(l), Some(d)) => (n, l, d),
-            _ => bail!("bad key {key:?}, expected file:line:date"),
+        // The account is last because it has colons of its own.
+        let mut parts = key.splitn(4, ':');
+        let (name, line, expected, account) = match (parts.next(), parts.next(), parts.next(), parts.next()) {
+            (Some(n), Some(l), Some(d), Some(a)) if !a.is_empty() => (n, l, d, a),
+            _ => bail!("bad key {key:?}, expected file:line:date:account; run reconcile again for fresh keys"),
         };
         // Keys reach this function from a browser form, so nothing from them is
         // allowed to shape a path beyond a file name inside journal/.
@@ -156,22 +161,26 @@ fn mark(ctx: &Ctx, keys: &[String]) -> Result<ClearReport> {
                     .map(str::to_owned)
                     .collect()
             });
-        let row = line
-            .checked_sub(1)
-            .and_then(|i| text.get_mut(i)).with_context(|| format!("{key}: no such line"))?;
-
-        let (date, rest) = row.split_once(' ').with_context(|| format!("{key}: not a transaction"))?;
+        let head = line.checked_sub(1).filter(|&i| i < text.len()).with_context(|| format!("{key}: no such line"))?;
+        let date = text[head].split(' ').next().unwrap_or_default();
         if date != expected {
             bail!(
                 "{key} is stale: line {line} is now {date:?}, not {expected:?}. \
                  Run reconcile again for fresh keys."
             );
         }
-        let rest = rest.trim_start();
-        if let Some(stripped) = rest.strip_prefix('*') {
-            *row = format!("{date} *{stripped}");
-        } else {
-            *row = format!("{date} * {}", rest.strip_prefix('!').unwrap_or(rest).trim_start());
+        // The transaction's postings are the indented lines under its date.
+        let mut found = false;
+        for row in text[head + 1..].iter_mut().take_while(|l| l.starts_with([' ', '\t'])) {
+            if let Some(marked) = clear_posting(row, account) {
+                *row = marked;
+                found = true;
+            } else if posting_account(row) == Some(account) {
+                found = true; // already cleared
+            }
+        }
+        if !found {
+            bail!("{key}: that transaction has no posting to {account}");
         }
         marked.push(key.clone());
     }
@@ -197,9 +206,36 @@ fn mark(ctx: &Ctx, keys: &[String]) -> Result<ClearReport> {
     Ok(ClearReport { marked, commit })
 }
 
+/// The account a posting line names, past any status mark; None for a comment.
+fn posting_account(row: &str) -> Option<&str> {
+    let body = row.trim_start();
+    if body.starts_with(';') {
+        return None;
+    }
+    let body = body.strip_prefix(['*', '!']).map_or(body, str::trim_start);
+    // An account ends at two spaces or a tab, where the amount begins.
+    Some(body.split("  ").next()?.split('\t').next()?.trim_end())
+}
+
+/// The line with `*` in front of its account, if it posts to `account` and is
+/// not cleared already.
+fn clear_posting(row: &str, account: &str) -> Option<String> {
+    if posting_account(row) != Some(account) {
+        return None;
+    }
+    let body = row.trim_start();
+    let indent = &row[..row.len() - body.len()];
+    match body.strip_prefix('!') {
+        Some(rest) => Some(format!("{indent}* {}", rest.trim_start())),
+        None if body.starts_with('*') => None,
+        None => Some(format!("{indent}* {body}")),
+    }
+}
+
 fn plural(n: usize) -> String {
     if n == 1 { "1 transaction".into() } else { format!("{n} transactions") }
 }
+
 
 /// Record the agreed balance in the journal.
 ///
@@ -244,4 +280,25 @@ fn assert_balance(ctx: &Ctx, r: &Reconciliation, balance: Decimal) -> Result<Add
 /// True when `record` would write an assertion rather than only a note.
 pub fn asserts(r: &Reconciliation) -> bool {
     r.outstanding.is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marks_the_posting_not_the_transfer() {
+        let bank = "    assets:bank                     -500.00 EUR";
+        let cash = "    assets:cash                     500.00 EUR";
+        assert_eq!(clear_posting(cash, "assets:cash").unwrap(), "    * assets:cash                     500.00 EUR");
+        assert_eq!(clear_posting(bank, "assets:cash"), None);
+        // a pending mark becomes cleared; a cleared one is left alone
+        assert_eq!(clear_posting("    ! assets:cash  1 EUR", "assets:cash").unwrap(), "    * assets:cash  1 EUR");
+        assert_eq!(clear_posting("    * assets:cash  1 EUR", "assets:cash"), None);
+        // a sub-account is a different account, and a comment is not a posting
+        assert_eq!(clear_posting("    assets:cash:box  1 EUR", "assets:cash"), None);
+        assert_eq!(clear_posting("    ; assets:cash  note", "assets:cash"), None);
+        // an elided amount: the account is the whole line
+        assert_eq!(clear_posting("    assets:cash", "assets:cash").unwrap(), "    * assets:cash");
+    }
 }

@@ -76,6 +76,14 @@ impl Document {
 }
 
 pub async fn propose(ctx: &Ctx, doc: &Document, thread: &Thread) -> Result<Proposal> {
+    // A stand-in for the model, so the bill workflow can be tried and tested
+    // without an API key or a network: every request returns the proposal in
+    // this file, which a tester edits to play the model's next answer. The
+    // validator still decides, exactly as it does for the real thing.
+    if let Ok(path) = std::env::var("ABO_STAND_IN") {
+        let text = std::fs::read_to_string(&path).with_context(|| path.clone())?;
+        return serde_json::from_str(&text).with_context(|| format!("{path} is not a proposal"));
+    }
     let key = std::env::var("ANTHROPIC_API_KEY")
         .context("ANTHROPIC_API_KEY is not set")?;
 

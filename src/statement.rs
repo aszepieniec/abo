@@ -221,7 +221,11 @@ pub fn vat_return(ctx: &Ctx, period: &str) -> Result<Statement> {
         );
     }
     let currency = ctx.cfg.company.currency.clone();
-    let extra = period_flags(period);
+    // A return is filed in one currency. Anything else is valued in it at the
+    // price on the day of each posting, from the books' own `P` directives.
+    let value = format!("--value=then,{currency}");
+    let mut extra = period_flags(period);
+    extra.push(&value);
     let hundred = Decimal::ONE_HUNDRED;
 
     let mut values: BTreeMap<String, Decimal> = BTreeMap::new();
@@ -229,8 +233,21 @@ pub fn vat_return(ctx: &Ctx, period: &str) -> Result<Statement> {
     for l in spec {
         let value = if !l.query.is_empty() {
             let mut v = Decimal::ZERO;
-            for (_, bag) in balances(ctx, &l.query, &extra)? {
-                v += bag.get(&currency).copied().unwrap_or_default();
+            for (account, bag) in balances(ctx, &l.query, &extra)? {
+                for (c, x) in &bag {
+                    if c == &currency {
+                        v += x;
+                    } else if !x.is_zero() {
+                        // No price to value it with. Dropping it would file a
+                        // plausible wrong number.
+                        bail!(
+                            "line {} includes {x} {c} in {account}, and the books have no {c} price \
+                             in {currency} to value it with. Add one to journal/accounts.journal, \
+                             e.g. `P 2026-05-10 {c} 60000.00 {currency}`, dated on or before the posting.",
+                            l.code
+                        );
+                    }
+                }
             }
             if l.invert { -v } else { v }
         } else if !l.of.is_empty() {
@@ -257,6 +274,10 @@ pub fn vat_return(ctx: &Ctx, period: &str) -> Result<Statement> {
         } else {
             bail!("line {} has no query, no `of`, and no `sum`", l.code);
         };
+        // every box to the currency's places, and never "-0"
+        let mut value = if value.is_zero() { Decimal::ZERO } else { value }
+            .round_dp_with_strategy(ctx.cfg.invoice.decimals, rust_decimal::RoundingStrategy::MidpointAwayFromZero);
+        value.rescale(ctx.cfg.invoice.decimals);
         values.insert(l.code.clone(), value);
         lines.push(Line {
             code: Some(l.code.clone()),
@@ -287,20 +308,57 @@ pub fn pdf(ctx: &Ctx, s: &Statement, out: &std::path::Path) -> Result<()> {
 }
 
 fn render(ctx: &Ctx, s: &Statement, out: &std::path::Path) -> Result<()> {
-    let template = ctx.root.join(TEMPLATE_REL);
-    if !template.exists() {
-        std::fs::create_dir_all(template.parent().unwrap())?;
-        std::fs::write(&template, TEMPLATE)?;
-        ctx.commit(&[&template], "Seed the report template")?;
+    if compile(ctx, TEMPLATE_REL, TEMPLATE, DATA_REL, s, out)? {
+        ctx.commit(&[&ctx.root.join(TEMPLATE_REL)], "Seed the report template")?;
     }
-    let json = ctx.root.join(DATA_REL);
-    std::fs::create_dir_all(json.parent().unwrap())?;
-    std::fs::write(&json, serde_json::to_vec_pretty(s)?)?;
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    Ok(())
+}
 
-    typst(ctx, &template, out)
+/// Write `data` where the template reads it and compile the template to `out`,
+/// seeding the template into the books first if it is not there yet. Returns
+/// whether it was seeded, for the caller to commit. A failure takes back what
+/// this call created — the seeded template, the folders made for it and for
+/// `out` — so a missing typst leaves the books as they were.
+pub fn compile(
+    ctx: &Ctx,
+    template_rel: &str,
+    template_src: &str,
+    data_rel: &str,
+    data: &impl Serialize,
+    out: &std::path::Path,
+) -> Result<bool> {
+    let template = ctx.root.join(template_rel);
+    let seeded = !template.exists();
+    let mut made = vec![];
+    let mut dir = |d: &std::path::Path| -> Result<()> {
+        if !d.exists() {
+            std::fs::create_dir_all(d)?;
+            made.push(d.to_path_buf());
+        }
+        Ok(())
+    };
+    dir(template.parent().unwrap())?;
+    if let Some(parent) = out.parent() {
+        dir(parent)?;
+    }
+    let result = (|| {
+        if seeded {
+            std::fs::write(&template, template_src)?;
+        }
+        let json = ctx.root.join(data_rel);
+        std::fs::create_dir_all(json.parent().unwrap())?;
+        std::fs::write(&json, serde_json::to_vec_pretty(data)?)?;
+        typst(ctx, &template, out)
+    })();
+    if result.is_err() {
+        if seeded {
+            let _ = std::fs::remove_file(&template);
+        }
+        for d in made.iter().rev() {
+            let _ = std::fs::remove_dir(d); // only if empty
+        }
+    }
+    result.map(|()| seeded)
 }
 
 /// Compile a template to PDF. The one place abo runs typst.
