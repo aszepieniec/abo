@@ -238,6 +238,25 @@ fn thread_path(ctx: &Ctx, sha256: &str) -> PathBuf {
     thread_dir(ctx).join(format!("{sha256}.json"))
 }
 
+pub fn is_pending(ctx: &Ctx, sha256: &str) -> bool {
+    thread_path(ctx, sha256).is_file()
+}
+
+/// Throw a pending bill away: its document and its conversation. Nothing was
+/// ever booked, so there is nothing to commit.
+pub fn discard(ctx: &Ctx, sha256: &str) -> Result<()> {
+    let what = format!("document {}", sha256.get(..8).unwrap_or(sha256));
+    ctx.logged("bill.discard", &what, serde_json::json!({ "sha256": sha256 }), remove_pending(ctx, sha256))
+}
+
+/// `discard`, unlogged, for undo, which logs itself.
+pub fn remove_pending(ctx: &Ctx, sha256: &str) -> Result<()> {
+    let thread = load_thread(ctx, sha256)?;
+    std::fs::remove_file(pending_path(ctx, sha256, &thread.ext))?;
+    std::fs::remove_file(thread_path(ctx, sha256))?;
+    Ok(())
+}
+
 /// Every bill waiting for a decision, newest first.
 pub fn waiting(ctx: &Ctx) -> Result<Vec<String>> {
     let dir = thread_dir(ctx);

@@ -422,3 +422,58 @@ sum   = ["2", "-3"]
 
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// Undo takes an operation back out of the journal with `git revert`; revert
+/// books the opposite entry and leaves the original where it is.
+#[test]
+fn undo_and_revert() {
+    let dir = std::env::temp_dir().join(format!("abo-undo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let o = abo(&dir, &["init"], "Test Ltd\n\n\n\n\nEUR\nnone\n");
+    assert!(o.status.success(), "init failed: {}", err(&o));
+    let journal = || std::fs::read_to_string(dir.join("journal/2026.journal")).unwrap();
+    let log = || -> serde_json::Value {
+        serde_json::from_slice(&abo(&dir, &["log", "--json"], "").stdout).unwrap()
+    };
+
+    for (date, desc, amount) in [("2026-01-10", "Coffee", "5.00"), ("2026-01-11", "Paper", "7.00")] {
+        let o = abo(&dir, &["add", "--date", date, "--desc", desc,
+                            &format!("expenses:general={amount}"), "assets:cash"], "");
+        assert!(o.status.success(), "{}", err(&o));
+    }
+    assert_eq!(log()[0]["undoable"], true);
+
+    // undo the first booking: gone from the journal, kept in git
+    let o = abo(&dir, &["undo", "1"], "");
+    assert!(o.status.success(), "undo failed: {}", err(&o));
+    assert!(!journal().contains("Coffee") && journal().contains("Paper"), "{}", journal());
+    let o = abo(&dir, &["undo", "1"], "");
+    assert!(err(&o).contains("cannot be undone"), "undone twice: {}", err(&o));
+    let l = log();
+    assert_eq!(l[0]["undoable"], false);
+    // the undo is an operation too, and can itself be undone
+    assert_eq!(l[2]["op"], "undo");
+    assert_eq!(l[2]["undoable"], true);
+    let o = abo(&dir, &["undo", "3"], "");
+    assert!(o.status.success(), "undoing the undo failed: {}", err(&o));
+    assert!(journal().contains("Coffee") && journal().contains("Paper"), "{}", journal());
+    let o = abo(&dir, &["bal"], "");
+    assert!(o.status.success(), "books no longer load: {}", err(&o));
+
+    // revert the second: a new entry with the opposite amounts; the original stays
+    let o = abo(&dir, &["reconcile", "--account", "assets:cash", "--date", "2026-12-31", "--json"], "");
+    let r: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let paper = r["outstanding"].as_array().unwrap().iter().find(|i| i["description"] == "Paper").unwrap();
+    let k: Vec<&str> = paper["key"].as_str().unwrap().splitn(4, ':').collect();
+    let key = format!("{}:{}:{}", k[0], k[1], k[2]);
+    let o = abo(&dir, &["revert", &key], "");
+    assert!(o.status.success(), "revert failed: {}", err(&o));
+    let text = journal();
+    assert!(text.contains("Paper") && text.contains("Reversal of 2026-01-11 Paper"), "{text}");
+    assert!(text.contains("; reverses: ") && text.contains("-7.00 EUR"), "{text}");
+    let o = abo(&dir, &["revert", &key], "");
+    assert!(err(&o).contains("already reversed"), "reversed twice: {}", err(&o));
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}

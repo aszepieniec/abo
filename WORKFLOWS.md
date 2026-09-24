@@ -182,23 +182,35 @@ opens to its input and, for a commit, the diff it made. A commit undone since
 with `git revert` is struck through and says so.
 **Done when** the last action appears with the right input and outcome.
 
-### F2. Undo a booking made by mistake — Missing
-DESIGN §1 names `git revert` as the undo, and that works from a terminal today.
-**Open decision:** whether undo in abo is a revert (the entry disappears from
-the journal; git keeps the history) or a reversing entry (the entry stays and a
-mirror entry cancels it, the usual bookkeeping practice), and whether the
-browser offers it from the Log or from recent entries.
+### F2. Undo something just done — Supported (browser, CLI)
+Every operation that succeeds says so in a green notice that fades after a
+couple of seconds (hovering holds it), with **Undo** on it. The **Log** offers
+**Undo** on every line, greyed out where there is nothing to undo: a failure, a
+correction, a PDF, or something already undone. CLI: `abo log`, then
+`abo undo <line>`.
+Undoing a booking, a bill, an invoice, a clearing or a recorded balance takes
+its change back out of the books — the entry, and any document it filed — as a
+new commit, so git keeps both. An undo is itself undoable.
+**Done when** the books are as they were before the operation and the Log
+shows it struck through. Refused, with nothing changed, when something since
+has changed the same lines (a booking cleared since: undo the clearing first,
+or revert the booking), or when it would change a closed period. Undoing an
+invoice frees its number for the next one; undo only one not yet sent.
 
-### F3. Un-tick a transaction cleared by mistake — Missing
-Clearing writes `*`; nothing removes it except editing the journal.
-**Open decision:** an **Unclear** action beside cleared items, or undo (F2)
-covering it.
+### F3. Un-tick a transaction cleared by mistake — Supported (as F2)
+Undo the clearing.
 
-### F4. Throw away a pending bill — Missing
-A document uploaded by mistake, or not a bill at all, stays waiting in
-`.abo/pending` for ever.
-**Open decision:** none really; it needs a **Discard** button and `abo bill
---discard`.
+### F4. Throw away a pending bill — Supported (browser, as F2)
+**Discard** on the bill's page, or undo its upload in the Log.
+
+### F7. Revert a booking — Supported (browser, CLI)
+For a booking that stands and turns out wrong, the bookkeeping way: click it
+among the recent entries to open its page — the entry as it is in the journal,
+its invoice or reversal if any, and the commit that booked it — and
+**Revert**. CLI: `abo revert <file:line:date>`.
+**Done when** a new entry dated today carries the opposite amounts and a
+`reverses:` tag naming the commit that booked the original, which stays where
+it is. A booking already reversed says so and cannot be reversed again.
 
 ### F5. Correct an issued invoice — Missing
 An issued invoice is a document the customer has; it is corrected by a credit

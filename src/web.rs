@@ -7,6 +7,7 @@ use crate::invoice;
 use crate::journal::{self, Entry, Posting};
 use crate::reconcile;
 use crate::statement::{self, money};
+use crate::undo;
 use crate::repo::{Ctx, Vat};
 use anyhow::{bail, Context as _, Result};
 use axum::extract::{DefaultBodyLimit, Form, Multipart, Path, Query};
@@ -57,6 +58,10 @@ pub async fn serve(ctx: Ctx, port: u16) -> Result<()> {
         .route("/bill/{sha}/document", get(document))
         .route("/bill/{sha}/approve", post(approve))
         .route("/bill/{sha}/refine", post(refine))
+        .route("/bill/{sha}/discard", post(discard))
+        .route("/entry/{key}", get(booking))
+        .route("/entry/{key}/revert", post(revert))
+        .route("/undo/{line}", post(undo_line))
         // A scanned bill is much bigger than a form post, and 32 MB is the
         // API's own request limit.
         .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
@@ -93,6 +98,9 @@ tokio::task_local! {
     /// The page this request came from, when it came from one of ours: where
     /// **Back** goes after a refusal.
     static BACK: Option<String>;
+    /// The query string, for `?done=<n>`, which any page answers with the
+    /// success notice for line n of the log.
+    static QUERY: String;
 }
 
 /// The path of a same-site Referer, or None. Anything from another host is
@@ -109,7 +117,8 @@ async fn log(req: axum::extract::Request, next: axum::middleware::Next) -> Respo
     let (method, path) = (req.method().clone(), req.uri().path().to_string());
     let start = Instant::now();
     let back = referer_path(req.headers());
-    let res = PATH.scope(path.clone(), BACK.scope(back, next.run(req))).await;
+    let query = req.uri().query().unwrap_or_default().to_string();
+    let res = PATH.scope(path.clone(), BACK.scope(back, QUERY.scope(query, next.run(req)))).await;
     let (status, ms) = (res.status().as_u16(), start.elapsed().as_millis());
     if status >= 500 {
         error!(%method, %path, status, ms, "request");
@@ -132,18 +141,14 @@ async fn csrf(req: axum::extract::Request, next: axum::middleware::Next) -> Resp
     next.run(req).await
 }
 
-async fn index(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
+async fn index(Books(ctx): Books) -> Response {
     or_error(&ctx, "Books", || {
         // -E: an account that has come back to zero stays listed, at 0.00
         let accounts = statement::balances(&ctx, "", &["-E"])?;
         let recent = recent_entries(&ctx, 12)?;
         let waiting = bill::waiting(&ctx)?;
         let tiles = tiles(&ctx, &accounts);
-        let booked = q.get("booked").and_then(|h| booked(&ctx, h));
         Ok(html! {
-            @if let Some((hash, subject)) = &booked {
-                div.flash.flash-ok { (icon("success")) div { strong { "Booked" } "Committed " (hash) ": " (subject) } }
-            }
             div.head {
                 h1 { "Books" }
                 div.actions {
@@ -213,7 +218,7 @@ async fn index(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
                                 tr {
                                     td.date { (e.date) }
                                     td {
-                                        @if let Some(pdf) = &e.pdf { a href=(pdf) { (e.description) } }
+                                        @if let Some(h) = &e.href { a href=(h) { (e.description) } }
                                         @else { (e.description) }
                                     }
                                     td.amt { (e.debits) }
@@ -227,16 +232,58 @@ async fn index(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
     })
 }
 
-/// `?booked=<hash>` after a booking redirects here. The notice says what git
-/// says that commit is, so a hand-made link cannot put words on the page; and
-/// the hash must be hex before it goes near git, where `--output=…` would be
-/// an option.
-fn booked(ctx: &Ctx, hash: &str) -> Option<(String, String)> {
-    if !is_hash(hash) {
+/// Where to go after an operation succeeds: `to`, with `done=<n>` naming the
+/// log line just written, so the page there shows its success notice. Any
+/// `done` already on `to` is replaced.
+fn done(ctx: &Ctx, to: &str) -> String {
+    let n = undo::lines(ctx).len();
+    let (path, query) = to.split_once('?').unwrap_or((to, ""));
+    let mut q: Vec<&str> = query.split('&').filter(|kv| !kv.is_empty() && !kv.starts_with("done=")).collect();
+    let d = format!("done={n}");
+    q.push(&d);
+    format!("{path}?{}", q.join("&"))
+}
+
+/// The success notice for log line `n`, if it succeeded. Its text comes from
+/// the log, never from the query, so a hand-made link cannot put words on the
+/// page. It fades after a few seconds (CSS, no script), and offers Undo while
+/// it shows; the Log keeps offering it after that.
+fn toast(ctx: &Ctx, n: usize) -> Option<Markup> {
+    let line = undo::lines(ctx).into_iter().nth(n.checked_sub(1)?)?;
+    if !line["error"].is_null() || line.is_null() {
         return None;
     }
-    let subject = ctx.git(&["log", "-1", "--format=%s", hash, "--"]).ok()?;
-    Some((hash.to_string(), subject.trim().to_string()))
+    let title = match line["op"].as_str()? {
+        "entry" => "Booked",
+        "bill.approve" => "Bill booked",
+        "bill.discard" => "Bill thrown away",
+        "invoice" => "Invoice issued",
+        "clear" => "Cleared",
+        "record" => "Balance recorded",
+        "revert" => "Reversed",
+        "undo" => "Undone",
+        _ => return None,
+    };
+    let commit = line["ok"]["commit"].as_str();
+    let invoice = line["ok"]["number"].as_str();
+    let undoable = undo::how(ctx, &line, &undo::reverted(ctx)).is_some();
+    Some(html! {
+        div.flash.flash-ok.toast role="status" {
+            (icon("success"))
+            div {
+                strong { (title) }
+                (line["what"].as_str().unwrap_or_default())
+                @if let Some(c) = commit { span.muted { " · " (c) } }
+                @if let Some(number) = invoice { " · " a href={"/invoice/" (number)} { "the PDF" } }
+            }
+            @if undoable {
+                form.undo method="post" action={"/undo/" (n)} {
+                    (token())
+                    button type="submit" title="Undo" { (icon("undo")) " Undo" }
+                }
+            }
+        }
+    })
 }
 
 /// Forms carry a one-time token. Sending again one that already succeeded — a
@@ -284,18 +331,12 @@ fn is_hash(s: &str) -> bool {
 /// are ever needed.
 async fn activity(Books(ctx): Books) -> Response {
     or_error(&ctx, "Log", || {
-        let text = std::fs::read_to_string(ctx.log_path()).unwrap_or_default();
-        let lines: Vec<serde_json::Value> =
-            text.lines().rev().take(50).filter_map(|l| serde_json::from_str(l).ok()).collect();
+        let all = undo::lines(&ctx);
+        // (line number, line), newest first
+        let lines: Vec<(usize, &serde_json::Value)> =
+            all.iter().enumerate().rev().take(50).map(|(i, l)| (i + 1, l)).filter(|(_, l)| !l.is_null()).collect();
         let pretty = |v: &serde_json::Value| serde_json::to_string_pretty(v).unwrap_or_default();
-        // `git revert` leaves "This reverts commit <hash>." in the new commit's
-        // message; one pass over the history finds every commit undone that way.
-        let messages = ctx.git(&["log", "--grep=This reverts commit", "--format=%B"]).unwrap_or_default();
-        let reverted: Vec<&str> = messages
-            .split("This reverts commit ")
-            .skip(1)
-            .filter_map(|rest| rest.get(..40))
-            .collect();
+        let reverted = undo::reverted(&ctx);
         let was_reverted = |h: &str| reverted.iter().any(|full| full.starts_with(h));
         Ok(html! {
             h1 { "Log" }
@@ -304,9 +345,9 @@ async fn activity(Books(ctx): Books) -> Response {
             } @else {
                 div.box {
                     table.list.log {
-                        thead { tr { th { "When" } th { "Who" } th { "Operation" } th { "What" } th.amt { "Outcome" } } }
+                        thead { tr { th { "When" } th { "Who" } th { "Operation" } th { "What" } th.amt { "Outcome" } th {} } }
                         tbody {
-                            @for l in &lines {
+                            @for (n, l) in &lines {
                                 @let commit = l["ok"]["commit"].as_str().filter(|h| is_hash(h));
                                 @let error = l["error"].as_str();
                                 tr {
@@ -337,6 +378,13 @@ async fn activity(Books(ctx): Books) -> Response {
                                         }
                                         @else if let Some(h) = commit { code { (h) } }
                                         @else { span.muted { "done" } }
+                                    }
+                                    td {
+                                        form method="post" action={"/undo/" (n)} {
+                                            (token())
+                                            button.small type="submit" title="Undo"
+                                                   disabled[undo::how(&ctx, l, &reverted).is_none()] { (icon("undo")) " Undo" }
+                                        }
                                     }
                                 }
                             }
@@ -375,8 +423,8 @@ struct Recent {
     date: String,
     description: String,
     debits: String,
-    /// An invoice's PDF, when there is one.
-    pdf: Option<String>,
+    /// Its booking page.
+    href: Option<String>,
 }
 
 fn recent_entries(ctx: &Ctx, n: usize) -> Result<Vec<Recent>> {
@@ -394,19 +442,89 @@ fn recent_entries(ctx: &Ctx, n: usize) -> Result<Vec<Recent>> {
                 }
             }
         }
-        let pdf = t["ttags"].as_array().into_iter().flatten().find_map(|tag| {
-            let number = tag[1].as_str().filter(|_| tag[0] == "invoice")?;
-            let year = number.get(..4)?;
-            ctx.root.join(format!("invoices/{year}/{number}.pdf")).is_file().then(|| format!("/invoice/{number}"))
-        });
+        let href = reconcile::key_of(t).ok().map(|k| format!("/entry/{k}"));
         rows.push(Recent {
             date: t["tdate"].as_str().unwrap_or_default().to_string(),
             description: t["tdescription"].as_str().unwrap_or_default().to_string(),
             debits: money(&statement::amounts(&bag)),
-            pdf,
+            href,
         });
     }
     Ok(rows)
+}
+
+#[derive(Deserialize)]
+struct Once {
+    #[serde(default)]
+    token: String,
+}
+
+/// Undo line `n` of the log, from its success notice or the Log, and go back
+/// to where that was, which then says so.
+async fn undo_line(Books(ctx): Books, Path(n): Path<usize>, Form(f): Form<Once>) -> Response {
+    let back = BACK.try_with(Clone::clone).ok().flatten().unwrap_or_else(|| "/".into());
+    match once(&f.token, || undo::undo(&ctx, n).map(|_| done(&ctx, &back))) {
+        Ok(to) => Redirect::to(&to).into_response(),
+        Err(e) => or_error(&ctx, "Undo", || Err(e)),
+    }
+}
+
+/// One booking: the entry as it stands in the journal, where it came from,
+/// and Revert.
+async fn booking(Books(ctx): Books, Path(key): Path<String>) -> Response {
+    or_error(&ctx, "Booking", || {
+        let b = journal::booking(&ctx, &key)?;
+        let tag = |k: &str| b.tags.iter().find(|(t, _)| t == k).map(|(_, v)| v.clone());
+        let pdf = tag("invoice").filter(|n| {
+            n.get(..4).is_some_and(|y| ctx.root.join(format!("invoices/{y}/{n}.pdf")).is_file())
+        });
+        let subject = b.commit.as_ref().and_then(|h| ctx.git(&["log", "-1", "--format=%s  (%an, %ad)", "--date=short", h, "--"]).ok());
+        Ok(html! {
+            h1 { (b.description) }
+            p.muted.small {
+                (b.date)
+                @if let Some(n) = &pdf { " · " a href={"/invoice/" (n)} { (icon("doc")) " invoice " (n) } }
+                @if let Some(r) = tag("reverses") { " · reverses the booking of commit " code { (r) } }
+            }
+            @if let Some(by) = &b.reversed_by {
+                div.flash.flash-info { (icon("info")) div { strong { "Reversed" } "by " (by) } }
+            }
+            div.box {
+                div.box-header { (icon("book")) "In the journal" }
+                div.box-body { pre { (b.text) } }
+            }
+            @if let (Some(h), Some(sub)) = (&b.commit, &subject) {
+                p.muted.small { "Booked by commit " code { (h) } ": " (sub.trim()) }
+            }
+            div.actions {
+                form method="post" action={"/entry/" (key) "/revert"} {
+                    (token())
+                    button type="submit" disabled[b.reversed_by.is_some() || b.commit.is_none()] {
+                        (icon("undo")) " Revert"
+                    }
+                }
+                a.btn href="/" { (icon("left")) " Back" }
+                span.muted.small {
+                    @if b.reversed_by.is_some() { "Already reversed." }
+                    @else { "Books the opposite amounts as a new entry, dated today. This one stays." }
+                }
+            }
+        })
+    })
+}
+
+async fn revert(Books(ctx): Books, Path(key): Path<String>, Form(f): Form<Once>) -> Response {
+    match once(&f.token, || journal::reverse(&ctx, &key).map(|_| done(&ctx, "/"))) {
+        Ok(to) => Redirect::to(&to).into_response(),
+        Err(e) => or_error(&ctx, "Booking", || Err(e)),
+    }
+}
+
+async fn discard(Books(ctx): Books, Path(sha): Path<String>, Form(f): Form<Once>) -> Response {
+    match once(&f.token, || bill::discard(&ctx, &sha).map(|()| done(&ctx, "/"))) {
+        Ok(to) => Redirect::to(&to).into_response(),
+        Err(e) => or_error(&ctx, "Proposal", || card_page(&ctx, &sha, Some(refused(&e)))),
+    }
 }
 
 async fn add_form(Books(ctx): Books) -> Response {
@@ -431,11 +549,11 @@ async fn add_submit(Books(ctx): Books, Form(f): Form<AddForm>) -> Response {
             .filter(|l| !l.is_empty())
             .map(|l| Posting::parse(l, &ctx.cfg.company.currency))
             .collect::<Result<_>>()?;
-        let r = journal::book(
+        journal::book(
             &ctx,
             &Entry { date: f.date.clone(), description: f.description.clone(), tags: vec![], postings },
         )?;
-        Ok(format!("/?booked={}", r.commit))
+        Ok(done(&ctx, "/"))
     });
 
     match booked {
@@ -552,10 +670,7 @@ async fn report(Books(ctx): Books, Path(kind): Path<String>, Query(q): Query<Fie
 }
 
 async fn reconcile_view(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
-    let notice = q.get("committed").and_then(|h| booked(&ctx, h)).map(|(hash, subject)| {
-        html! { div.flash.flash-change { (icon("commit")) div { strong { "Committed " (hash) } (subject) } } }
-    });
-    or_error(&ctx, "Reconcile", || reconcile_page(&ctx, &q, notice))
+    or_error(&ctx, "Reconcile", || reconcile_page(&ctx, &q, None))
 }
 
 /// One form, two buttons: tick things off, or record the agreed balance.
@@ -568,26 +683,24 @@ async fn reconcile_act(
 
     let done = once(f.get("token").map_or("", String::as_str), || {
         let (account, commodity, date) = params(&ctx, &f);
-        let commit = match f.get("action").map(String::as_str) {
+        match f.get("action").map(String::as_str) {
             Some("record") => {
                 let balance = rust_decimal::Decimal::from_str_exact(f.get("balance").map_or("", |s| s.trim()))
                     .context("a statement balance is needed to record one")?;
                 let r = reconcile::status(&ctx, &account, &commodity, &date, Some(balance))?;
                 let a = reconcile::record(&ctx, &r, balance)?;
                 info!(commit = %a.commit, %account, %date, "reconciled");
-                a.commit
             }
             _ => {
                 let c = reconcile::clear(&ctx, &keys)?;
                 info!(commit = %c.commit, marked = c.marked.len(), "cleared");
-                c.commit
             }
-        };
+        }
         let balance = f.get("balance").map_or("", |s| s.trim());
-        Ok(format!(
-            "/reconcile?account={}&commodity={}&date={}&balance={}&committed={commit}",
+        Ok(done(&ctx, &format!(
+            "/reconcile?account={}&commodity={}&date={}&balance={}",
             enc(&account), enc(&commodity), enc(&date), enc(balance)
-        ))
+        )))
     });
 
     match done {
@@ -712,7 +825,7 @@ async fn invoice_submit(
         };
         let r = invoice::issue(&ctx, &args)?;
         info!(number = %r.number, commit = %r.commit, "invoiced");
-        Ok(format!("/invoice/{}", r.number))
+        Ok(done(&ctx, "/"))
     });
     match issued {
         Ok(to) => Redirect::to(&to).into_response(),
@@ -900,6 +1013,10 @@ fn card_page(ctx: &Ctx, sha: &str, notice: Option<Markup>) -> Result<Markup> {
             form method="post" action={"/bill/" (sha) "/approve"} {
                 button.btn-primary type="submit" disabled[!ready] { (icon("check")) " Approve and commit" }
             }
+            form method="post" action={"/bill/" (sha) "/discard"} {
+                (token())
+                button type="submit" { (icon("trash")) " Discard" }
+            }
             a.btn href="/" { (icon("left")) " Back" }
             @if let Some(why) = blocked { span.muted.small { (why) } }
         }
@@ -937,7 +1054,7 @@ async fn approve(Books(ctx): Books, Path(sha): Path<String>) -> Response {
     match bill::approve(&ctx, &sha) {
         Ok(r) => {
             info!(commit = %r.commit, "approved");
-            Redirect::to(&format!("/?booked={}", r.commit)).into_response()
+            Redirect::to(&done(&ctx, "/")).into_response()
         }
         Err(e) => or_error(&ctx, "Proposal", || card_page(&ctx, &sha, Some(refused(&e)))),
     }
@@ -1015,6 +1132,8 @@ fn icon(name: &str) -> Markup {
         "commit" => &["M8 10.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z", "M1.5 8h4", "M10.5 8h4"],
         "success" => &["M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12z", "M5.5 8.2 7.3 10 10.5 6.3"],
         "left" => &["M12.5 8h-9", "M7 4 3.5 8 7 12"],
+        "undo" => &["M5.5 3.5 3 6l2.5 2.5", "M3 6h6.5a3.5 3.5 0 0 1 0 7H6"],
+        "trash" => &["M3 4.5h10", "M6.5 4.5v-2h3v2", "M4.5 4.5l.5 9h6l.5-9"],
         "download" => &["M8 2.5v8", "M4.5 7.5 8 11 11.5 7.5", "M2.5 13.5h11"],
         "camera" => &["M2.5 5.5h2l1-1.5h5l1 1.5h2a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-.5.5h-11a.5.5 0 0 1-.5-.5v-7a.5.5 0 0 1 .5-.5z",
                       "M8 11.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"],
@@ -1096,7 +1215,12 @@ fn page(ctx: &Ctx, title: &str, body: Markup) -> Html<String> {
                             }
                         }
                     }
-                    main.content { (body) }
+                    main.content {
+                        @if let Some(t) = QUERY.try_with(|q| {
+                            q.split('&').find_map(|kv| kv.strip_prefix("done=")?.parse::<usize>().ok())
+                        }).ok().flatten().and_then(|n| toast(ctx, n)) { (t) }
+                        (body)
+                    }
                 }
             }
         }
@@ -1282,6 +1406,16 @@ table.log details[open] summary { white-space: normal; }
 table.log h2 { font-size: 12px; margin: 12px 0 4px; color: var(--sub); }
 table.log pre { max-height: 360px; }
 .failed { color: var(--error); font-weight: 600; }
+
+/* a success notice: shown, then gone — no script. Hovering or tabbing into it
+   holds it, so its Undo can be reached; the Log keeps Undo after that. */
+.toast { animation: vanish .4s ease 2s forwards; }
+.toast:hover, .toast:focus-within { animation-play-state: paused; }
+@keyframes vanish {
+  to { opacity: 0; visibility: hidden; max-height: 0; margin: 0; padding-block: 0; border-width: 0; }
+}
+.toast > div { flex: 1; }
+form.undo button, button.small { min-height: 32px; padding: 0 10px; font-size: 13px; }
 ol.said { margin: 0; padding-left: 20px; }
 code.reverted { text-decoration: line-through; }
 

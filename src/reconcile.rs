@@ -106,7 +106,7 @@ pub fn status(
     })
 }
 
-fn key_of(t: &Value) -> Result<String> {
+pub fn key_of(t: &Value) -> Result<String> {
     let pos = &t["tsourcepos"][0];
     let file = pos["sourceName"].as_str().context("no source file")?;
     let line = pos["sourceLine"].as_u64().context("no source line")?;

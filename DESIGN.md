@@ -20,7 +20,7 @@ Status: M0-M4 built — `abo init`, `add`, `bill`, `invoice`, `reconcile`,
 | Decision | Choice | Why |
 |---|---|---|
 | Language | Rust | Stated requirement. |
-| Storage | The git repository itself. No database. | Audit trail, versioning, undo, backup and sync become `git log`, `git revert`, `git push`. Approve = commit. |
+| Storage | The git repository itself. No database. | Audit trail, versioning, undo, backup and sync become `git log`, reverting a commit, `git push`. Approve = commit. |
 | Journal format | hledger | Follows from the reports decision below. |
 | Reports | Minimal Rust parser for writing and validating; **hledger computes everything**. | Multi-commodity, elided amounts, price directives and period expressions are where a hand-rolled money parser goes quietly wrong. hledger is already installed (GPL-3+, shelled out, no licence obligation — see §9). |
 | Invoice PDF | typst template, `typst compile` shelled out | One page, fixed grid. Layout lives in a `.typ` template, not in Rust. Compiler is Apache-2.0, offline, no account. |
@@ -480,6 +480,32 @@ nginx forwards the public Host. `abo demo` is the same server over toy data.
 Each request opens the books afresh — `abo.toml` and all — so an edit made
 while the server runs, closing a period or changing a rate, applies to the
 next request instead of after a restart. It is a small file read per request.
+
+Every operation that succeeds redirects with `?done=<n>`, n being its line in
+the log, and the page frame shows a success notice built from that line — never
+from the query, so a link cannot put words on the page. It fades by CSS alone
+after two seconds, held while pointed at or focused, and carries **Undo**. The
+Log offers Undo on every line.
+
+Undo and revert are two things. **Undo** takes an operation back: a commit's
+change leaves the books as a new commit, and a pending bill is thrown away.
+It is for a mistake just made. **Revert**, on a booking's own page, is the
+bookkeeping correction of one that stands: a new entry with the opposite
+amounts, dated today, tagged `reverses: <commit>`; the original stays.
+
+Undo is not `git revert`. That merges with three lines of context, and since
+entries are written in date order the next booking usually sits right beside
+the one being undone, which it then reads as a conflict. Undo reverses exactly
+the lines the commit changed (`git apply -R --unidiff-zero`), which git
+refuses, changing nothing, if they are no longer as the commit left them — a
+booking cleared since, say. `include` lines in main.journal are left, since
+later entries share them, and a commit that started a year's file is
+presented as lines added to an empty file, so undoing it removes those lines
+rather than the file. The result gets the usual `hledger check`, and nothing
+dated in a closed period may change; otherwise the patch is applied forward
+again and the books are as they were. The message is git's own revert
+message, "This reverts commit …", which is how the Log knows a commit was
+undone, whether abo or a person at a terminal did it.
 
 Forms that change the books carry a one-time token. A second send of one that
 succeeded — a double click, a reload, the back button — is sent where the first

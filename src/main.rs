@@ -6,6 +6,7 @@ mod report;
 mod reconcile;
 mod repo;
 mod statement;
+mod undo;
 mod web;
 
 use anyhow::{bail, Context as _, Result};
@@ -132,6 +133,17 @@ enum Cmd {
         #[arg(long)]
         record: bool,
     },
+    /// The latest operations from the log, numbered, and whether each can be undone.
+    Log {
+        #[arg(long, default_value_t = 20)]
+        last: usize,
+    },
+    /// Take back an operation, by its number in `abo log`: a commit is
+    /// reverted with git, a pending bill is thrown away.
+    Undo { line: usize },
+    /// Book the opposite of an entry, dated today. KEY is `file:line:date`,
+    /// as `abo reconcile` and the web interface give it.
+    Revert { key: String },
     /// Mark transactions cleared. Keys come from `abo reconcile`.
     Clear {
         #[arg(required = true)]
@@ -399,6 +411,56 @@ async fn run(cli: Cli) -> Result<()> {
             let ctx = Ctx::open(&here)?;
             let r = reconcile::clear(&ctx, &keys)?;
             emit(cli.json, &r, || format!("Marked {} cleared. Committed {}.", r.marked.len(), r.commit))
+        }
+        Cmd::Log { last } => {
+            let ctx = Ctx::open(&here)?;
+            let all = undo::lines(&ctx);
+            let reverted = undo::reverted(&ctx);
+            let rows: Vec<serde_json::Value> = all
+                .iter()
+                .enumerate()
+                .skip(all.len().saturating_sub(last))
+                .map(|(i, l)| {
+                    let mut l = l.clone();
+                    l["line"] = (i + 1).into();
+                    l["undoable"] = undo::how(&ctx, &l, &reverted).is_some().into();
+                    l
+                })
+                .collect();
+            emit(cli.json, &rows, || {
+                rows.iter()
+                    .map(|l| {
+                        let outcome = match (l["error"].as_str(), l["ok"]["commit"].as_str()) {
+                            (Some(_), _) => "failed".to_string(),
+                            (None, Some(c)) => c.to_string(),
+                            (None, None) => "done".to_string(),
+                        };
+                        let undo = if l["undoable"] == true { "  (undo)" } else { "" };
+                        format!(
+                            "{:>4}  {}  {:<13} {:<10} {}{undo}",
+                            l["line"],
+                            l["at"].as_str().unwrap_or_default().get(..16).unwrap_or_default().replace('T', " "),
+                            l["op"].as_str().unwrap_or_default(),
+                            outcome,
+                            l["what"].as_str().unwrap_or_default()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+        }
+        Cmd::Undo { line } => {
+            let ctx = Ctx::open(&here)?;
+            let r = undo::undo(&ctx, line)?;
+            emit(cli.json, &r, || match &r.commit {
+                Some(c) => format!("Undid line {} ({}). Committed {c}.", r.line, r.op),
+                None => format!("Undid line {} ({}).", r.line, r.op),
+            })
+        }
+        Cmd::Revert { key } => {
+            let ctx = Ctx::open(&here)?;
+            let r = journal::reverse(&ctx, &key)?;
+            emit(cli.json, &r, || format!("{}\nCommitted {} to {}.", r.entry.render(), r.commit, r.file))
         }
         Cmd::Bal { args } => passthrough(&here, "balance", &args, cli.json),
         Cmd::Reg { args } => passthrough(&here, "register", &args, cli.json),

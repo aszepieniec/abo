@@ -364,3 +364,125 @@ pub fn hledger(ctx: &Ctx, args: &[&str]) -> Result<String> {
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
+
+/// A booking as it stands in the journal, found by its key
+/// (`file:line:date`, from hledger's own source positions), with the commit
+/// that booked it and the entry that reverses it, if one does.
+#[derive(Serialize)]
+pub struct Booking {
+    pub key: String,
+    pub date: String,
+    pub description: String,
+    /// The lines as they are in the journal file.
+    pub text: String,
+    /// The commit that booked it, short.
+    pub commit: Option<String>,
+    pub tags: Vec<(String, String)>,
+    /// `date description` of the entry reversing this one.
+    pub reversed_by: Option<String>,
+    #[serde(skip)]
+    postings: Vec<Posting>,
+}
+
+pub fn booking(ctx: &Ctx, key: &str) -> Result<Booking> {
+    let mut parts = key.splitn(3, ':');
+    let (name, line, date) = match (parts.next(), parts.next(), parts.next()) {
+        (Some(n), Some(l), Some(d)) => (n, l, d),
+        _ => bail!("bad booking key {key:?}, expected file:line:date"),
+    };
+    // Keys arrive in URLs: nothing in one may name a path outside journal/.
+    if name.is_empty() || name.contains('/') || name.contains("..") || !name.ends_with(".journal") {
+        bail!("bad journal file in {key:?}");
+    }
+    let line: usize = line.parse().with_context(|| format!("bad line in {key:?}"))?;
+
+    let txns: Vec<serde_json::Value> = serde_json::from_str(&hledger(ctx, &["print", "-O", "json"])?)?;
+    let t = txns
+        .iter()
+        .find(|t| {
+            let pos = &t["tsourcepos"][0];
+            pos["sourceLine"].as_u64() == Some(line as u64)
+                && Path::new(pos["sourceName"].as_str().unwrap_or_default()).file_name().is_some_and(|f| f == name)
+                && t["tdate"] == date
+        })
+        .with_context(|| format!("no booking at {key}; the books have changed since that link was made"))?;
+
+    let lines: Vec<String> = std::fs::read_to_string(ctx.journal_dir().join(name))?.lines().map(str::to_owned).collect();
+    let text = lines[line - 1..]
+        .iter()
+        .enumerate()
+        .take_while(|(i, l)| *i == 0 || l.starts_with([' ', '\t']))
+        .map(|(_, l)| l.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let blame = ctx.git(&["blame", "--porcelain", "-L", &format!("{line},{line}"), "--", &format!("journal/{name}")]).ok();
+    let commit = blame
+        .and_then(|b| b.split_whitespace().next().map(str::to_string))
+        .filter(|h| !h.starts_with("0000000"))
+        .and_then(|h| ctx.git(&["rev-parse", "--short", &h]).ok())
+        .map(|h| h.trim().to_string());
+
+    let reversed_by = match &commit {
+        Some(h) => {
+            let out = hledger(ctx, &["print", &format!("tag:reverses=^{h}$"), "-O", "json"])?;
+            let found: Vec<serde_json::Value> = serde_json::from_str(&out)?;
+            found.first().map(|r| format!("{} {}", r["tdate"].as_str().unwrap_or_default(), r["tdescription"].as_str().unwrap_or_default()))
+        }
+        None => None,
+    };
+
+    let mut postings = vec![];
+    for p in t["tpostings"].as_array().into_iter().flatten() {
+        for a in p["pamount"].as_array().into_iter().flatten() {
+            postings.push(Posting {
+                account: p["paccount"].as_str().unwrap_or_default().to_string(),
+                amount: Some(decimal(&a["aquantity"])?),
+                commodity: a["acommodity"].as_str().unwrap_or_default().to_string(),
+                assertion: None,
+            });
+        }
+    }
+    Ok(Booking {
+        key: key.to_string(),
+        date: date.to_string(),
+        description: t["tdescription"].as_str().unwrap_or_default().to_string(),
+        text,
+        commit,
+        tags: t["ttags"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|tag| (tag[0].as_str().unwrap_or_default().to_string(), tag[1].as_str().unwrap_or_default().to_string()))
+            .collect(),
+        reversed_by,
+        postings,
+    })
+}
+
+/// Revert a booking the bookkeeping way: a new entry, dated today, with every
+/// amount of the original negated and tagged `reverses:` with the commit that
+/// booked it. The original stays in the books and the two cancel. Tags such as
+/// `sha256:` and `invoice:` are not copied, since they say what the original
+/// is, not what the reversal is.
+pub fn reverse(ctx: &Ctx, key: &str) -> Result<AddReport> {
+    let r = (|| {
+        let b = booking(ctx, key)?;
+        if let Some(by) = &b.reversed_by {
+            bail!("it is already reversed, by {by}");
+        }
+        let commit = b.commit.context("no commit booked it, so a reversal would have nothing to name")?;
+        let description: String = format!("Reversal of {} {}", b.date, b.description).chars().take(200).collect();
+        let postings = b.postings.into_iter().map(|p| Posting { amount: p.amount.map(|a| -a), ..p }).collect();
+        add(
+            ctx,
+            &Entry {
+                date: jiff::Zoned::now().date().to_string(),
+                description,
+                tags: vec![("reverses".into(), commit)],
+                postings,
+            },
+        )
+    })();
+    ctx.logged("revert", key, serde_json::json!({ "key": key }), r)
+}
