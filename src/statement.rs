@@ -60,6 +60,13 @@ pub fn amounts(bag: &Bag) -> Vec<Amount> {
     }
 }
 
+pub fn money(a: &[Amount]) -> String {
+    a.iter()
+        .map(|m| format!("{} {}", m.quantity, m.commodity).trim().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn add(into: &mut Bag, from: &Bag, sign: Decimal) {
     for (c, v) in from {
         *into.entry(c.clone()).or_default() += v * sign;
@@ -279,7 +286,6 @@ pub fn pdf(ctx: &Ctx, s: &Statement, out: &std::path::Path) -> Result<()> {
     if !template.exists() {
         std::fs::create_dir_all(template.parent().unwrap())?;
         std::fs::write(&template, TEMPLATE)?;
-        ctx.git(&["add", "--", TEMPLATE_REL])?;
         ctx.commit(&[&template], "Seed the report template")?;
     }
     let json = ctx.root.join(DATA_REL);
@@ -289,11 +295,16 @@ pub fn pdf(ctx: &Ctx, s: &Statement, out: &std::path::Path) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
+    typst(ctx, &template, out)
+}
+
+/// Compile a template to PDF. The one place abo runs typst.
+pub fn typst(ctx: &Ctx, template: &std::path::Path, out: &std::path::Path) -> Result<()> {
     let result = Command::new("typst")
         .arg("compile")
         .arg("--root")
         .arg(&ctx.root)
-        .arg(&template)
+        .arg(template)
         .arg(out)
         .output();
     let result = match result {

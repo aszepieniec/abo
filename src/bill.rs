@@ -131,7 +131,10 @@ pub fn approve(ctx: &Ctx, sha256: &str) -> Result<AddReport> {
 /// Proposal to entry. The destination path is derived from the date, a
 /// sanitized vendor and the hash — never from anything a client sent (§8).
 fn build(sha256: &str, ext: &str, p: &Proposal) -> Result<(Entry, String)> {
-    let year = p.date.get(..4).context("proposal has no usable date")?;
+    // The date shapes the path, and it comes from the model.
+    let year = jiff::civil::Date::strptime("%Y-%m-%d", &p.date)
+        .context("proposal has no usable date")?
+        .year();
     let rel = format!("bills/{year}/{}-{}-{}.{ext}", p.date, slug(&p.vendor), &sha256[..8]);
 
     let mut tags = vec![("bill".to_string(), rel.clone()), ("sha256".to_string(), sha256.to_string())];
@@ -187,6 +190,10 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn load_thread(ctx: &Ctx, sha256: &str) -> Result<Thread> {
+    // It arrives in a URL and becomes a file name.
+    if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("no pending bill {sha256}");
+    }
     let p = thread_path(ctx, sha256);
     let text = std::fs::read_to_string(&p)
         .with_context(|| format!("no pending bill {sha256}"))?;
@@ -217,7 +224,7 @@ pub fn waiting(ctx: &Ctx) -> Result<Vec<String>> {
             out.push((e.metadata()?.modified()?, sha.to_string()));
         }
     }
-    out.sort_by(|a, b| b.0.cmp(&a.0));
+    out.sort_by_key(|e| std::cmp::Reverse(e.0));
     Ok(out.into_iter().map(|(_, s)| s).collect())
 }
 
@@ -284,9 +291,13 @@ mod tests {
         assert!(rel.starts_with("bills/2026/"), "{rel}");
         assert!(rel.ends_with(".pdf"), "{rel}");
         assert_eq!(rel.matches('/').count(), 2, "{rel}");
+        // so does the date
+        let mut hostile = proposal("Acme", "100.00");
+        hostile.date = "2026/../../../.ssh/x".into();
+        assert!(build(sha, "pdf", &hostile).is_err());
 
         let (entry, rel) = build(sha, "pdf", &proposal("Acme Hosting GmbH", "100.00")).unwrap();
-        assert_eq!(rel, format!("bills/2026/2026-09-21-acme-hosting-gmbh-9f2a1b3c.pdf"));
+        assert_eq!(rel, "bills/2026/2026-09-21-acme-hosting-gmbh-9f2a1b3c.pdf");
         assert_eq!(entry.tag("sha256"), Some(sha));
         assert_eq!(entry.tag("bill"), Some(rel.as_str()));
         // the supplier's number must not land in `invoice:`, which numbers the

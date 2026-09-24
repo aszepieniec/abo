@@ -49,6 +49,10 @@ pub fn status(
     date: &str,
     statement: Option<Decimal>,
 ) -> Result<Reconciliation> {
+    // The account reaches hledger as a query argument, from a browser form.
+    if account.starts_with('-') {
+        bail!("bad account {account:?}");
+    }
     // -e is exclusive, so ask for everything before the day after.
     let end = jiff::civil::Date::strptime("%Y-%m-%d", date)
         .context("bad date")?
@@ -148,7 +152,9 @@ pub fn clear(ctx: &Ctx, keys: &[String]) -> Result<ClearReport> {
                     .map(str::to_owned)
                     .collect()
             });
-        let row = text.get_mut(line - 1).with_context(|| format!("{key}: no such line"))?;
+        let row = line
+            .checked_sub(1)
+            .and_then(|i| text.get_mut(i)).with_context(|| format!("{key}: no such line"))?;
 
         let (date, rest) = row.split_once(' ').with_context(|| format!("{key}: not a transaction"))?;
         if date != expected {
@@ -204,7 +210,10 @@ fn plural(n: usize) -> String {
 /// status. Asserting the statement figure there would be asserting something
 /// untrue, so the entry is recorded without one and only carries the tags.
 pub fn record(ctx: &Ctx, r: &Reconciliation, balance: Decimal) -> Result<AddReport> {
-    let assertion = r.outstanding.is_empty().then_some(balance);
+    if !r.reconciled {
+        bail!("not reconciled: off by {} {}", r.difference.as_deref().unwrap_or_default(), r.commodity);
+    }
+    let assertion = asserts(r).then_some(balance);
     let entry = Entry {
         date: r.date.clone(),
         description: format!("Reconciled {} to statement", r.account),

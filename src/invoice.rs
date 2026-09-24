@@ -6,7 +6,6 @@ use crate::repo::{Ctx, Vat};
 use anyhow::{bail, Context as _, Result};
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::Serialize;
-use std::process::Command;
 
 pub struct IssueArgs {
     pub customer: String,
@@ -243,23 +242,7 @@ fn render(ctx: &Ctx, data: &Data, rel: &str) -> Result<()> {
     let out = ctx.root.join(rel);
     std::fs::create_dir_all(out.parent().unwrap())?;
 
-    let result = Command::new("typst")
-        .arg("compile")
-        .arg("--root")
-        .arg(&ctx.root)
-        .arg(&template)
-        .arg(&out)
-        .output();
-    let result = match result {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            bail!("typst is not installed; see https://github.com/typst/typst#installation")
-        }
-        other => other.context("running typst")?,
-    };
-    if !result.status.success() {
-        bail!("typst: {}", String::from_utf8_lossy(&result.stderr).trim());
-    }
-    Ok(())
+    crate::statement::typst(ctx, &template, &out)
 }
 
 fn round(d: Decimal, dp: u32) -> Decimal {

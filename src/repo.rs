@@ -59,8 +59,6 @@ impl Default for InvoiceCfg {
 }
 
 #[derive(Deserialize, Clone)]
-// Read by the AI system prompt (M1) and the invoice template (M3).
-#[allow(dead_code)]
 pub struct Company {
     pub name: String,
     pub currency: String,
@@ -172,7 +170,7 @@ pub fn init(
     dir: &Path,
     c: &Company,
     vat: &Vat,
-    sales_rate: &str,
+    sales_rate: Decimal,
 ) -> Result<InitReport> {
     if dir.join("abo.toml").exists() {
         bail!("{} is already a books repository", dir.display());
@@ -182,37 +180,39 @@ pub fn init(
     }
     std::fs::create_dir_all(dir.join("journal"))?;
 
+    // A company called `Smith "&" Sons` must not break, or rewrite, abo.toml.
+    let q = |s: &str| toml::Value::from(s).to_string();
     let vat_toml = match vat {
         Vat::None => "method = \"none\"\n".to_string(),
         Vat::Flat { rate, account } => {
-            format!("method  = \"flat\"\nrate    = {rate}\naccount = \"{account}\"\n")
+            format!("method  = \"flat\"\nrate    = {rate}\naccount = {}\n", q(account))
         }
         Vat::Effective { input, output } => {
-            format!("method = \"effective\"\ninput  = \"{input}\"\noutput = \"{output}\"\n")
+            format!("method = \"effective\"\ninput  = {}\noutput = {}\n", q(input), q(output))
         }
     };
     std::fs::write(
         dir.join("abo.toml"),
         format!(
             "[company]\n\
-             name      = \"{name}\"\n\
-             address   = \"{address}\"\n\
-             country   = \"{country}\"\n\
-             tax_id    = \"{tax_id}\"\n\
-             payment   = \"{payment}\"\n\
-             currency  = \"{currency}\"\n\
+             name      = {name}\n\
+             address   = {address}\n\
+             country   = {country}\n\
+             tax_id    = {tax_id}\n\
+             payment   = {payment}\n\
+             currency  = {currency}\n\
              # Handed to the model with every bill. Put the rules that apply\n\
              # where you are here: what is deductible, what is reverse charged,\n\
              # how imports arrive. This is configuration, not code.\n\
              tax_notes = \"\"\n\
              \n[vat]\n{vat_toml}\
              \n[invoice]\nvat_rate = {sales_rate}\n",
-            name = c.name,
-            address = c.address.replace('\n', "\\n"),
-            country = c.country,
-            tax_id = c.tax_id,
-            payment = c.payment,
-            currency = c.currency,
+            name = q(&c.name),
+            address = q(&c.address),
+            country = q(&c.country),
+            tax_id = q(&c.tax_id),
+            payment = q(&c.payment),
+            currency = q(&c.currency),
         ),
     )?;
 
@@ -286,7 +286,7 @@ pub fn demo(dir: &Path) -> Result<Ctx> {
     };
     // 10% is obviously a placeholder: real rates are statutory and belong in
     // the company's own abo.toml, not in abo.
-    init(dir, &company, &vat, "10")?;
+    init(dir, &company, &vat, Decimal::TEN)?;
 
     // An illustrative return. Which accounts feed which numbered box is set
     // by the tax authority wherever the company is, so this is config.

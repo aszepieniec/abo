@@ -208,7 +208,10 @@ fn preflight() -> Result<Vec<&'static Dep>> {
     Ok(optional)
 }
 
-#[tokio::main]
+// ponytail: one thread, so no two requests write the journal or the git index at
+// once; the handlers are synchronous between awaits. Per-repo locks if it ever
+// has to serve more than one person.
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let missing = preflight()?;
@@ -228,7 +231,7 @@ async fn main() -> Result<()> {
     match cli.cmd {
         Cmd::Init => {
             let (company, vat, sales_rate) = ask()?;
-            let r = repo::init(&here, &company, &vat, &sales_rate)?;
+            let r = repo::init(&here, &company, &vat, sales_rate)?;
             emit(cli.json, &r, || {
                 format!("Books opened in {} ({}).\nNext: edit journal/accounts.journal, then `abo add`.", r.root, r.commit)
             })
@@ -331,9 +334,6 @@ async fn main() -> Result<()> {
             let r = reconcile::status(&ctx, &account, &commodity, &date, balance)?;
             if record {
                 let Some(b) = balance else { bail!("--record needs --balance") };
-                if !r.reconciled {
-                    bail!("not reconciled: off by {} {commodity}", r.difference.unwrap_or_default());
-                }
                 let asserts = reconcile::asserts(&r);
                 let a = reconcile::record(&ctx, &r, b)?;
                 return emit(cli.json, &a, || {
@@ -410,12 +410,7 @@ fn statement(
         statement::pdf(ctx, &s, path)?;
     }
     emit(json, &s, || {
-        let money = |a: &[statement::Amount]| {
-            a.iter()
-                .map(|m| format!("{} {}", m.quantity, m.commodity).trim().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
+        let money = statement::money;
         let mut out = format!("{}\n{} — {}\n", s.company, s.title, s.period);
         for section in &s.sections {
             if !section.title.is_empty() {
@@ -466,7 +461,7 @@ fn prompt(question: &str, default: &str) -> Result<String> {
     Ok(if s.is_empty() { default.to_string() } else { s.to_string() })
 }
 
-fn ask() -> Result<(repo::Company, Vat, String)> {
+fn ask() -> Result<(repo::Company, Vat, Decimal)> {
     let name = prompt("Company name", "")?;
     let address = prompt("Address, one line (use \\n between lines)", "")?.replace("\\n", "\n");
     let country = prompt("Country", "")?;
@@ -489,8 +484,8 @@ fn ask() -> Result<(repo::Company, Vat, String)> {
         other => bail!("unknown VAT method {other:?}"),
     };
     let sales_rate = match vat {
-        Vat::None => "0".to_string(),
-        _ => prompt("VAT rate charged to customers, percent", "0")?,
+        Vat::None => Decimal::ZERO,
+        _ => Decimal::from_str(&prompt("VAT rate charged to customers, percent", "0")?)?,
     };
     Ok((
         repo::Company {

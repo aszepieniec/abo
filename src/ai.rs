@@ -117,7 +117,7 @@ pub async fn propose(ctx: &Ctx, doc: &Document, thread: &Thread) -> Result<Propo
         .context("calling the Anthropic API")?;
 
     let status = res.status();
-    let v: Value = res.json().await.context("reading the API response")?;
+    let v: Value = res.json().await.with_context(|| format!("reading the API response ({status})"))?;
     if !status.is_success() {
         bail!("api {status}: {}", v["error"]["message"].as_str().unwrap_or(&v.to_string()));
     }

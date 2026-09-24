@@ -6,7 +6,7 @@ use crate::bill;
 use crate::invoice;
 use crate::journal::{self, Entry, Posting};
 use crate::reconcile;
-use crate::statement;
+use crate::statement::{self, money};
 use crate::repo::Ctx;
 use anyhow::{bail, Context as _, Result};
 use axum::extract::{DefaultBodyLimit, Form, Multipart, Path, Query, State};
@@ -41,6 +41,7 @@ pub async fn serve(ctx: Ctx, port: u16) -> Result<()> {
         // A scanned bill is much bigger than a form post, and 32 MB is the
         // API's own request limit.
         .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
+        .layer(axum::middleware::from_fn(csrf))
         .layer(axum::middleware::from_fn(log))
         .with_state(Arc::new(ctx));
 
@@ -81,8 +82,17 @@ async fn log(req: axum::extract::Request, next: axum::middleware::Next) -> Respo
     res
 }
 
-// ponytail: hledger's own aligned text output in a <pre>. Reach for `-O csv`
-// and a real table when a column needs to be sortable or a row clickable.
+/// Every request that can write must come from our own pages; see `same_origin`.
+async fn csrf(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    if !req.method().is_safe() {
+        if let Err(e) = same_origin(req.headers()) {
+            warn!(%e, path = %req.uri().path(), "rejected cross-origin request");
+            return (StatusCode::FORBIDDEN, "cross-origin request").into_response();
+        }
+    }
+    next.run(req).await
+}
+
 async fn index(State(ctx): State<Arc<Ctx>>) -> Response {
     or_error(&ctx, "Books", || {
         let accounts = statement::balances(&ctx, "", &[])?;
@@ -111,7 +121,7 @@ async fn index(State(ctx): State<Arc<Ctx>>) -> Response {
                                     },
                                     Err(_) => {
                                         td.date {}
-                                        td { a href={"/bill/" (sha)} { (sha[..8]) } }
+                                        td { a href={"/bill/" (sha)} { (sha.get(..8).unwrap_or(sha)) } }
                                         td.amt {}
                                     },
                                 }
@@ -188,11 +198,7 @@ struct AddForm {
     postings: String,
 }
 
-async fn add_submit(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, Form(f): Form<AddForm>) -> Response {
-    if let Err(e) = same_origin(&headers) {
-        warn!(%e, "rejected cross-origin POST");
-        return (StatusCode::FORBIDDEN, "cross-origin request").into_response();
-    }
+async fn add_submit(State(ctx): State<Arc<Ctx>>, Form(f): Form<AddForm>) -> Response {
     let booked = (|| -> Result<_> {
         let postings: Vec<Posting> = f
             .postings
@@ -281,10 +287,7 @@ async fn report(State(ctx): State<Arc<Ctx>>, Path(kind): Path<String>, Query(q):
                         }
                         div.actions {
                             button type="submit" { (icon("chart")) " Show" }
-                            a.btn href=({
-                                let q = if kind == "bs" { format!("date={date}") } else { format!("period={period}") };
-                                format!("/report/{kind}?pdf=1&{q}")
-                            }) { (icon("download")) " Download as PDF" }
+                            button type="submit" name="pdf" value="1" { (icon("download")) " Download as PDF" }
                         }
                     }
                 }
@@ -318,13 +321,6 @@ async fn report(State(ctx): State<Arc<Ctx>>, Path(kind): Path<String>, Query(q):
     })
 }
 
-fn money(a: &[statement::Amount]) -> String {
-    a.iter()
-        .map(|m| format!("{} {}", m.quantity, m.commodity).trim().to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 async fn reconcile_view(State(ctx): State<Arc<Ctx>>, Query(q): Query<Fields>) -> Response {
     or_error(&ctx, "Reconcile", || reconcile_page(&ctx, &q, None))
 }
@@ -332,13 +328,8 @@ async fn reconcile_view(State(ctx): State<Arc<Ctx>>, Query(q): Query<Fields>) ->
 /// One form, two buttons: tick things off, or record the agreed balance.
 async fn reconcile_act(
     State(ctx): State<Arc<Ctx>>,
-    headers: HeaderMap,
     Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(e) = same_origin(&headers) {
-        warn!(%e, "rejected cross-origin POST");
-        return (StatusCode::FORBIDDEN, "cross-origin request").into_response();
-    }
     let keys: Vec<String> = pairs.iter().filter(|(k, _)| k == "key").map(|(_, v)| v.clone()).collect();
     let f: Fields = pairs.into_iter().filter(|(k, _)| k != "key").collect();
 
@@ -349,9 +340,6 @@ async fn reconcile_act(
                 let balance = rust_decimal::Decimal::from_str_exact(f.get("balance").map_or("", |s| s.trim()))
                     .context("a statement balance is needed to record one")?;
                 let r = reconcile::status(&ctx, &account, &commodity, &date, Some(balance))?;
-                if !r.reconciled {
-                    bail!("not reconciled: off by {} {commodity}", r.difference.unwrap_or_default());
-                }
                 let a = reconcile::record(&ctx, &r, balance)?;
                 info!(commit = %a.commit, %account, %date, "reconciled");
             }
@@ -455,13 +443,8 @@ async fn invoice_form(State(ctx): State<Arc<Ctx>>) -> Response {
 
 async fn invoice_submit(
     State(ctx): State<Arc<Ctx>>,
-    headers: HeaderMap,
     Form(f): Form<InvoiceForm>,
 ) -> Response {
-    if let Err(e) = same_origin(&headers) {
-        warn!(%e, "rejected cross-origin POST");
-        return (StatusCode::FORBIDDEN, "cross-origin request").into_response();
-    }
     let issued = (|| -> Result<_> {
         let args = invoice::IssueArgs {
             customer: f.to.replace("\r\n", "\n"),
@@ -572,11 +555,7 @@ async fn upload_form(State(ctx): State<Arc<Ctx>>) -> Response {
     })
 }
 
-async fn upload(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, mut mp: Multipart) -> Response {
-    if let Err(e) = same_origin(&headers) {
-        warn!(%e, "rejected cross-origin upload");
-        return (StatusCode::FORBIDDEN, "cross-origin request").into_response();
-    }
+async fn upload(State(ctx): State<Arc<Ctx>>, mut mp: Multipart) -> Response {
     // The filename is deliberately not read: the path comes from the hash (§8).
     let bytes = match mp.next_field().await {
         Ok(Some(f)) => f.bytes().await.ok(),
@@ -658,24 +637,15 @@ struct Correction {
 async fn refine(
     State(ctx): State<Arc<Ctx>>,
     Path(sha): Path<String>,
-    headers: HeaderMap,
     Form(f): Form<Correction>,
 ) -> Response {
-    if let Err(e) = same_origin(&headers) {
-        warn!(%e, "rejected cross-origin refine");
-        return (StatusCode::FORBIDDEN, "cross-origin request").into_response();
-    }
     match bill::refine(&ctx, &sha, &f.correction).await {
         Ok(_) => Redirect::to(&format!("/bill/{sha}")).into_response(),
         Err(e) => or_error(&ctx, "Proposal", || Err(e)),
     }
 }
 
-async fn approve(State(ctx): State<Arc<Ctx>>, Path(sha): Path<String>, headers: HeaderMap) -> Response {
-    if let Err(e) = same_origin(&headers) {
-        warn!(%e, "rejected cross-origin approve");
-        return (StatusCode::FORBIDDEN, "cross-origin request").into_response();
-    }
+async fn approve(State(ctx): State<Arc<Ctx>>, Path(sha): Path<String>) -> Response {
     match bill::approve(&ctx, &sha) {
         Ok(r) => {
             info!(commit = %r.commit, "approved");
