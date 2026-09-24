@@ -461,6 +461,17 @@ nginx forwards the public Host. `abo demo` is the same server over toy data.
 Logging is `tracing`, off for the short-lived commands and `abo=info` for these
 two. `RUST_LOG` overrides it.
 
+Separately, every operation someone asks for — an entry, a bill proposed,
+corrected or approved, an invoice, clearing, recording a balance, a PDF —
+appends one line to `.abo/log.jsonl`, from the CLI and the browser alike: when,
+who (git's author name, until there are users), the input as given, and either
+what came back, with its commit, or the error. Refusals are logged too; for
+checking that what you did is what happened they are the most useful lines.
+`/log` shows the last fifty, each opening to its input and, for a commit, the
+diff it made. The log is working state like the rest of `.abo/` and is not
+committed: who changed the books is already in git, and a shared record of
+failed attempts would be noise in the books' history.
+
 ### Phone
 A **PWA** over the same server-rendered pages: a manifest plus a responsive
 stylesheet. The camera is a platform feature and needs no library:

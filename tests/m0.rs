@@ -62,6 +62,14 @@ fn m0() {
     );
     assert!(err(&o).contains("already booked"), "duplicate not caught: {}", err(&o));
 
+    // both attempts are in the log: the first with its commit, the refusal with why
+    let log = std::fs::read_to_string(dir.join(".abo/log.jsonl")).unwrap();
+    let lines: Vec<serde_json::Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(lines.len(), 2, "{log}");
+    assert_eq!(lines[0]["op"], "entry");
+    assert!(lines[0]["ok"]["commit"].is_string(), "{log}");
+    assert!(lines[1]["error"].as_str().unwrap().contains("already booked"), "{log}");
+
     // unbalanced: rejected
     let o = abo(
         &dir,

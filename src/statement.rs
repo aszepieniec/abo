@@ -282,6 +282,11 @@ const TEMPLATE: &str = include_str!("report.typ");
 /// Render to PDF at `out`. Seeds the template into the books on first use,
 /// exactly as the invoice does.
 pub fn pdf(ctx: &Ctx, s: &Statement, out: &std::path::Path) -> Result<()> {
+    let what = format!("{}, {}", s.title, s.period);
+    ctx.logged("pdf", &what, serde_json::json!({ "out": out.display().to_string() }), render(ctx, s, out))
+}
+
+fn render(ctx: &Ctx, s: &Statement, out: &std::path::Path) -> Result<()> {
     let template = ctx.root.join(TEMPLATE_REL);
     if !template.exists() {
         std::fs::create_dir_all(template.parent().unwrap())?;

@@ -124,6 +124,10 @@ pub struct ClearReport {
 
 /// Mark transactions cleared by writing `*` into the journal.
 pub fn clear(ctx: &Ctx, keys: &[String]) -> Result<ClearReport> {
+    ctx.logged("clear", &plural(keys.len()), serde_json::json!({ "keys": keys }), mark(ctx, keys))
+}
+
+fn mark(ctx: &Ctx, keys: &[String]) -> Result<ClearReport> {
     if keys.is_empty() {
         bail!("nothing to mark");
     }
@@ -210,6 +214,12 @@ fn plural(n: usize) -> String {
 /// status. Asserting the statement figure there would be asserting something
 /// untrue, so the entry is recorded without one and only carries the tags.
 pub fn record(ctx: &Ctx, r: &Reconciliation, balance: Decimal) -> Result<AddReport> {
+    let what = format!("{} at {}: {balance} {}", r.account, r.date, r.commodity);
+    let input = serde_json::json!({ "account": r.account, "commodity": r.commodity, "date": r.date, "balance": balance.to_string() });
+    ctx.logged("record", &what, input, assert_balance(ctx, r, balance))
+}
+
+fn assert_balance(ctx: &Ctx, r: &Reconciliation, balance: Decimal) -> Result<AddReport> {
     if !r.reconciled {
         bail!("not reconciled: off by {} {}", r.difference.as_deref().unwrap_or_default(), r.commodity);
     }

@@ -254,7 +254,7 @@ async fn main() -> Result<()> {
                     .map(|p| Posting::parse(p, &ctx.cfg.company.currency))
                     .collect::<Result<_>>()?,
             };
-            let r = journal::add(&ctx, &entry)?;
+            let r = journal::book(&ctx, &entry)?;
             emit(cli.json, &r, || format!("{}\nCommitted {} to {}.", entry.render(), r.commit, r.file))
         }
         Cmd::Bill { file, yes } => {

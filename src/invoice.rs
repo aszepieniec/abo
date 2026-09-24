@@ -7,6 +7,7 @@ use anyhow::{bail, Context as _, Result};
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::Serialize;
 
+#[derive(Serialize)]
 pub struct IssueArgs {
     pub customer: String,
     /// What the invoice is denominated in. Defaults to the company currency;
@@ -69,6 +70,11 @@ struct ItemOut {
 }
 
 pub fn issue(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
+    let what = format!("to {}", args.customer.lines().next().unwrap_or("").trim());
+    ctx.logged("invoice", &what, serde_json::json!(args), issue_it(ctx, args))
+}
+
+fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
     if args.customer.trim().is_empty() {
         bail!("an invoice needs a customer");
     }

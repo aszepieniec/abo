@@ -29,6 +29,7 @@ pub async fn serve(ctx: Ctx, port: u16) -> Result<()> {
     let app = Router::new()
         .route("/", get(index))
         .route("/add", get(add_form).post(add_submit))
+        .route("/log", get(activity))
         .route("/report/{kind}", get(report))
         .route("/reconcile", get(reconcile_view).post(reconcile_act))
         .route("/invoice", get(invoice_form).post(invoice_submit))
@@ -195,11 +196,74 @@ async fn index(State(ctx): State<Arc<Ctx>>, Query(q): Query<Fields>) -> Response
 /// the hash must be hex before it goes near git, where `--output=…` would be
 /// an option.
 fn booked(ctx: &Ctx, hash: &str) -> Option<(String, String)> {
-    if !(4..=40).contains(&hash.len()) || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if !is_hash(hash) {
         return None;
     }
     let subject = ctx.git(&["log", "-1", "--format=%s", hash, "--"]).ok()?;
     Some((hash.to_string(), subject.trim().to_string()))
+}
+
+fn is_hash(s: &str) -> bool {
+    (4..=40).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The last operations from `.abo/log.jsonl`, newest first. Each opens to the
+/// input as given, the error or what came back, and for a commit the diff it
+/// made, which is the thing to check.
+/// ponytail: one `git show` per row with a commit, so 50 rows; page it if more
+/// are ever needed.
+async fn activity(State(ctx): State<Arc<Ctx>>) -> Response {
+    or_error(&ctx, "Log", || {
+        let text = std::fs::read_to_string(ctx.log_path()).unwrap_or_default();
+        let lines: Vec<serde_json::Value> =
+            text.lines().rev().take(50).filter_map(|l| serde_json::from_str(l).ok()).collect();
+        let pretty = |v: &serde_json::Value| serde_json::to_string_pretty(v).unwrap_or_default();
+        Ok(html! {
+            h1 { "Log" }
+            @if lines.is_empty() {
+                div.flash.flash-info { (icon("info")) div { "Nothing done yet. Every entry, bill, invoice, reconciliation and PDF is recorded here, including the ones that failed." } }
+            } @else {
+                div.box {
+                    table.list.log {
+                        thead { tr { th { "When" } th { "Who" } th { "Operation" } th { "What" } th.amt { "Outcome" } } }
+                        tbody {
+                            @for l in &lines {
+                                @let commit = l["ok"]["commit"].as_str().filter(|h| is_hash(h));
+                                @let error = l["error"].as_str();
+                                tr {
+                                    td.date { (l["at"].as_str().unwrap_or("").get(..16).unwrap_or("").replace('T', " ")) }
+                                    td { (l["who"].as_str().unwrap_or("")) }
+                                    td { code { (l["op"].as_str().unwrap_or("")) } }
+                                    td.what {
+                                        details {
+                                            summary { (l["what"].as_str().unwrap_or("")) }
+                                            h2 { "Input" }
+                                            pre { (pretty(&l["input"])) }
+                                            @if let Some(e) = error {
+                                                h2 { "Error" }
+                                                pre { (e) }
+                                            } @else if let Some(h) = commit {
+                                                h2 { "Commit " (h) }
+                                                pre { (ctx.git(&["show", "--format=%s%n", "--stat", "--patch", h, "--"]).unwrap_or_else(|e| e.to_string())) }
+                                            } @else {
+                                                h2 { "Result" }
+                                                pre { (pretty(&l["ok"])) }
+                                            }
+                                        }
+                                    }
+                                    td.amt {
+                                        @if error.is_some() { span.failed { "failed" } }
+                                        @else if let Some(h) = commit { code { (h) } }
+                                        @else { span.muted { "done" } }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        })
+    })
 }
 
 /// The figures across the top of the front page: every asset account holding
@@ -269,7 +333,7 @@ async fn add_submit(State(ctx): State<Arc<Ctx>>, Form(f): Form<AddForm>) -> Resp
             .filter(|l| !l.is_empty())
             .map(|l| Posting::parse(l, &ctx.cfg.company.currency))
             .collect::<Result<_>>()?;
-        journal::add(
+        journal::book(
             &ctx,
             &Entry { date: f.date.clone(), description: f.description.clone(), tags: vec![], postings },
         )
@@ -846,6 +910,7 @@ fn page(ctx: &Ctx, title: &str, body: Markup) -> Html<String> {
         ("/reconcile", "checks", "Reconcile", "/reconcile"),
         ("/report/pl", "chart", "Statements", "/report"),
         ("/add", "plus", "Entry", "/add"),
+        ("/log", "clock", "Log", "/log"),
     ];
     let here = PATH.try_with(String::clone).unwrap_or_default();
     let current = |section: &str| if section == "/" { here == "/" } else { here.starts_with(section) };
@@ -1052,6 +1117,14 @@ label.row { display: grid; grid-template-columns: auto 6.5rem 8rem 1fr; gap: 12p
 label.row input { width: auto; margin: 0; }
 label.row .date, label.row .amt { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; color: var(--muted); }
 label.row .amt { text-align: right; color: var(--fg); }
+
+table.log td { vertical-align: top; white-space: nowrap; }
+table.log td.what { width: 100%; max-width: 0; }
+table.log summary { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+table.log details[open] summary { white-space: normal; }
+table.log h2 { font-size: 12px; margin: 12px 0 4px; color: var(--sub); }
+table.log pre { max-height: 360px; }
+.failed { color: var(--error); font-weight: 600; }
 
 ul.accounts { columns: 2; list-style: none; padding: 0; margin: 0; font-size: 12px; }
 ul.accounts li { padding: 2px 0; }

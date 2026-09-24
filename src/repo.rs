@@ -132,6 +132,59 @@ impl Ctx {
         self.journal_dir().join("accounts.journal")
     }
 
+    /// Append one line to `.abo/log.jsonl` for an operation someone asked
+    /// for, whether it worked or not, and hand the result back unchanged. The
+    /// log is for checking that what you did is what happened: the input as
+    /// given, then either what came back (with the commit, when there is one)
+    /// or the error. A failure to write it is warned about, never fatal.
+    /// ponytail: grows by a line per action and is never trimmed; rotate it if
+    /// the /log page ever gets slow to read.
+    pub fn logged<T: serde::Serialize>(
+        &self,
+        op: &str,
+        what: &str,
+        input: serde_json::Value,
+        r: Result<T>,
+    ) -> Result<T> {
+        let mut line = serde_json::json!({
+            "at": jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string(),
+            "who": self.who(),
+            "op": op,
+            "what": what,
+            "input": input,
+        });
+        match &r {
+            Ok(t) => line["ok"] = serde_json::json!(t),
+            Err(e) => line["error"] = format!("{e:#}").into(),
+        }
+        let write = || -> Result<()> {
+            use std::io::Write as _;
+            crate::bill::ensure_ignored(self)?;
+            std::fs::create_dir_all(self.root.join(".abo"))?;
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(self.log_path())?;
+            writeln!(f, "{line}")?;
+            Ok(())
+        };
+        if let Err(e) = write() {
+            tracing::warn!(%e, op, "could not write the log");
+        }
+        r
+    }
+
+    pub fn log_path(&self) -> PathBuf {
+        self.root.join(".abo/log.jsonl")
+    }
+
+    /// Whoever git would name as the author. The actor slot, until there are
+    /// users.
+    fn who(&self) -> String {
+        std::env::var("GIT_AUTHOR_NAME")
+            .ok()
+            .or_else(|| self.git(&["config", "user.name"]).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default()
+    }
+
     pub fn git(&self, args: &[&str]) -> Result<String> {
         git_in(&self.root, args)
     }

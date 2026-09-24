@@ -36,8 +36,14 @@ pub fn sniff(bytes: &[u8]) -> Result<(&'static str, &'static str)> {
 }
 
 pub async fn propose(ctx: &Ctx, bytes: Vec<u8>) -> Result<Pending> {
-    let (ext, media_type) = sniff(&bytes)?;
     let sha256 = hex(&Sha256::digest(&bytes));
+    let input = serde_json::json!({ "sha256": sha256, "bytes": bytes.len() });
+    let r = propose_new(ctx, bytes, &sha256).await;
+    ctx.logged("bill.propose", &format!("document {}", &sha256[..8]), input, r)
+}
+
+async fn propose_new(ctx: &Ctx, bytes: Vec<u8>, sha256: &str) -> Result<Pending> {
+    let (ext, media_type) = sniff(&bytes)?;
 
     // Cheapest rejection first: this document may already be in the books.
     let booked = journal::hledger(ctx, &["print", &format!("tag:sha256={sha256}")])?;
@@ -47,8 +53,8 @@ pub async fn propose(ctx: &Ctx, bytes: Vec<u8>) -> Result<Pending> {
 
     // Re-offering the same document resumes its conversation rather than
     // paying for a fresh proposal and throwing away the refinements.
-    if thread_path(ctx, &sha256).is_file() {
-        return review(ctx, &sha256);
+    if thread_path(ctx, sha256).is_file() {
+        return review(ctx, sha256);
     }
 
     let mut thread = Thread {
@@ -57,10 +63,16 @@ pub async fn propose(ctx: &Ctx, bytes: Vec<u8>) -> Result<Pending> {
         turns: vec![Turn { role: "user".into(), text: INSTRUCTION.into() }],
         proposal: None,
     };
-    request(ctx, &sha256, &mut thread, bytes).await
+    request(ctx, sha256, &mut thread, bytes).await
 }
 
 pub async fn refine(ctx: &Ctx, sha256: &str, correction: &str) -> Result<Pending> {
+    let r = refine_thread(ctx, sha256, correction).await;
+    let what = format!("document {}: {correction}", sha256.get(..8).unwrap_or(sha256));
+    ctx.logged("bill.refine", &what, serde_json::json!({ "sha256": sha256, "correction": correction }), r)
+}
+
+async fn refine_thread(ctx: &Ctx, sha256: &str, correction: &str) -> Result<Pending> {
     let mut thread = load_thread(ctx, sha256)?;
     let previous = thread.proposal.as_ref().context("no proposal to refine yet")?;
     thread.turns.push(Turn { role: "assistant".into(), text: serde_json::to_string(previous)? });
@@ -98,6 +110,11 @@ pub fn review(ctx: &Ctx, sha256: &str) -> Result<Pending> {
 
 /// File the document and commit it with its entry, in one commit.
 pub fn approve(ctx: &Ctx, sha256: &str) -> Result<AddReport> {
+    let what = format!("document {}", sha256.get(..8).unwrap_or(sha256));
+    ctx.logged("bill.approve", &what, serde_json::json!({ "sha256": sha256 }), file(ctx, sha256))
+}
+
+fn file(ctx: &Ctx, sha256: &str) -> Result<AddReport> {
     let thread = load_thread(ctx, sha256)?;
     let proposal = thread.proposal.context("no proposal for this document yet")?;
     if !proposal.questions.is_empty() {

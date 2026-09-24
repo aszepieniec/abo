@@ -219,6 +219,12 @@ pub struct AddReport {
     pub entry: Entry,
 }
 
+/// An entry typed by a person, from the CLI or the form: `add`, logged.
+/// Workflows that book through `add` log themselves, once.
+pub fn book(ctx: &Ctx, e: &Entry) -> Result<AddReport> {
+    ctx.logged("entry", &format!("{} {}", e.date, e.description), serde_json::json!(e), add(ctx, e))
+}
+
 /// Validate, prove it against hledger, append, commit.
 pub fn add(ctx: &Ctx, e: &Entry) -> Result<AddReport> {
     validate(ctx, e)?;
