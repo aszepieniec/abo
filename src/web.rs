@@ -99,13 +99,17 @@ async fn csrf(req: axum::extract::Request, next: axum::middleware::Next) -> Resp
     next.run(req).await
 }
 
-async fn index(State(ctx): State<Arc<Ctx>>) -> Response {
+async fn index(State(ctx): State<Arc<Ctx>>, Query(q): Query<Fields>) -> Response {
     or_error(&ctx, "Books", || {
         let accounts = statement::balances(&ctx, "", &[])?;
         let recent = recent_entries(&ctx, 12)?;
         let waiting = bill::waiting(&ctx)?;
         let tiles = tiles(&ctx, &accounts);
+        let booked = q.get("booked").and_then(|h| booked(&ctx, h));
         Ok(html! {
+            @if let Some((hash, subject)) = &booked {
+                div.flash.flash-ok { (icon("success")) div { strong { "Booked" } "Committed " (hash) ": " (subject) } }
+            }
             div.head {
                 h1 { "Books" }
                 div.actions {
@@ -153,10 +157,13 @@ async fn index(State(ctx): State<Arc<Ctx>>) -> Response {
                         span.spacer { a.small href="/report/bs" { "Balance sheet" } }
                     }
                     table.list {
-                        @for (account, bag) in &accounts {
-                            tr {
-                                td { code { (account) } }
-                                td.amt { (money(&statement::amounts(bag))) }
+                        thead { tr { th { "Account" } th.amt { "Balance" } } }
+                        tbody {
+                            @for (account, bag) in &accounts {
+                                tr {
+                                    td { code { (account) } }
+                                    td.amt { (money(&statement::amounts(bag))) }
+                                }
                             }
                         }
                     }
@@ -166,11 +173,14 @@ async fn index(State(ctx): State<Arc<Ctx>>) -> Response {
                         span.spacer { a.small href="/report/pl" { "Profit and loss" } }
                     }
                     table.list {
-                        @for e in &recent {
-                            tr {
-                                td.date { (e.0) }
-                                td { (e.1) }
-                                td.amt { (e.2) }
+                        thead { tr { th { "Date" } th { "Description" } th.amt { "Debits" } } }
+                        tbody {
+                            @for e in &recent {
+                                tr {
+                                    td.date { (e.0) }
+                                    td { (e.1) }
+                                    td.amt { (e.2) }
+                                }
                             }
                         }
                     }
@@ -178,6 +188,18 @@ async fn index(State(ctx): State<Arc<Ctx>>) -> Response {
             }
         })
     })
+}
+
+/// `?booked=<hash>` after a booking redirects here. The notice says what git
+/// says that commit is, so a hand-made link cannot put words on the page; and
+/// the hash must be hex before it goes near git, where `--output=…` would be
+/// an option.
+fn booked(ctx: &Ctx, hash: &str) -> Option<(String, String)> {
+    if !(4..=40).contains(&hash.len()) || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let subject = ctx.git(&["log", "-1", "--format=%s", hash, "--"]).ok()?;
+    Some((hash.to_string(), subject.trim().to_string()))
 }
 
 /// The figures across the top of the front page: every asset account holding
@@ -254,7 +276,7 @@ async fn add_submit(State(ctx): State<Arc<Ctx>>, Form(f): Form<AddForm>) -> Resp
     })();
 
     match booked {
-        Ok(_) => Redirect::to("/").into_response(),
+        Ok(r) => Redirect::to(&format!("/?booked={}", r.commit)).into_response(),
         // The form comes back filled in with the reason. Nothing is lost.
         Err(e) => or_error(&ctx, "Book an entry", || {
             form(&ctx, &f.date, &f.description, &f.postings, Some(&e.to_string()))
@@ -334,10 +356,13 @@ async fn report(State(ctx): State<Arc<Ctx>>, Path(kind): Path<String>, Query(q):
             }
             div.box {
                 div.box-header { (icon("doc")) (s.period) }
-                div.box-body {
-                    @for section in &s.sections {
-                        @if !section.title.is_empty() { h2 { (section.title) } }
-                        table.figures {
+                @for section in &s.sections {
+                    table.figures {
+                        thead { tr {
+                            th { @if section.title.is_empty() { "Line" } @else { (section.title) } }
+                            th.amt { "Amount" }
+                        } }
+                        tbody {
                             @for l in &section.lines {
                                 tr {
                                     td {
@@ -347,14 +372,14 @@ async fn report(State(ctx): State<Arc<Ctx>>, Path(kind): Path<String>, Query(q):
                                     td { (money(&l.amounts)) }
                                 }
                             }
-                            @if !section.total.is_empty() {
-                                tr.total { td { "Total" } td { (money(&section.total)) } }
-                            }
+                        }
+                        @if !section.total.is_empty() {
+                            tfoot { tr.total { td { "Total" } td { (money(&section.total)) } } }
                         }
                     }
-                    table.figures {
-                        tr.grand { td { (s.bottom.label) } td { (money(&s.bottom.amounts)) } }
-                    }
+                }
+                table.figures {
+                    tfoot { tr.grand { td { (s.bottom.label) } td { (money(&s.bottom.amounts)) } } }
                 }
             }
         })
@@ -431,12 +456,17 @@ fn reconcile_page(ctx: &Ctx, f: &Fields, notice: Option<Markup>) -> Result<Marku
                     label.field { "Closing balance on the statement"
                         input type="text" name="balance" value=(raw);
                     }
-                    table.figures {
-                        tr { td { "Cleared per the books" } td { (r.cleared) " " (commodity) } }
-                        @if let (Some(b), Some(d)) = (&r.statement, &r.difference) {
-                            tr { td { "Per the statement" } td { (b) " " (commodity) } }
-                            tr.total { td { "Difference" } td { (d) " " (commodity) } }
+                }
+                table.figures {
+                    thead { tr { th { "Balance" } th.amt { (commodity) } } }
+                    tbody {
+                        tr { td { "Cleared per the books" } td { (r.cleared) } }
+                        @if let Some(b) = &r.statement {
+                            tr { td { "Per the statement" } td { (b) } }
                         }
+                    }
+                    @if let Some(d) = &r.difference {
+                        tfoot { tr.total { td { "Difference" } td { (d) } } }
                     }
                 }
             }
@@ -449,6 +479,7 @@ fn reconcile_page(ctx: &Ctx, f: &Fields, notice: Option<Markup>) -> Result<Marku
                         span.spacer.muted.small { "tick what the statement shows" }
                     }
                     ul.items {
+                        li.cols { span {} span { "Date" } span.amt { "Amount" } span { "Description" } }
                         @for i in &r.outstanding {
                             li {
                                 label.row {
@@ -690,7 +721,7 @@ async fn approve(State(ctx): State<Arc<Ctx>>, Path(sha): Path<String>) -> Respon
     match bill::approve(&ctx, &sha) {
         Ok(r) => {
             info!(commit = %r.commit, "approved");
-            Redirect::to("/").into_response()
+            Redirect::to(&format!("/?booked={}", r.commit)).into_response()
         }
         Err(e) => or_error(&ctx, "Proposal", || Err(e)),
     }
@@ -861,8 +892,9 @@ fn page(ctx: &Ctx, title: &str, body: Markup) -> Html<String> {
 const STYLE: &str = r#"
 :root {
   --bg: #F7F6F2; --side: #EFEBE4; --side-border: #E0DAD0; --side-text: #4A453E;
-  --active: #FFFFFF; --card: #FFFFFF; --card-border: #E8E3DA; --rule: #F0ECE5;
+  --active: #FFFFFF; --card: #FFFFFF; --card-border: #E8E3DA;
   --btn: #FFFFFF; --btn-border: #E0DAD0; --inset: #F3F1EC;
+  --head: #EFEBE4; --stripe: #FAF8F5; --hover: #F3F3F9;
   --fg: #1C1A17; --sub: #4A453E; --muted: #6B665E;
   --accent: #4338CA; --accent-hover: #3730A3; --link: #4338CA; --focus: rgba(67,56,202,.18);
   --shadow: 0 1px 2px rgba(0,0,0,.08);
@@ -876,8 +908,9 @@ const STYLE: &str = r#"
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #23252C; --side: #1E2026; --side-border: #30333B; --side-text: #AEB3BF;
-    --active: #2F323A; --card: #2A2D35; --card-border: #383C45; --rule: #33363F;
+    --active: #2F323A; --card: #2A2D35; --card-border: #383C45;
     --btn: #2A2D35; --btn-border: #3D414B; --inset: #1E2026;
+    --head: #353841; --stripe: #2E3139; --hover: #323548;
     --fg: #E8EAEE; --sub: #C0C4CD; --muted: #9BA1AD;
     --accent: #5B57E0; --accent-hover: #6C68EA; --link: #B3B5FF; --focus: rgba(179,181,255,.25);
     --shadow: none;
@@ -944,15 +977,14 @@ code { font-size: 13px; }
 .box-header .spacer { margin-left: auto; font-weight: 400; }
 .box-body { padding: 16px 20px; }
 .box-body > :last-child { margin-bottom: 0; }
-table.list td { padding: 8px 20px; border-top: 1px solid var(--rule); }
-table.list td + td { padding-left: 0; }
+table.list td, table.list th { padding: 8px 20px; }
+table.list td + td, table.list th + th { padding-left: 0; }
 table.list code { color: var(--sub); }
 table.list td.date { color: var(--muted); width: 7rem; white-space: nowrap; font-size: 13px; }
 table.list td.amt { text-align: right; white-space: nowrap; font-size: 13px; }
 pre { overflow-x: auto; margin: 0; padding: 12px 16px; background: var(--inset);
   border: 1px solid var(--card-border); border-radius: 8px; font-size: 12px; line-height: 1.5; }
 .box .box-body > pre { border: 0; border-radius: 0; margin: -16px -20px; }
-.box .box-body > table.figures:first-child { margin-top: -6px; }
 
 /* buttons */
 .btn, button {
@@ -1000,17 +1032,23 @@ input:focus, textarea:focus { outline: none; border-color: var(--link); box-shad
 
 /* figures */
 table { width: 100%; border-collapse: collapse; }
-table.figures td { padding: 6px 0; font-variant-numeric: tabular-nums; }
+table.figures td, table.figures th { padding: 7px 20px; font-variant-numeric: tabular-nums; }
 table.figures td:last-child { text-align: right; white-space: nowrap; font-size: 13px; }
 table.figures tr.total td { border-top: 1px solid var(--card-border); font-weight: 600; }
-table.figures tr.grand td { border-top: 2px solid var(--muted); font-weight: 600; font-size: 16px; }
+table.figures tr.grand td { border-top: 2px solid var(--muted); font-weight: 600; font-size: 16px; padding: 12px 20px; }
+table.figures + table.figures thead th { border-top: 1px solid var(--card-border); }
+
+/* rows: a header colour, two alternating body colours, and a third under the pointer */
+thead th, ul.items li.cols { background: var(--head); color: var(--sub); font-size: 12px; font-weight: 600; text-align: left; }
+th.amt, ul.items li.cols .amt { text-align: right; }
+tbody tr:nth-child(even), ul.items li:nth-child(odd):not(.cols) { background: var(--stripe); }
+tbody tr:hover, tfoot tr:hover, ul.items li:not(.cols):hover { background: var(--hover); }
 
 /* checkbox rows */
 ul.items { list-style: none; margin: 0; padding: 0; }
-ul.items li { border-top: 1px solid var(--rule); }
+ul.items li.cols { display: grid; grid-template-columns: 13px 6.5rem 8rem 1fr; gap: 12px; padding: 8px 20px; }
 label.row { display: grid; grid-template-columns: auto 6.5rem 8rem 1fr; gap: 12px;
   align-items: center; margin: 0; padding: 10px 20px; cursor: pointer; font-weight: 400; }
-label.row:hover { background: var(--bg); }
 label.row input { width: auto; margin: 0; }
 label.row .date, label.row .amt { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; color: var(--muted); }
 label.row .amt { text-align: right; color: var(--fg); }
@@ -1040,10 +1078,11 @@ ul.accounts li { padding: 2px 0; }
   .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .tile { padding: 12px 14px; }
   .figure { font-size: 18px; }
-  table.list td { padding: 8px 12px; }
+  table.list td, table.list th, table.figures td, table.figures th { padding: 8px 12px; }
   .box-header { padding: 12px 12px 6px; }
   table.list td.amt { white-space: normal; }
   label.row { grid-template-columns: auto 1fr; }
+  ul.items li.cols { display: none; }
   label.row .date, label.row .amt { grid-column: 2; text-align: left; }
 }
 "#;
