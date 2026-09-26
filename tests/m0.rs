@@ -171,9 +171,11 @@ fn invoices() {
     let o = abo(
         &base,
         &["init", "Test Ltd"],
-        // address and the empty line ending it, country, tax id,
-        // payment, currency, method, input, output, rate charged to customers
-        "1 Example Street\n\nExampleland\nTAX-1\nIBAN XX00\n\nEUR\neffective\n\n\n10\n",
+        // address and the empty line ending it, country, tax id; a payment
+        // option (id, name, details and the empty line ending them, account)
+        // and the blank id ending them; currency, method, input, output, rate
+        // charged to customers
+        "1 Example Street\n\nExampleland\nTAX-1\nbank\nBank\nIBAN XX00\n\n\n\nEUR\neffective\n\n\n10\n",
     );
     assert!(o.status.success(), "init failed: {}", err(&o));
 
@@ -527,8 +529,8 @@ fn init_asks_again() {
     std::fs::remove_dir_all(&base).unwrap();
 }
 
-/// Payment options are skipped at init, then added, refused, removed and the
-/// removal undone; a single string, as abo.toml held before, still reads.
+/// Payment options are skipped at init, then added, refused, changed,
+/// removed and the removal undone; the old single string is refused.
 #[test]
 fn payment_options() {
     let base = std::env::temp_dir().join(format!("abo-pay-{}", std::process::id()));
@@ -538,48 +540,54 @@ fn payment_options() {
     // address, country, tax id, no payment options, currency, method
     let o = abo(&base, &["init", "Test Ltd"], "\n\n\n\nEUR\nnone\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
-    let list = || String::from_utf8_lossy(&abo(&dir, &["payment-options"], "").stdout).into_owned();
+    let po = |args: &[&str]| abo(&dir, &[&["payment-options"][..], args].concat(), "");
+    let list = || String::from_utf8_lossy(&po(&["list"]).stdout).into_owned();
     assert!(list().contains("No payment options"), "{}", list());
 
-    for option in [&["IBAN", "XX00", "1234"][..], &["Cash on collection"][..]] {
-        let o = abo(&dir, &[&["payment-options", "add"][..], option].concat(), "");
-        assert!(o.status.success(), "add failed: {}", err(&o));
-    }
-    assert_eq!(list(), "1. IBAN XX00 1234\n2. Cash on collection\n");
-    for (args, says) in [
-        (&["add", "Cash", "on", "collection"][..], "already a payment option"),
-        (&["remove", "3"][..], "no payment option 3"),
+    for args in [
+        &["add", "postfinance", "--label", "PostFinance", "--detail", "IBAN CH93", "--detail", "BIC POFICHBEXXX"][..],
+        &["add", "cash", "--label", "Cash on collection", "--account", "assets:cash"][..],
     ] {
-        let o = abo(&dir, &[&["payment-options"][..], args].concat(), "");
+        let o = po(args);
+        assert!(o.status.success(), "{args:?}: {}", err(&o));
+    }
+    let both = "postfinance: PostFinance -> assets:bank\n    IBAN CH93\n    BIC POFICHBEXXX\n\
+                cash: Cash on collection -> assets:cash\n";
+    assert_eq!(list(), both);
+    for (args, says) in [
+        (&["add", "cash", "--label", "Cash"][..], "already the id of a payment option"),
+        (&["add", "Wallet", "--label", "Wallet"][..], "is not an id"),
+        (&["add", "wallet", "--label", "W", "--account", "assets:crypto"][..], "assets:crypto is not declared"),
+        (&["add", "empty", "--account", "assets:cash"][..], "needs a name or details"),
+        (&["add", "--label", "No id"][..], "needs an id"),
+        (&["edit", "nope", "--label", "X"][..], "no payment option \"nope\""),
+        (&["edit", "cash", "--label", "Cash on collection"][..], "like that already"),
+        (&["edit", "cash", "--id", "postfinance"][..], "already the id of a payment option"),
+        (&["remove", "x"][..], "no payment option \"x\""),
+    ] {
+        let o = po(args);
         assert!(!o.status.success() && err(&o).contains(says), "{args:?}: {}", err(&o));
     }
 
-    let o = abo(&dir, &["payment-options", "edit", "2", "Cash", "on", "delivery"], "");
+    // An id's start will do.
+    let o = po(&["edit", "ca", "--id", "cash-eur", "--label", "Cash, in euro"]);
     assert!(o.status.success(), "edit failed: {}", err(&o));
-    assert_eq!(String::from_utf8_lossy(&abo(&dir, &["payment-options", "list"], "").stdout), "1. IBAN XX00 1234\n2. Cash on delivery\n");
-    for (args, says) in [
-        (&["edit", "2", "Cash on delivery"][..], "is \"Cash on delivery\" already"),
-        (&["edit", "2", "IBAN XX00 1234"][..], "already a payment option"),
-        (&["edit", "3", "Cheque"][..], "no payment option 3"),
-    ] {
-        let o = abo(&dir, &[&["payment-options"][..], args].concat(), "");
-        assert!(!o.status.success() && err(&o).contains(says), "{args:?}: {}", err(&o));
-    }
-
-    let o = abo(&dir, &["payment-options", "remove", "1"], "");
+    let o = po(&["remove", "post"]);
     assert!(o.status.success(), "remove failed: {}", err(&o));
-    assert_eq!(list(), "1. Cash on delivery\n");
-    // The log: two adds, two refusals, the edit, three refusals, the remove.
-    let o = abo(&dir, &["undo", "9"], "");
+    assert_eq!(list(), "cash-eur: Cash, in euro -> assets:cash\n");
+    // The log: two adds, seven refusals (not the two about the arguments:
+    // no id, no option to edit), the edit, the remove.
+    let o = abo(&dir, &["undo", "11"], "");
     assert!(o.status.success(), "undo failed: {}", err(&o));
-    assert_eq!(list(), "1. IBAN XX00 1234\n2. Cash on delivery\n");
+    assert_eq!(list(), "postfinance: PostFinance -> assets:bank\n    IBAN CH93\n    BIC POFICHBEXXX\n\
+                        cash-eur: Cash, in euro -> assets:cash\n");
 
     let toml = dir.join("abo.toml");
     let text = std::fs::read_to_string(&toml).unwrap();
     assert!(text.contains("# Handed to the model"), "comments lost:\n{text}");
-    let old = text.lines().map(|l| if l.starts_with("payment") { "payment   = \"IBAN OLD\"" } else { l }).collect::<Vec<_>>();
-    std::fs::write(&toml, old.join("\n")).unwrap();
-    assert_eq!(list(), "1. IBAN OLD\n");
+    std::fs::write(&toml, text.replace("[company]\n", "[company]\npayment = \"IBAN OLD\"\n")).unwrap();
+    let o = po(&["list"]);
+    assert!(!o.status.success() && err(&o).contains("no longer read"), "{}", err(&o));
 
     std::fs::remove_dir_all(&base).unwrap();
 }

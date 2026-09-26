@@ -164,7 +164,7 @@ fn editing() {
             ("", "\r"),
             ("Country: ", "BE\r"),
             ("Tax registration", "\r"),
-            ("Where invoices ask to be paid", "\r"),
+            ("Id, such as", "\r"),
             ("Currency: ", "eur\r"),
             (METHOD, &format!("{UP} ")),
             ("Flat rate", "5\r"),
@@ -202,7 +202,7 @@ fn vat_method_list() {
             (ADDRESS, "\r"),
             blank("Country: "),
             blank("Tax registration"),
-            blank("Where invoices ask to be paid"),
+            blank("Id, such as"),
             ("Currency: ", "EUR\r"),
             (METHOD, keys.as_str()),
         ];
@@ -222,7 +222,7 @@ fn vat_method_list() {
 #[test]
 fn giving_up() {
     let to_currency = |keys| {
-        vec![(ADDRESS, "\r"), ("Country: ", "\r"), ("Tax registration", "\r"), ("Where invoices ask to be paid", "\r"), ("Currency: ", keys)]
+        vec![(ADDRESS, "\r"), ("Country: ", "\r"), ("Tax registration", "\r"), ("Id, such as", "\r"), ("Currency: ", keys)]
     };
     refused(&init("ctrl-d", "Acme", &to_currency(CTRL_D)), "Currency: A currency is needed");
     refused(&init("ctrl-c", "Acme", &to_currency(CTRL_C)), "Error:");
@@ -231,25 +231,46 @@ fn giving_up() {
     refused(&init("ctrl-c-list", "Acme", &steps), "Error: interrupted");
 }
 
-/// `abo payment-options edit N` puts the option on the line to change.
+/// A payment option asked for part by part at init, and changed later the
+/// same way, each part put on the line as it stands: kept, changed, or
+/// cleared and typed anew, and a detail line added after the ones there.
 #[test]
-fn edit_payment_option() {
+fn payment_option_parts() {
     let steps = [
         (ADDRESS, "\r"),
         ("Country: ", "\r"),
         ("Tax registration", "\r"),
-        ("Where invoices ask to be paid", "IBAN XX00 1234\r"),
+        ("Id, such as", "Bank\r"),
+        ("Id, such as", "bank\r"),
+        ("Name on invoices", "Bank\r"),
+        ("an empty line ends them:", "IBAN XX00 1234\r"),
         ("", "\r"),
+        ("Account the money arrives in: ", "\r"),
+        ("Id, such as", "\r"),
         ("Currency: ", "EUR\r"),
         (METHOD, "n "),
         ("Your name", "\r"),
         ("Your email", "\r"),
     ];
-    let r = init("edit", "Acme", &steps);
+    let r = init("parts", "Acme", &steps);
     assert!(r.status.success(), "init failed:\n{}", r.screen);
-    let (status, screen, restored) =
-        abo(&r.books, &["payment-options", "edit", "1"], &[("1. ", &format!("{HOME}Bank {END} (EUR)\r"))]);
+    assert!(r.screen.contains("\"Bank\" is not an id"), "{}", r.screen);
+    let (status, screen, restored) = abo(
+        &r.books,
+        &["payment-options", "edit", "bank"],
+        &[
+            ("Id, such as", "\r"),
+            ("Name on invoices", &format!("{HOME}The \r")),
+            ("an empty line ends them:", "\r"),
+            ("", &format!("{CTRL_A}{CTRL_K}BIC XXXX\r")),
+            ("", "\r"),
+            ("Account the money arrives in: ", &format!("{CTRL_A}{CTRL_K}assets:cash\r")),
+        ],
+    );
     assert!(status.success() && restored, "edit failed:\n{screen}");
     let c = done(&r);
-    assert_eq!(c["company"]["payment"][0].as_str(), Some("Bank IBAN XX00 1234 (EUR)"));
+    let p = &c["payment"][0];
+    assert_eq!(p["label"].as_str(), Some("The Bank"));
+    assert_eq!(p["details"].as_str(), Some("IBAN XX00 1234\nBIC XXXX"));
+    assert_eq!(p["account"].as_str(), Some("assets:cash"));
 }

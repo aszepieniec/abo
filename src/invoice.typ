@@ -65,13 +65,21 @@
 ))
 
 #v(1.4cm)
-#let pay = d.company.payment
-#if pay.len() > 1 [
-  Payable by #d.due to any of:
-  #list(..pay)
-  Please quote #d.number.
+#let pay = d.payment
+#if pay.len() == 0 [
+  Payable by #d.due. Please quote #d.number.
 ] else [
-  Payable by #d.due#if pay.len() == 1 [ to #pay.first()]. Please quote #d.number.
+  Payable by #d.due #if pay.len() == 1 [to] else [to any of] the following. Please quote #d.number.
+  #v(0.3cm)
+  #grid(
+    columns: calc.min(pay.len(), 3),
+    column-gutter: 1.2cm,
+    row-gutter: 0.6cm,
+    ..pay.map(p => [
+      #if p.label != "" [*#p.label* \ ]
+      #p.details.join(linebreak())
+    ]),
+  )
 ]
 
 #if d.note != "" [

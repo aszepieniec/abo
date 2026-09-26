@@ -28,8 +28,9 @@ there: the name spelled in ASCII and in lower case, every run of anything but
 letters and digits made one dash (`Smith & Sons, LLC` → `smith-sons-llc`,
 `Łódź Straße` → `lodz-strasse`). It then asks, one per
 line: the company's address (a line at a time, ended by an empty line),
-country, tax number, where invoices ask to be paid (options a line at a time,
-ended, or skipped, by an empty line), currency and VAT method (chosen from a
+country, tax number, where invoices ask to be paid (payment options, each
+asked part by part as in A4; a blank id skips them, or ends them), currency
+and VAT method (chosen from a
 list: up and down or a letter, then space); then what the
 method needs — for `effective` the input and the output VAT accounts, for
 `flat` the rate remitted and the VAT account, for `none` nothing — and, unless
@@ -40,7 +41,8 @@ was wrong: a currency must be letters (`eur` is taken as EUR), a VAT method
 may be the start of one (`e`, `f`, `n`), a rate must be a number from 0 up to
 100. Refused before any question is asked: a
 directory of that name already there, a name with no letters or digits,
-`--dir`, and running it inside a company's books.
+`--dir`, and running it inside a company's books. The accounts the payment
+options name are declared along with the default ones.
 **Done when** the company's directory is a git repository with one commit
 holding `abo.toml`, `journal/main.journal`, `journal/accounts.journal` (the
 default accounts, plus the VAT accounts the method needs) and `.gitignore`.
@@ -64,14 +66,19 @@ new rate, a declared account — applies without a restart.
 entries; for a data directory, the name and directory of each company in it.
 
 ### A4. Change where invoices ask to be paid — Supported (CLI)
-`abo payment-options` (or `... list`) numbers the options in the order
-invoices print them. `... add <text>` appends one, `... edit <n> <text>`
-replaces one, `... edit <n>` puts it on the line to change, and
-`... remove <n>` removes one. An empty option, a second copy of one, and a
-number with no option are refused. Each change is a commit to `abo.toml`,
-comments kept, logged and undoable like any other. An invoice with no option
-says only when to pay; with one, "Payable by <due> to <option>"; with
-several, "to any of:" and a list.
+A payment option has an id, for commands (`postfinance`: lower-case letters,
+digits, dashes); a name and details for invoices ("PostFinance bank account";
+account holder, IBAN, BIC, the bank's address, a line each), either of which
+may be blank but not both; and the declared account the money arrives in
+(default `assets:bank`). `abo payment-options` (or `... list`) shows them in
+the order invoices print them. `... add` asks for each part, `... add <id>
+--label ... --detail ... --account ...` takes them as given; `... edit <id>`
+asks for each part with the current one on the line to change or keep, or
+takes `--id`, `--label`, `--detail`, `--account` for the parts to change;
+`... remove <id>` removes one. Wherever an id is asked for, its start will do
+when it names one option. A taken id, an undeclared account, an option with
+nothing to print and an edit that changes nothing are refused. Each change is
+a commit to `abo.toml`, comments kept, logged and undoable like any other.
 **Done when** the next invoice prints the options as they now stand.
 
 ---
@@ -130,7 +137,11 @@ as `0.00` on the front page.
 ### C1. Issue an invoice — Supported (browser, CLI)
 **Issue an invoice**: customer, one line per item
 (`quantity|unit price|description`), optionally date, VAT rate, commodity,
-their reference and a note. CLI: `abo invoice`.
+their reference and a note. CLI: `abo invoice`, where `--pay-to <id>`,
+repeatable, chooses which payment options the invoice prints; the browser, and
+the CLI without it, print them all. With none it says only when to pay; with
+one or more, "to the following" or "to any of the following" and each
+option's name and details, side by side.
 **Done when** the invoice is numbered one past the highest `invoice:` tag for
 its year, its PDF is under `invoices/<year>/`, the receivable, income and (under
 the effective method) output VAT are booked, and the PDF and entry are in one

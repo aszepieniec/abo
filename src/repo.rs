@@ -14,6 +14,32 @@ pub struct Config {
     pub invoice: InvoiceCfg,
     #[serde(default)]
     pub report: ReportCfg,
+    #[serde(default)]
+    pub payment: Vec<PaymentOption>,
+}
+
+/// Somewhere invoices ask to be paid.
+#[derive(Deserialize, serde::Serialize, Clone, PartialEq, Default)]
+pub struct PaymentOption {
+    /// How commands name it: `abo invoice --pay-to postfinance`. Lower-case
+    /// ASCII letters, digits and dashes.
+    pub id: String,
+    /// What invoices call it: "PostFinance bank account". May be blank.
+    #[serde(default)]
+    pub label: String,
+    /// What invoices print under the name, as free text with newlines
+    /// between lines: account holder, IBAN, BIC, the bank's address; a wallet
+    /// address; "cash on collection". abo never parses it.
+    #[serde(default)]
+    pub details: String,
+    /// Where money paid this way arrives. A declared account.
+    pub account: String,
+}
+
+/// abo.toml's `[[payment]]` tables on their own, to write them.
+#[derive(serde::Serialize)]
+pub struct Payments {
+    pub payment: Vec<PaymentOption>,
 }
 
 #[derive(Deserialize, Clone, Default)]
@@ -69,11 +95,10 @@ pub struct Company {
     /// issues it. Blank if not registered.
     #[serde(default)]
     pub tax_id: String,
-    /// Where invoices ask to be paid, each as free text: bank details, a
-    /// wallet address, "cash on collection". abo does not care which. None,
-    /// one or several; see `payment`.
-    #[serde(default, deserialize_with = "one_or_more")]
-    pub payment: Vec<String>,
+    /// Where invoices asked to be paid before that was `[[payment]]`. Only
+    /// read to say so.
+    #[serde(default, rename = "payment")]
+    pub old_payment: Option<serde::de::IgnoredAny>,
     /// Where the company is registered. Only the model reads it.
     #[serde(default)]
     pub country: String,
@@ -99,22 +124,6 @@ pub enum Vat {
     Effective { input: String, output: String },
 }
 
-/// A list, or a single string as abo.toml held before there could be several
-/// payment options; an empty one is none.
-fn one_or_more<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Options {
-        One(String),
-        More(Vec<String>),
-    }
-    Ok(match Options::deserialize(d)? {
-        Options::One(s) if s.is_empty() => vec![],
-        Options::One(s) => vec![s],
-        Options::More(v) => v,
-    })
-}
-
 /// Passed first to every workflow function. Multi-company means building a
 /// different one; users mean adding an actor here. Never read from a global.
 pub struct Ctx {
@@ -131,6 +140,13 @@ impl Ctx {
             if f.is_file() {
                 let text = std::fs::read_to_string(&f)?;
                 let cfg: Config = toml::from_str(&text).with_context(|| format!("{}", f.display()))?;
+                if cfg.company.old_payment.is_some() {
+                    bail!(
+                        "{}: `payment` under [company] is no longer read. Remove it, then add each \
+                         option with `abo payment-options add`",
+                        f.display()
+                    );
+                }
                 return Ok(Ctx { root: root.to_path_buf(), cfg });
             }
         }
@@ -264,6 +280,29 @@ pub mod answer {
         }
     }
 
+    /// A payment option's id: lower-case ASCII letters, digits and dashes,
+    /// starting with a letter or digit, so that it can be typed anywhere.
+    pub fn option_id(s: &str) -> Result<String, String> {
+        let ok = s.starts_with(|c: char| c.is_ascii_alphanumeric())
+            && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if !ok {
+            return Err(format!("{s:?} is not an id: lower-case letters, digits and dashes, such as postfinance."));
+        }
+        Ok(s.to_string())
+    }
+
+    /// An account name as the journal can hold it: words separated by
+    /// colons, no `;` (a comment) and no two spaces running (the end of the
+    /// name).
+    pub fn account(s: &str) -> Result<String, String> {
+        if s.is_empty() || s.contains(';') || s.contains("  ") || s.chars().any(char::is_control)
+            || s.split(':').any(|part| part.trim().is_empty() || part.trim() != part)
+        {
+            return Err(format!("{s:?} is not an account name, such as assets:bank:postfinance."));
+        }
+        Ok(s.to_string())
+    }
+
     /// A percentage from 0 up to, not including, 100; a trailing % is allowed.
     pub fn percent(s: &str) -> Result<Decimal, String> {
         let r = Decimal::from_str(s.strip_suffix('%').unwrap_or(s).trim())
@@ -295,6 +334,7 @@ pub fn init(
     c: &Company,
     vat: &Vat,
     sales_rate: Decimal,
+    payment: &[PaymentOption],
     author: Option<(&str, &str)>,
 ) -> Result<InitReport> {
     if dir.join("abo.toml").exists() {
@@ -324,19 +364,22 @@ pub fn init(
              address   = {address}\n\
              country   = {country}\n\
              tax_id    = {tax_id}\n\
-             payment   = {payment}\n\
              currency  = {currency}\n\
              # Handed to the model with every bill. Put the rules that apply\n\
              # where you are here: what is deductible, what is reverse charged,\n\
              # how imports arrive. This is configuration, not code.\n\
              tax_notes = \"\"\n\
              \n[vat]\n{vat_toml}\
-             \n[invoice]\nvat_rate = {sales_rate}\n",
+             \n[invoice]\nvat_rate = {sales_rate}\n{payment}",
             name = q(&c.name),
             address = q(&c.address),
             country = q(&c.country),
             tax_id = q(&c.tax_id),
-            payment = toml::Value::from(c.payment.clone()),
+            // Where invoices ask to be paid, one [[payment]] table each.
+            payment = match payment {
+                [] => String::new(),
+                _ => format!("\n{}", toml::to_string(&Payments { payment: payment.to_vec() })?),
+            },
             currency = q(&c.currency),
         ),
     )?;
@@ -358,7 +401,10 @@ pub fn init(
             accounts.push(output.clone());
         }
     }
+    // The accounts money arrives in, as the payment options name them.
+    accounts.extend(payment.iter().map(|p| p.account.clone()));
     accounts.sort();
+    accounts.dedup();
     let decls: String = accounts.iter().map(|a| format!("account {a}\n")).collect();
     std::fs::write(
         dir.join("journal/accounts.journal"),
@@ -412,14 +458,20 @@ pub fn demo(dir: &Path) -> Result<Ctx> {
         address: "1 Example Street\n10000 Example City".into(),
         country: "Exampleland".into(),
         tax_id: "TAX-123456789".into(),
-        payment: vec!["IBAN XX00 0000 0000 0000 0000 0".into()],
+        old_payment: None,
         currency: "EUR".into(),
         tax_notes: String::new(),
         closed_through: None,
     };
     // 10% is obviously a placeholder: real rates are statutory and belong in
     // the company's own abo.toml, not in abo.
-    init(dir, &company, &vat, Decimal::TEN, None)?;
+    let payment = [PaymentOption {
+        id: "bank".into(),
+        label: "Example Bank".into(),
+        details: "Account holder: Example Ltd\nIBAN XX00 0000 0000 0000 0000 0\nBIC XXXXXX00".into(),
+        account: "assets:bank".into(),
+    }];
+    init(dir, &company, &vat, Decimal::TEN, &payment, None)?;
 
     // An illustrative return. Which accounts feed which numbered box is set
     // by the tax authority wherever the company is, so this is config.

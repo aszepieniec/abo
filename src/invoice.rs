@@ -23,6 +23,8 @@ pub struct IssueArgs {
     pub due_days: Option<i64>,
     pub vat_rate: Option<Decimal>,
     pub reference: String,
+    /// Ids of the payment options to print; none means all of them.
+    pub pay_to: Vec<String>,
     pub note: String,
 }
 
@@ -51,6 +53,13 @@ struct Data {
     vat: String,
     total: String,
     note: String,
+    payment: Vec<PayOut>,
+}
+
+#[derive(Serialize)]
+struct PayOut {
+    label: String,
+    details: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -59,7 +68,6 @@ struct CompanyOut {
     country: String,
     address: String,
     tax_id: String,
-    payment: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -142,13 +150,23 @@ fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
     let total = net + vat;
 
     let c = &ctx.cfg.company;
+    // The options asked for, each once, in the order asked; else all.
+    let mut pay: Vec<&crate::repo::PaymentOption> = vec![];
+    for id in &args.pay_to {
+        let o = crate::payment::find(&ctx.cfg.payment, id)?;
+        if !pay.iter().any(|p| p.id == o.id) {
+            pay.push(o);
+        }
+    }
+    if args.pay_to.is_empty() {
+        pay = ctx.cfg.payment.iter().collect();
+    }
     let data = Data {
         company: CompanyOut {
             name: c.name.clone(),
             country: c.country.clone(),
             address: c.address.clone(),
             tax_id: c.tax_id.clone(),
-            payment: c.payment.clone(),
         },
         customer: args.customer.clone(),
         number: number.clone(),
@@ -162,6 +180,10 @@ fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
         vat: vat.to_string(),
         total: total.to_string(),
         note: args.note.clone(),
+        payment: pay
+            .iter()
+            .map(|p| PayOut { label: p.label.clone(), details: p.details.lines().map(str::to_string).collect() })
+            .collect(),
     };
 
     let entry = entry(ctx, &number, &date, args, &currency, net, vat, total)?;

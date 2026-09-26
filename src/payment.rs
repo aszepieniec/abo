@@ -1,80 +1,97 @@
-//! Where invoices ask to be paid: none, one or several options, each a line
-//! of free text (bank details, a wallet address, "cash on collection"). Kept
-//! in abo.toml; each change is a commit, so it shows in the log and can be
-//! undone.
+//! Where invoices ask to be paid: none, one or several options, kept in
+//! abo.toml as `[[payment]]` tables. Each change is a commit, so it shows in
+//! the log and can be undone.
 
-use crate::repo::Ctx;
+use crate::repo::{answer, Ctx, PaymentOption};
 use anyhow::{bail, Result};
 use serde::Serialize;
 
 #[derive(Serialize)]
 pub struct PaymentReport {
     /// The options as they now stand, in the order invoices print them.
-    pub options: Vec<String>,
+    pub options: Vec<PaymentOption>,
     pub commit: String,
 }
 
-pub fn add(ctx: &Ctx, option: &str) -> Result<PaymentReport> {
-    let option = option.trim();
-    let r = change(ctx, &format!("Add payment option: {option}"), |options| {
-        if option.is_empty() {
-            bail!("a payment option needs some text, such as an IBAN");
-        }
-        if options.iter().any(|o| o == option) {
-            bail!("{option:?} is already a payment option");
-        }
-        options.push(option.to_string());
-        Ok(())
-    });
-    ctx.logged("payment-options.add", option, serde_json::json!({ "option": option }), r)
-}
-
-/// Replace option `n`, counting from 1 as `abo payment-options` lists them.
-pub fn edit(ctx: &Ctx, n: usize, option: &str) -> Result<PaymentReport> {
-    let option = option.trim();
-    let r = change(ctx, &format!("Change payment option {n} to: {option}"), |options| {
-        let i = index(options, n)?;
-        if option.is_empty() {
-            bail!("a payment option needs some text; `abo payment-options remove {n}` removes it");
-        }
-        if options[i] == option {
-            bail!("payment option {n} is {option:?} already");
-        }
-        if options.iter().any(|o| o == option) {
-            bail!("{option:?} is already a payment option");
-        }
-        options[i] = option.to_string();
-        Ok(())
-    });
-    ctx.logged("payment-options.edit", option, serde_json::json!({ "n": n, "option": option }), r)
-}
-
-/// Remove option `n`, counting from 1 as `abo payment-options` lists them.
-pub fn remove(ctx: &Ctx, n: usize) -> Result<PaymentReport> {
-    let options = &ctx.cfg.company.payment;
-    let what = n.checked_sub(1).and_then(|i| options.get(i)).cloned().unwrap_or_else(|| format!("number {n}"));
-    let r = change(ctx, &format!("Remove payment option: {what}"), |options| {
-        options.remove(index(options, n)?);
-        Ok(())
-    });
-    ctx.logged("payment-options.remove", &what, serde_json::json!({ "n": n }), r)
-}
-
-fn index(options: &[String], n: usize) -> Result<usize> {
-    if n == 0 || n > options.len() {
-        bail!("there is no payment option {n}; `abo payment-options` lists {}", options.len());
+/// The option `id` names: exactly, or failing that as the start of exactly
+/// one id, so `post` finds `postfinance`.
+pub fn find<'a>(options: &'a [PaymentOption], id: &str) -> Result<&'a PaymentOption> {
+    if let Some(o) = options.iter().find(|o| o.id == id) {
+        return Ok(o);
     }
-    Ok(n - 1)
+    let ids = || options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>().join(", ");
+    match options.iter().filter(|o| o.id.starts_with(id)).collect::<Vec<_>>()[..] {
+        [o] => Ok(o),
+        [] if options.is_empty() => bail!("there is no payment option {id:?}; there are none yet"),
+        [] => bail!("there is no payment option {id:?}; there are {}", ids()),
+        _ => bail!("{id:?} is the start of more than one payment option: {}", ids()),
+    }
 }
 
-/// Rewrite `payment` in abo.toml, leaving the rest of the file as it was,
-/// comments included, and commit.
-fn change(ctx: &Ctx, msg: &str, f: impl FnOnce(&mut Vec<String>) -> Result<()>) -> Result<PaymentReport> {
-    let mut options = ctx.cfg.company.payment.clone();
+/// What makes an option acceptable in the company of `others`, whatever
+/// asked for it: a free id, something to print, a declared account.
+pub fn check(ctx: &Ctx, o: &PaymentOption, others: &[&PaymentOption]) -> Result<()> {
+    answer::option_id(&o.id).map_err(anyhow::Error::msg)?;
+    if others.iter().any(|p| p.id == o.id) {
+        bail!("{:?} is already the id of a payment option", o.id);
+    }
+    if o.label.trim().is_empty() && o.details.trim().is_empty() {
+        bail!("a payment option needs a name or details for invoices to print");
+    }
+    answer::account(&o.account).map_err(anyhow::Error::msg)?;
+    if !crate::journal::declared_accounts(ctx)?.contains(&o.account) {
+        bail!("{} is not declared; add `account {}` to journal/accounts.journal first", o.account, o.account);
+    }
+    Ok(())
+}
+
+pub fn add(ctx: &Ctx, o: PaymentOption) -> Result<PaymentReport> {
+    let what = o.id.clone();
+    let input = serde_json::json!(o);
+    let r = change(ctx, &format!("Add payment option {}", o.id), |options| {
+        check(ctx, &o, &options.iter().collect::<Vec<_>>())?;
+        options.push(o);
+        Ok(())
+    });
+    ctx.logged("payment-options.add", &what, input, r)
+}
+
+/// Replace the option `id` names with `o`, which may carry a new id.
+pub fn edit(ctx: &Ctx, id: &str, o: PaymentOption) -> Result<PaymentReport> {
+    let input = serde_json::json!({ "id": id, "option": o });
+    let r = change(ctx, &format!("Change payment option {id}"), |options| {
+        let old = find(options, id)?.clone();
+        if old == o {
+            bail!("payment option {} is like that already", old.id);
+        }
+        check(ctx, &o, &options.iter().filter(|p| p.id != old.id).collect::<Vec<_>>())?;
+        *options.iter_mut().find(|p| p.id == old.id).unwrap() = o;
+        Ok(())
+    });
+    ctx.logged("payment-options.edit", id, input, r)
+}
+
+pub fn remove(ctx: &Ctx, id: &str) -> Result<PaymentReport> {
+    let r = change(ctx, &format!("Remove payment option {id}"), |options| {
+        let old = find(options, id)?.id.clone();
+        options.retain(|p| p.id != old);
+        Ok(())
+    });
+    ctx.logged("payment-options.remove", id, serde_json::json!({ "id": id }), r)
+}
+
+/// Rewrite the `[[payment]]` tables in abo.toml, leaving the rest of the
+/// file as it was, comments included, and commit.
+fn change(ctx: &Ctx, msg: &str, f: impl FnOnce(&mut Vec<PaymentOption>) -> Result<()>) -> Result<PaymentReport> {
+    let mut options = ctx.cfg.payment.clone();
     f(&mut options)?;
     let path = ctx.root.join("abo.toml");
     let mut doc: toml_edit::DocumentMut = std::fs::read_to_string(&path)?.parse()?;
-    doc["company"]["payment"] = toml_edit::value(options.iter().collect::<toml_edit::Array>());
+    let tables: toml_edit::DocumentMut = toml::to_string(&crate::repo::Payments { payment: options.clone() })?.parse()?;
+    match tables.get("payment") {
+        Some(t) => doc["payment"] = t.clone(),
+        None => _ = doc.remove("payment"),
+    }
     std::fs::write(&path, doc.to_string())?;
     let commit = ctx.commit(&[&path], msg)?;
     Ok(PaymentReport { options, commit })

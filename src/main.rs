@@ -33,18 +33,51 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum PaymentCmd {
-    /// List the options, numbered, in the order invoices print them. The
-    /// same as no subcommand.
+    /// List the options in the order invoices print them. The same as no
+    /// subcommand.
     List,
-    /// Add an option, printed last on invoices. Its words need no quotes.
+    /// Add an option, printed last on invoices. Without --label, --detail or
+    /// --account, each part is asked for.
     Add {
-        #[arg(required = true)]
-        option: Vec<String>,
+        /// How commands will name it, such as postfinance.
+        id: Option<String>,
+        #[command(flatten)]
+        parts: OptionParts,
     },
-    /// Replace option N with TEXT; without TEXT, edit it on the line.
-    Edit { n: usize, text: Vec<String> },
-    /// Remove option N, as `abo payment-options` numbers them.
-    Remove { n: usize },
+    /// Change the option ID names, or starts, the id of. Without --id,
+    /// --label, --detail or --account, each part is asked for, the current
+    /// one offered.
+    Edit {
+        id: String,
+        /// A new id.
+        #[arg(long = "id")]
+        new_id: Option<String>,
+        #[command(flatten)]
+        parts: OptionParts,
+    },
+    /// Remove the option ID names, or starts, the id of.
+    Remove { id: String },
+}
+
+#[derive(clap::Args)]
+struct OptionParts {
+    /// What invoices call it, such as "PostFinance bank account".
+    #[arg(long)]
+    label: Option<String>,
+    /// A line invoices print under the name: account holder, IBAN, BIC, the
+    /// bank's address. Repeatable, one line each.
+    #[arg(long = "detail")]
+    details: Vec<String>,
+    /// The declared account money paid this way arrives in. Adding, it
+    /// defaults to assets:bank.
+    #[arg(long)]
+    account: Option<String>,
+}
+
+impl OptionParts {
+    fn given(&self) -> bool {
+        self.label.is_some() || !self.details.is_empty() || self.account.is_some()
+    }
 }
 
 #[derive(Subcommand)]
@@ -111,6 +144,10 @@ enum Cmd {
         /// The customer's own order reference.
         #[arg(long, default_value = "")]
         reference: String,
+        /// The id of a payment option to print, repeatable. Defaults to all
+        /// of them, as `abo payment-options` lists them.
+        #[arg(long)]
+        pay_to: Vec<String>,
         #[arg(long, default_value = "")]
         note: String,
     },
@@ -317,8 +354,9 @@ async fn run(cli: Cli) -> Result<()> {
             if dir.exists() {
                 bail!("{} already exists; choose another name, or move it out of the way", dir.display());
             }
-            let (company, vat, sales_rate, author) = ask(name)?;
-            let r = repo::init(&dir, &company, &vat, sales_rate, author.as_ref().map(|(n, e)| (n.as_str(), e.as_str())))?;
+            let (company, vat, sales_rate, payment, author) = ask(name)?;
+            let author = author.as_ref().map(|(n, e)| (n.as_str(), e.as_str()));
+            let r = repo::init(&dir, &company, &vat, sales_rate, &payment, author)?;
             emit(cli.json, &r, || {
                 format!(
                     "Books opened in {} ({}).\nNext: cd {slug}, edit journal/accounts.journal, then `abo add`.",
@@ -392,7 +430,7 @@ async fn run(cli: Cli) -> Result<()> {
                 return emit(cli.json, &r, || format!("Committed {} to {}.", r.commit, r.file));
             }
         }
-        Cmd::Invoice { to, items, date, due_days, vat_rate, currency, decimals, reference, note } => {
+        Cmd::Invoice { to, items, date, due_days, vat_rate, currency, decimals, reference, pay_to, note } => {
             let ctx = Ctx::open(&here)?;
             let args = invoice::IssueArgs {
                 customer: to.replace("\\n", "\n"),
@@ -403,6 +441,7 @@ async fn run(cli: Cli) -> Result<()> {
                 currency,
                 decimals,
                 reference,
+                pay_to,
                 note,
             };
             let r = invoice::issue(&ctx, &args)?;
@@ -503,33 +542,57 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Cmd::PaymentOptions { change } => {
             let ctx = Ctx::open(&here)?;
+            let declared = journal::declared_accounts(&ctx)?;
+            let others = |id: &str| ctx.cfg.payment.iter().filter(|p| p.id != id).map(|p| p.id.clone()).collect::<Vec<_>>();
             let (options, commit) = match change {
-                None | Some(PaymentCmd::List) => (ctx.cfg.company.payment.clone(), None),
-                Some(PaymentCmd::Edit { n, text }) => {
-                    let text = match text.is_empty() {
-                        false => text.join(" "),
-                        // The option as it stands, ready to change on the line.
-                        true => {
-                            let now = n.checked_sub(1).and_then(|i| ctx.cfg.company.payment.get(i));
-                            let now = now.with_context(|| format!("there is no payment option {n}"))?;
-                            rustyline::DefaultEditor::new()?.readline_with_initial(&format!("{n}. "), (now, ""))?
+                None | Some(PaymentCmd::List) => (ctx.cfg.payment.clone(), None),
+                Some(PaymentCmd::Add { id, parts }) => {
+                    let o = match (id, parts.given()) {
+                        (Some(id), true) => repo::PaymentOption {
+                            id,
+                            label: parts.label.unwrap_or_default(),
+                            details: parts.details.join("\n"),
+                            account: parts.account.unwrap_or_else(|| "assets:bank".into()),
+                        },
+                        (None, true) => bail!("an option added with --label, --detail or --account needs an id"),
+                        (id, false) => {
+                            let start = id.map(|id| repo::PaymentOption { id, ..Default::default() });
+                            let asked = ask_option(start.as_ref(), &others(""), Some(&declared))?;
+                            asked.context("no id, so no option added")?
                         }
                     };
-                    let r = payment::edit(&ctx, n, &text)?;
+                    let r = payment::add(&ctx, o)?;
                     (r.options, Some(r.commit))
                 }
-                Some(PaymentCmd::Add { option }) => {
-                    let r = payment::add(&ctx, &option.join(" "))?;
+                Some(PaymentCmd::Edit { id, new_id, parts }) => {
+                    let now = payment::find(&ctx.cfg.payment, &id)?.clone();
+                    let o = match new_id.is_some() || parts.given() {
+                        true => repo::PaymentOption {
+                            id: new_id.unwrap_or(now.id.clone()),
+                            label: parts.label.unwrap_or(now.label.clone()),
+                            details: match parts.details.is_empty() {
+                                true => now.details.clone(),
+                                false => parts.details.join("\n"),
+                            },
+                            account: parts.account.unwrap_or(now.account.clone()),
+                        },
+                        false => ask_option(Some(&now), &others(&now.id), Some(&declared))?
+                            .context("no id, so nothing changed")?,
+                    };
+                    let r = payment::edit(&ctx, &now.id, o)?;
                     (r.options, Some(r.commit))
                 }
-                Some(PaymentCmd::Remove { n }) => {
-                    let r = payment::remove(&ctx, n)?;
+                Some(PaymentCmd::Remove { id }) => {
+                    let r = payment::remove(&ctx, &id)?;
                     (r.options, Some(r.commit))
                 }
             };
             let r = serde_json::json!({ "options": options, "commit": commit });
             emit(cli.json, &r, || {
-                let mut s: String = options.iter().enumerate().map(|(i, o)| format!("{}. {o}\n", i + 1)).collect();
+                let mut s: String = options.iter().map(|o| {
+                    let details: String = o.details.lines().map(|l| format!("    {l}\n")).collect();
+                    format!("{}: {} -> {}\n{details}", o.id, o.label, o.account)
+                }).collect();
                 if options.is_empty() {
                     s += "No payment options; invoices say only when to pay.\n";
                 }
@@ -649,14 +712,41 @@ fn read(question: &str, default: &str) -> Result<Option<String>> {
     Ok(Some(if s.is_empty() { default.to_string() } else { s.to_string() }))
 }
 
+/// The answer to a question put with `now` already on the line, to change
+/// or keep; `None` when the input has run out. Without a terminal nothing
+/// can be put on the line, so there a blank answer keeps `now`.
+fn read_over(question: &str, now: &str) -> Result<Option<String>> {
+    use std::io::IsTerminal as _;
+    let s = match rustyline::DefaultEditor::new()?.readline_with_initial(&format!("{question}: "), (now, "")) {
+        Err(rustyline::error::ReadlineError::Eof) => return Ok(None),
+        r => r?,
+    };
+    let s = s.trim();
+    Ok(Some(if s.is_empty() && !std::io::stdin().is_terminal() { now.to_string() } else { s.to_string() }))
+}
+
 fn prompt(question: &str, default: &str) -> Result<String> {
     Ok(read(question, default)?.unwrap_or_else(|| default.to_string()))
 }
 
 /// Asks until `check` accepts the answer, saying each time what was wrong.
 fn prompt_until<T>(question: &str, default: &str, check: impl Fn(&str) -> Result<T, String>) -> Result<T> {
+    ask_until(|| read(question, default), question, default, check)
+}
+
+/// `prompt_until`, with `now` on the line to change or keep.
+fn prompt_over_until<T>(question: &str, now: &str, check: impl Fn(&str) -> Result<T, String>) -> Result<T> {
+    ask_until(|| read_over(question, now), question, now, check)
+}
+
+fn ask_until<T>(
+    read: impl Fn() -> Result<Option<String>>,
+    question: &str,
+    default: &str,
+    check: impl Fn(&str) -> Result<T, String>,
+) -> Result<T> {
     loop {
-        let answer = read(question, default)?;
+        let answer = read()?;
         match check(answer.as_deref().unwrap_or(default)) {
             Ok(v) => return Ok(v),
             // With the input run out there is no asking again.
@@ -668,11 +758,21 @@ fn prompt_until<T>(question: &str, default: &str, check: impl Fn(&str) -> Result
 
 /// Lines until an empty one, under `intro`.
 fn prompt_lines(intro: &str) -> Result<Vec<String>> {
+    prompt_lines_over(intro, &[])
+}
+
+/// Lines until an empty one, under `intro`, the first ones starting as
+/// `now`'s, to change or keep.
+fn prompt_lines_over(intro: &str, now: &[&str]) -> Result<Vec<String>> {
+    use std::io::IsTerminal as _;
     println!("{intro}");
     let mut editor = rustyline::DefaultEditor::new()?;
     let mut lines = vec![];
     loop {
-        match editor.readline("  ") {
+        let now = now.get(lines.len()).copied().unwrap_or("");
+        // Without a terminal there is no line to put them on.
+        let now = if std::io::stdin().is_terminal() { now } else { "" };
+        match editor.readline_with_initial("  ", (now, "")) {
             Err(rustyline::error::ReadlineError::Eof) => break,
             r if r.as_ref().is_ok_and(|l| l.trim().is_empty()) => break,
             r => lines.push(r?.trim().to_string()),
@@ -792,14 +892,23 @@ fn confirm(question: &str, secs: u8) -> Result<bool> {
     Ok(false)
 }
 
-fn ask(name: String) -> Result<(repo::Company, Vat, Decimal, Option<(String, String)>)> {
+type Answers = (repo::Company, Vat, Decimal, Vec<repo::PaymentOption>, Option<(String, String)>);
+
+fn ask(name: String) -> Result<Answers> {
     let address = prompt_lines("Address, one line at a time; an empty line ends it:")?.join("\n");
     let country = prompt("Country", "")?;
     let tax_id = prompt("Tax registration number (blank if not registered)", "")?;
-    let payment = prompt_lines(
-        "Where invoices ask to be paid, one option per line, such as an IBAN;\n\
-         an empty line ends it, or skips it (`abo payment-options` changes them later):",
-    )?;
+    println!(
+        "Where invoices ask to be paid: none, one or several options, each with an id\n\
+         for abo commands, a name and details for invoices, and the account the money\n\
+         arrives in. A blank id skips them, or ends them; `abo payment-options` changes\n\
+         them later."
+    );
+    let mut payment: Vec<repo::PaymentOption> = vec![];
+    // The accounts are not declared yet: init declares the ones named here.
+    while let Some(o) = ask_option(None, &payment.iter().map(|p| p.id.clone()).collect::<Vec<_>>(), None)? {
+        payment.push(o);
+    }
     let currency = prompt_until("Currency", "", answer::currency)?;
     let vat = match choose("VAT method", &answer::METHODS, "none", answer::method)? {
         "none" => Vat::None,
@@ -830,15 +939,58 @@ fn ask(name: String) -> Result<(repo::Company, Vat, Decimal, Option<(String, Str
             address,
             country,
             tax_id,
-            payment,
+            old_payment: None,
             currency,
             tax_notes: String::new(),
             closed_through: None,
         },
         vat,
         sales_rate,
+        payment,
         author,
     ))
+}
+
+/// One payment option, part by part, starting from `start`'s parts where it
+/// has them; `None` for a blank id. The id must not be one of `taken`, and
+/// the account one of `declared` when that is given.
+fn ask_option(
+    start: Option<&repo::PaymentOption>,
+    taken: &[String],
+    declared: Option<&[String]>,
+) -> Result<Option<repo::PaymentOption>> {
+    // Each part is put on the line as it stands, to change or keep.
+    let was = start.cloned().unwrap_or_default();
+    let id = prompt_over_until("Id, such as postfinance (blank: none)", &was.id, |s| match s {
+        "" => Ok(None),
+        s if taken.iter().any(|t| t == s) => Err(format!("{s:?} is already the id of a payment option.")),
+        s => answer::option_id(s).map(Some),
+    })?;
+    let Some(id) = id else { return Ok(None) };
+    let label = read_over("Name on invoices, such as PostFinance bank account", &was.label)?.unwrap_or(was.label);
+    let details = prompt_lines_over(
+        "Details on invoices, a line at a time (holder, IBAN, BIC, bank address);\n\
+         an empty line ends them:",
+        &was.details.lines().collect::<Vec<_>>(),
+    )?;
+    // Without a terminal the lines could not be offered; none keeps them.
+    let offered = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let details = if details.is_empty() && !offered { was.details } else { details.join("\n") };
+    let default = if was.account.is_empty() { "assets:bank" } else { &was.account };
+    let account = prompt_over_until("Account the money arrives in", default, |s| {
+        let a = answer::account(s)?;
+        match declared {
+            Some(d) if !d.contains(&a) => {
+                Err(format!("{a} is not declared; declare it in journal/accounts.journal, or choose another."))
+            }
+            _ => Ok(a),
+        }
+    })?;
+    if label.is_empty() && details.is_empty() {
+        eprintln!("  An option needs a name or details for invoices to print; asking again.");
+        return ask_option(Some(&repo::PaymentOption { id, label, details, account }), taken, declared);
+    }
+    Ok(Some(repo::PaymentOption { id, label, details, account }))
 }
 
 fn git_global(key: &str) -> Option<String> {

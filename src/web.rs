@@ -892,6 +892,9 @@ async fn invoice_submit(
             currency: (!f.currency.trim().is_empty()).then(|| f.currency.trim().to_owned()),
             decimals: None,
             reference: f.reference.clone(),
+            // ponytail: every option; a choice on the form comes with the
+            // form for payment options.
+            pay_to: vec![],
             note: f.note.clone(),
         };
         let r = invoice::issue(&ctx, &args)?;
