@@ -12,11 +12,10 @@ mod web;
 use anyhow::{bail, Context as _, Result};
 use clap::{Parser, Subcommand};
 use journal::{Entry, Posting};
-use repo::{Ctx, Vat};
+use repo::{answer, Ctx, Vat};
 use rust_decimal::Decimal;
 use std::io::Write as _;
 use std::path::PathBuf;
-use std::str::FromStr;
 
 #[derive(Parser)]
 #[command(name = "abo", version, about = "accountant back office")]
@@ -574,15 +573,33 @@ fn emit<T: serde::Serialize>(json: bool, value: &T, human: impl FnOnce() -> Stri
     Ok(())
 }
 
-fn prompt(question: &str, default: &str) -> Result<String> {
+/// The answer, or the default for a blank one; `None` when the input has run out.
+fn read(question: &str, default: &str) -> Result<Option<String>> {
     let question = if default.is_empty() { format!("{question}: ") } else { format!("{question} [{default}]: ") };
     // A line editor, so the arrow keys move along what has been typed.
     let s = match rustyline::DefaultEditor::new()?.readline(&question) {
-        Err(rustyline::error::ReadlineError::Eof) => String::new(),
+        Err(rustyline::error::ReadlineError::Eof) => return Ok(None),
         r => r?,
     };
     let s = s.trim();
-    Ok(if s.is_empty() { default.to_string() } else { s.to_string() })
+    Ok(Some(if s.is_empty() { default.to_string() } else { s.to_string() }))
+}
+
+fn prompt(question: &str, default: &str) -> Result<String> {
+    Ok(read(question, default)?.unwrap_or_else(|| default.to_string()))
+}
+
+/// Asks until `check` accepts the answer, saying each time what was wrong.
+fn prompt_until<T>(question: &str, default: &str, check: impl Fn(&str) -> Result<T, String>) -> Result<T> {
+    loop {
+        let answer = read(question, default)?;
+        match check(answer.as_deref().unwrap_or(default)) {
+            Ok(v) => return Ok(v),
+            // With the input run out there is no asking again.
+            Err(e) if answer.is_none() => bail!("{question}: {e}"),
+            Err(e) => eprintln!("  {e}"),
+        }
+    }
 }
 
 /// Asks y/n on stderr, counting down; silence, or no terminal to ask on, is no.
@@ -628,25 +645,23 @@ fn ask(name: String) -> Result<(repo::Company, Vat, Decimal, Option<(String, Str
     let country = prompt("Country", "")?;
     let tax_id = prompt("Tax registration number (blank if not registered)", "")?;
     let payment = prompt("How customers pay you (bank details, wallet, cash)", "")?;
-    let currency = prompt("Currency", "")?;
-    let method = prompt("VAT method (effective / flat / none)", "none")?;
-    let vat = match method.as_str() {
+    let currency = prompt_until("Currency", "", answer::currency)?;
+    let vat = match prompt_until("VAT method (effective / flat / none)", "none", answer::method)? {
         "none" => Vat::None,
         // A flat percentage of gross turnover with no input deduction. Sold
         // under different names in different places.
         "flat" => Vat::Flat {
-            rate: Decimal::from_str(&prompt("Flat rate remitted on gross turnover, percent", "")?)?,
+            rate: prompt_until("Flat rate remitted on gross turnover, percent", "", answer::percent)?,
             account: prompt("VAT account", "liabilities:vat")?,
         },
-        "effective" => Vat::Effective {
+        _ => Vat::Effective {
             input: prompt("Input VAT account", "assets:vat:input")?,
             output: prompt("Output VAT account", "liabilities:vat:output")?,
         },
-        other => bail!("unknown VAT method {other:?}"),
     };
     let sales_rate = match vat {
         Vat::None => Decimal::ZERO,
-        _ => Decimal::from_str(&prompt("VAT rate charged to customers, percent", "0")?)?,
+        _ => prompt_until("VAT rate charged to customers, percent", "0", answer::percent)?,
     };
     // Every change to the books is a commit, and git refuses one without an
     // author. Offer the global identity; blank on both leaves it to git.

@@ -33,7 +33,10 @@ method needs — for `effective` the input and the output VAT accounts, for
 `flat` the rate remitted and the VAT account, for `none` nothing — and, unless
 the method is `none`, the rate charged to customers; and last the name and
 email git records on every change, offering the global git identity. Blank
-takes the default shown in brackets. Refused before any question is asked: a
+takes the default shown in brackets. A wrong answer is asked again with what
+was wrong: a currency must be letters (`eur` is taken as EUR), a VAT method
+may be the start of one (`e`, `f`, `n`), a rate must be a number from 0 up to
+100. Refused before any question is asked: a
 directory of that name already there, a name with no letters or digits,
 `--dir`, and running it inside a company's books.
 **Done when** the company's directory is a git repository with one commit

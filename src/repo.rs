@@ -218,6 +218,46 @@ pub struct InitReport {
     pub commit: String,
 }
 
+/// The checks on init's answers, shared by the questions on the console and
+/// the form in the browser. Each takes an answer as typed and says what is
+/// wrong with it in words that can be shown under the question.
+pub mod answer {
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
+
+    /// A currency code, in letters, upper-cased: `eur` is EUR.
+    pub fn currency(s: &str) -> Result<String, String> {
+        if s.is_empty() {
+            return Err("A currency is needed, such as EUR.".into());
+        }
+        if !s.chars().all(|c| c.is_ascii_alphabetic()) {
+            return Err(format!("{s:?} is not a currency code: letters only, such as EUR."));
+        }
+        Ok(s.to_ascii_uppercase())
+    }
+
+    pub const METHODS: [&str; 3] = ["effective", "flat", "none"];
+
+    /// One of `METHODS`, or the start of exactly one of them, in any case.
+    pub fn method(s: &str) -> Result<&'static str, String> {
+        let s = s.to_ascii_lowercase();
+        match METHODS.iter().filter(|m| !s.is_empty() && m.starts_with(&s)).collect::<Vec<_>>()[..] {
+            [m] => Ok(m),
+            _ => Err(format!("{s:?} is not a VAT method: effective, flat or none.")),
+        }
+    }
+
+    /// A percentage from 0 up to, not including, 100; a trailing % is allowed.
+    pub fn percent(s: &str) -> Result<Decimal, String> {
+        let r = Decimal::from_str(s.strip_suffix('%').unwrap_or(s).trim())
+            .map_err(|_| format!("{s:?} is not a number, such as 21 or 5.5."))?;
+        if r < Decimal::ZERO || r >= Decimal::ONE_HUNDRED {
+            return Err(format!("{s} is not a percentage from 0 up to 100."));
+        }
+        Ok(r)
+    }
+}
+
 /// A company's directory name: its name in ASCII, lower case, with every run
 /// of anything but letters and digits made one dash. ASCII so that it can be
 /// typed on any keyboard; letters outside it are spelled in it, not dropped.
@@ -444,8 +484,59 @@ mod tests {
     fn slug() {
         assert_eq!(super::slug("Smith & Sons, LLC"), "smith-sons-llc");
         assert_eq!(super::slug("  Ünïcode GmbH "), "unicode-gmbh");
-        assert_eq!(super::slug("Łódź Straße"), "lodz-strasse");
-        assert_eq!(super::slug("北京"), "bei-jing");
         assert_eq!(super::slug("&&"), "");
+    }
+
+    /// What deunicode spells, as of the version this was written against.
+    /// Directory names are made from it, so a new version that spells
+    /// something differently would name a company's directory differently;
+    /// this fails first. Japanese read as Chinese and € as EUR are what it
+    /// does, not what anyone chose.
+    #[test]
+    fn deunicode_is_unchanged() {
+        for (name, spelled, slug) in [
+            ("Café Crème SARL", "Cafe Creme SARL", "cafe-creme-sarl"),
+            ("Müller & Söhne GmbH", "Muller & Sohne GmbH", "muller-sohne-gmbh"),
+            ("Straße", "Strasse", "strasse"),
+            ("Łódź", "Lodz", "lodz"),
+            ("Ærøskøbing Å/S", "AEroskobing A/S", "aeroskobing-a-s"),
+            ("İstanbul Işık", "Istanbul Isik", "istanbul-isik"),
+            ("Ñandú S.L.", "Nandu S.L.", "nandu-s-l"),
+            ("Þór ehf.", "Thor ehf.", "thor-ehf"),
+            ("Nguyễn Văn", "Nguyen Van", "nguyen-van"),
+            ("Ελληνικά Α.Ε.", "Ellenika A.E.", "ellenika-a-e"),
+            ("Москва ООО", "Moskva OOO", "moskva-ooo"),
+            ("北京公司", "Bei Jing Gong Si", "bei-jing-gong-si"),
+            ("東京株式会社", "Dong Jing Zhu Shi Hui She", "dong-jing-zhu-shi-hui-she"),
+            ("서울", "seoul", "seoul"),
+            ("مصر", "mSr", "msr"),
+            ("שלום", "shlvm", "shlvm"),
+            ("ﬁnance", "finance", "finance"),
+            ("ＡＢＣ", "ABC", "abc"),
+            ("€uro Ltd", "EURuro Ltd", "eururo-ltd"),
+            ("© ™ ®", "(c) tm (r)", "c-tm-r"),
+            ("Smith 😀 Co", "Smith grinning Co", "smith-grinning-co"),
+            ("Crème – “quoted” — dash", "Creme - \"quoted\" -- dash", "creme-quoted-dash"),
+            ("O'Brien", "O'Brien", "o-brien"),
+        ] {
+            assert_eq!(deunicode::deunicode(name), spelled, "{name}");
+            assert_eq!(super::slug(name), slug, "{name}");
+        }
+    }
+
+    #[test]
+    fn answers() {
+        use super::answer::*;
+        use rust_decimal::Decimal;
+        assert_eq!(currency("eur"), Ok("EUR".into()));
+        assert!(currency("").is_err() && currency("E U R").is_err() && currency("$").is_err());
+        for (typed, m) in [("e", "effective"), ("FL", "flat"), ("none", "none"), ("N", "none")] {
+            assert_eq!(method(typed), Ok(m), "{typed}");
+        }
+        assert!(method("").is_err() && method("x").is_err() && method("flatter").is_err());
+        assert_eq!(percent("5.3"), Ok(Decimal::new(53, 1)));
+        assert_eq!(percent("21%"), Ok(Decimal::from(21)));
+        assert_eq!(percent("0"), Ok(Decimal::ZERO));
+        assert!(percent("abc").is_err() && percent("-1").is_err() && percent("100").is_err());
     }
 }

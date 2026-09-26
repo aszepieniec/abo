@@ -493,3 +493,35 @@ fn undo_and_revert() {
 
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+/// A wrong answer to init is asked again, saying what was wrong, instead of
+/// losing every answer before it; input that runs out on one is refused.
+#[test]
+fn init_asks_again() {
+    let base = std::env::temp_dir().join(format!("abo-ask-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+
+    // address, country, tax id, payment; currency blank, spaced, then good;
+    // method unknown, then a prefix; flat rate not a number, too big, then
+    // good; VAT account; rate charged to customers
+    let o = abo(
+        &base,
+        &["init", "Test Ltd"],
+        "\n\n\n\n\ne u r\neur\nx\nfl\nabc\n150\n5.3%\n\n0\n",
+    );
+    assert!(o.status.success(), "init failed: {}", err(&o));
+    for says in ["A currency is needed", "is not a currency code", "is not a VAT method", "is not a number", "from 0 up to 100"] {
+        assert!(err(&o).contains(says), "no {says:?} in: {}", err(&o));
+    }
+    let toml = std::fs::read_to_string(base.join("test-ltd/abo.toml")).unwrap();
+    for has in ["currency  = \"EUR\"", "method  = \"flat\"", "rate    = 5.3"] {
+        assert!(toml.contains(has), "no {has:?} in:\n{toml}");
+    }
+
+    let o = abo(&base, &["init", "Other"], "\n\n\n\n");
+    assert!(!o.status.success() && err(&o).contains("Currency: A currency is needed"), "{}", err(&o));
+    assert!(!base.join("other").exists());
+
+    std::fs::remove_dir_all(&base).unwrap();
+}
