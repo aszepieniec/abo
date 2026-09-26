@@ -75,6 +75,77 @@ pub async fn serve(ctx: Ctx, port: u16) -> Result<()> {
     Ok(())
 }
 
+/// A data directory: any number of companies, each in a subdirectory that
+/// holds its books. For now a page listing them; serving each one, and
+/// opening new ones from the browser, come next.
+pub async fn serve_data(root: PathBuf, port: u16) -> Result<()> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let app = Router::new()
+        .route("/", get(landing))
+        .layer(axum::middleware::from_fn(log))
+        .with_state(Arc::new(root.clone()));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    info!(data = %root.display(), "http://{addr}");
+    axum::serve(listener, app).with_graceful_shutdown(shutdown()).await?;
+    Ok(())
+}
+
+async fn landing(axum::extract::State(root): axum::extract::State<Arc<PathBuf>>) -> Response {
+    // (directory, company name, or why its abo.toml could not be read)
+    let mut companies: Vec<(String, Result<String, String>)> = std::fs::read_dir(&*root)
+        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.join("abo.toml").is_file()).collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| {
+            let dir = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            (dir, Ctx::open(&p).map(|c| c.cfg.company.name).map_err(|e| format!("{e:#}")))
+        })
+        .collect();
+    companies.sort();
+    Html(
+        html! {
+            (DOCTYPE)
+            html lang="en" {
+                head {
+                    meta charset="utf-8";
+                    meta name="viewport" content="width=device-width, initial-scale=1";
+                    title { "Companies · abo" }
+                    style { (PreEscaped(STYLE)) }
+                }
+                body {
+                    aside.side { a.brand href="/" { span.mark { "abo" } } }
+                    main.content {
+                        h1 { "Companies" }
+                        @if companies.is_empty() {
+                            p.muted { "No companies in " code { (root.display()) } " yet." }
+                        } @else {
+                            div.box {
+                                table.list {
+                                    thead { tr { th { "Company" } th { "Directory" } } }
+                                    tbody {
+                                        @for (dir, name) in &companies {
+                                            tr {
+                                                @match name {
+                                                    Ok(n) => td { (n) },
+                                                    Err(e) => td.muted { "abo.toml unreadable: " (e) },
+                                                }
+                                                td { code { (dir) } }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        p.muted.small { "To open the books for a new company, run " code { "abo init <name>" } " in " code { (root.display()) } "." }
+                    }
+                }
+            }
+        }
+        .into_string(),
+    )
+    .into_response()
+}
+
 async fn shutdown() {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;

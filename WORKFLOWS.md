@@ -23,16 +23,21 @@ last such run.
 ## A. Setting up
 
 ### A1. Open the books — Supported (CLI)
-`abo init` in an empty directory asks, one per line: the company's name,
-address, country, tax number, payment details, currency and VAT method; then
-what the method needs — for `effective` the input and the output VAT accounts,
-for `flat` the rate remitted and the VAT account, for `none` nothing — and,
-unless the method is `none`, the rate charged to customers. Blank takes the
-default shown in brackets. A directory that already holds books is refused
-before any question is asked.
-**Done when** the directory is a git repository with one commit holding
-`abo.toml`, `journal/main.journal`, `journal/accounts.journal` (the default
-accounts, plus the VAT accounts the method needs) and `.gitignore`.
+`abo init <name>`, run in a data directory, makes the company's directory
+there: the name in lower case, every run of anything but letters and digits
+made one dash (`Smith & Sons, LLC` → `smith-sons-llc`). It then asks, one per
+line: the company's address (a line at a time, ended by an empty line),
+country, tax number, payment details, currency and VAT method; then what the
+method needs — for `effective` the input and the output VAT accounts, for
+`flat` the rate remitted and the VAT account, for `none` nothing — and, unless
+the method is `none`, the rate charged to customers; and last the name and
+email git records on every change, offering the global git identity. Blank
+takes the default shown in brackets. Refused before any question is asked: a
+directory of that name already there, a name with no letters or digits,
+`--dir`, and running it inside a company's books.
+**Done when** the company's directory is a git repository with one commit
+holding `abo.toml`, `journal/main.journal`, `journal/accounts.journal` (the
+default accounts, plus the VAT accounts the method needs) and `.gitignore`.
 
 ### A2. Declare an account or a commodity — Supported (editor, by design)
 Add an `account …` or `commodity …` line to `journal/accounts.journal` and
@@ -41,12 +46,16 @@ commit it. There is deliberately no editor for this in abo (DESIGN §12).
 with a message saying where to declare it.
 
 ### A3. Start the web interface — Supported
-`abo serve` for the books in the current directory, `abo demo` for throwaway
-toy books. A missing `git` or `hledger` stops startup with a message naming
+`abo serve [--dir x]` serves one company when `x` (default: the working
+directory) is inside its books; otherwise `x` is a data directory, and the
+front page lists the companies in it. A missing `x` is created after a y/n
+question that counts down five seconds and takes silence as no. `abo demo`
+serves throwaway toy books. A missing `git` or `hledger` stops startup with a message naming
 what it is for; a missing `typst` is a warning. The server reads `abo.toml` and
 the journal afresh on every request, so an edit to either — a closed period, a
 new rate, a declared account — applies without a restart.
-**Done when** the front page shows the company, its balances and recent entries.
+**Done when** the front page shows the company, its balances and recent
+entries; for a data directory, the name and directory of each company in it.
 
 ---
 

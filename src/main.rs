@@ -33,8 +33,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Create a books repository here.
-    Init,
+    /// Open the books for a new company, in a directory of its own named
+    /// after it, inside the working directory.
+    Init {
+        /// The company's name. The directory is this in lower case, with
+        /// anything but letters and digits made into single dashes.
+        name: String,
+    },
     /// Book an entry. POSTINGs are `account=amount [COMMODITY]`, one may omit the amount.
     Add {
         #[arg(long)]
@@ -260,28 +265,40 @@ async fn run(cli: Cli) -> Result<()> {
             );
         }
     }
-    // `abo init` makes its own directory.
-    if let Some(d) = cli.dir.as_ref().filter(|d| !d.exists() && !matches!(cli.cmd, Cmd::Init)) {
-        if !confirm(&format!("{} does not exist. Create it and open books there?", d.display()), 5)? {
+    // A data directory may start out empty, so serve may make it. Every other
+    // command needs books that are already there.
+    if let Some(d) = cli.dir.as_ref().filter(|d| !d.exists() && matches!(cli.cmd, Cmd::Serve { .. })) {
+        if !confirm(&format!("{} does not exist. Create it?", d.display()), 5)? {
             bail!("{} does not exist", d.display());
         }
-        // An empty directory is no use to any command, so open books in it.
-        let (company, vat, sales_rate, author) = ask()?;
-        let r = repo::init(d, &company, &vat, sales_rate, author.as_ref().map(|(n, e)| (n.as_str(), e.as_str())))?;
-        eprintln!("Books opened in {} ({}).", r.root, r.commit);
+        std::fs::create_dir_all(d)?;
     }
     let here = cli.dir.clone().unwrap_or(std::env::current_dir()?);
 
     match cli.cmd {
-        Cmd::Init => {
-            // Before the questions, not after them.
-            if here.join("abo.toml").exists() {
-                bail!("{} is already a books repository", here.display());
+        Cmd::Init { name } => {
+            // Refusals before the questions, not after them.
+            if cli.dir.is_some() {
+                bail!("abo init makes the company's directory in the working directory; it takes no --dir");
             }
-            let (company, vat, sales_rate, author) = ask()?;
-            let r = repo::init(&here, &company, &vat, sales_rate, author.as_ref().map(|(n, e)| (n.as_str(), e.as_str())))?;
+            let slug = repo::slug(&name);
+            if slug.is_empty() {
+                bail!("{name:?} has no letters or digits to name a directory after");
+            }
+            if let Some(books) = repo::books_root(&here)? {
+                bail!("{} is inside the books in {}; run abo init from the data directory", here.display(), books.display());
+            }
+            let dir = here.join(&slug);
+            if dir.exists() {
+                bail!("{} already exists; choose another name, or move it out of the way", dir.display());
+            }
+            let (company, vat, sales_rate, author) = ask(name)?;
+            let r = repo::init(&dir, &company, &vat, sales_rate, author.as_ref().map(|(n, e)| (n.as_str(), e.as_str())))?;
             emit(cli.json, &r, || {
-                format!("Books opened in {} ({}).\nNext: edit journal/accounts.journal, then `abo add`.", r.root, r.commit)
+                format!(
+                    "Books opened in {} ({}).\nNext: cd {slug}, edit journal/accounts.journal, then `abo add`.",
+                    r.root, r.commit
+                )
             })
         }
         Cmd::Add { date, description, tags, postings } => {
@@ -476,7 +493,12 @@ async fn run(cli: Cli) -> Result<()> {
         Cmd::Reg { args } => passthrough(&here, "register", &args, cli.json),
         Cmd::Serve { port } => {
             logging(&missing);
-            web::serve(Ctx::open(&here)?, port).await
+            // Inside a company's books, that company alone; anywhere else, a
+            // data directory holding any number of them.
+            match repo::books_root(&here)? {
+                Some(_) => web::serve(Ctx::open(&here)?, port).await,
+                None => web::serve_data(here.canonicalize()?, port).await,
+            }
         }
         Cmd::Demo { port } => {
             logging(&missing);
@@ -591,8 +613,7 @@ fn confirm(question: &str, secs: u8) -> Result<bool> {
     Ok(false)
 }
 
-fn ask() -> Result<(repo::Company, Vat, Decimal, Option<(String, String)>)> {
-    let name = prompt("Company name", "")?;
+fn ask(name: String) -> Result<(repo::Company, Vat, Decimal, Option<(String, String)>)> {
     println!("Address, one line at a time; an empty line ends it:");
     let mut editor = rustyline::DefaultEditor::new()?;
     let mut lines = vec![];

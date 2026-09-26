@@ -33,15 +33,27 @@ fn commits(dir: &Path) -> usize {
 
 #[test]
 fn m0() {
-    let dir = std::env::temp_dir().join(format!("abo-test-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let base = std::env::temp_dir().join(format!("abo-test-{}", std::process::id()));
+    let dir = base.join("test-ltd");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
 
-    // name, address, country, tax id, payment, currency, method, flat rate,
+    // address, country, tax id, payment, currency, method, flat rate,
     // vat account, rate charged to customers
-    let o = abo(&dir, &["init"], "Test Ltd\n\n\n\n\nEUR\nflat\n5.3\nliabilities:vat\n0\n");
+    let o = abo(&base, &["init", "Test Ltd"], "\n\n\n\nEUR\nflat\n5.3\nliabilities:vat\n0\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
     assert_eq!(commits(&dir), 1);
+
+    // A second company of the same name, a --dir, and init from inside a
+    // company's books are each refused before any question is asked.
+    for (cwd, args, says) in [
+        (&base, &["init", "test  LTD!"][..], "already exists"),
+        (&base, &["init", "Other", "--dir", "x"][..], "takes no --dir"),
+        (&dir, &["init", "Other"][..], "is inside the books in"),
+    ] {
+        let o = abo(cwd, args, "");
+        assert!(!o.status.success() && err(&o).contains(says), "{args:?}: {}", err(&o));
+    }
 
     // balanced: commits
     let o = abo(
@@ -140,7 +152,7 @@ fn m0() {
     assert!(o.status.success(), "bal failed: {}", err(&o));
     assert!(String::from_utf8_lossy(&o.stdout).contains("expenses:general"));
 
-    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_dir_all(&base).unwrap();
 }
 
 /// The invoice path end to end. Skipped where typst is not installed, since
@@ -151,16 +163,17 @@ fn invoices() {
         eprintln!("skipping: typst is not installed");
         return;
     }
-    let dir = std::env::temp_dir().join(format!("abo-inv-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let base = std::env::temp_dir().join(format!("abo-inv-{}", std::process::id()));
+    let dir = base.join("test-ltd");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
 
     let o = abo(
-        &dir,
-        &["init"],
-        // name, address and the empty line ending it, country, tax id,
+        &base,
+        &["init", "Test Ltd"],
+        // address and the empty line ending it, country, tax id,
         // payment, currency, method, input, output, rate charged to customers
-        "Test Ltd\n1 Example Street\n\nExampleland\nTAX-1\nIBAN XX00\nEUR\neffective\n\n\n10\n",
+        "1 Example Street\n\nExampleland\nTAX-1\nIBAN XX00\nEUR\neffective\n\n\n10\n",
     );
     assert!(o.status.success(), "init failed: {}", err(&o));
 
@@ -203,17 +216,18 @@ fn invoices() {
     assert!(String::from_utf8_lossy(&o.stdout).contains("161.00"), "{}",
             String::from_utf8_lossy(&o.stdout));
 
-    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_dir_all(&base).unwrap();
 }
 
 /// Manual reconciliation: tick booked items off against a statement, then
 /// freeze the agreed balance as an assertion hledger re-checks forever.
 #[test]
 fn reconciliation() {
-    let dir = std::env::temp_dir().join(format!("abo-rec-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let o = abo(&dir, &["init"], "Test Ltd\n\n\n\n\nEUR\nnone\n");
+    let base = std::env::temp_dir().join(format!("abo-rec-{}", std::process::id()));
+    let dir = base.join("test-ltd");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let o = abo(&base, &["init", "Test Ltd"], "\n\n\n\nEUR\nnone\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
 
     let book = |date: &str, desc: &str, amount: &str| {
@@ -326,7 +340,7 @@ fn reconciliation() {
     assert!(outstanding("assets:cash").is_empty());
     assert_eq!(outstanding("assets:bank").len(), 1, "clearing cash cleared the bank side too");
 
-    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_dir_all(&base).unwrap();
 }
 
 /// P&L, balance sheet and the tax return, including the arithmetic between
@@ -334,12 +348,13 @@ fn reconciliation() {
 /// only once unclosed profit is counted as equity.
 #[test]
 fn statements() {
-    let dir = std::env::temp_dir().join(format!("abo-stm-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    // name, address, country, tax id, payment, currency, method, input,
+    let base = std::env::temp_dir().join(format!("abo-stm-{}", std::process::id()));
+    let dir = base.join("test-ltd");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    // address, country, tax id, payment, currency, method, input,
     // output, rate charged to customers
-    let o = abo(&dir, &["init"], "Test Ltd\n\n\n\n\nEUR\neffective\n\n\n10\n");
+    let o = abo(&base, &["init", "Test Ltd"], "\n\n\n\nEUR\neffective\n\n\n10\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
 
     let add = |args: &[&str]| {
@@ -420,17 +435,18 @@ sum   = ["2", "-3"]
         assert!(!dir.join("templates/report.typ").exists());
     }
 
-    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_dir_all(&base).unwrap();
 }
 
 /// Undo takes an operation back out of the journal with `git revert`; revert
 /// books the opposite entry and leaves the original where it is.
 #[test]
 fn undo_and_revert() {
-    let dir = std::env::temp_dir().join(format!("abo-undo-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let o = abo(&dir, &["init"], "Test Ltd\n\n\n\n\nEUR\nnone\n");
+    let base = std::env::temp_dir().join(format!("abo-undo-{}", std::process::id()));
+    let dir = base.join("test-ltd");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let o = abo(&base, &["init", "Test Ltd"], "\n\n\n\nEUR\nnone\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
     let journal = || std::fs::read_to_string(dir.join("journal/2026.journal")).unwrap();
     let log = || -> serde_json::Value {
@@ -475,5 +491,5 @@ fn undo_and_revert() {
     let o = abo(&dir, &["revert", &key], "");
     assert!(err(&o).contains("already reversed"), "reversed twice: {}", err(&o));
 
-    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_dir_all(&base).unwrap();
 }

@@ -218,6 +218,19 @@ pub struct InitReport {
     pub commit: String,
 }
 
+/// A company's directory name: its name in lower case, with every run of
+/// anything but letters and digits made one dash.
+pub fn slug(name: &str) -> String {
+    name.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join("-")
+}
+
+/// The books `dir` is in, if any: the nearest of it and its parents that
+/// holds an abo.toml.
+pub fn books_root(dir: &Path) -> Result<Option<PathBuf>> {
+    let dir = dir.canonicalize().with_context(|| format!("{}", dir.display()))?;
+    Ok(dir.ancestors().find(|a| a.join("abo.toml").is_file()).map(Path::to_path_buf))
+}
+
 /// Create a books repository. `answers` come from the dispatch layer.
 pub fn init(
     dir: &Path,
@@ -422,4 +435,14 @@ sum   = ["2", "-3"]
         add(&ctx, &Entry { date: date.into(), description: description.into(), tags, postings })?;
     }
     Ok(ctx)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn slug() {
+        assert_eq!(super::slug("Smith & Sons, LLC"), "smith-sons-llc");
+        assert_eq!(super::slug("  Ünïcode GmbH "), "ünïcode-gmbh");
+        assert_eq!(super::slug("&&"), "");
+    }
 }
