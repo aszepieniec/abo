@@ -593,7 +593,17 @@ fn confirm(question: &str, secs: u8) -> Result<bool> {
 
 fn ask() -> Result<(repo::Company, Vat, Decimal)> {
     let name = prompt("Company name", "")?;
-    let address = prompt("Address, one line (use \\n between lines)", "")?.replace("\\n", "\n");
+    println!("Address, one line at a time; an empty line ends it:");
+    let mut editor = rustyline::DefaultEditor::new()?;
+    let mut lines = vec![];
+    loop {
+        match editor.readline("  ") {
+            Err(rustyline::error::ReadlineError::Eof) => break,
+            r if r.as_ref().is_ok_and(|l| l.trim().is_empty()) => break,
+            r => lines.push(r?.trim().to_string()),
+        }
+    }
+    let address = lines.join("\n");
     let country = prompt("Country", "")?;
     let tax_id = prompt("Tax registration number (blank if not registered)", "")?;
     let payment = prompt("How customers pay you (bank details, wallet, cash)", "")?;

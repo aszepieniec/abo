@@ -158,9 +158,9 @@ fn invoices() {
     let o = abo(
         &dir,
         &["init"],
-        // name, address, country, tax id, payment, currency, method, input,
-        // output, rate charged to customers
-        "Test Ltd\n1 Example Street\nExampleland\nTAX-1\nIBAN XX00\nEUR\neffective\n\n\n10\n",
+        // name, address and the empty line ending it, country, tax id,
+        // payment, currency, method, input, output, rate charged to customers
+        "Test Ltd\n1 Example Street\n\nExampleland\nTAX-1\nIBAN XX00\nEUR\neffective\n\n\n10\n",
     );
     assert!(o.status.success(), "init failed: {}", err(&o));
 
