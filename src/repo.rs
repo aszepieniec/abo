@@ -224,6 +224,7 @@ pub fn init(
     c: &Company,
     vat: &Vat,
     sales_rate: Decimal,
+    author: Option<(&str, &str)>,
 ) -> Result<InitReport> {
     if dir.join("abo.toml").exists() {
         bail!("{} is already a books repository", dir.display());
@@ -300,6 +301,14 @@ pub fn init(
     if !dir.join(".git").exists() {
         git_in(dir, &["init", "-q", "-b", "master"])?;
     }
+    // Set in this repository only, so every commit abo makes here carries it.
+    if let Some((name, email)) = author {
+        for (key, value) in [("user.name", name), ("user.email", email)] {
+            if !value.is_empty() {
+                git_in(dir, &["config", key, value])?;
+            }
+        }
+    }
     git_in(dir, &["add", "-A"])?;
     git_in(dir, &["commit", "-q", "-m", &format!("Open the books for {}", c.name)])?;
     let commit = git_in(dir, &["rev-parse", "--short", "HEAD"])?.trim().to_string();
@@ -339,7 +348,7 @@ pub fn demo(dir: &Path) -> Result<Ctx> {
     };
     // 10% is obviously a placeholder: real rates are statutory and belong in
     // the company's own abo.toml, not in abo.
-    init(dir, &company, &vat, Decimal::TEN)?;
+    init(dir, &company, &vat, Decimal::TEN, None)?;
 
     // An illustrative return. Which accounts feed which numbered box is set
     // by the tax authority wherever the company is, so this is config.

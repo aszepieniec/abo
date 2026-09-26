@@ -266,8 +266,8 @@ async fn run(cli: Cli) -> Result<()> {
             bail!("{} does not exist", d.display());
         }
         // An empty directory is no use to any command, so open books in it.
-        let (company, vat, sales_rate) = ask()?;
-        let r = repo::init(d, &company, &vat, sales_rate)?;
+        let (company, vat, sales_rate, author) = ask()?;
+        let r = repo::init(d, &company, &vat, sales_rate, author.as_ref().map(|(n, e)| (n.as_str(), e.as_str())))?;
         eprintln!("Books opened in {} ({}).", r.root, r.commit);
     }
     let here = cli.dir.clone().unwrap_or(std::env::current_dir()?);
@@ -278,8 +278,8 @@ async fn run(cli: Cli) -> Result<()> {
             if here.join("abo.toml").exists() {
                 bail!("{} is already a books repository", here.display());
             }
-            let (company, vat, sales_rate) = ask()?;
-            let r = repo::init(&here, &company, &vat, sales_rate)?;
+            let (company, vat, sales_rate, author) = ask()?;
+            let r = repo::init(&here, &company, &vat, sales_rate, author.as_ref().map(|(n, e)| (n.as_str(), e.as_str())))?;
             emit(cli.json, &r, || {
                 format!("Books opened in {} ({}).\nNext: edit journal/accounts.journal, then `abo add`.", r.root, r.commit)
             })
@@ -591,7 +591,7 @@ fn confirm(question: &str, secs: u8) -> Result<bool> {
     Ok(false)
 }
 
-fn ask() -> Result<(repo::Company, Vat, Decimal)> {
+fn ask() -> Result<(repo::Company, Vat, Decimal, Option<(String, String)>)> {
     let name = prompt("Company name", "")?;
     println!("Address, one line at a time; an empty line ends it:");
     let mut editor = rustyline::DefaultEditor::new()?;
@@ -627,6 +627,12 @@ fn ask() -> Result<(repo::Company, Vat, Decimal)> {
         Vat::None => Decimal::ZERO,
         _ => Decimal::from_str(&prompt("VAT rate charged to customers, percent", "0")?)?,
     };
+    // Every change to the books is a commit, and git refuses one without an
+    // author. Offer the global identity; blank on both leaves it to git.
+    let global = |key| git_global(key).unwrap_or_default();
+    let author_name = prompt("Your name, recorded on every change to the books", &global("user.name"))?;
+    let author_email = prompt("Your email, likewise", &global("user.email"))?;
+    let author = (!author_name.is_empty() || !author_email.is_empty()).then_some((author_name, author_email));
     Ok((
         repo::Company {
             name,
@@ -640,7 +646,13 @@ fn ask() -> Result<(repo::Company, Vat, Decimal)> {
         },
         vat,
         sales_rate,
+        author,
     ))
+}
+
+fn git_global(key: &str) -> Option<String> {
+    let o = std::process::Command::new("git").args(["config", "--global", "--get", key]).output().ok()?;
+    Some(String::from_utf8(o.stdout).ok()?.trim().to_string())
 }
 
 #[cfg(test)]
