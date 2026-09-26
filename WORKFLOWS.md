@@ -38,7 +38,7 @@ the method is `none`, the rate charged to customers; and last git's
 `user.name` and `user.email` for the new repository, offering the global
 ones. Blank
 takes the default shown in brackets. A wrong answer is asked again with what
-was wrong: a currency must be three or four letters (`eur` is taken as EUR), a VAT method
+was wrong: a currency must be three letters or more (`eur` is taken as EUR), a VAT method
 may be the start of one (`e`, `f`, `n`), a rate must be a number from 0 up to
 100. Refused before any question is asked: a
 directory of that name already there, a name with no letters or digits,
