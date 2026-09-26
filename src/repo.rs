@@ -79,6 +79,23 @@ impl Kind {
     pub fn account(self) -> &'static str {
         ["assets:bank", "assets:cash", "assets:crypto"][self as usize]
     }
+
+    /// What invoices call an option of this kind, unless said otherwise.
+    pub fn label(self, network: &str) -> String {
+        match self {
+            Kind::Bank => "Bank transfer".into(),
+            Kind::Cash => "Cash".into(),
+            Kind::Crypto => network.into(),
+        }
+    }
+
+    /// An id free to take: the kind's name, numbered if that is taken.
+    pub fn free_id(self, taken: &[String]) -> String {
+        (1..)
+            .map(|n| if n == 1 { self.name().to_string() } else { format!("{}-{n}", self.name()) })
+            .find(|id| !taken.contains(id))
+            .unwrap()
+    }
 }
 
 impl PaymentOption {
@@ -451,6 +468,12 @@ pub fn slug(name: &str) -> String {
 pub fn books_root(dir: &Path) -> Result<Option<PathBuf>> {
     let dir = dir.canonicalize().with_context(|| format!("{}", dir.display()))?;
     Ok(dir.ancestors().find(|a| a.join("abo.toml").is_file()).map(Path::to_path_buf))
+}
+
+/// The global git setting `key`, such as user.name, if there is one.
+pub fn git_global(key: &str) -> Option<String> {
+    let o = Command::new("git").args(["config", "--global", "--get", key]).output().ok()?;
+    Some(String::from_utf8(o.stdout).ok()?.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 /// Create a books repository. `answers` come from the dispatch layer.

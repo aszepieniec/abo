@@ -22,7 +22,7 @@ last such run.
 
 ## A. Setting up
 
-### A1. Open the books — Supported (CLI)
+### A1. Open the books — Supported (CLI, browser)
 `abo init <name>` (its words need no quotes), run in a data directory, makes the company's directory
 there: the name spelled in ASCII and in lower case, every run of anything but
 letters and digits made one dash (`Smith & Sons, LLC` → `smith-sons-llc`,
@@ -44,6 +44,12 @@ may be the start of one (`e`, `f`, `n`), a rate must be a number from 0 up to
 directory of that name already there, a name with no letters or digits,
 `--dir`, and running it inside a company's books. The accounts the payment
 options name are declared along with the default ones.
+In the browser, `abo serve` on a data directory offers the same questions as
+one form at `/new`, in the same order, with the same checks and the same
+defaults for a blank answer. The fields of a payment option's kind and of the
+VAT method show once it is chosen (CSS, no script); another payment option
+only when asked for with its button. Each wrong answer says why under it and
+the form comes back as filled in; sent twice, it opens one company.
 **Done when** the company's directory is a git repository with one commit
 holding `abo.toml`, `journal/main.journal`, `journal/accounts.journal` (the
 default accounts, plus the VAT accounts the method needs) and `.gitignore`.
@@ -64,7 +70,8 @@ what it is for; a missing `typst` is a warning. The server reads `abo.toml` and
 the journal afresh on every request, so an edit to either — a closed period, a
 new rate, a declared account — applies without a restart.
 **Done when** the front page shows the company, its balances and recent
-entries; for a data directory, the name and directory of each company in it.
+entries; for a data directory, the name and directory of each company in it,
+and a button to open the books for a new one (A1).
 
 ### A4. Change where invoices ask to be paid — Supported (CLI)
 A payment option is one of three kinds. A **bank** option has an account

@@ -1,0 +1,181 @@
+//! Opening the books for a new company from the browser: `abo serve` on a
+//! data directory, spoken to over plain HTTP as a browser would.
+
+use std::io::{Read as _, Write as _};
+use std::net::TcpStream;
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+struct Server {
+    child: Child,
+    port: u16,
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn serve(data: &Path, home: &Path) -> Server {
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let child = Command::new(env!("CARGO_BIN_EXE_abo"))
+        .args(["serve", "--port", &port.to_string(), "--dir"])
+        .arg(data)
+        // No global git identity to offer.
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    while TcpStream::connect(("127.0.0.1", port)).is_err() {
+        assert!(start.elapsed() < Duration::from_secs(10), "abo serve did not start");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Server { child, port }
+}
+
+/// (status, the Location header, the body)
+fn http(s: &Server, method: &str, path: &str, form: &[(&str, &str)]) -> (u16, String, String) {
+    let body: String = form.iter().map(|(k, v)| format!("{}={}", enc(k), enc(v))).collect::<Vec<_>>().join("&");
+    let host = format!("127.0.0.1:{}", s.port);
+    let mut c = TcpStream::connect(&host).unwrap();
+    write!(
+        c,
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nConnection: close\r\n\
+         Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut out = String::new();
+    c.read_to_string(&mut out).unwrap();
+    let status = out[9..12].parse().unwrap();
+    let location = out
+        .lines()
+        .find_map(|l| l.to_ascii_lowercase().starts_with("location:").then(|| l[9..].trim().to_string()))
+        .unwrap_or_default();
+    (status, location, out)
+}
+
+fn enc(s: &str) -> String {
+    s.bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect()
+}
+
+#[test]
+fn new_company() {
+    let base = std::env::temp_dir().join(format!("abo-web-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let data = base.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let s = serve(&data, &base);
+
+    let (status, _, page) = http(&s, "GET", "/", &[]);
+    assert_eq!(status, 200);
+    assert!(page.contains("No companies in") && page.contains("href=\"/new\""), "{page}");
+    let (_, _, page) = http(&s, "GET", "/new", &[]);
+    assert!(page.contains("name=\"p0.kind\" value=\"bank\" checked"), "{page}");
+    assert!(!page.contains("name=\"p1.kind\""), "a second option before one was asked for");
+
+    // Another payment option only when asked for; what was typed stays.
+    let (_, _, page) = http(&s, "POST", "/new", &[("n", "1"), ("name", "Acme"), ("more", "1")]);
+    assert!(page.contains("name=\"p1.kind\" value=\"bank\" checked"), "{page}");
+    assert!(page.contains("name=\"name\" value=\"Acme\""), "{page}");
+
+    // Every wrong answer says why under its field, and nothing is made.
+    let (status, _, page) = http(
+        &s,
+        "POST",
+        "/new",
+        &[
+            ("token", "wrong"),
+            ("n", "2"),
+            ("name", "&&"),
+            ("p0.kind", "bank"),
+            ("p0.iban", "CH9300762011623852958"),
+            ("p1.kind", "crypto"),
+            ("p1.network", "Bitcoin"),
+            ("currency", "eu"),
+            ("method", "flat"),
+            ("flat_rate", "abc"),
+            ("flat_account", "liabilities:vat"),
+            ("sales_rate", "150"),
+        ],
+    );
+    assert_eq!(status, 200);
+    for says in [
+        "has no letters or digits",
+        "check digits do not match",
+        "An address is needed",
+        "is not a currency code",
+        "is not a number",
+        "not a percentage from 0 up to 100",
+    ] {
+        assert!(page.contains(says), "no {says:?} in the page");
+    }
+    assert!(!page.contains("needs an IBAN"), "the IBAN's own problem explains it");
+    assert_eq!(std::fs::read_dir(&data).unwrap().count(), 0);
+
+    // Blank answers take init's defaults; fields of a kind not chosen are
+    // ignored; a blank line in the address goes, as on the terminal.
+    let good = [
+        ("token", "good"),
+        ("n", "3"),
+        ("name", "Test & Sons Ltd"),
+        ("address", "1 Street\r\n\r\n3000 City"),
+        ("p0.kind", "bank"),
+        ("p0.iban", "ch93 0076 2011 6238 5295 7"),
+        ("p0.network", "not a bank's"),
+        ("p1.kind", "skip"),
+        ("p1.details", "skipped"),
+        ("p2.kind", "cash"),
+        ("p2.details", "At our office"),
+        ("currency", "chf"),
+        ("method", "effective"),
+        ("input", "assets:vat:input"),
+        ("output", "liabilities:vat:output"),
+        ("sales_rate", "8.1"),
+        ("git_name", "Ann"),
+        ("git_email", "ann@example.invalid"),
+    ];
+    let (status, to, _) = http(&s, "POST", "/new", &good);
+    assert_eq!((status, to.as_str()), (303, "/?opened=test-sons-ltd"));
+    // Sent twice, one company.
+    let (status, to, _) = http(&s, "POST", "/new", &good);
+    assert_eq!((status, to.as_str()), (303, "/?opened=test-sons-ltd"));
+    let (_, _, page) = http(&s, "GET", "/?opened=test-sons-ltd", &[]);
+    assert!(page.contains("Books opened") && page.contains("<td>Test &amp; Sons Ltd</td>"), "{page}");
+
+    let books = data.join("test-sons-ltd");
+    let c: toml::Value = toml::from_str(&std::fs::read_to_string(books.join("abo.toml")).unwrap()).unwrap();
+    assert_eq!(c["company"]["address"].as_str(), Some("1 Street\n3000 City"));
+    assert_eq!(c["company"]["currency"].as_str(), Some("CHF"));
+    assert_eq!(c["vat"]["method"].as_str(), Some("effective"));
+    assert_eq!(c["invoice"]["vat_rate"].as_float(), Some(8.1));
+    let (bank, cash) = (&c["payment"][0], &c["payment"][1]);
+    assert_eq!(bank["id"].as_str(), Some("bank"));
+    assert_eq!(bank["label"].as_str(), Some("Bank transfer"));
+    assert_eq!(bank["holder"].as_str(), Some("Test & Sons Ltd"));
+    assert_eq!(bank["iban"].as_str(), Some("CH93 0076 2011 6238 5295 7"));
+    assert!(bank.get("network").is_none());
+    assert_eq!(cash["id"].as_str(), Some("cash"));
+    assert_eq!(cash["label"].as_str(), Some("Cash"));
+    assert_eq!(cash["details"].as_str(), Some("At our office"));
+    assert!(c["payment"].as_array().unwrap().len() == 2, "the skipped option was kept");
+    let log = Command::new("git").args(["log", "--format=%an <%ae>"]).current_dir(&books).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&log.stdout), "Ann <ann@example.invalid>\n");
+
+    // The same name again is refused, under the name.
+    let again: Vec<_> = good.iter().map(|&(k, v)| if k == "token" { (k, "again") } else { (k, v) }).collect();
+    let (status, _, page) = http(&s, "POST", "/new", &again);
+    assert_eq!(status, 200);
+    assert!(page.contains("test-sons-ltd is already in the data directory"), "{page}");
+
+    drop(s);
+    std::fs::remove_dir_all(&base).unwrap();
+}

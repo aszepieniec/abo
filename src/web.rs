@@ -76,12 +76,15 @@ pub async fn serve(ctx: Ctx, port: u16) -> Result<()> {
 }
 
 /// A data directory: any number of companies, each in a subdirectory that
-/// holds its books. For now a page listing them; serving each one, and
-/// opening new ones from the browser, come next.
+/// holds its books. A page listing them, and a form opening the books for a
+/// new one: init's questions, asked in the browser. Serving each company
+/// from here comes next.
 pub async fn serve_data(root: PathBuf, port: u16) -> Result<()> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let app = Router::new()
         .route("/", get(landing))
+        .route("/new", get(new_form).post(new_submit))
+        .layer(axum::middleware::from_fn(csrf))
         .layer(axum::middleware::from_fn(log))
         .with_state(Arc::new(root.clone()));
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -90,7 +93,29 @@ pub async fn serve_data(root: PathBuf, port: u16) -> Result<()> {
     Ok(())
 }
 
-async fn landing(axum::extract::State(root): axum::extract::State<Arc<PathBuf>>) -> Response {
+/// A page of the data directory: no company, so no sidebar of its sections.
+fn data_page(title: &str, body: Markup) -> Html<String> {
+    Html(
+        html! {
+            (DOCTYPE)
+            html lang="en" {
+                head {
+                    meta charset="utf-8";
+                    meta name="viewport" content="width=device-width, initial-scale=1";
+                    title { (title) " · abo" }
+                    style { (PreEscaped(STYLE)) }
+                }
+                body {
+                    aside.side { a.brand href="/" { span.mark { "abo" } } }
+                    main.content { (body) }
+                }
+            }
+        }
+        .into_string(),
+    )
+}
+
+async fn landing(axum::extract::State(root): axum::extract::State<Arc<PathBuf>>, Query(q): Query<Fields>) -> Response {
     // (directory, company name, or why its abo.toml could not be read)
     let mut companies: Vec<(String, Result<String, String>)> = std::fs::read_dir(&*root)
         .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.join("abo.toml").is_file()).collect::<Vec<_>>())
@@ -102,48 +127,355 @@ async fn landing(axum::extract::State(root): axum::extract::State<Arc<PathBuf>>)
         })
         .collect();
     companies.sort();
-    Html(
+    let opened = q.get("opened").and_then(|d| companies.iter().find(|(dir, _)| dir == d));
+    data_page(
+        "Companies",
         html! {
-            (DOCTYPE)
-            html lang="en" {
-                head {
-                    meta charset="utf-8";
-                    meta name="viewport" content="width=device-width, initial-scale=1";
-                    title { "Companies · abo" }
-                    style { (PreEscaped(STYLE)) }
-                }
-                body {
-                    aside.side { a.brand href="/" { span.mark { "abo" } } }
-                    main.content {
-                        h1 { "Companies" }
-                        @if companies.is_empty() {
-                            p.muted { "No companies in " code { (root.display()) } " yet." }
-                        } @else {
-                            div.box {
-                                table.list {
-                                    thead { tr { th { "Company" } th { "Directory" } } }
-                                    tbody {
-                                        @for (dir, name) in &companies {
-                                            tr {
-                                                @match name {
-                                                    Ok(n) => td { (n) },
-                                                    Err(e) => td.muted { "abo.toml unreadable: " (e) },
-                                                }
-                                                td { code { (dir) } }
-                                            }
-                                        }
+            h1 { "Companies" }
+            @if let Some((dir, Ok(name))) = opened {
+                div.flash.flash-ok { (icon("success")) div {
+                    strong { "Books opened" }
+                    "The books for " (name) " are in " code { (dir) } "."
+                } }
+            }
+            @if companies.is_empty() {
+                p.muted { "No companies in " code { (root.display()) } " yet." }
+            } @else {
+                div.box {
+                    table.list {
+                        thead { tr { th { "Company" } th { "Directory" } } }
+                        tbody {
+                            @for (dir, name) in &companies {
+                                tr {
+                                    @match name {
+                                        Ok(n) => td { (n) },
+                                        Err(e) => td.muted { "abo.toml unreadable: " (e) },
                                     }
+                                    td { code { (dir) } }
                                 }
                             }
                         }
-                        p.muted.small { "To open the books for a new company, run " code { "abo init <name>" } " in " code { (root.display()) } "." }
                     }
                 }
             }
-        }
-        .into_string(),
+            div.actions { a.btn.btn-primary href="/new" { (icon("plus")) " Open the books for a new company" } }
+            p.muted.small { "Or run " code { "abo init <name>" } " in " code { (root.display()) } ": the same questions, on the terminal." }
+        },
     )
     .into_response()
+}
+
+/// Field name to what is wrong with the answer given there.
+type Problems = std::collections::BTreeMap<String, String>;
+
+/// At most this many payment options on the form, however often another is
+/// asked for.
+const MAX_OPTIONS: usize = 20;
+
+/// The form as init would start it: one payment option, a bank one; no VAT;
+/// the global git identity.
+fn new_defaults() -> Fields {
+    let mut f = Fields::new();
+    for (k, v) in [
+        ("n", "1"),
+        ("p0.kind", "bank"),
+        ("method", "none"),
+        ("flat_account", "liabilities:vat"),
+        ("input", "assets:vat:input"),
+        ("output", "liabilities:vat:output"),
+        ("sales_rate", "0"),
+    ] {
+        f.insert(k.into(), v.into());
+    }
+    for (k, key) in [("git_name", "user.name"), ("git_email", "user.email")] {
+        f.insert(k.into(), crate::repo::git_global(key).unwrap_or_default());
+    }
+    f
+}
+
+async fn new_form() -> Response {
+    data_page("A new company", new_page(&new_defaults(), &Problems::new(), None)).into_response()
+}
+
+async fn new_submit(axum::extract::State(root): axum::extract::State<Arc<PathBuf>>, Form(mut f): Form<Fields>) -> Response {
+    let n = f.get("n").and_then(|n| n.parse().ok()).unwrap_or(1usize).clamp(1, MAX_OPTIONS);
+    // Another payment option only when asked for, as on the terminal.
+    if f.contains_key("more") && n < MAX_OPTIONS {
+        f.insert("n".into(), (n + 1).to_string());
+        f.insert(format!("p{n}.kind"), "bank".into());
+        return data_page("A new company", new_page(&f, &Problems::new(), None)).into_response();
+    }
+    let mut problems = Problems::new();
+    let token = f.get("token").cloned().unwrap_or_default();
+    let opened = once(&token, || {
+        let a = new_answers(&root, &f, n).map_err(|p| {
+            problems = p;
+            anyhow::anyhow!("answers to look at again")
+        })?;
+        let author = a.author.as_ref().map(|(n, e)| (n.as_str(), e.as_str()));
+        crate::repo::init(&root.join(&a.slug), &a.company, &a.vat, a.sales_rate, &a.payment, author)?;
+        info!(company = %a.company.name, dir = %a.slug, "books opened");
+        Ok(format!("/?opened={}", enc(&a.slug)))
+    });
+    match opened {
+        Ok(to) => Redirect::to(&to).into_response(),
+        Err(_) if !problems.is_empty() => data_page("A new company", new_page(&f, &problems, None)).into_response(),
+        Err(e) => {
+            error!(%e, "opening books failed");
+            data_page("A new company", new_page(&f, &problems, Some(&e))).into_response()
+        }
+    }
+}
+
+struct NewBooks {
+    slug: String,
+    company: crate::repo::Company,
+    vat: Vat,
+    sales_rate: rust_decimal::Decimal,
+    payment: Vec<crate::repo::PaymentOption>,
+    author: Option<(String, String)>,
+}
+
+/// The form's answers, checked as init checks them on the terminal, with
+/// the same defaults for what was left blank; or every problem found, by
+/// field.
+fn new_answers(root: &std::path::Path, f: &Fields, n: usize) -> Result<NewBooks, Problems> {
+    use crate::repo::{answer, Kind, PaymentOption};
+    let get = |k: &str| f.get(k).map(|s| s.trim().to_string()).unwrap_or_default();
+    // A text area's lines, blank ones dropped: on the terminal a blank line
+    // ends the answer.
+    let lines = |k: &str| get(k).lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
+    /// The answer, or the problem with it noted under its field.
+    fn take<T: Default>(problems: &mut Problems, field: &str, r: Result<T, String>) -> T {
+        r.unwrap_or_else(|e| {
+            problems.insert(field.to_string(), e);
+            T::default()
+        })
+    }
+    let mut problems = Problems::new();
+    let p = &mut problems;
+
+    let name = get("name");
+    let slug = crate::repo::slug(&name);
+    take(p, "name", match () {
+        _ if name.is_empty() => Err("A name is needed.".into()),
+        _ if slug.is_empty() => Err(format!("{name:?} has no letters or digits to name a directory after.")),
+        _ if root.join(&slug).exists() => Err(format!("{slug} is already in the data directory; choose another name.")),
+        _ => Ok(String::new()),
+    });
+
+    let mut payment: Vec<PaymentOption> = vec![];
+    for i in 0..n {
+        let k = |part: &str| format!("p{i}.{part}");
+        // Skipped, or never chosen.
+        let Some(kind) = Kind::from_name(&get(&k("kind"))) else { continue };
+        let mut o = PaymentOption { kind, ..Default::default() };
+        let blank_or = |c: fn(&str) -> Result<String, String>, s: String| if s.is_empty() { Ok(s) } else { c(&s) };
+        let needed = |what: &str, s: String| if s.is_empty() { Err(format!("{what} is needed.")) } else { Ok(s) };
+        // Only the fields of the kind chosen: the others may hold what was
+        // typed before the kind changed.
+        match kind {
+            Kind::Bank => {
+                o.holder = match get(&k("holder")) {
+                    h if h.is_empty() => name.clone(),
+                    h => h,
+                };
+                o.iban = take(p, &k("iban"), blank_or(answer::iban, get(&k("iban"))));
+                o.bic = take(p, &k("bic"), blank_or(answer::bic, get(&k("bic"))));
+                o.bank = lines(&k("bank"));
+            }
+            Kind::Cash => {}
+            Kind::Crypto => {
+                o.network = take(p, &k("network"), needed("A network", get(&k("network"))));
+                o.address = take(p, &k("address"), needed("An address", get(&k("address"))));
+            }
+        }
+        o.details = lines(&k("details"));
+        o.label = match get(&k("label")) {
+            l if l.is_empty() => kind.label(&o.network),
+            l => l,
+        };
+        let taken: Vec<String> = payment.iter().map(|p| p.id.clone()).collect();
+        o.id = match get(&k("id")) {
+            id if id.is_empty() => kind.free_id(&taken),
+            id if taken.contains(&id) => take(p, &k("id"), Err(format!("{id:?} is already the id of another option."))),
+            id => take(p, &k("id"), answer::option_id(&id)),
+        };
+        o.account = match get(&k("account")) {
+            a if a.is_empty() => kind.account().to_string(),
+            a => take(p, &k("account"), answer::account(&a)),
+        };
+        // Said under the kind, unless a field of the option already has a
+        // problem that explains it.
+        let explained = p.keys().any(|f| f.starts_with(&format!("p{i}.")));
+        if let (Some(mut why), false) = (o.problem(), explained) {
+            why[..1].make_ascii_uppercase();
+            take::<()>(p, &k("kind"), Err(format!("{why}.")));
+        }
+        payment.push(o);
+    }
+
+    let currency = take(p, "currency", answer::currency(&get("currency")));
+    let vat = match answer::method(&get("method")) {
+        Ok("flat") => Vat::Flat {
+            rate: take(p, "flat_rate", answer::percent(&get("flat_rate"))),
+            account: take(p, "flat_account", answer::account(&get("flat_account"))),
+        },
+        Ok("effective") => Vat::Effective {
+            input: take(p, "input", answer::account(&get("input"))),
+            output: take(p, "output", answer::account(&get("output"))),
+        },
+        Ok(_) => Vat::None,
+        Err(e) => {
+            take::<()>(p, "method", Err(e));
+            Vat::None
+        }
+    };
+    let sales_rate = match vat {
+        Vat::None => rust_decimal::Decimal::ZERO,
+        _ => take(p, "sales_rate", answer::percent(&get("sales_rate"))),
+    };
+    let (git_name, git_email) = (get("git_name"), get("git_email"));
+    let author = (!git_name.is_empty() || !git_email.is_empty()).then_some((git_name, git_email));
+
+    if !problems.is_empty() {
+        return Err(problems);
+    }
+    let company = crate::repo::Company {
+        name,
+        address: lines("address"),
+        country: get("country"),
+        tax_id: get("tax_id"),
+        old_payment: None,
+        currency,
+        tax_notes: String::new(),
+        closed_through: None,
+    };
+    Ok(NewBooks { slug, company, vat, sales_rate, payment, author })
+}
+
+/// init's questions as a form, in init's order, filled in from `f`, each
+/// problem under its field. The fields of a payment option's kind, and of
+/// the VAT method, show once it is chosen: CSS, no script. Where `:has` is
+/// not supported every field shows, and the ones not chosen are ignored.
+fn new_page(f: &Fields, problems: &Problems, refused: Option<&anyhow::Error>) -> Markup {
+    let v = |k: &str| f.get(k).cloned().unwrap_or_default();
+    let problem = |k: &str| html! { @if let Some(p) = problems.get(k) { span.problem { (p) } } };
+    let text = |label: &str, hint: &str, k: &str, placeholder: &str| html! {
+        label.field { (label)
+            @if !hint.is_empty() { span.hint { (hint) } }
+            input type="text" name=(k) value=(v(k)) placeholder=[(!placeholder.is_empty()).then_some(placeholder)];
+            (problem(k))
+        }
+    };
+    let area = |label: &str, hint: &str, k: &str| html! {
+        label.field { (label)
+            @if !hint.is_empty() { span.hint { (hint) } }
+            textarea name=(k) rows="3" { (v(k)) }
+            (problem(k))
+        }
+    };
+    let radios = |k: &str, options: &[&str]| html! {
+        div.choice {
+            @for o in options {
+                label { input type="radio" name=(k) value=(o) checked[v(k) == *o]; (o) }
+            }
+        }
+        (problem(k))
+    };
+    let n = v("n").parse().unwrap_or(1usize).clamp(1, MAX_OPTIONS);
+    html! {
+        h1 { "Open the books for a new company" }
+        @if let Some(e) = refused {
+            div.flash.flash-error { (icon("error")) div { strong { "Not done" } pre { (format!("{e:#}")) } } }
+        } @else if !problems.is_empty() {
+            div.flash.flash-error { (icon("error")) div {
+                strong { "Not done" }
+                "Some answers need another look; each says why under it."
+            } }
+        }
+        form.new method="post" action="/new" {
+            // Enter in a field opens the books, as the button at the end
+            // does: the first submit button is the one Enter presses, and
+            // "Add another payment option" comes before it.
+            button.offscreen type="submit" tabindex="-1" aria-hidden="true" { "Open the books" }
+            (token())
+            input type="hidden" name="n" value=(n);
+            div.box {
+                div.box-header { (icon("book")) "The company" }
+                div.box-body {
+                    (text("Name", "Its directory is this in lower-case ASCII, with dashes between the words.", "name", ""))
+                    (area("Address", "One line each.", "address"))
+                    (text("Country", "", "country", ""))
+                    (text("Tax registration number", "Blank if not registered.", "tax_id", ""))
+                }
+            }
+            div.box {
+                div.box-header { (icon("inbox")) "Where invoices ask to be paid" }
+                div.box-body {
+                    p.muted.small { "None, one or several options. Choose a kind for each and answer its questions, or skip. "
+                        code { "abo payment-options" } " changes them later." }
+                    @for i in 0..n {
+                        @let k = |part: &str| format!("p{i}.{part}");
+                        div.option {
+                            (radios(&k("kind"), &["bank", "cash", "crypto", "skip"]))
+                            div.kind-bank {
+                                (text("Account holder", "Blank for the company's name.", &k("holder"), ""))
+                                (text("IBAN", "Blank if none.", &k("iban"), "CH93 0076 2011 6238 5295 7"))
+                                (text("BIC", "Blank if none.", &k("bic"), "POFICHBEXXX"))
+                                (area("The bank's name and address", "One line each.", &k("bank")))
+                            }
+                            div.kind-crypto {
+                                (text("Network", "", &k("network"), "Bitcoin, Ethereum or Lightning"))
+                                (text("Wallet address", "", &k("address"), ""))
+                            }
+                            div.kind-any {
+                                (area("Anything else invoices should print",
+                                      "One line each: an account or routing number, where and when to pay cash, a memo to include.",
+                                      &k("details")))
+                                (text("Name on invoices", "Blank for Bank transfer, Cash, or the network.", &k("label"), ""))
+                                (text("Id, for abo commands", "Blank for the kind: bank, cash or crypto, numbered if taken.", &k("id"), ""))
+                                (text("Account the money arrives in",
+                                      "Blank for assets:bank, assets:cash or assets:crypto, by kind.", &k("account"), ""))
+                            }
+                        }
+                    }
+                    @if n < MAX_OPTIONS {
+                        div.actions { button type="submit" name="more" value="1" { (icon("plus")) " Add another payment option" } }
+                    }
+                }
+            }
+            div.box {
+                div.box-header { (icon("coins")) "Currency and VAT" }
+                div.box-body {
+                    (text("Currency code", "Such as USD, EUR or BTC.", "currency", ""))
+                    div.vat {
+                        label.field { "VAT method" }
+                        (radios("method", &["effective", "flat", "none"]))
+                        div.m-flat {
+                            (text("Flat rate remitted on gross turnover, percent", "", "flat_rate", ""))
+                            (text("VAT account", "", "flat_account", ""))
+                        }
+                        div.m-effective {
+                            (text("Input VAT account", "", "input", ""))
+                            (text("Output VAT account", "", "output", ""))
+                        }
+                        div.m-rate { (text("VAT rate charged to customers, percent", "", "sales_rate", "")) }
+                    }
+                }
+            }
+            div.box {
+                div.box-header { (icon("commit")) "git" }
+                div.box-body {
+                    p.muted.small { "Set in the new repository only; blank on both leaves it to git." }
+                    (text("git user.name", "", "git_name", ""))
+                    (text("git user.email", "", "git_email", ""))
+                }
+            }
+            div.actions { button.btn-primary type="submit" { (icon("check")) " Open the books" } }
+        }
+        p { a.btn href="/" { (icon("left")) " Back" } }
+    }
 }
 
 async fn shutdown() {
@@ -1429,6 +1761,19 @@ input[type=text], input[type=date], input[type=file], textarea, select {
   border: 1px solid var(--btn-border); border-radius: 8px;
 }
 textarea { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }
+label.field .problem, .problem { display: block; font-weight: 400; font-size: 12px; color: var(--error); margin-top: 4px; }
+.choice { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: -8px 0 16px; }
+.choice label { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; }
+.option { padding-bottom: 8px; }
+.option + .option { border-top: 1px solid var(--card-border); padding-top: 16px; }
+/* A payment option's fields, and the VAT method's, for the one chosen. */
+.option:not(:has(input[value=bank]:checked)) .kind-bank,
+.option:not(:has(input[value=crypto]:checked)) .kind-crypto,
+.option:has(input[value=skip]:checked) .kind-any,
+.vat:not(:has(input[value=flat]:checked)) .m-flat,
+.vat:not(:has(input[value=effective]:checked)) .m-effective,
+.vat:has(input[value=none]:checked) .m-rate { display: none; }
+.offscreen { position: absolute; left: -9999px; }
 input:focus, textarea:focus { outline: none; border-color: var(--link); box-shadow: 0 0 0 3px var(--focus); }
 
 /* notices: one colour per kind, whatever the palette */

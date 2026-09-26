@@ -977,11 +977,11 @@ fn ask(name: String) -> Result<Answers> {
         // under different names in different places.
         "flat" => Vat::Flat {
             rate: prompt_until("Flat rate remitted on gross turnover, percent", "", answer::percent)?,
-            account: prompt("VAT account", "liabilities:vat")?,
+            account: prompt_until("VAT account", "liabilities:vat", answer::account)?,
         },
         _ => Vat::Effective {
-            input: prompt("Input VAT account", "assets:vat:input")?,
-            output: prompt("Output VAT account", "liabilities:vat:output")?,
+            input: prompt_until("Input VAT account", "assets:vat:input", answer::account)?,
+            output: prompt_until("Output VAT account", "liabilities:vat:output", answer::account)?,
         },
     };
     let sales_rate = match vat {
@@ -990,7 +990,7 @@ fn ask(name: String) -> Result<Answers> {
     };
     // Every change to the books is a commit, and git refuses one without an
     // author. Offer the global identity; blank on both leaves it to git.
-    let global = |key| git_global(key).unwrap_or_default();
+    let global = |key| repo::git_global(key).unwrap_or_default();
     let author_name = prompt("git user.name", &global("user.name"))?;
     let author_email = prompt("git user.email", &global("user.email"))?;
     let author = (!author_name.is_empty() || !author_email.is_empty()).then_some((author_name, author_email));
@@ -1059,16 +1059,9 @@ fn ask_option(
     };
     let now: Vec<&str> = was.details.lines().collect();
     o.details = prompt_lines_over(&format!("{intro}\na line at a time, an empty line ends it:"), &now)?.join("\n");
-    let suggested = match kind {
-        Kind::Bank => "Bank transfer",
-        Kind::Cash => "Cash",
-        Kind::Crypto => &o.network,
-    };
-    let label = if was.label.is_empty() { suggested.to_string() } else { was.label.clone() };
+    let label = if was.label.is_empty() { kind.label(&o.network) } else { was.label.clone() };
     o.label = read_over("Name on invoices", &label)?.unwrap_or_default();
-    // An id free to take: the kind's name, numbered if need be.
-    let free = (1..).map(|n| if n == 1 { kind.name().to_string() } else { format!("{}-{n}", kind.name()) });
-    let id = if was.id.is_empty() { free.into_iter().find(|i| !taken.contains(i)).unwrap() } else { was.id.clone() };
+    let id = if was.id.is_empty() { kind.free_id(taken) } else { was.id.clone() };
     o.id = prompt_over_until("Id, for abo commands", &id, |s| match s {
         s if taken.iter().any(|t| t == s) => Err(format!("{s:?} is already the id of a payment option.")),
         s => answer::option_id(s),
@@ -1090,10 +1083,6 @@ fn ask_option(
     Ok(Some(o))
 }
 
-fn git_global(key: &str) -> Option<String> {
-    let o = std::process::Command::new("git").args(["config", "--global", "--get", key]).output().ok()?;
-    Some(String::from_utf8(o.stdout).ok()?.trim().to_string())
-}
 
 #[cfg(test)]
 mod tests {
