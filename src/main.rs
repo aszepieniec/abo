@@ -2,6 +2,7 @@ mod ai;
 mod bill;
 mod invoice;
 mod journal;
+mod payment;
 mod report;
 mod reconcile;
 mod repo;
@@ -28,6 +29,22 @@ struct Cli {
     dir: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+#[derive(Subcommand)]
+enum PaymentCmd {
+    /// List the options, numbered, in the order invoices print them. The
+    /// same as no subcommand.
+    List,
+    /// Add an option, printed last on invoices. Its words need no quotes.
+    Add {
+        #[arg(required = true)]
+        option: Vec<String>,
+    },
+    /// Replace option N with TEXT; without TEXT, edit it on the line.
+    Edit { n: usize, text: Vec<String> },
+    /// Remove option N, as `abo payment-options` numbers them.
+    Remove { n: usize },
 }
 
 #[derive(Subcommand)]
@@ -147,6 +164,11 @@ enum Cmd {
     /// Take back an operation, by its number in `abo log`: a commit is
     /// reverted with git, a pending bill is thrown away.
     Undo { line: usize },
+    /// List where invoices ask to be paid, numbered; add or remove an option.
+    PaymentOptions {
+        #[command(subcommand)]
+        change: Option<PaymentCmd>,
+    },
     /// Book the opposite of an entry, dated today. KEY is `file:line:date`,
     /// as `abo reconcile` and the web interface give it.
     Revert { key: String },
@@ -479,6 +501,44 @@ async fn run(cli: Cli) -> Result<()> {
                     .join("\n")
             })
         }
+        Cmd::PaymentOptions { change } => {
+            let ctx = Ctx::open(&here)?;
+            let (options, commit) = match change {
+                None | Some(PaymentCmd::List) => (ctx.cfg.company.payment.clone(), None),
+                Some(PaymentCmd::Edit { n, text }) => {
+                    let text = match text.is_empty() {
+                        false => text.join(" "),
+                        // The option as it stands, ready to change on the line.
+                        true => {
+                            let now = n.checked_sub(1).and_then(|i| ctx.cfg.company.payment.get(i));
+                            let now = now.with_context(|| format!("there is no payment option {n}"))?;
+                            rustyline::DefaultEditor::new()?.readline_with_initial(&format!("{n}. "), (now, ""))?
+                        }
+                    };
+                    let r = payment::edit(&ctx, n, &text)?;
+                    (r.options, Some(r.commit))
+                }
+                Some(PaymentCmd::Add { option }) => {
+                    let r = payment::add(&ctx, &option.join(" "))?;
+                    (r.options, Some(r.commit))
+                }
+                Some(PaymentCmd::Remove { n }) => {
+                    let r = payment::remove(&ctx, n)?;
+                    (r.options, Some(r.commit))
+                }
+            };
+            let r = serde_json::json!({ "options": options, "commit": commit });
+            emit(cli.json, &r, || {
+                let mut s: String = options.iter().enumerate().map(|(i, o)| format!("{}. {o}\n", i + 1)).collect();
+                if options.is_empty() {
+                    s += "No payment options; invoices say only when to pay.\n";
+                }
+                if let Some(c) = &commit {
+                    s += &format!("Committed {c}.");
+                }
+                s.trim_end().to_string()
+            })
+        }
         Cmd::Undo { line } => {
             let ctx = Ctx::open(&here)?;
             let r = undo::undo(&ctx, line)?;
@@ -606,6 +666,21 @@ fn prompt_until<T>(question: &str, default: &str, check: impl Fn(&str) -> Result
     }
 }
 
+/// Lines until an empty one, under `intro`.
+fn prompt_lines(intro: &str) -> Result<Vec<String>> {
+    println!("{intro}");
+    let mut editor = rustyline::DefaultEditor::new()?;
+    let mut lines = vec![];
+    loop {
+        match editor.readline("  ") {
+            Err(rustyline::error::ReadlineError::Eof) => break,
+            r if r.as_ref().is_ok_and(|l| l.trim().is_empty()) => break,
+            r => lines.push(r?.trim().to_string()),
+        }
+    }
+    Ok(lines)
+}
+
 /// One of `options`, from a list on a terminal: up and down, or a letter for
 /// the next option starting with it, then space or enter. Without a terminal
 /// the answer is typed, and `check` reads it.
@@ -718,20 +793,13 @@ fn confirm(question: &str, secs: u8) -> Result<bool> {
 }
 
 fn ask(name: String) -> Result<(repo::Company, Vat, Decimal, Option<(String, String)>)> {
-    println!("Address, one line at a time; an empty line ends it:");
-    let mut editor = rustyline::DefaultEditor::new()?;
-    let mut lines = vec![];
-    loop {
-        match editor.readline("  ") {
-            Err(rustyline::error::ReadlineError::Eof) => break,
-            r if r.as_ref().is_ok_and(|l| l.trim().is_empty()) => break,
-            r => lines.push(r?.trim().to_string()),
-        }
-    }
-    let address = lines.join("\n");
+    let address = prompt_lines("Address, one line at a time; an empty line ends it:")?.join("\n");
     let country = prompt("Country", "")?;
     let tax_id = prompt("Tax registration number (blank if not registered)", "")?;
-    let payment = prompt("How customers pay you (bank details, wallet, cash)", "")?;
+    let payment = prompt_lines(
+        "Where invoices ask to be paid, one option per line, such as an IBAN;\n\
+         an empty line ends it, or skips it (`abo payment-options` changes them later):",
+    )?;
     let currency = prompt_until("Currency", "", answer::currency)?;
     let vat = match choose("VAT method", &answer::METHODS, "none", answer::method)? {
         "none" => Vat::None,

@@ -69,10 +69,11 @@ pub struct Company {
     /// issues it. Blank if not registered.
     #[serde(default)]
     pub tax_id: String,
-    /// How customers pay, as free text: bank details, a wallet address, "cash
-    /// on collection". abo does not care which.
-    #[serde(default)]
-    pub payment: String,
+    /// Where invoices ask to be paid, each as free text: bank details, a
+    /// wallet address, "cash on collection". abo does not care which. None,
+    /// one or several; see `payment`.
+    #[serde(default, deserialize_with = "one_or_more")]
+    pub payment: Vec<String>,
     /// Where the company is registered. Only the model reads it.
     #[serde(default)]
     pub country: String,
@@ -96,6 +97,22 @@ pub enum Vat {
     Flat { rate: Decimal, account: String },
     /// Output tax collected less input tax paid.
     Effective { input: String, output: String },
+}
+
+/// A list, or a single string as abo.toml held before there could be several
+/// payment options; an empty one is none.
+fn one_or_more<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Options {
+        One(String),
+        More(Vec<String>),
+    }
+    Ok(match Options::deserialize(d)? {
+        Options::One(s) if s.is_empty() => vec![],
+        Options::One(s) => vec![s],
+        Options::More(v) => v,
+    })
 }
 
 /// Passed first to every workflow function. Multi-company means building a
@@ -319,7 +336,7 @@ pub fn init(
             address = q(&c.address),
             country = q(&c.country),
             tax_id = q(&c.tax_id),
-            payment = q(&c.payment),
+            payment = toml::Value::from(c.payment.clone()),
             currency = q(&c.currency),
         ),
     )?;
@@ -395,7 +412,7 @@ pub fn demo(dir: &Path) -> Result<Ctx> {
         address: "1 Example Street\n10000 Example City".into(),
         country: "Exampleland".into(),
         tax_id: "TAX-123456789".into(),
-        payment: "IBAN XX00 0000 0000 0000 0000 0".into(),
+        payment: vec!["IBAN XX00 0000 0000 0000 0000 0".into()],
         currency: "EUR".into(),
         tax_notes: String::new(),
         closed_through: None,

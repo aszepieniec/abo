@@ -65,7 +65,14 @@
 ))
 
 #v(1.4cm)
-Payable by #d.due#if d.company.payment != "" [ to #d.company.payment]. Please quote #d.number.
+#let pay = d.company.payment
+#if pay.len() > 1 [
+  Payable by #d.due to any of:
+  #list(..pay)
+  Please quote #d.number.
+] else [
+  Payable by #d.due#if pay.len() == 1 [ to #pay.first()]. Please quote #d.number.
+]
 
 #if d.note != "" [
   #v(0.6cm)

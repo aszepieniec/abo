@@ -28,7 +28,8 @@ there: the name spelled in ASCII and in lower case, every run of anything but
 letters and digits made one dash (`Smith & Sons, LLC` → `smith-sons-llc`,
 `Łódź Straße` → `lodz-strasse`). It then asks, one per
 line: the company's address (a line at a time, ended by an empty line),
-country, tax number, payment details, currency and VAT method (chosen from a
+country, tax number, where invoices ask to be paid (options a line at a time,
+ended, or skipped, by an empty line), currency and VAT method (chosen from a
 list: up and down or a letter, then space); then what the
 method needs — for `effective` the input and the output VAT accounts, for
 `flat` the rate remitted and the VAT account, for `none` nothing — and, unless
@@ -61,6 +62,17 @@ the journal afresh on every request, so an edit to either — a closed period, a
 new rate, a declared account — applies without a restart.
 **Done when** the front page shows the company, its balances and recent
 entries; for a data directory, the name and directory of each company in it.
+
+### A4. Change where invoices ask to be paid — Supported (CLI)
+`abo payment-options` (or `... list`) numbers the options in the order
+invoices print them. `... add <text>` appends one, `... edit <n> <text>`
+replaces one, `... edit <n>` puts it on the line to change, and
+`... remove <n>` removes one. An empty option, a second copy of one, and a
+number with no option are refused. Each change is a commit to `abo.toml`,
+comments kept, logged and undoable like any other. An invoice with no option
+says only when to pay; with one, "Payable by <due> to <option>"; with
+several, "to any of:" and a list.
+**Done when** the next invoice prints the options as they now stand.
 
 ---
 

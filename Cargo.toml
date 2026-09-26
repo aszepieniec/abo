@@ -22,6 +22,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Reads every answer to init. tests/tty.rs presses its keys: run it after a bump.
 rustyline = { version = "18.0.1", default-features = false }
 deunicode = "1.6.2"
+toml_edit = "0.22"
 
 # Already built for rustyline; used directly for the key-by-key VAT method
 # list, and by tests/tty.rs for a terminal to press keys on.

@@ -243,8 +243,9 @@ invoice can be denominated in any of them (`abo invoice --currency BTC`), and
 stated in: two for most money, eight for a wallet. Rounding happens in exactly
 one place, `invoice::round`, half away from zero.
 
-`[company] payment` is free text for the same reason: bank details, a wallet
-address, "cash on collection". abo never parses it, it only prints it.
+`[company] payment` is a list of free text for the same reason: bank details,
+a wallet address, "cash on collection". abo never parses an option, it only
+prints them, and `abo payment-options` adds, edits and removes them.
 
 Amounts are never converted between commodities. A bill in one currency against
 books in another is booked as stated and the model is told to say so. Valuing a
@@ -384,7 +385,7 @@ name      = "Example Ltd"
 address   = "1 Example Street\n10000 Example City"
 country   = "Exampleland"
 tax_id    = ""                 # blank if not registered
-payment   = "IBAN XX00 ..."    # or a wallet address, or "cash on collection"
+payment   = ["IBAN XX00 ..."]  # none, one or several: IBANs, wallets, "cash on collection"
 currency  = "EUR"
 tax_notes = """..."""          # see Appendix A
 

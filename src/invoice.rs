@@ -59,7 +59,7 @@ struct CompanyOut {
     country: String,
     address: String,
     tax_id: String,
-    payment: String,
+    payment: Vec<String>,
 }
 
 #[derive(Serialize)]

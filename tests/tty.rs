@@ -30,23 +30,31 @@ struct Run {
     terminal_restored: bool,
 }
 
-/// `abo init <name>` in a fresh directory, on a terminal. Each step waits for
-/// `prompt` to appear after the previous one and for the screen to settle,
-/// as a person would, then presses `keys`. An empty `prompt` only waits to
-/// settle: the address's further lines are prompted with spaces, which the
-/// editor's redrawing also writes.
+/// `abo init <name>` in a fresh directory, on a terminal.
 fn init(test: &str, name: &str, steps: &[(&str, &str)]) -> Run {
     let base = std::env::temp_dir().join(format!("abo-tty-{test}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
+    let (status, screen, terminal_restored) = abo(&base, &["init", name], steps);
+    Run { status, screen, books: base.join(name.to_lowercase()), terminal_restored }
+}
 
+/// `abo <args>` in `cwd`, on a terminal: how it ended, everything it drew,
+/// and whether it left the terminal as it found it. Each step waits for
+/// `prompt` to appear after the previous one and for the screen to settle,
+/// as a person would, then presses `keys`. An empty `prompt` only waits to
+/// settle: the address's further lines are prompted with spaces, which the
+/// editor's redrawing also writes.
+fn abo(cwd: &Path, args: &[&str], steps: &[(&str, &str)]) -> (ExitStatus, String, bool) {
+    // HOME and XDG_CONFIG_HOME below: somewhere with no git config.
+    let base = cwd.ancestors().find(|a| a.file_name().is_some_and(|n| n.to_string_lossy().starts_with("abo-tty-"))).unwrap();
     let size = Winsize { ws_row: 24, ws_col: 100, ws_xpixel: 0, ws_ypixel: 0 };
     let pty = openpty(Some(&size), None).unwrap();
     let before = tcgetattr(&pty.slave).unwrap().local_flags;
     let tty = |fd: &OwnedFd| Stdio::from(fd.try_clone().unwrap());
     let mut child = Command::new(env!("CARGO_BIN_EXE_abo"))
-        .args(["init", name])
-        .current_dir(&base)
+        .args(args)
+        .current_dir(cwd)
         .env("TERM", "xterm")
         // No global git identity to offer, and no stray config of the
         // machine running the tests.
@@ -108,7 +116,7 @@ fn init(test: &str, name: &str, steps: &[(&str, &str)]) -> Run {
         }
         if start.elapsed() > Duration::from_secs(10) {
             let _ = child.kill();
-            panic!("abo init did not finish:\n{}", screen.lock().unwrap());
+            panic!("abo {args:?} did not finish:\n{}", screen.lock().unwrap());
         }
         std::thread::sleep(Duration::from_millis(10));
     };
@@ -116,12 +124,7 @@ fn init(test: &str, name: &str, steps: &[(&str, &str)]) -> Run {
     let after = tcgetattr(&pty.slave).unwrap().local_flags;
     let modes = LocalFlags::ICANON | LocalFlags::ECHO | LocalFlags::ISIG;
     let screen = screen.lock().unwrap().clone();
-    Run {
-        status,
-        screen,
-        books: base.join(name.to_lowercase()),
-        terminal_restored: after & modes == before & modes,
-    }
+    (status, screen, after & modes == before & modes)
 }
 
 fn config(books: &Path) -> toml::Value {
@@ -161,7 +164,7 @@ fn editing() {
             ("", "\r"),
             ("Country: ", "BE\r"),
             ("Tax registration", "\r"),
-            ("How customers pay", "\r"),
+            ("Where invoices ask to be paid", "\r"),
             ("Currency: ", "eur\r"),
             (METHOD, &format!("{UP} ")),
             ("Flat rate", "5\r"),
@@ -199,7 +202,7 @@ fn vat_method_list() {
             (ADDRESS, "\r"),
             blank("Country: "),
             blank("Tax registration"),
-            blank("How customers pay"),
+            blank("Where invoices ask to be paid"),
             ("Currency: ", "EUR\r"),
             (METHOD, keys.as_str()),
         ];
@@ -219,11 +222,34 @@ fn vat_method_list() {
 #[test]
 fn giving_up() {
     let to_currency = |keys| {
-        vec![(ADDRESS, "\r"), ("Country: ", "\r"), ("Tax registration", "\r"), ("How customers pay", "\r"), ("Currency: ", keys)]
+        vec![(ADDRESS, "\r"), ("Country: ", "\r"), ("Tax registration", "\r"), ("Where invoices ask to be paid", "\r"), ("Currency: ", keys)]
     };
     refused(&init("ctrl-d", "Acme", &to_currency(CTRL_D)), "Currency: A currency is needed");
     refused(&init("ctrl-c", "Acme", &to_currency(CTRL_C)), "Error:");
     let mut steps = to_currency("EUR\r");
     steps.push((METHOD, CTRL_C));
     refused(&init("ctrl-c-list", "Acme", &steps), "Error: interrupted");
+}
+
+/// `abo payment-options edit N` puts the option on the line to change.
+#[test]
+fn edit_payment_option() {
+    let steps = [
+        (ADDRESS, "\r"),
+        ("Country: ", "\r"),
+        ("Tax registration", "\r"),
+        ("Where invoices ask to be paid", "IBAN XX00 1234\r"),
+        ("", "\r"),
+        ("Currency: ", "EUR\r"),
+        (METHOD, "n "),
+        ("Your name", "\r"),
+        ("Your email", "\r"),
+    ];
+    let r = init("edit", "Acme", &steps);
+    assert!(r.status.success(), "init failed:\n{}", r.screen);
+    let (status, screen, restored) =
+        abo(&r.books, &["payment-options", "edit", "1"], &[("1. ", &format!("{HOME}Bank {END} (EUR)\r"))]);
+    assert!(status.success() && restored, "edit failed:\n{screen}");
+    let c = done(&r);
+    assert_eq!(c["company"]["payment"][0].as_str(), Some("Bank IBAN XX00 1234 (EUR)"));
 }
