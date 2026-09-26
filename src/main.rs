@@ -3,6 +3,7 @@ mod bill;
 mod invoice;
 mod journal;
 mod payment;
+mod questions;
 mod report;
 mod reconcile;
 mod repo;
@@ -13,7 +14,7 @@ mod web;
 use anyhow::{bail, Context as _, Result};
 use clap::{Parser, Subcommand};
 use journal::{Entry, Posting};
-use repo::{answer, Ctx, Vat};
+use repo::{answer, Ctx};
 use rust_decimal::Decimal;
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -411,9 +412,13 @@ async fn run(cli: Cli) -> Result<()> {
             if dir.exists() {
                 bail!("{} already exists; choose another name, or move it out of the way", dir.display());
             }
-            let (company, vat, sales_rate, payment, author) = ask(name)?;
-            let author = author.as_ref().map(|(n, e)| (n.as_str(), e.as_str()));
-            let r = repo::init(&dir, &company, &vat, sales_rate, &payment, author)?;
+            let mut term = Terminal { given: questions::Answers::from([("name".into(), name)]), start: Default::default() };
+            let context = questions::Context { root: Some(&here), ..Default::default() };
+            let mut answers = questions::Answers::new();
+            questions::walk(questions::INIT, "", &mut answers, &context, &mut term)?;
+            let b = questions::books(&answers);
+            let author = b.author.as_ref().map(|(n, e)| (n.as_str(), e.as_str()));
+            let r = repo::init(&dir, &b.company, &b.vat, b.sales_rate, &b.payment, author)?;
             emit(cli.json, &r, || {
                 format!(
                     "Books opened in {} ({}).\nNext: cd {slug}, edit journal/accounts.journal, then `abo add`.",
@@ -599,8 +604,6 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Cmd::PaymentOptions { change } => {
             let ctx = Ctx::open(&here)?;
-            let declared = journal::declared_accounts(&ctx)?;
-            let company = &ctx.cfg.company.name;
             let others = |id: &str| ctx.cfg.payment.iter().filter(|p| p.id != id).map(|p| p.id.clone()).collect::<Vec<_>>();
             let (options, commit) = match change {
                 None | Some(PaymentCmd::List) => (ctx.cfg.payment.clone(), None),
@@ -610,8 +613,8 @@ async fn run(cli: Cli) -> Result<()> {
                         let kind = parts.kind.unwrap_or_default();
                         parts.over(repo::PaymentOption { id, kind, account: kind.account().into(), ..Default::default() })
                     } else {
-                        let start = id.map(|id| repo::PaymentOption { id, ..Default::default() });
-                        let asked = ask_option(start.as_ref(), &others(""), Some(&declared), company, "bank")?;
+                        let start = id.map(|id| questions::Answers::from([("id".into(), id)])).unwrap_or_default();
+                        let asked = ask_option(&ctx, start, others(""))?;
                         let Some(o) = asked else {
                             println!("Nothing added.");
                             return Ok(());
@@ -628,7 +631,7 @@ async fn run(cli: Cli) -> Result<()> {
                         o.id = new_id.unwrap_or(o.id);
                         o
                     } else {
-                        let asked = ask_option(Some(&now), &others(&now.id), Some(&declared), company, now.kind.name())?;
+                        let asked = ask_option(&ctx, questions::option_answers(&now), others(&now.id))?;
                         let Some(o) = asked else {
                             println!("Nothing changed.");
                             return Ok(());
@@ -812,11 +815,6 @@ fn ask_until<T>(
     }
 }
 
-/// Lines until an empty one, under `intro`.
-fn prompt_lines(intro: &str) -> Result<Vec<String>> {
-    prompt_lines_over(intro, &[])
-}
-
 /// Lines until an empty one, under `intro`, the first ones starting as
 /// `now`'s, to change or keep.
 fn prompt_lines_over(intro: &str, now: &[&str]) -> Result<Vec<String>> {
@@ -843,7 +841,7 @@ fn prompt_lines_over(intro: &str, now: &[&str]) -> Result<Vec<String>> {
 fn choose(
     question: &str,
     options: &[&'static str],
-    default: &'static str,
+    default: &str,
     check: impl Fn(&str) -> Result<&'static str, String>,
 ) -> Result<&'static str> {
     #[cfg(unix)]
@@ -857,7 +855,7 @@ fn choose(
 }
 
 #[cfg(unix)]
-fn pick(question: &str, options: &[&'static str], default: &'static str) -> Result<&'static str> {
+fn pick(question: &str, options: &[&'static str], default: &str) -> Result<&'static str> {
     use nix::sys::termios::{tcgetattr, tcsetattr, LocalFlags, SetArg};
 
     /// Puts the terminal back however the choosing ends, a refusal included.
@@ -948,141 +946,99 @@ fn confirm(question: &str, secs: u8) -> Result<bool> {
     Ok(false)
 }
 
-type Answers = (repo::Company, Vat, Decimal, Vec<repo::PaymentOption>, Option<(String, String)>);
-
-fn ask(name: String) -> Result<Answers> {
-    let address = prompt_lines("Address, one line at a time; an empty line ends it:")?.join("\n");
-    let country = prompt("Country", "")?;
-    let tax_id = prompt("Tax registration number (blank if not registered)", "")?;
-    println!(
-        "Where invoices ask to be paid: none, one or several options. Choose a kind for\n\
-         each and answer its questions, or skip. `abo payment-options` changes them\n\
-         later."
-    );
-    let mut payment: Vec<repo::PaymentOption> = vec![];
-    // The accounts are not declared yet: init declares the ones named here.
-    // After one, another only when asked for.
-    let yes_no = |s: &str| answer::one_of(s, &["yes", "no"], "yes or no");
-    while payment.is_empty() || prompt_until("Add another payment option", "no", yes_no)? == "yes" {
-        let taken: Vec<String> = payment.iter().map(|p| p.id.clone()).collect();
-        match ask_option(None, &taken, None, &name, "bank")? {
-            Some(o) => payment.push(o),
-            None => break,
-        }
-    }
-    let currency = prompt_until("Currency code, such as USD, EUR or BTC", "", answer::currency)?;
-    let vat = match choose("VAT method", &answer::METHODS, "none", answer::method)? {
-        "none" => Vat::None,
-        // A flat percentage of gross turnover with no input deduction. Sold
-        // under different names in different places.
-        "flat" => Vat::Flat {
-            rate: prompt_until("Flat rate remitted on gross turnover, percent", "", answer::percent)?,
-            account: prompt_until("VAT account", "liabilities:vat", answer::account)?,
-        },
-        _ => Vat::Effective {
-            input: prompt_until("Input VAT account", "assets:vat:input", answer::account)?,
-            output: prompt_until("Output VAT account", "liabilities:vat:output", answer::account)?,
-        },
-    };
-    let sales_rate = match vat {
-        Vat::None => Decimal::ZERO,
-        _ => prompt_until("VAT rate charged to customers, percent", "0", answer::percent)?,
-    };
-    // Every change to the books is a commit, and git refuses one without an
-    // author. Offer the global identity; blank on both leaves it to git.
-    let global = |key| repo::git_global(key).unwrap_or_default();
-    let author_name = prompt("git user.name", &global("user.name"))?;
-    let author_email = prompt("git user.email", &global("user.email"))?;
-    let author = (!author_name.is_empty() || !author_email.is_empty()).then_some((author_name, author_email));
-    Ok((
-        repo::Company {
-            name,
-            address,
-            country,
-            tax_id,
-            old_payment: None,
-            currency,
-            tax_notes: String::new(),
-            closed_through: None,
-        },
-        vat,
-        sales_rate,
-        payment,
-        author,
-    ))
+/// Answers from the terminal: each question put in turn, with what it
+/// offers, or the answer being changed, already on the line to keep or edit.
+struct Terminal {
+    /// Answered on the command line: checked, not asked.
+    given: questions::Answers,
+    /// Answers being changed, each put on the line as it stands.
+    start: questions::Answers,
 }
 
-/// One payment option: its kind from a list starting at `kind`, then the
-/// questions for that kind, each answer starting on the line as `start` has
-/// it, or as most would answer. `None` when skipped. The id must not be one
-/// of `taken`, and the account one of `declared` when that is given.
-fn ask_option(
-    start: Option<&repo::PaymentOption>,
-    taken: &[String],
-    declared: Option<&[String]>,
-    company: &str,
-    kind: &'static str,
-) -> Result<Option<repo::PaymentOption>> {
-    use repo::Kind;
-    const KINDS: [&str; 4] = ["bank", "cash", "crypto", "skip"];
-    let kind = choose("Payment option", &KINDS, kind, |s| answer::one_of(s, &KINDS, "a kind of payment option"))?;
-    let Some(kind) = Kind::from_name(kind) else { return Ok(None) };
-    let was = start.cloned().unwrap_or_default();
-    // A field of the kind chosen, as it stands if that was the kind before.
-    let same = start.is_some_and(|s| s.kind == kind);
-    let was_or = |v: &String, or: &str| if same && !v.is_empty() { v.clone() } else { or.to_string() };
-    let lines_of = |v: &String| if same { v.lines().map(str::to_string).collect() } else { vec![] };
-    let nonempty = |what: &'static str| move |s: &str| if s.is_empty() { Err(format!("{what} is needed.")) } else { Ok(s.to_string()) };
-    let blank_or = |check: fn(&str) -> Result<String, String>| move |s: &str| if s.is_empty() { Ok(String::new()) } else { check(s) };
-
-    let mut o = repo::PaymentOption { kind, ..Default::default() };
-    match kind {
-        Kind::Bank => {
-            o.holder = read_over("Account holder", &was_or(&was.holder, company))?.unwrap_or_default();
-            o.iban = prompt_over_until("IBAN (blank if none)", &was_or(&was.iban, ""), blank_or(answer::iban))?;
-            o.bic = prompt_over_until("BIC (blank if none)", &was_or(&was.bic, ""), blank_or(answer::bic))?;
-            let now = lines_of(&was.bank);
-            let intro = "The bank's name and address, a line at a time; an empty line ends them:";
-            o.bank = prompt_lines_over(intro, &now.iter().map(String::as_str).collect::<Vec<_>>())?.join("\n");
-        }
-        Kind::Cash => {}
-        Kind::Crypto => {
-            let network = "Network, such as Bitcoin, Ethereum or Lightning";
-            o.network = prompt_over_until(network, &was_or(&was.network, ""), nonempty("A network"))?;
-            o.address = prompt_over_until("Wallet address", &was_or(&was.address, ""), nonempty("An address"))?;
-        }
+/// A question's label with its hint, as the terminal puts it: "IBAN (blank
+/// if none)".
+fn question(label: &str, hint: &str) -> String {
+    match hint.trim_end_matches('.') {
+        "" => label.to_string(),
+        h => format!("{label} ({}{})", h[..1].to_lowercase(), &h[1..]),
     }
-    let intro = match kind {
-        Kind::Bank => "Anything else invoices should print, such as an account or routing number;",
-        Kind::Cash => "What invoices should say, such as where and when to pay;",
-        Kind::Crypto => "Anything else invoices should print, such as a memo to include;",
-    };
-    let now: Vec<&str> = was.details.lines().collect();
-    o.details = prompt_lines_over(&format!("{intro}\na line at a time, an empty line ends it:"), &now)?.join("\n");
-    let label = if was.label.is_empty() { kind.label(&o.network) } else { was.label.clone() };
-    o.label = read_over("Name on invoices", &label)?.unwrap_or_default();
-    let id = if was.id.is_empty() { kind.free_id(taken) } else { was.id.clone() };
-    o.id = prompt_over_until("Id, for abo commands", &id, |s| match s {
-        s if taken.iter().any(|t| t == s) => Err(format!("{s:?} is already the id of a payment option.")),
-        s => answer::option_id(s),
-    })?;
-    let account = if same && !was.account.is_empty() { was.account.clone() } else { kind.account().to_string() };
-    o.account = prompt_over_until("Account the money arrives in", &account, |s| {
-        let a = answer::account(s)?;
-        match declared {
-            Some(d) if !d.contains(&a) => {
-                Err(format!("{a} is not declared; declare it in journal/accounts.journal, or choose another."))
+}
+
+impl questions::Source for Terminal {
+    fn note(&mut self, title: &str, note: &str) -> Result<()> {
+        if note.is_empty() {
+            return Ok(());
+        }
+        // Folded to the width of the other questions' words.
+        let mut line = String::new();
+        let note = format!("{title}: {}{}", note[..1].to_lowercase(), &note[1..]);
+        for word in note.split_whitespace() {
+            if !line.is_empty() && line.len() + word.len() >= 80 {
+                println!("{line}");
+                line.clear();
             }
-            _ => Ok(a),
+            line = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
         }
-    })?;
-    if let Some(p) = o.problem() {
-        eprintln!("  But {p}; asking again.");
-        return ask_option(Some(&o), taken, declared, company, kind.name());
+        if !line.is_empty() {
+            println!("{line}");
+        }
+        Ok(())
     }
-    Ok(Some(o))
+
+    fn text(
+        &mut self,
+        key: &str,
+        label: &str,
+        hint: &str,
+        offer: &str,
+        check: &dyn Fn(&str) -> Result<String, String>,
+    ) -> Result<String> {
+        if let Some(v) = self.given.get(key) {
+            return check(v).map_err(anyhow::Error::msg);
+        }
+        let now = self.start.get(key).map_or(offer, String::as_str);
+        prompt_over_until(&question(label, hint), now, check)
+    }
+
+    fn lines(&mut self, key: &str, label: &str, hint: &str) -> Result<String> {
+        let now: Vec<&str> = self.start.get(key).map(|s| s.lines().collect()).unwrap_or_default();
+        let intro = format!("{}, a line at a time; an empty line ends it:", question(label, hint));
+        Ok(prompt_lines_over(&intro, &now)?.join("\n"))
+    }
+
+    fn choice(&mut self, key: &str, label: &str, noun: &str, options: &[&'static str], offer: &str) -> Result<String> {
+        let now = self.start.get(key).map_or(offer, String::as_str);
+        Ok(choose(label, options, now, |s| answer::one_of(s, options, noun))?.to_string())
+    }
+
+    fn another(&mut self, _key: &str, question: &str, n: usize, skipped: bool) -> Result<bool> {
+        // The first is offered, and may be skipped; after one, another only
+        // when asked for.
+        Ok(match (n, skipped) {
+            (0, _) => true,
+            (_, true) => false,
+            _ => prompt_until(question, "no", |s| answer::one_of(s, &["yes", "no"], "yes or no"))? == "yes",
+        })
+    }
+
+    fn item_problem(&mut self, prefix: &str, _first: &str, problem: String, answers: &questions::Answers) -> Result<bool> {
+        eprintln!("  {problem} Asking again.");
+        self.start.extend(answers.iter().filter(|(k, _)| k.starts_with(prefix)).map(|(k, v)| (k.clone(), v.clone())));
+        Ok(true)
+    }
 }
 
+/// A payment option's questions, starting from `start`; `None` if skipped.
+fn ask_option(ctx: &Ctx, start: questions::Answers, others: Vec<String>) -> Result<Option<repo::PaymentOption>> {
+    let context = questions::Context { root: None, ids: others, declared: Some(journal::declared_accounts(ctx)?) };
+    // The company's name, offered as the account holder.
+    let mut answers = questions::Answers::from([("name".into(), ctx.cfg.company.name.clone())]);
+    let mut term = Terminal { given: Default::default(), start };
+    if questions::ask_item(questions::OPTION, "", "skip", questions::option_problem, &mut answers, &context, &mut term)? {
+        return Ok(None);
+    }
+    Ok(Some(questions::option(&answers, "")))
+}
 
 #[cfg(test)]
 mod tests {

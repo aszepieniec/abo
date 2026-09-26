@@ -151,8 +151,8 @@ const ADDRESS: &str = "an empty line ends it:";
 const METHOD: &str = "VAT method (up";
 const PAYMENT: &str = "Payment option (up";
 
-/// Keys that move and delete within an answer, lines of an address, and
-/// Ctrl-D on a question with a default.
+/// Keys that move and delete within an answer, lines of an address, Ctrl-D
+/// on an empty line, and Enter keeping what a question put on the line.
 #[test]
 fn editing() {
     let r = init(
@@ -164,12 +164,12 @@ fn editing() {
             ("", &format!("art{HOME}E{END}h\r")),
             ("", "\r"),
             ("Country: ", "BE\r"),
-            ("Tax registration", "\r"),
+            ("Tax registration", CTRL_D),
             (PAYMENT, "s "),
             ("Currency code", "eur\r"),
             (METHOD, &format!("{UP} ")),
             ("Flat rate", "5\r"),
-            ("VAT account [liabilities:vat]: ", CTRL_D),
+            ("VAT account: ", "\r"),
             ("VAT rate charged", "\r"),
             ("git user.name", "\r"),
             ("git user.email", "\r"),
@@ -179,6 +179,7 @@ fn editing() {
     let (company, vat) = (&c["company"], &c["vat"]);
     assert_eq!(company["address"].as_str(), Some("12 Ailrd\n1 Main St\nEarth"));
     assert_eq!(company["country"].as_str(), Some("BE"));
+    assert_eq!(company["tax_id"].as_str(), Some(""));
     assert_eq!(company["currency"].as_str(), Some("EUR"));
     assert_eq!(vat["method"].as_str(), Some("flat"));
     assert_eq!(vat["account"].as_str(), Some("liabilities:vat"));
@@ -256,7 +257,7 @@ fn payment_options() {
         ("Account the money arrives in: ", "\r"),
         ("Add another payment option [no]: ", "y\r"),
         (PAYMENT, &format!("{DOWN} ")),
-        ("What invoices should say", "At our office\r"),
+        ("Anything else", "At our office\r"),
         ("", "\r"),
         ("Name on invoices: ", "\r"),
         ("Id, for abo commands: ", "\r"),
@@ -295,7 +296,7 @@ fn payment_options() {
         &["payment-options", "add"],
         &[
             (PAYMENT, &format!("{DOWN}{DOWN} ")),
-            ("Network, such as", "Bitcoin\r"),
+            ("Network (such as", "Bitcoin\r"),
             ("Wallet address: ", "bc1qexample\r"),
             ("Anything else", "\r"),
             ("Name on invoices: ", "\r"),

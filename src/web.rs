@@ -8,6 +8,7 @@ use crate::journal::{self, Entry, Posting};
 use crate::reconcile;
 use crate::statement::{self, money};
 use crate::undo;
+use crate::questions::{self, Q};
 use crate::repo::{Ctx, Vat};
 use anyhow::{bail, Context as _, Result};
 use axum::extract::{DefaultBodyLimit, Form, Multipart, Path, Query};
@@ -172,50 +173,219 @@ type Problems = std::collections::BTreeMap<String, String>;
 /// asked for.
 const MAX_OPTIONS: usize = 20;
 
-/// The form as init would start it: one payment option, a bank one; no VAT;
-/// the global git identity.
-fn new_defaults() -> Fields {
-    let mut f = Fields::new();
-    for (k, v) in [
-        ("n", "1"),
-        ("p0.kind", "bank"),
-        ("method", "none"),
-        ("flat_account", "liabilities:vat"),
-        ("input", "assets:vat:input"),
-        ("output", "liabilities:vat:output"),
-        ("sales_rate", "0"),
-    ] {
-        f.insert(k.into(), v.into());
+/// The form as it starts: each choice and each fixed offer filled in, one
+/// of each repeat's items.
+fn initial(qs: &[Q], prefix: &str, f: &mut Fields) {
+    for q in qs {
+        match q {
+            Q::Group { qs, .. } | Q::When { qs, .. } => initial(qs, prefix, f),
+            Q::Text { key, offer: questions::Offer::Value(v), .. } => {
+                f.insert(format!("{prefix}{key}"), v.to_string());
+            }
+            Q::Text { .. } | Q::Lines { .. } => {}
+            Q::Choice { key, options, offer, .. } => {
+                f.insert(format!("{prefix}{key}"), offer.to_string());
+                for (_, then) in options.iter() {
+                    initial(then, prefix, f);
+                }
+            }
+            Q::Repeat { key, item, .. } => {
+                f.insert(format!("{prefix}{key}.n"), "1".into());
+                initial(item, &format!("{prefix}{key}0."), f);
+            }
+        }
     }
-    for (k, key) in [("git_name", "user.name"), ("git_email", "user.email")] {
-        f.insert(k.into(), crate::repo::git_global(key).unwrap_or_default());
+}
+
+/// Answers from a posted form. A wrong one is noted under its field, and
+/// the rest are still read, so that every problem is said at once.
+struct Posted<'a> {
+    f: &'a Fields,
+    problems: Problems,
+}
+
+impl Posted<'_> {
+    fn raw(&self, key: &str) -> String {
+        self.f.get(key).map(|s| s.trim().to_string()).unwrap_or_default()
     }
-    f
+}
+
+impl questions::Source for Posted<'_> {
+    fn note(&mut self, _: &str, _: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn text(&mut self, key: &str, _: &str, _: &str, _: &str, check: &dyn Fn(&str) -> Result<String, String>) -> Result<String> {
+        let raw = self.raw(key);
+        Ok(check(&raw).unwrap_or_else(|e| {
+            self.problems.insert(key.to_string(), e);
+            raw
+        }))
+    }
+
+    fn lines(&mut self, key: &str, _: &str, _: &str) -> Result<String> {
+        // Blank lines dropped: on the terminal a blank line ends the answer.
+        Ok(self.raw(key).lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n"))
+    }
+
+    fn choice(&mut self, key: &str, _: &str, noun: &str, options: &[&'static str], offer: &str) -> Result<String> {
+        let raw = self.raw(key);
+        match options.iter().find(|o| **o == raw) {
+            Some(o) => Ok(o.to_string()),
+            None => {
+                self.problems.insert(key.to_string(), format!("Choose {noun}: {}.", options.join(", ")));
+                Ok(offer.to_string())
+            }
+        }
+    }
+
+    fn another(&mut self, key: &str, _: &str, n: usize, _: bool) -> Result<bool> {
+        let items: usize = self.raw(&format!("{key}.n")).parse().unwrap_or(1);
+        Ok(n < items.clamp(1, MAX_OPTIONS))
+    }
+
+    fn item_problem(&mut self, prefix: &str, first: &str, problem: String, _: &questions::Answers) -> Result<bool> {
+        // Unless a field of the item already has a problem that explains it.
+        if !self.problems.keys().any(|k| k.starts_with(prefix)) {
+            self.problems.insert(first.to_string(), problem);
+        }
+        Ok(false)
+    }
+}
+
+/// The questions as a form, filled in from `f`, each problem under its
+/// field. What follows a choice shows once it is chosen, through CSS rules
+/// written into `css` as the form is drawn: no script. Where `:has` is not
+/// supported every field shows, and the ones not chosen are ignored.
+fn render(qs: &[Q], prefix: &str, f: &Fields, problems: &Problems, css: &mut Vec<String>) -> Markup {
+    let v = |k: &str| f.get(k).cloned().unwrap_or_default();
+    let problem = |k: &str| html! { @if let Some(p) = problems.get(k) { span.problem { (p) } } };
+    let mut out = html! {};
+    for q in qs {
+        let m = match q {
+            Q::Group { title, icon: ic, note, qs } => html! {
+                div.box {
+                    div.box-header { (icon(ic)) (title) }
+                    div.box-body {
+                        @if !note.is_empty() { p.muted.small { (with_code(note)) } }
+                        (render(qs, prefix, f, problems, css))
+                    }
+                }
+            },
+            Q::Text { key, label, hint, offer, .. } => {
+                let k = format!("{prefix}{key}");
+                let blank = match offer {
+                    questions::Offer::From(words, _) => format!("Blank for {words}."),
+                    _ => String::new(),
+                };
+                html! {
+                    label.field { (label)
+                        @if !hint.is_empty() || !blank.is_empty() { span.hint { (hint) " " (blank) } }
+                        input type="text" name=(k) value=(v(&k));
+                        (problem(&k))
+                    }
+                }
+            }
+            Q::Lines { key, label, hint } => {
+                let k = format!("{prefix}{key}");
+                html! {
+                    label.field { (label)
+                        span.hint { (hint) " One line each." }
+                        textarea name=(k) rows="3" { (v(&k)) }
+                        (problem(&k))
+                    }
+                }
+            }
+            Q::Choice { key, label, options, .. } => {
+                let k = format!("{prefix}{key}");
+                let branches: Vec<(String, &[Q])> = options
+                    .iter()
+                    .filter(|(_, then)| !then.is_empty())
+                    .map(|(o, then)| (shown_when(css, &k, &[o]), *then))
+                    .collect();
+                html! {
+                    div.field-label { (label) }
+                    div.choice {
+                        @for (o, _) in options.iter() {
+                            label { input type="radio" name=(k) value=(o) checked[v(&k) == *o]; (o) }
+                        }
+                    }
+                    (problem(&k))
+                    @for (class, then) in &branches {
+                        div class=(class) { (render(then, prefix, f, problems, css)) }
+                    }
+                }
+            }
+            Q::When { key, is, qs } => {
+                let class = shown_when(css, &format!("{prefix}{key}"), is);
+                html! { div class=(class) { (render(qs, prefix, f, problems, css)) } }
+            }
+            Q::Repeat { key, item, another, .. } => {
+                let n = v(&format!("{prefix}{key}.n")).parse().unwrap_or(1usize).clamp(1, MAX_OPTIONS);
+                html! {
+                    @for i in 0..n {
+                        div.option { (render(item, &format!("{prefix}{key}{i}."), f, problems, css)) }
+                    }
+                    input type="hidden" name={ (prefix) (key) ".n" } value=(n);
+                    @if n < MAX_OPTIONS {
+                        div.actions { button type="submit" name="more" value={ (prefix) (key) } { (icon("plus")) " " (another) } }
+                    }
+                }
+            }
+        };
+        out = html! { (out) (m) };
+    }
+    out
+}
+
+/// Words, with what is between backticks set as code.
+fn with_code(s: &str) -> Markup {
+    html! { @for (i, part) in s.split('`').enumerate() { @if i % 2 == 1 { code { (part) } } @else { (part) } } }
+}
+
+/// A class for markup shown only while one of `options` is chosen at `key`,
+/// and the rule that does it.
+fn shown_when(css: &mut Vec<String>, key: &str, options: &[&str]) -> String {
+    let class = format!("q{}", css.len());
+    let chosen: Vec<String> = options.iter().map(|o| format!("input[name=\"{key}\"][value=\"{o}\"]:checked")).collect();
+    css.push(format!("form:not(:has({})) .{class} {{ display: none; }}", chosen.join(", ")));
+    class
 }
 
 async fn new_form() -> Response {
-    data_page("A new company", new_page(&new_defaults(), &Problems::new(), None)).into_response()
+    let mut f = Fields::new();
+    initial(questions::INIT, "", &mut f);
+    data_page("A new company", new_page(&f, &Problems::new(), None)).into_response()
 }
 
 async fn new_submit(axum::extract::State(root): axum::extract::State<Arc<PathBuf>>, Form(mut f): Form<Fields>) -> Response {
-    let n = f.get("n").and_then(|n| n.parse().ok()).unwrap_or(1usize).clamp(1, MAX_OPTIONS);
-    // Another payment option only when asked for, as on the terminal.
-    if f.contains_key("more") && n < MAX_OPTIONS {
-        f.insert("n".into(), (n + 1).to_string());
-        f.insert(format!("p{n}.kind"), "bank".into());
+    // Another item of a repeat only when asked for, as on the terminal.
+    if let Some(key) = f.get("more").cloned() {
+        let n: usize = f.get(&format!("{key}.n")).and_then(|n| n.parse().ok()).unwrap_or(1);
+        if n < MAX_OPTIONS {
+            f.insert(format!("{key}.n"), (n + 1).to_string());
+            if let Some(Q::Repeat { item, .. }) = find_repeat(questions::INIT, &key) {
+                initial(item, &format!("{key}{n}."), &mut f);
+            }
+        }
         return data_page("A new company", new_page(&f, &Problems::new(), None)).into_response();
     }
     let mut problems = Problems::new();
     let token = f.get("token").cloned().unwrap_or_default();
     let opened = once(&token, || {
-        let a = new_answers(&root, &f, n).map_err(|p| {
-            problems = p;
-            anyhow::anyhow!("answers to look at again")
-        })?;
-        let author = a.author.as_ref().map(|(n, e)| (n.as_str(), e.as_str()));
-        crate::repo::init(&root.join(&a.slug), &a.company, &a.vat, a.sales_rate, &a.payment, author)?;
-        info!(company = %a.company.name, dir = %a.slug, "books opened");
-        Ok(format!("/?opened={}", enc(&a.slug)))
+        let context = questions::Context { root: Some(&root), ..Default::default() };
+        let mut posted = Posted { f: &f, problems: Problems::new() };
+        let mut answers = questions::Answers::new();
+        questions::walk(questions::INIT, "", &mut answers, &context, &mut posted)?;
+        if !posted.problems.is_empty() {
+            problems = posted.problems;
+            bail!("answers to look at again");
+        }
+        let b = questions::books(&answers);
+        let author = b.author.as_ref().map(|(n, e)| (n.as_str(), e.as_str()));
+        crate::repo::init(&root.join(&b.slug), &b.company, &b.vat, b.sales_rate, &b.payment, author)?;
+        info!(company = %b.company.name, dir = %b.slug, "books opened");
+        Ok(format!("/?opened={}", enc(&b.slug)))
     });
     match opened {
         Ok(to) => Redirect::to(&to).into_response(),
@@ -227,163 +397,19 @@ async fn new_submit(axum::extract::State(root): axum::extract::State<Arc<PathBuf
     }
 }
 
-struct NewBooks {
-    slug: String,
-    company: crate::repo::Company,
-    vat: Vat,
-    sales_rate: rust_decimal::Decimal,
-    payment: Vec<crate::repo::PaymentOption>,
-    author: Option<(String, String)>,
+fn find_repeat<'a>(qs: &'a [Q], key: &str) -> Option<&'a Q> {
+    qs.iter().find_map(|q| match q {
+        Q::Repeat { key: k, .. } if *k == key => Some(q),
+        Q::Group { qs, .. } | Q::When { qs, .. } => find_repeat(qs, key),
+        Q::Choice { options, .. } => options.iter().find_map(|(_, then)| find_repeat(then, key)),
+        _ => None,
+    })
 }
 
-/// The form's answers, checked as init checks them on the terminal, with
-/// the same defaults for what was left blank; or every problem found, by
-/// field.
-fn new_answers(root: &std::path::Path, f: &Fields, n: usize) -> Result<NewBooks, Problems> {
-    use crate::repo::{answer, Kind, PaymentOption};
-    let get = |k: &str| f.get(k).map(|s| s.trim().to_string()).unwrap_or_default();
-    // A text area's lines, blank ones dropped: on the terminal a blank line
-    // ends the answer.
-    let lines = |k: &str| get(k).lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
-    /// The answer, or the problem with it noted under its field.
-    fn take<T: Default>(problems: &mut Problems, field: &str, r: Result<T, String>) -> T {
-        r.unwrap_or_else(|e| {
-            problems.insert(field.to_string(), e);
-            T::default()
-        })
-    }
-    let mut problems = Problems::new();
-    let p = &mut problems;
-
-    let name = get("name");
-    let slug = crate::repo::slug(&name);
-    take(p, "name", match () {
-        _ if name.is_empty() => Err("A name is needed.".into()),
-        _ if slug.is_empty() => Err(format!("{name:?} has no letters or digits to name a directory after.")),
-        _ if root.join(&slug).exists() => Err(format!("{slug} is already in the data directory; choose another name.")),
-        _ => Ok(String::new()),
-    });
-
-    let mut payment: Vec<PaymentOption> = vec![];
-    for i in 0..n {
-        let k = |part: &str| format!("p{i}.{part}");
-        // Skipped, or never chosen.
-        let Some(kind) = Kind::from_name(&get(&k("kind"))) else { continue };
-        let mut o = PaymentOption { kind, ..Default::default() };
-        let blank_or = |c: fn(&str) -> Result<String, String>, s: String| if s.is_empty() { Ok(s) } else { c(&s) };
-        let needed = |what: &str, s: String| if s.is_empty() { Err(format!("{what} is needed.")) } else { Ok(s) };
-        // Only the fields of the kind chosen: the others may hold what was
-        // typed before the kind changed.
-        match kind {
-            Kind::Bank => {
-                o.holder = match get(&k("holder")) {
-                    h if h.is_empty() => name.clone(),
-                    h => h,
-                };
-                o.iban = take(p, &k("iban"), blank_or(answer::iban, get(&k("iban"))));
-                o.bic = take(p, &k("bic"), blank_or(answer::bic, get(&k("bic"))));
-                o.bank = lines(&k("bank"));
-            }
-            Kind::Cash => {}
-            Kind::Crypto => {
-                o.network = take(p, &k("network"), needed("A network", get(&k("network"))));
-                o.address = take(p, &k("address"), needed("An address", get(&k("address"))));
-            }
-        }
-        o.details = lines(&k("details"));
-        o.label = match get(&k("label")) {
-            l if l.is_empty() => kind.label(&o.network),
-            l => l,
-        };
-        let taken: Vec<String> = payment.iter().map(|p| p.id.clone()).collect();
-        o.id = match get(&k("id")) {
-            id if id.is_empty() => kind.free_id(&taken),
-            id if taken.contains(&id) => take(p, &k("id"), Err(format!("{id:?} is already the id of another option."))),
-            id => take(p, &k("id"), answer::option_id(&id)),
-        };
-        o.account = match get(&k("account")) {
-            a if a.is_empty() => kind.account().to_string(),
-            a => take(p, &k("account"), answer::account(&a)),
-        };
-        // Said under the kind, unless a field of the option already has a
-        // problem that explains it.
-        let explained = p.keys().any(|f| f.starts_with(&format!("p{i}.")));
-        if let (Some(mut why), false) = (o.problem(), explained) {
-            why[..1].make_ascii_uppercase();
-            take::<()>(p, &k("kind"), Err(format!("{why}.")));
-        }
-        payment.push(o);
-    }
-
-    let currency = take(p, "currency", answer::currency(&get("currency")));
-    let vat = match answer::method(&get("method")) {
-        Ok("flat") => Vat::Flat {
-            rate: take(p, "flat_rate", answer::percent(&get("flat_rate"))),
-            account: take(p, "flat_account", answer::account(&get("flat_account"))),
-        },
-        Ok("effective") => Vat::Effective {
-            input: take(p, "input", answer::account(&get("input"))),
-            output: take(p, "output", answer::account(&get("output"))),
-        },
-        Ok(_) => Vat::None,
-        Err(e) => {
-            take::<()>(p, "method", Err(e));
-            Vat::None
-        }
-    };
-    let sales_rate = match vat {
-        Vat::None => rust_decimal::Decimal::ZERO,
-        _ => take(p, "sales_rate", answer::percent(&get("sales_rate"))),
-    };
-    let (git_name, git_email) = (get("git_name"), get("git_email"));
-    let author = (!git_name.is_empty() || !git_email.is_empty()).then_some((git_name, git_email));
-
-    if !problems.is_empty() {
-        return Err(problems);
-    }
-    let company = crate::repo::Company {
-        name,
-        address: lines("address"),
-        country: get("country"),
-        tax_id: get("tax_id"),
-        old_payment: None,
-        currency,
-        tax_notes: String::new(),
-        closed_through: None,
-    };
-    Ok(NewBooks { slug, company, vat, sales_rate, payment, author })
-}
-
-/// init's questions as a form, in init's order, filled in from `f`, each
-/// problem under its field. The fields of a payment option's kind, and of
-/// the VAT method, show once it is chosen: CSS, no script. Where `:has` is
-/// not supported every field shows, and the ones not chosen are ignored.
+/// init's questions as a form.
 fn new_page(f: &Fields, problems: &Problems, refused: Option<&anyhow::Error>) -> Markup {
-    let v = |k: &str| f.get(k).cloned().unwrap_or_default();
-    let problem = |k: &str| html! { @if let Some(p) = problems.get(k) { span.problem { (p) } } };
-    let text = |label: &str, hint: &str, k: &str, placeholder: &str| html! {
-        label.field { (label)
-            @if !hint.is_empty() { span.hint { (hint) } }
-            input type="text" name=(k) value=(v(k)) placeholder=[(!placeholder.is_empty()).then_some(placeholder)];
-            (problem(k))
-        }
-    };
-    let area = |label: &str, hint: &str, k: &str| html! {
-        label.field { (label)
-            @if !hint.is_empty() { span.hint { (hint) } }
-            textarea name=(k) rows="3" { (v(k)) }
-            (problem(k))
-        }
-    };
-    let radios = |k: &str, options: &[&str]| html! {
-        div.choice {
-            @for o in options {
-                label { input type="radio" name=(k) value=(o) checked[v(k) == *o]; (o) }
-            }
-        }
-        (problem(k))
-    };
-    let n = v("n").parse().unwrap_or(1usize).clamp(1, MAX_OPTIONS);
+    let mut css = vec![];
+    let form = render(questions::INIT, "", f, problems, &mut css);
     html! {
         h1 { "Open the books for a new company" }
         @if let Some(e) = refused {
@@ -394,84 +420,14 @@ fn new_page(f: &Fields, problems: &Problems, refused: Option<&anyhow::Error>) ->
                 "Some answers need another look; each says why under it."
             } }
         }
-        form.new method="post" action="/new" {
+        style { (PreEscaped(css.join("\n"))) }
+        form method="post" action="/new" {
             // Enter in a field opens the books, as the button at the end
             // does: the first submit button is the one Enter presses, and
             // "Add another payment option" comes before it.
             button.offscreen type="submit" tabindex="-1" aria-hidden="true" { "Open the books" }
             (token())
-            input type="hidden" name="n" value=(n);
-            div.box {
-                div.box-header { (icon("book")) "The company" }
-                div.box-body {
-                    (text("Name", "Its directory is this in lower-case ASCII, with dashes between the words.", "name", ""))
-                    (area("Address", "One line each.", "address"))
-                    (text("Country", "", "country", ""))
-                    (text("Tax registration number", "Blank if not registered.", "tax_id", ""))
-                }
-            }
-            div.box {
-                div.box-header { (icon("inbox")) "Where invoices ask to be paid" }
-                div.box-body {
-                    p.muted.small { "None, one or several options. Choose a kind for each and answer its questions, or skip. "
-                        code { "abo payment-options" } " changes them later." }
-                    @for i in 0..n {
-                        @let k = |part: &str| format!("p{i}.{part}");
-                        div.option {
-                            (radios(&k("kind"), &["bank", "cash", "crypto", "skip"]))
-                            div.kind-bank {
-                                (text("Account holder", "Blank for the company's name.", &k("holder"), ""))
-                                (text("IBAN", "Blank if none.", &k("iban"), "CH93 0076 2011 6238 5295 7"))
-                                (text("BIC", "Blank if none.", &k("bic"), "POFICHBEXXX"))
-                                (area("The bank's name and address", "One line each.", &k("bank")))
-                            }
-                            div.kind-crypto {
-                                (text("Network", "", &k("network"), "Bitcoin, Ethereum or Lightning"))
-                                (text("Wallet address", "", &k("address"), ""))
-                            }
-                            div.kind-any {
-                                (area("Anything else invoices should print",
-                                      "One line each: an account or routing number, where and when to pay cash, a memo to include.",
-                                      &k("details")))
-                                (text("Name on invoices", "Blank for Bank transfer, Cash, or the network.", &k("label"), ""))
-                                (text("Id, for abo commands", "Blank for the kind: bank, cash or crypto, numbered if taken.", &k("id"), ""))
-                                (text("Account the money arrives in",
-                                      "Blank for assets:bank, assets:cash or assets:crypto, by kind.", &k("account"), ""))
-                            }
-                        }
-                    }
-                    @if n < MAX_OPTIONS {
-                        div.actions { button type="submit" name="more" value="1" { (icon("plus")) " Add another payment option" } }
-                    }
-                }
-            }
-            div.box {
-                div.box-header { (icon("coins")) "Currency and VAT" }
-                div.box-body {
-                    (text("Currency code", "Such as USD, EUR or BTC.", "currency", ""))
-                    div.vat {
-                        label.field { "VAT method" }
-                        (radios("method", &["effective", "flat", "none"]))
-                        div.m-flat {
-                            (text("Flat rate remitted on gross turnover, percent", "", "flat_rate", ""))
-                            (text("VAT account", "", "flat_account", ""))
-                        }
-                        div.m-effective {
-                            (text("Input VAT account", "", "input", ""))
-                            (text("Output VAT account", "", "output", ""))
-                        }
-                        div.m-rate { (text("VAT rate charged to customers, percent", "", "sales_rate", "")) }
-                    }
-                }
-            }
-            div.box {
-                div.box-header { (icon("commit")) "git" }
-                div.box-body {
-                    p.muted.small { "Set in the new repository only; blank on both leaves it to git." }
-                    (text("git user.name", "", "git_name", ""))
-                    (text("git user.email", "", "git_email", ""))
-                }
-            }
+            (form)
             div.actions { button.btn-primary type="submit" { (icon("check")) " Open the books" } }
         }
         p { a.btn href="/" { (icon("left")) " Back" } }
@@ -1762,17 +1718,11 @@ input[type=text], input[type=date], input[type=file], textarea, select {
 }
 textarea { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }
 label.field .problem, .problem { display: block; font-weight: 400; font-size: 12px; color: var(--error); margin-top: 4px; }
-.choice { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: -8px 0 16px; }
+.field-label { font-weight: 600; margin: 0 0 6px; }
+.choice { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 0 0 16px; }
 .choice label { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; }
 .option { padding-bottom: 8px; }
 .option + .option { border-top: 1px solid var(--card-border); padding-top: 16px; }
-/* A payment option's fields, and the VAT method's, for the one chosen. */
-.option:not(:has(input[value=bank]:checked)) .kind-bank,
-.option:not(:has(input[value=crypto]:checked)) .kind-crypto,
-.option:has(input[value=skip]:checked) .kind-any,
-.vat:not(:has(input[value=flat]:checked)) .m-flat,
-.vat:not(:has(input[value=effective]:checked)) .m-effective,
-.vat:has(input[value=none]:checked) .m-rate { display: none; }
 .offscreen { position: absolute; left: -9999px; }
 input:focus, textarea:focus { outline: none; border-color: var(--link); box-shadow: 0 0 0 3px var(--focus); }
 

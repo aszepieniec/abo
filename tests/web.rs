@@ -83,7 +83,7 @@ fn new_company() {
     assert!(!page.contains("name=\"p1.kind\""), "a second option before one was asked for");
 
     // Another payment option only when asked for; what was typed stays.
-    let (_, _, page) = http(&s, "POST", "/new", &[("n", "1"), ("name", "Acme"), ("more", "1")]);
+    let (_, _, page) = http(&s, "POST", "/new", &[("p.n", "1"), ("name", "Acme"), ("more", "p")]);
     assert!(page.contains("name=\"p1.kind\" value=\"bank\" checked"), "{page}");
     assert!(page.contains("name=\"name\" value=\"Acme\""), "{page}");
 
@@ -94,7 +94,7 @@ fn new_company() {
         "/new",
         &[
             ("token", "wrong"),
-            ("n", "2"),
+            ("p.n", "2"),
             ("name", "&&"),
             ("p0.kind", "bank"),
             ("p0.iban", "CH9300762011623852958"),
@@ -125,7 +125,7 @@ fn new_company() {
     // ignored; a blank line in the address goes, as on the terminal.
     let good = [
         ("token", "good"),
-        ("n", "3"),
+        ("p.n", "3"),
         ("name", "Test & Sons Ltd"),
         ("address", "1 Street\r\n\r\n3000 City"),
         ("p0.kind", "bank"),
@@ -174,8 +174,84 @@ fn new_company() {
     let again: Vec<_> = good.iter().map(|&(k, v)| if k == "token" { (k, "again") } else { (k, v) }).collect();
     let (status, _, page) = http(&s, "POST", "/new", &again);
     assert_eq!(status, 200);
-    assert!(page.contains("test-sons-ltd is already in the data directory"), "{page}");
+    assert!(page.contains("test-sons-ltd already exists here"), "{page}");
 
     drop(s);
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+/// The same answers, typed at `abo init` and posted to `/new`, open the same
+/// books: both ask `questions::INIT`, and this is what says they mean the
+/// same by it.
+#[test]
+fn terminal_and_form_agree() {
+    let base = std::env::temp_dir().join(format!("abo-parity-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let (typed, posted) = (base.join("typed"), base.join("posted"));
+    for d in [&typed, &posted] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+
+    // In init's order; a blank line takes what is offered.
+    let answers = [
+        "1 Street", "3000 City", "",                  // address, ended by an empty line
+        "CH", "CHE-1",                                // country, tax id
+        "bank", "", "CH9300762011623852957", "pofichbexxx", "PostFinance AG", "", // holder offered; bank's lines
+        "", "", "", "",                               // no further lines; name, id, account offered
+        "yes",                                        // another
+        "crypto", "Bitcoin", "bc1qexample", "Memo", "", "", "", "",
+        "",                                           // no more
+        "chf", "flat", "5.3", "", "8.1",              // currency, method, rate, account offered, rate charged
+        "Ann", "ann@example.invalid",
+    ];
+    let mut c = Command::new(env!("CARGO_BIN_EXE_abo"))
+        .args(["init", "Parity", "Ltd"])
+        .current_dir(&typed)
+        .env("HOME", &base)
+        .env("XDG_CONFIG_HOME", &base)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    c.stdin.take().unwrap().write_all(format!("{}\n", answers.join("\n")).as_bytes()).unwrap();
+    let o = c.wait_with_output().unwrap();
+    assert!(o.status.success(), "init failed: {}", String::from_utf8_lossy(&o.stderr));
+
+    let s = serve(&posted, &base);
+    let form = [
+        ("token", "parity"),
+        ("name", "Parity Ltd"),
+        ("address", "1 Street\r\n3000 City"),
+        ("country", "CH"),
+        ("tax_id", "CHE-1"),
+        ("p.n", "2"),
+        ("p0.kind", "bank"),
+        ("p0.iban", "CH9300762011623852957"),
+        ("p0.bic", "pofichbexxx"),
+        ("p0.bank", "PostFinance AG"),
+        ("p1.kind", "crypto"),
+        ("p1.network", "Bitcoin"),
+        ("p1.address", "bc1qexample"),
+        ("p1.details", "Memo"),
+        ("currency", "chf"),
+        ("method", "flat"),
+        ("flat_rate", "5.3"),
+        ("sales_rate", "8.1"),
+        ("git_name", "Ann"),
+        ("git_email", "ann@example.invalid"),
+    ];
+    let (status, to, page) = http(&s, "POST", "/new", &form);
+    assert_eq!((status, to.as_str()), (303, "/?opened=parity-ltd"), "{page}");
+    drop(s);
+
+    for file in ["abo.toml", "journal/accounts.journal", "journal/main.journal", ".gitignore"] {
+        let read = |d: &Path| std::fs::read_to_string(d.join("parity-ltd").join(file)).unwrap();
+        assert_eq!(read(&typed), read(&posted), "{file} differs");
+    }
+    let config = std::fs::read_to_string(typed.join("parity-ltd/abo.toml")).unwrap();
+    for has in ["id = \"bank\"", "iban = \"CH93 0076 2011 6238 5295 7\"", "id = \"crypto\"", "account = \"assets:crypto\"", "rate    = 5.3"] {
+        assert!(config.contains(has), "no {has:?} in\n{config}");
+    }
     std::fs::remove_dir_all(&base).unwrap();
 }

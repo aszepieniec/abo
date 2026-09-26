@@ -45,8 +45,9 @@ directory of that name already there, a name with no letters or digits,
 `--dir`, and running it inside a company's books. The accounts the payment
 options name are declared along with the default ones.
 In the browser, `abo serve` on a data directory offers the same questions as
-one form at `/new`, in the same order, with the same checks and the same
-defaults for a blank answer. The fields of a payment option's kind and of the
+one form at `/new`: both are drawn from one description of them
+(`src/questions.rs`), so they come in the same order, with the same checks and
+the same defaults for a blank answer, and the same answers open the same books. The fields of a payment option's kind and of the
 VAT method show once it is chosen (CSS, no script); another payment option
 only when asked for with its button. Each wrong answer says why under it and
 the form comes back as filled in; sent twice, it opens one company.

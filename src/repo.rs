@@ -371,13 +371,6 @@ pub mod answer {
         Ok(s.to_ascii_uppercase())
     }
 
-    pub const METHODS: [&str; 3] = ["effective", "flat", "none"];
-
-    /// One of `METHODS`, or the start of exactly one of them, in any case.
-    pub fn method(s: &str) -> Result<&'static str, String> {
-        one_of(s, &METHODS, "a VAT method")
-    }
-
     /// One of `options`, or the start of exactly one of them, in any case.
     pub fn one_of(s: &str, options: &[&'static str], what: &str) -> Result<&'static str, String> {
         let s = s.to_ascii_lowercase();
@@ -755,10 +748,13 @@ mod tests {
         for bad in ["", "E U R", "$", "EU"] {
             assert!(currency(bad).is_err(), "{bad}");
         }
+        let methods = ["effective", "flat", "none"];
         for (typed, m) in [("e", "effective"), ("FL", "flat"), ("none", "none"), ("N", "none")] {
-            assert_eq!(method(typed), Ok(m), "{typed}");
+            assert_eq!(one_of(typed, &methods, "a VAT method"), Ok(m), "{typed}");
         }
-        assert!(method("").is_err() && method("x").is_err() && method("flatter").is_err());
+        for bad in ["", "x", "flatter"] {
+            assert!(one_of(bad, &methods, "a VAT method").is_err(), "{bad}");
+        }
         for good in ["CH9300762011623852957", "ch93 0076 2011 6238 5295 7", "GB82WEST12345698765432", "DE89370400440532013000"] {
             assert!(iban(good).is_ok(), "{good}");
         }

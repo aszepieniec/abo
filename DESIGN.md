@@ -107,6 +107,16 @@ These are free now and expensive to retrofit. Do not violate them.
 The web server calls these functions **in-process**. It does not shell out to the
 CLI and it does not talk to itself over HTTP.
 
+Questions asked in both places are written once. `src/questions.rs` describes
+opening the books (and a payment option's questions) as data: text, lines, a
+choice with the questions that follow each option, questions shown only for
+some answers, and a repeated group such as payment options, each question
+with what it offers when left blank and how its answer is checked. The
+terminal walks the description asking one question at a time; the browser
+draws it as one form, and reads a posted form by walking it again. Both hand
+the same answers to one function that turns them into books. A test gives the
+same answers to `abo init` and to `/new` and requires identical books.
+
 ---
 
 ## 4. The bill workflow (the core)
