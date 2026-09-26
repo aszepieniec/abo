@@ -991,8 +991,8 @@ fn ask(name: String) -> Result<Answers> {
     // Every change to the books is a commit, and git refuses one without an
     // author. Offer the global identity; blank on both leaves it to git.
     let global = |key| git_global(key).unwrap_or_default();
-    let author_name = prompt("Your name, recorded on every change to the books", &global("user.name"))?;
-    let author_email = prompt("Your email, likewise", &global("user.email"))?;
+    let author_name = prompt("git user.name", &global("user.name"))?;
+    let author_email = prompt("git user.email", &global("user.email"))?;
     let author = (!author_name.is_empty() || !author_email.is_empty()).then_some((author_name, author_email));
     Ok((
         repo::Company {

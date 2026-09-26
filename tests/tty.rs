@@ -171,8 +171,8 @@ fn editing() {
             ("Flat rate", "5\r"),
             ("VAT account [liabilities:vat]: ", CTRL_D),
             ("VAT rate charged", "\r"),
-            ("Your name", "\r"),
-            ("Your email", "\r"),
+            ("git user.name", "\r"),
+            ("git user.email", "\r"),
         ],
     );
     let c = done(&r);
@@ -212,7 +212,7 @@ fn vat_method_list() {
             "effective" => steps.extend([blank("Input VAT"), blank("Output VAT"), blank("VAT rate charged")]),
             _ => {}
         }
-        steps.extend([blank("Your name"), blank("Your email")]);
+        steps.extend([blank("git user.name"), blank("git user.email")]);
         let c = done(&init(&format!("list{i}"), "Acme", &steps));
         assert_eq!(c["vat"]["method"].as_str(), Some(method), "{keys:?}");
     }
@@ -264,8 +264,8 @@ fn payment_options() {
         ("Add another payment option [no]: ", "\r"),
         ("Currency: ", "EUR\r"),
         (METHOD, "n "),
-        ("Your name", "\r"),
-        ("Your email", "\r"),
+        ("git user.name", "\r"),
+        ("git user.email", "\r"),
     ];
     let r = init("payment", "Acme", &steps);
     assert!(r.status.success(), "init failed:\n{}", r.screen);

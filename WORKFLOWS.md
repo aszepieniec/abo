@@ -34,8 +34,9 @@ if asked for with yes), currency and VAT method (chosen from a
 list: up and down or a letter, then space); then what the
 method needs — for `effective` the input and the output VAT accounts, for
 `flat` the rate remitted and the VAT account, for `none` nothing — and, unless
-the method is `none`, the rate charged to customers; and last the name and
-email git records on every change, offering the global git identity. Blank
+the method is `none`, the rate charged to customers; and last git's
+`user.name` and `user.email` for the new repository, offering the global
+ones. Blank
 takes the default shown in brackets. A wrong answer is asked again with what
 was wrong: a currency must be letters (`eur` is taken as EUR), a VAT method
 may be the start of one (`e`, `f`, `n`), a rate must be a number from 0 up to
