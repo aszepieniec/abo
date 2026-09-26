@@ -35,9 +35,11 @@ enum Cmd {
     /// Open the books for a new company, in a directory of its own named
     /// after it, inside the working directory.
     Init {
-        /// The company's name. The directory is this in lower case, with
-        /// anything but letters and digits made into single dashes.
-        name: String,
+        /// The company's name; its words need no quotes. The directory is the
+        /// name spelled in ASCII and in lower case, with anything but letters
+        /// and digits made into single dashes.
+        #[arg(required = true)]
+        name: Vec<String>,
     },
     /// Book an entry. POSTINGs are `account=amount [COMMODITY]`, one may omit the amount.
     Add {
@@ -276,6 +278,8 @@ async fn run(cli: Cli) -> Result<()> {
 
     match cli.cmd {
         Cmd::Init { name } => {
+            // `abo init Test LLC` is one name, its words one space apart.
+            let name = name.join(" ");
             // Refusals before the questions, not after them.
             if cli.dir.is_some() {
                 bail!("abo init makes the company's directory in the working directory; it takes no --dir");

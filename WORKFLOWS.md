@@ -23,7 +23,7 @@ last such run.
 ## A. Setting up
 
 ### A1. Open the books — Supported (CLI)
-`abo init <name>`, run in a data directory, makes the company's directory
+`abo init <name>` (its words need no quotes), run in a data directory, makes the company's directory
 there: the name spelled in ASCII and in lower case, every run of anything but
 letters and digits made one dash (`Smith & Sons, LLC` → `smith-sons-llc`,
 `Łódź Straße` → `lodz-strasse`). It then asks, one per

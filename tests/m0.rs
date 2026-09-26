@@ -507,7 +507,8 @@ fn init_asks_again() {
     // good; VAT account; rate charged to customers
     let o = abo(
         &base,
-        &["init", "Test Ltd"],
+        // A name of several words needs no quotes.
+        &["init", "Test", "Ltd"],
         "\n\n\n\n\ne u r\neur\nx\nfl\nabc\n150\n5.3%\n\n0\n",
     );
     assert!(o.status.success(), "init failed: {}", err(&o));
@@ -515,7 +516,7 @@ fn init_asks_again() {
         assert!(err(&o).contains(says), "no {says:?} in: {}", err(&o));
     }
     let toml = std::fs::read_to_string(base.join("test-ltd/abo.toml")).unwrap();
-    for has in ["currency  = \"EUR\"", "method  = \"flat\"", "rate    = 5.3"] {
+    for has in ["name      = \"Test Ltd\"", "currency  = \"EUR\"", "method  = \"flat\"", "rate    = 5.3"] {
         assert!(toml.contains(has), "no {has:?} in:\n{toml}");
     }
 
