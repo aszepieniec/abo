@@ -260,6 +260,13 @@ async fn run(cli: Cli) -> Result<()> {
             );
         }
     }
+    // `abo init` makes its own directory.
+    if let Some(d) = cli.dir.as_ref().filter(|d| !d.exists() && !matches!(cli.cmd, Cmd::Init)) {
+        if !confirm(&format!("{} does not exist. Create it?", d.display()), 5)? {
+            bail!("{} does not exist", d.display());
+        }
+        std::fs::create_dir_all(d)?;
+    }
     let here = cli.dir.clone().unwrap_or(std::env::current_dir()?);
 
     match cli.cmd {
@@ -553,6 +560,34 @@ fn prompt(question: &str, default: &str) -> Result<String> {
     std::io::stdin().read_line(&mut s)?;
     let s = s.trim();
     Ok(if s.is_empty() { default.to_string() } else { s.to_string() })
+}
+
+/// Asks y/n on stderr, counting down; silence, or no terminal to ask on, is no.
+fn confirm(question: &str, secs: u8) -> Result<bool> {
+    use std::io::IsTerminal as _;
+    if !std::io::stdin().is_terminal() {
+        return Ok(false);
+    }
+    // The reader outlives a timeout, blocked on stdin, until the process ends.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = std::io::stdin().read_line(&mut s);
+        let _ = tx.send(s);
+    });
+    let mut err = std::io::stderr();
+    write!(err, "[{secs}] {question} [y/N] ")?;
+    for left in (0..secs).rev() {
+        err.flush()?;
+        if let Ok(s) = rx.recv_timeout(std::time::Duration::from_secs(1)) {
+            return Ok(matches!(s.trim(), "y" | "Y" | "yes"));
+        }
+        // Rewrite the count at the start of the line and put the cursor back
+        // where it was, so what the user has typed stays put.
+        write!(err, "\x1b7\r[{left}]\x1b8")?;
+    }
+    writeln!(err)?;
+    Ok(false)
 }
 
 fn ask() -> Result<(repo::Company, Vat, Decimal)> {
