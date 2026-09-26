@@ -956,15 +956,16 @@ fn ask(name: String) -> Result<Answers> {
     let tax_id = prompt("Tax registration number (blank if not registered)", "")?;
     println!(
         "Where invoices ask to be paid: none, one or several options. Choose a kind for\n\
-         each and answer its questions; skip when there are no more. `abo payment-options`\n\
-         changes them later."
+         each and answer its questions, or skip. `abo payment-options` changes them\n\
+         later."
     );
     let mut payment: Vec<repo::PaymentOption> = vec![];
     // The accounts are not declared yet: init declares the ones named here.
-    loop {
+    // After one, another only when asked for.
+    let yes_no = |s: &str| answer::one_of(s, &["yes", "no"], "yes or no");
+    while payment.is_empty() || prompt_until("Add another payment option", "no", yes_no)? == "yes" {
         let taken: Vec<String> = payment.iter().map(|p| p.id.clone()).collect();
-        let first = if payment.is_empty() { "bank" } else { "skip" };
-        match ask_option(None, &taken, None, &name, first)? {
+        match ask_option(None, &taken, None, &name, "bank")? {
             Some(o) => payment.push(o),
             None => break,
         }

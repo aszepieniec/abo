@@ -29,8 +29,8 @@ letters and digits made one dash (`Smith & Sons, LLC` → `smith-sons-llc`,
 `Łódź Straße` → `lodz-strasse`). It then asks, one per
 line: the company's address (a line at a time, ended by an empty line),
 country, tax number, where invoices ask to be paid (payment options: a kind
-from a list, then its questions, as in A4, until skip is chosen), currency and
-VAT method (chosen from a
+from a list, or skip, then its questions, as in A4; after each, another only
+if asked for with yes), currency and VAT method (chosen from a
 list: up and down or a letter, then space); then what the
 method needs — for `effective` the input and the output VAT accounts, for
 `flat` the rate remitted and the VAT account, for `none` nothing — and, unless

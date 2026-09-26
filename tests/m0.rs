@@ -173,9 +173,9 @@ fn invoices() {
         &["init", "Test Ltd"],
         // address and the empty line ending it, country, tax id; a bank
         // option: holder as offered, IBAN, then as offered BIC (none), bank
-        // (none), further lines (none), name, id and account; then the next
-        // kind as offered, skip; currency, method, input, output, rate
-        // charged to customers
+        // (none), further lines (none), name, id and account; then no other
+        // option, as offered; currency, method, input, output, rate charged
+        // to customers
         "1 Example Street\n\nExampleland\nTAX-1\nbank\n\nCH9300762011623852957\n\n\n\n\n\n\n\n\
          EUR\neffective\n\n\n10\n",
     );

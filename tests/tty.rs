@@ -233,7 +233,8 @@ fn giving_up() {
 }
 
 /// Payment options chosen from a list of kinds and asked for part by part:
-/// at init, a bank option with a mistyped IBAN asked again; changed later,
+/// at init, a bank option with a mistyped IBAN asked again, then, asked for,
+/// a cash option, then no more; changed later,
 /// each part on the line as it stands; and a crypto option added, its
 /// undeclared account asked again.
 #[test]
@@ -253,7 +254,14 @@ fn payment_options() {
         ("Name on invoices: ", "\r"),
         ("Id, for abo commands: ", "\r"),
         ("Account the money arrives in: ", "\r"),
-        (PAYMENT, " "),
+        ("Add another payment option [no]: ", "y\r"),
+        (PAYMENT, &format!("{DOWN} ")),
+        ("What invoices should say", "At our office\r"),
+        ("", "\r"),
+        ("Name on invoices: ", "\r"),
+        ("Id, for abo commands: ", "\r"),
+        ("Account the money arrives in: ", "\r"),
+        ("Add another payment option [no]: ", "\r"),
         ("Currency: ", "EUR\r"),
         (METHOD, "n "),
         ("Your name", "\r"),
@@ -300,7 +308,11 @@ fn payment_options() {
     assert!(screen.contains("assets:crypto is not declared"), "{screen}");
 
     let c = done(&r);
-    let (bank, wallet) = (&c["payment"][0], &c["payment"][1]);
+    let (bank, cash, wallet) = (&c["payment"][0], &c["payment"][1], &c["payment"][2]);
+    assert_eq!(cash["id"].as_str(), Some("cash"));
+    assert_eq!(cash["label"].as_str(), Some("Cash"));
+    assert_eq!(cash["details"].as_str(), Some("At our office"));
+    assert_eq!(cash["account"].as_str(), Some("assets:cash"));
     assert_eq!(bank["id"].as_str(), Some("postfinance"));
     assert_eq!(bank["kind"].as_str(), Some("bank"));
     assert_eq!(bank["label"].as_str(), Some("PostFinance"));
