@@ -28,28 +28,36 @@ pub fn find<'a>(options: &'a [PaymentOption], id: &str) -> Result<&'a PaymentOpt
     }
 }
 
-/// What makes an option acceptable in the company of `others`, whatever
-/// asked for it: a free id, something to print, a declared account.
-pub fn check(ctx: &Ctx, o: &PaymentOption, others: &[&PaymentOption]) -> Result<()> {
-    answer::option_id(&o.id).map_err(anyhow::Error::msg)?;
+/// The option as it will be kept, its IBAN and BIC tidied, if it is
+/// acceptable in the company of `others`, whatever asked for it: a free id,
+/// the fields of its kind, a declared account.
+pub fn check(ctx: &Ctx, mut o: PaymentOption, others: &[&PaymentOption]) -> Result<PaymentOption> {
+    let msg = anyhow::Error::msg;
+    answer::option_id(&o.id).map_err(msg)?;
     if others.iter().any(|p| p.id == o.id) {
         bail!("{:?} is already the id of a payment option", o.id);
     }
-    if o.label.trim().is_empty() && o.details.trim().is_empty() {
-        bail!("a payment option needs a name or details for invoices to print");
+    if !o.iban.is_empty() {
+        o.iban = answer::iban(&o.iban).map_err(msg)?;
     }
-    answer::account(&o.account).map_err(anyhow::Error::msg)?;
+    if !o.bic.is_empty() {
+        o.bic = answer::bic(&o.bic).map_err(msg)?;
+    }
+    if let Some(p) = o.problem() {
+        bail!(p);
+    }
+    answer::account(&o.account).map_err(msg)?;
     if !crate::journal::declared_accounts(ctx)?.contains(&o.account) {
         bail!("{} is not declared; add `account {}` to journal/accounts.journal first", o.account, o.account);
     }
-    Ok(())
+    Ok(o)
 }
 
 pub fn add(ctx: &Ctx, o: PaymentOption) -> Result<PaymentReport> {
     let what = o.id.clone();
     let input = serde_json::json!(o);
     let r = change(ctx, &format!("Add payment option {}", o.id), |options| {
-        check(ctx, &o, &options.iter().collect::<Vec<_>>())?;
+        let o = check(ctx, o, &options.iter().collect::<Vec<_>>())?;
         options.push(o);
         Ok(())
     });
@@ -61,10 +69,10 @@ pub fn edit(ctx: &Ctx, id: &str, o: PaymentOption) -> Result<PaymentReport> {
     let input = serde_json::json!({ "id": id, "option": o });
     let r = change(ctx, &format!("Change payment option {id}"), |options| {
         let old = find(options, id)?.clone();
+        let o = check(ctx, o, &options.iter().filter(|p| p.id != old.id).collect::<Vec<_>>())?;
         if old == o {
             bail!("payment option {} is like that already", old.id);
         }
-        check(ctx, &o, &options.iter().filter(|p| p.id != old.id).collect::<Vec<_>>())?;
         *options.iter_mut().find(|p| p.id == old.id).unwrap() = o;
         Ok(())
     });

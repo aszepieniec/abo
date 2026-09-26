@@ -68,6 +68,9 @@ struct CompanyOut {
     country: String,
     address: String,
     tax_id: String,
+    /// The payment options as one line, for templates copied into books
+    /// before there were `payment` tables: they print it after "to".
+    payment: String,
 }
 
 #[derive(Serialize)]
@@ -167,6 +170,11 @@ fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
             country: c.country.clone(),
             address: c.address.clone(),
             tax_id: c.tax_id.clone(),
+            payment: pay
+                .iter()
+                .map(|p| std::iter::once(p.label.clone()).chain(p.lines()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(", "))
+                .collect::<Vec<_>>()
+                .join("; or "),
         },
         customer: args.customer.clone(),
         number: number.clone(),
@@ -182,7 +190,7 @@ fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
         note: args.note.clone(),
         payment: pay
             .iter()
-            .map(|p| PayOut { label: p.label.clone(), details: p.details.lines().map(str::to_string).collect() })
+            .map(|p| PayOut { label: p.label.clone(), details: p.lines() })
             .collect(),
     };
 

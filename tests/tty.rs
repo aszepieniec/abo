@@ -148,7 +148,8 @@ fn refused(r: &Run, says: &str) {
 }
 
 const ADDRESS: &str = "an empty line ends it:";
-const METHOD: &str = "then space):";
+const METHOD: &str = "VAT method (up";
+const PAYMENT: &str = "Payment option (up";
 
 /// Keys that move and delete within an answer, lines of an address, and
 /// Ctrl-D on a question with a default.
@@ -164,7 +165,7 @@ fn editing() {
             ("", "\r"),
             ("Country: ", "BE\r"),
             ("Tax registration", "\r"),
-            ("Id, such as", "\r"),
+            (PAYMENT, "s "),
             ("Currency: ", "eur\r"),
             (METHOD, &format!("{UP} ")),
             ("Flat rate", "5\r"),
@@ -202,7 +203,7 @@ fn vat_method_list() {
             (ADDRESS, "\r"),
             blank("Country: "),
             blank("Tax registration"),
-            blank("Id, such as"),
+            (PAYMENT, "s "),
             ("Currency: ", "EUR\r"),
             (METHOD, keys.as_str()),
         ];
@@ -222,7 +223,7 @@ fn vat_method_list() {
 #[test]
 fn giving_up() {
     let to_currency = |keys| {
-        vec![(ADDRESS, "\r"), ("Country: ", "\r"), ("Tax registration", "\r"), ("Id, such as", "\r"), ("Currency: ", keys)]
+        vec![(ADDRESS, "\r"), ("Country: ", "\r"), ("Tax registration", "\r"), (PAYMENT, "s "), ("Currency: ", keys)]
     };
     refused(&init("ctrl-d", "Acme", &to_currency(CTRL_D)), "Currency: A currency is needed");
     refused(&init("ctrl-c", "Acme", &to_currency(CTRL_C)), "Error:");
@@ -231,46 +232,86 @@ fn giving_up() {
     refused(&init("ctrl-c-list", "Acme", &steps), "Error: interrupted");
 }
 
-/// A payment option asked for part by part at init, and changed later the
-/// same way, each part put on the line as it stands: kept, changed, or
-/// cleared and typed anew, and a detail line added after the ones there.
+/// Payment options chosen from a list of kinds and asked for part by part:
+/// at init, a bank option with a mistyped IBAN asked again; changed later,
+/// each part on the line as it stands; and a crypto option added, its
+/// undeclared account asked again.
 #[test]
-fn payment_option_parts() {
+fn payment_options() {
     let steps = [
         (ADDRESS, "\r"),
         ("Country: ", "\r"),
         ("Tax registration", "\r"),
-        ("Id, such as", "Bank\r"),
-        ("Id, such as", "bank\r"),
-        ("Name on invoices", "Bank\r"),
-        ("an empty line ends them:", "IBAN XX00 1234\r"),
+        (PAYMENT, " "),
+        ("Account holder: ", "\r"),
+        ("IBAN (blank if none): ", "CH93 0076 2011 6238 5295 8\r"),
+        ("IBAN (blank if none): ", &format!("{CTRL_A}{CTRL_K}ch93 0076 2011 6238 5295 7\r")),
+        ("BIC (blank if none): ", "\r"),
+        ("name and address", "PostFinance AG\r"),
         ("", "\r"),
+        ("Anything else", "\r"),
+        ("Name on invoices: ", "\r"),
+        ("Id, for abo commands: ", "\r"),
         ("Account the money arrives in: ", "\r"),
-        ("Id, such as", "\r"),
+        (PAYMENT, " "),
         ("Currency: ", "EUR\r"),
         (METHOD, "n "),
         ("Your name", "\r"),
         ("Your email", "\r"),
     ];
-    let r = init("parts", "Acme", &steps);
+    let r = init("payment", "Acme", &steps);
     assert!(r.status.success(), "init failed:\n{}", r.screen);
-    assert!(r.screen.contains("\"Bank\" is not an id"), "{}", r.screen);
+    assert!(r.screen.contains("check digits do not match"), "{}", r.screen);
+
     let (status, screen, restored) = abo(
         &r.books,
         &["payment-options", "edit", "bank"],
         &[
-            ("Id, such as", "\r"),
-            ("Name on invoices", &format!("{HOME}The \r")),
-            ("an empty line ends them:", "\r"),
-            ("", &format!("{CTRL_A}{CTRL_K}BIC XXXX\r")),
+            (PAYMENT, " "),
+            ("Account holder: ", &format!("{END} GmbH\r")),
+            ("IBAN (blank if none): ", "\r"),
+            ("BIC (blank if none): ", "pofichbexxx\r"),
+            ("name and address", "\r"),
+            ("", "3030 Bern\r"),
             ("", "\r"),
-            ("Account the money arrives in: ", &format!("{CTRL_A}{CTRL_K}assets:cash\r")),
+            ("Anything else", "\r"),
+            ("Name on invoices: ", &format!("{CTRL_A}{CTRL_K}PostFinance\r")),
+            ("Id, for abo commands: ", &format!("{CTRL_A}{CTRL_K}postfinance\r")),
+            ("Account the money arrives in: ", "\r"),
         ],
     );
     assert!(status.success() && restored, "edit failed:\n{screen}");
+
+    let (status, screen, restored) = abo(
+        &r.books,
+        &["payment-options", "add"],
+        &[
+            (PAYMENT, &format!("{DOWN}{DOWN} ")),
+            ("Network, such as", "Bitcoin\r"),
+            ("Wallet address: ", "bc1qexample\r"),
+            ("Anything else", "\r"),
+            ("Name on invoices: ", "\r"),
+            ("Id, for abo commands: ", "\r"),
+            ("Account the money arrives in: ", "\r"),
+            ("Account the money arrives in: ", &format!("{CTRL_A}{CTRL_K}assets:cash\r")),
+        ],
+    );
+    assert!(status.success() && restored, "add failed:\n{screen}");
+    assert!(screen.contains("assets:crypto is not declared"), "{screen}");
+
     let c = done(&r);
-    let p = &c["payment"][0];
-    assert_eq!(p["label"].as_str(), Some("The Bank"));
-    assert_eq!(p["details"].as_str(), Some("IBAN XX00 1234\nBIC XXXX"));
-    assert_eq!(p["account"].as_str(), Some("assets:cash"));
+    let (bank, wallet) = (&c["payment"][0], &c["payment"][1]);
+    assert_eq!(bank["id"].as_str(), Some("postfinance"));
+    assert_eq!(bank["kind"].as_str(), Some("bank"));
+    assert_eq!(bank["label"].as_str(), Some("PostFinance"));
+    assert_eq!(bank["holder"].as_str(), Some("Acme GmbH"));
+    assert_eq!(bank["iban"].as_str(), Some("CH93 0076 2011 6238 5295 7"));
+    assert_eq!(bank["bic"].as_str(), Some("POFICHBEXXX"));
+    assert_eq!(bank["bank"].as_str(), Some("PostFinance AG\n3030 Bern"));
+    assert_eq!(bank["account"].as_str(), Some("assets:bank"));
+    assert_eq!(wallet["id"].as_str(), Some("crypto"));
+    assert_eq!(wallet["label"].as_str(), Some("Bitcoin"));
+    assert_eq!(wallet["network"].as_str(), Some("Bitcoin"));
+    assert_eq!(wallet["address"].as_str(), Some("bc1qexample"));
+    assert_eq!(wallet["account"].as_str(), Some("assets:cash"));
 }

@@ -38,9 +38,9 @@ fn m0() {
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
 
-    // address, country, tax id, payment, currency, method, flat rate,
+    // address, country, tax id, no payment option, currency, method, flat rate,
     // vat account, rate charged to customers
-    let o = abo(&base, &["init", "Test Ltd"], "\n\n\n\nEUR\nflat\n5.3\nliabilities:vat\n0\n");
+    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nflat\n5.3\nliabilities:vat\n0\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
     assert_eq!(commits(&dir), 1);
 
@@ -171,11 +171,13 @@ fn invoices() {
     let o = abo(
         &base,
         &["init", "Test Ltd"],
-        // address and the empty line ending it, country, tax id; a payment
-        // option (id, name, details and the empty line ending them, account)
-        // and the blank id ending them; currency, method, input, output, rate
+        // address and the empty line ending it, country, tax id; a bank
+        // option: holder as offered, IBAN, then as offered BIC (none), bank
+        // (none), further lines (none), name, id and account; then the next
+        // kind as offered, skip; currency, method, input, output, rate
         // charged to customers
-        "1 Example Street\n\nExampleland\nTAX-1\nbank\nBank\nIBAN XX00\n\n\n\nEUR\neffective\n\n\n10\n",
+        "1 Example Street\n\nExampleland\nTAX-1\nbank\n\nCH9300762011623852957\n\n\n\n\n\n\n\n\
+         EUR\neffective\n\n\n10\n",
     );
     assert!(o.status.success(), "init failed: {}", err(&o));
 
@@ -191,6 +193,24 @@ fn invoices() {
     // 1600 net + 10% = 1760
     assert!(out.contains("1760.00 EUR"), "{out}");
     assert!(dir.join("invoices/2026/2026-0001.pdf").is_file());
+    // What typst was given: the bank option's name and each of its lines,
+    // and the same as one line for templates older than [[payment]].
+    let data: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join(".abo/invoice.json")).unwrap()).unwrap();
+    assert_eq!(data["payment"][0]["label"], "Bank transfer");
+    assert_eq!(
+        data["payment"][0]["details"],
+        serde_json::json!(["Account holder: Test Ltd", "IBAN: CH93 0076 2011 6238 5295 7"])
+    );
+    assert_eq!(data["company"]["payment"], "Bank transfer, Account holder: Test Ltd, IBAN: CH93 0076 2011 6238 5295 7");
+    // A template copied into the books before [[payment]] still compiles.
+    let template = dir.join("templates/invoice.typ");
+    let text = std::fs::read_to_string(&template).unwrap();
+    let start = text.find("#let pay = d.payment").unwrap();
+    let end = start + text[start..].find("\n]\n").unwrap() + 3;
+    let old = "Payable by #d.due#if d.company.payment != \"\" [ to #d.company.payment]. Please quote #d.number.\n";
+    std::fs::write(&template, format!("{}{old}{}", &text[..start], &text[end..])).unwrap();
+    Command::new("git").args(["commit", "-qam", "Customise the invoice"]).current_dir(&dir).output().unwrap();
     assert!(dir.join("templates/invoice.typ").is_file());
 
     // the PDF and the entry are one commit
@@ -229,7 +249,7 @@ fn reconciliation() {
     let dir = base.join("test-ltd");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    let o = abo(&base, &["init", "Test Ltd"], "\n\n\n\nEUR\nnone\n");
+    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
 
     let book = |date: &str, desc: &str, amount: &str| {
@@ -354,9 +374,9 @@ fn statements() {
     let dir = base.join("test-ltd");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    // address, country, tax id, payment, currency, method, input,
+    // address, country, tax id, no payment option, currency, method, input,
     // output, rate charged to customers
-    let o = abo(&base, &["init", "Test Ltd"], "\n\n\n\nEUR\neffective\n\n\n10\n");
+    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\neffective\n\n\n10\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
 
     let add = |args: &[&str]| {
@@ -448,7 +468,7 @@ fn undo_and_revert() {
     let dir = base.join("test-ltd");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    let o = abo(&base, &["init", "Test Ltd"], "\n\n\n\nEUR\nnone\n");
+    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
     let journal = || std::fs::read_to_string(dir.join("journal/2026.journal")).unwrap();
     let log = || -> serde_json::Value {
@@ -504,14 +524,15 @@ fn init_asks_again() {
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
 
-    // address, country, tax id, payment; currency blank, spaced, then good;
+    // address, country, tax id, no payment option; currency blank, spaced,
+    // then good;
     // method unknown, then a prefix; flat rate not a number, too big, then
     // good; VAT account; rate charged to customers
     let o = abo(
         &base,
         // A name of several words needs no quotes.
         &["init", "Test", "Ltd"],
-        "\n\n\n\n\ne u r\neur\nx\nfl\nabc\n150\n5.3%\n\n0\n",
+        "\n\n\nskip\n\ne u r\neur\nx\nfl\nabc\n150\n5.3%\n\n0\n",
     );
     assert!(o.status.success(), "init failed: {}", err(&o));
     for says in ["A currency is needed", "is not a currency code", "is not a VAT method", "is not a number", "from 0 up to 100"] {
@@ -522,7 +543,7 @@ fn init_asks_again() {
         assert!(toml.contains(has), "no {has:?} in:\n{toml}");
     }
 
-    let o = abo(&base, &["init", "Other"], "\n\n\n\n");
+    let o = abo(&base, &["init", "Other"], "\n\n\nskip\n");
     assert!(!o.status.success() && err(&o).contains("Currency: A currency is needed"), "{}", err(&o));
     assert!(!base.join("other").exists());
 
@@ -537,31 +558,36 @@ fn payment_options() {
     let dir = base.join("test-ltd");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    // address, country, tax id, no payment options, currency, method
-    let o = abo(&base, &["init", "Test Ltd"], "\n\n\n\nEUR\nnone\n");
+    // address, country, tax id, no payment option, currency, method
+    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
     let po = |args: &[&str]| abo(&dir, &[&["payment-options"][..], args].concat(), "");
     let list = || String::from_utf8_lossy(&po(&["list"]).stdout).into_owned();
     assert!(list().contains("No payment options"), "{}", list());
 
     for args in [
-        &["add", "postfinance", "--label", "PostFinance", "--detail", "IBAN CH93", "--detail", "BIC POFICHBEXXX"][..],
-        &["add", "cash", "--label", "Cash on collection", "--account", "assets:cash"][..],
+        &["add", "postfinance", "--label", "PostFinance", "--iban", "ch93 0076 2011 6238 5295 7", "--bic", "pofichbexxx",
+          "--bank", "PostFinance AG", "--bank", "3030 Bern"][..],
+        &["add", "cash", "--kind", "cash", "--label", "Cash", "--detail", "At our office"][..],
     ] {
         let o = po(args);
         assert!(o.status.success(), "{args:?}: {}", err(&o));
     }
-    let both = "postfinance: PostFinance -> assets:bank\n    IBAN CH93\n    BIC POFICHBEXXX\n\
-                cash: Cash on collection -> assets:cash\n";
-    assert_eq!(list(), both);
+    let postfinance = "postfinance (bank): PostFinance -> assets:bank\n\
+                       \x20   IBAN: CH93 0076 2011 6238 5295 7\n    BIC: POFICHBEXXX\n\
+                       \x20   PostFinance AG\n    3030 Bern\n";
+    assert_eq!(list(), format!("{postfinance}cash (cash): Cash -> assets:cash\n    At our office\n"));
     for (args, says) in [
-        (&["add", "cash", "--label", "Cash"][..], "already the id of a payment option"),
-        (&["add", "Wallet", "--label", "Wallet"][..], "is not an id"),
-        (&["add", "wallet", "--label", "W", "--account", "assets:crypto"][..], "assets:crypto is not declared"),
-        (&["add", "empty", "--account", "assets:cash"][..], "needs a name or details"),
+        (&["add", "cash", "--kind", "cash", "--label", "Cash"][..], "already the id of a payment option"),
+        (&["add", "Wallet", "--kind", "cash", "--label", "Wallet"][..], "is not an id"),
+        (&["add", "wallet", "--kind", "crypto", "--network", "Bitcoin", "--address", "bc1q"][..], "assets:crypto is not declared"),
+        (&["add", "wallet", "--kind", "crypto", "--network", "Bitcoin", "--account", "assets:bank"][..], "needs a network and an address"),
+        (&["add", "iban", "--iban", "CH9300762011623852958"][..], "check digits do not match"),
+        (&["add", "bank2", "--label", "Bank"][..], "needs an IBAN"),
+        (&["add", "odd", "--kind", "cash", "--iban", "CH9300762011623852957"][..], "a cash option has no iban"),
         (&["add", "--label", "No id"][..], "needs an id"),
         (&["edit", "nope", "--label", "X"][..], "no payment option \"nope\""),
-        (&["edit", "cash", "--label", "Cash on collection"][..], "like that already"),
+        (&["edit", "cash", "--label", "Cash"][..], "like that already"),
         (&["edit", "cash", "--id", "postfinance"][..], "already the id of a payment option"),
         (&["remove", "x"][..], "no payment option \"x\""),
     ] {
@@ -569,18 +595,18 @@ fn payment_options() {
         assert!(!o.status.success() && err(&o).contains(says), "{args:?}: {}", err(&o));
     }
 
-    // An id's start will do.
-    let o = po(&["edit", "ca", "--id", "cash-eur", "--label", "Cash, in euro"]);
+    // An id's start will do; another kind drops the old kind's fields.
+    let o = po(&["edit", "post", "--kind", "cash", "--id", "counter"]);
     assert!(o.status.success(), "edit failed: {}", err(&o));
-    let o = po(&["remove", "post"]);
+    assert!(list().starts_with("counter (cash): PostFinance -> assets:bank\ncash"), "{}", list());
+    let o = po(&["remove", "coun"]);
     assert!(o.status.success(), "remove failed: {}", err(&o));
-    assert_eq!(list(), "cash-eur: Cash, in euro -> assets:cash\n");
-    // The log: two adds, seven refusals (not the two about the arguments:
-    // no id, no option to edit), the edit, the remove.
-    let o = abo(&dir, &["undo", "11"], "");
+    assert_eq!(list(), "cash (cash): Cash -> assets:cash\n    At our office\n");
+    // The log: two adds, ten refusals (not the two about the arguments: no
+    // id, no option to edit), the edit, the remove.
+    let o = abo(&dir, &["undo", "14"], "");
     assert!(o.status.success(), "undo failed: {}", err(&o));
-    assert_eq!(list(), "postfinance: PostFinance -> assets:bank\n    IBAN CH93\n    BIC POFICHBEXXX\n\
-                        cash-eur: Cash, in euro -> assets:cash\n");
+    assert!(list().starts_with("counter (cash)"), "{}", list());
 
     let toml = dir.join("abo.toml");
     let text = std::fs::read_to_string(&toml).unwrap();

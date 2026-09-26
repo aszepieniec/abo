@@ -28,9 +28,9 @@ there: the name spelled in ASCII and in lower case, every run of anything but
 letters and digits made one dash (`Smith & Sons, LLC` → `smith-sons-llc`,
 `Łódź Straße` → `lodz-strasse`). It then asks, one per
 line: the company's address (a line at a time, ended by an empty line),
-country, tax number, where invoices ask to be paid (payment options, each
-asked part by part as in A4; a blank id skips them, or ends them), currency
-and VAT method (chosen from a
+country, tax number, where invoices ask to be paid (payment options: a kind
+from a list, then its questions, as in A4, until skip is chosen), currency and
+VAT method (chosen from a
 list: up and down or a letter, then space); then what the
 method needs — for `effective` the input and the output VAT accounts, for
 `flat` the rate remitted and the VAT account, for `none` nothing — and, unless
@@ -66,19 +66,29 @@ new rate, a declared account — applies without a restart.
 entries; for a data directory, the name and directory of each company in it.
 
 ### A4. Change where invoices ask to be paid — Supported (CLI)
-A payment option has an id, for commands (`postfinance`: lower-case letters,
-digits, dashes); a name and details for invoices ("PostFinance bank account";
-account holder, IBAN, BIC, the bank's address, a line each), either of which
-may be blank but not both; and the declared account the money arrives in
-(default `assets:bank`). `abo payment-options` (or `... list`) shows them in
-the order invoices print them. `... add` asks for each part, `... add <id>
---label ... --detail ... --account ...` takes them as given; `... edit <id>`
-asks for each part with the current one on the line to change or keep, or
-takes `--id`, `--label`, `--detail`, `--account` for the parts to change;
-`... remove <id>` removes one. Wherever an id is asked for, its start will do
-when it names one option. A taken id, an undeclared account, an option with
-nothing to print and an edit that changes nothing are refused. Each change is
-a commit to `abo.toml`, comments kept, logged and undoable like any other.
+A payment option is one of three kinds. A **bank** option has an account
+holder, an IBAN (its check digits checked, and kept in groups of four), a BIC
+and the bank's name and address; it needs an IBAN or, for places without
+IBANs, further lines such as account and routing numbers. A **crypto** option
+has a network and a wallet address, both needed. A **cash** option has lines
+saying where and when. Each also has an id for commands (`postfinance`:
+lower-case letters, digits, dashes), a name for invoices, further lines, and
+the declared account the money arrives in (by kind `assets:bank`,
+`assets:cash` or `assets:crypto`).
+`abo payment-options` (or `... list`) shows them in the order invoices print
+them. `... add` puts up a list: bank, cash, crypto or skip, chosen as the VAT
+method is; then the questions for the kind chosen, each answer starting on the
+line as most would give it (the company as holder, "Bank transfer" as the
+name, the kind as the id). `... add <id> --kind ... --iban ... --bic ...
+--bank ... --network ... --address ... --detail ... --label ... --account ...`
+takes the parts as given. `... edit <id>` asks again, each answer on the line
+as it stands, or changes just the parts given as flags (and `--id`); another
+kind drops the old kind's fields. `... remove <id>` removes one. Wherever an
+id is asked for, its start will do when it names one option. A taken id, a
+bad IBAN or BIC, a field of another kind, too little to pay by, an undeclared
+account and an edit that changes nothing are refused; asked on the terminal,
+the question comes again. Each change is a commit to `abo.toml`, comments
+kept, logged and undoable like any other.
 **Done when** the next invoice prints the options as they now stand.
 
 ---

@@ -18,22 +18,106 @@ pub struct Config {
     pub payment: Vec<PaymentOption>,
 }
 
-/// Somewhere invoices ask to be paid.
+/// Somewhere invoices ask to be paid. Of the fields between `label` and
+/// `details`, a bank option has the first four and a crypto option the last
+/// two; the rest stay blank.
 #[derive(Deserialize, serde::Serialize, Clone, PartialEq, Default)]
 pub struct PaymentOption {
     /// How commands name it: `abo invoice --pay-to postfinance`. Lower-case
     /// ASCII letters, digits and dashes.
     pub id: String,
+    pub kind: Kind,
     /// What invoices call it: "PostFinance bank account". May be blank.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
-    /// What invoices print under the name, as free text with newlines
-    /// between lines: account holder, IBAN, BIC, the bank's address; a wallet
-    /// address; "cash on collection". abo never parses it.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub holder: String,
+    /// Grouped in fours, its check digits checked.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub iban: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bic: String,
+    /// The bank's name and address, newlines between lines.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bank: String,
+    /// Bitcoin, Ethereum, Lightning: free text.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub network: String,
+    /// The wallet's address. abo never parses it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub address: String,
+    /// Any further lines invoices print, newlines between them: account and
+    /// routing numbers, "at our office, weekdays 9-17". Free text.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub details: String,
     /// Where money paid this way arrives. A declared account.
     pub account: String,
+}
+
+#[derive(Deserialize, serde::Serialize, Clone, Copy, PartialEq, Default, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    #[default]
+    Bank,
+    Cash,
+    Crypto,
+}
+
+impl Kind {
+    pub const NAMES: [&str; 3] = ["bank", "cash", "crypto"];
+
+    pub fn name(self) -> &'static str {
+        Self::NAMES[self as usize]
+    }
+
+    pub fn from_name(s: &str) -> Option<Kind> {
+        [Kind::Bank, Kind::Cash, Kind::Crypto].into_iter().find(|k| k.name() == s)
+    }
+
+    /// Where money paid this way arrives, unless said otherwise. Only the
+    /// first two are declared at init without being named.
+    pub fn account(self) -> &'static str {
+        ["assets:bank", "assets:cash", "assets:crypto"][self as usize]
+    }
+}
+
+impl PaymentOption {
+    /// What is wrong with it as its kind, whatever asked for it: a field of
+    /// another kind, or too little to pay by.
+    pub fn problem(&self) -> Option<String> {
+        let kind = self.kind.name();
+        let (h, i, b, k, n, a) = (&self.holder, &self.iban, &self.bic, &self.bank, &self.network, &self.address);
+        let foreign = match self.kind {
+            Kind::Bank => vec![("network", n), ("address", a)],
+            Kind::Cash => vec![("holder", h), ("iban", i), ("bic", b), ("bank", k), ("network", n), ("address", a)],
+            Kind::Crypto => vec![("holder", h), ("iban", i), ("bic", b), ("bank", k)],
+        };
+        if let Some((field, _)) = foreign.iter().find(|(_, v)| !v.is_empty()) {
+            return Some(format!("a {kind} option has no {field}"));
+        }
+        match self.kind {
+            Kind::Bank if i.is_empty() && self.details.is_empty() => {
+                Some("a bank option needs an IBAN, or details such as an account number".into())
+            }
+            Kind::Crypto if n.is_empty() || a.is_empty() => Some("a crypto option needs a network and an address".into()),
+            Kind::Cash if self.label.is_empty() && self.details.is_empty() => {
+                Some("a cash option needs a name or details for invoices to print".into())
+            }
+            _ => None,
+        }
+    }
+
+    /// What invoices print under the name, a line each.
+    pub fn lines(&self) -> Vec<String> {
+        let named = |n: &str, v: &str| (!v.is_empty()).then(|| format!("{n}: {v}"));
+        [named("Account holder", &self.holder), named("IBAN", &self.iban), named("BIC", &self.bic)]
+            .into_iter()
+            .flatten()
+            .chain(self.bank.lines().map(str::to_string))
+            .chain([named("Network", &self.network), named("Address", &self.address)].into_iter().flatten())
+            .chain(self.details.lines().map(str::to_string))
+            .collect()
+    }
 }
 
 /// abo.toml's `[[payment]]` tables on their own, to write them.
@@ -273,11 +357,51 @@ pub mod answer {
 
     /// One of `METHODS`, or the start of exactly one of them, in any case.
     pub fn method(s: &str) -> Result<&'static str, String> {
+        one_of(s, &METHODS, "a VAT method")
+    }
+
+    /// One of `options`, or the start of exactly one of them, in any case.
+    pub fn one_of(s: &str, options: &[&'static str], what: &str) -> Result<&'static str, String> {
         let s = s.to_ascii_lowercase();
-        match METHODS.iter().filter(|m| !s.is_empty() && m.starts_with(&s)).collect::<Vec<_>>()[..] {
+        match options.iter().filter(|m| !s.is_empty() && m.starts_with(&s)).collect::<Vec<_>>()[..] {
             [m] => Ok(m),
-            _ => Err(format!("{s:?} is not a VAT method: effective, flat or none.")),
+            _ => Err(format!("{s:?} is not {what}: {}.", options.join(", "))),
         }
+    }
+
+    /// An IBAN, in groups of four, upper case, its check digits right: moved
+    /// behind the rest and read as a number, letters as 10 to 35, it leaves 1
+    /// when divided by 97.
+    pub fn iban(s: &str) -> Result<String, String> {
+        let c = s.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_ascii_uppercase();
+        let shaped = (15..=34).contains(&c.len())
+            && c.chars().all(|x| x.is_ascii_alphanumeric())
+            && c[..2].chars().all(|x| x.is_ascii_alphabetic())
+            && c[2..4].chars().all(|x| x.is_ascii_digit());
+        if !shaped {
+            return Err(format!("{s:?} is not an IBAN, such as CH93 0076 2011 6238 5295 7."));
+        }
+        let rest = c[4..].chars().chain(c[..4].chars()).fold(0, |r, x| match x.to_digit(36).unwrap() {
+            d @ 0..10 => (r * 10 + d) % 97,
+            d => (r * 100 + d) % 97,
+        });
+        if rest != 1 {
+            return Err(format!("{s:?} is not an IBAN: its check digits do not match. Is a character mistyped?"));
+        }
+        Ok(c.as_bytes().chunks(4).map(|g| std::str::from_utf8(g).unwrap()).collect::<Vec<_>>().join(" "))
+    }
+
+    /// A BIC: four letters for the bank, two for the country, two letters or
+    /// digits for the place, and three more for a branch or none; upper case.
+    pub fn bic(s: &str) -> Result<String, String> {
+        let c = s.trim().to_ascii_uppercase();
+        let ok = matches!(c.len(), 8 | 11)
+            && c.chars().all(|x| x.is_ascii_alphanumeric())
+            && c[..6].chars().all(|x| x.is_ascii_alphabetic());
+        if !ok {
+            return Err(format!("{s:?} is not a BIC, such as POFICHBEXXX."));
+        }
+        Ok(c)
     }
 
     /// A payment option's id: lower-case ASCII letters, digits and dashes,
@@ -467,9 +591,14 @@ pub fn demo(dir: &Path) -> Result<Ctx> {
     // the company's own abo.toml, not in abo.
     let payment = [PaymentOption {
         id: "bank".into(),
-        label: "Example Bank".into(),
-        details: "Account holder: Example Ltd\nIBAN XX00 0000 0000 0000 0000 0\nBIC XXXXXX00".into(),
+        kind: Kind::Bank,
+        label: "Bank transfer".into(),
+        holder: "Example Ltd".into(),
+        // The IBAN of the ISO 13616 examples: it passes the check.
+        iban: "CH93 0076 2011 6238 5295 7".into(),
+        bic: "POFICHBEXXX".into(),
         account: "assets:bank".into(),
+        ..Default::default()
     }];
     init(dir, &company, &vat, Decimal::TEN, &payment, None)?;
 
@@ -603,6 +732,17 @@ mod tests {
             assert_eq!(method(typed), Ok(m), "{typed}");
         }
         assert!(method("").is_err() && method("x").is_err() && method("flatter").is_err());
+        for good in ["CH9300762011623852957", "ch93 0076 2011 6238 5295 7", "GB82WEST12345698765432", "DE89370400440532013000"] {
+            assert!(iban(good).is_ok(), "{good}");
+        }
+        assert_eq!(iban("ch9300762011623852957"), Ok("CH93 0076 2011 6238 5295 7".into()));
+        // One digit off, two swapped, too short, not letters first.
+        for bad in ["CH9300762011623852958", "CH9300762011623859257", "CH93007620", "1293007620116238529577"] {
+            assert!(iban(bad).is_err(), "{bad}");
+        }
+        assert_eq!(bic("pofichbexxx"), Ok("POFICHBEXXX".into()));
+        assert_eq!(bic("DEUTDEFF"), Ok("DEUTDEFF".into()));
+        assert!(bic("POFI").is_err() && bic("P0FICHBE").is_err());
         assert_eq!(percent("5.3"), Ok(Decimal::new(53, 1)));
         assert_eq!(percent("21%"), Ok(Decimal::from(21)));
         assert_eq!(percent("0"), Ok(Decimal::ZERO));

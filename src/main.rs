@@ -36,17 +36,16 @@ enum PaymentCmd {
     /// List the options in the order invoices print them. The same as no
     /// subcommand.
     List,
-    /// Add an option, printed last on invoices. Without --label, --detail or
-    /// --account, each part is asked for.
+    /// Add an option, printed last on invoices. Without flags: a list of
+    /// kinds, then the questions for the kind chosen.
     Add {
         /// How commands will name it, such as postfinance.
         id: Option<String>,
         #[command(flatten)]
         parts: OptionParts,
     },
-    /// Change the option ID names, or starts, the id of. Without --id,
-    /// --label, --detail or --account, each part is asked for, the current
-    /// one offered.
+    /// Change the option ID names, or starts, the id of. Without flags: the
+    /// questions again, each answer on the line as it stands.
     Edit {
         id: String,
         /// A new id.
@@ -61,22 +60,80 @@ enum PaymentCmd {
 
 #[derive(clap::Args)]
 struct OptionParts {
+    /// Adding, it defaults to bank. Changed, the fields of the old kind go.
+    #[arg(long, value_enum)]
+    kind: Option<repo::Kind>,
     /// What invoices call it, such as "PostFinance bank account".
     #[arg(long)]
     label: Option<String>,
-    /// A line invoices print under the name: account holder, IBAN, BIC, the
-    /// bank's address. Repeatable, one line each.
+    /// Bank: the account holder.
+    #[arg(long)]
+    holder: Option<String>,
+    /// Bank: its check digits are checked.
+    #[arg(long)]
+    iban: Option<String>,
+    /// Bank.
+    #[arg(long)]
+    bic: Option<String>,
+    /// Bank: a line of the bank's name and address. Repeatable.
+    #[arg(long = "bank")]
+    bank: Vec<String>,
+    /// Crypto: Bitcoin, Ethereum, Lightning.
+    #[arg(long)]
+    network: Option<String>,
+    /// Crypto: the wallet's address.
+    #[arg(long)]
+    address: Option<String>,
+    /// A further line invoices print, such as an account number or where to
+    /// pay cash. Repeatable.
     #[arg(long = "detail")]
     details: Vec<String>,
     /// The declared account money paid this way arrives in. Adding, it
-    /// defaults to assets:bank.
+    /// defaults to assets:bank, assets:cash or assets:crypto by kind.
     #[arg(long)]
     account: Option<String>,
 }
 
 impl OptionParts {
     fn given(&self) -> bool {
-        self.label.is_some() || !self.details.is_empty() || self.account.is_some()
+        let one = [&self.label, &self.holder, &self.iban, &self.bic, &self.network, &self.address, &self.account];
+        self.kind.is_some() || one.iter().any(|v| v.is_some()) || !self.bank.is_empty() || !self.details.is_empty()
+    }
+
+    /// `now` with the parts given put over it. Another kind starts with
+    /// only what every kind has: id, name, further lines, account.
+    fn over(self, now: repo::PaymentOption) -> repo::PaymentOption {
+        let mut o = match self.kind {
+            Some(kind) if kind != now.kind => repo::PaymentOption {
+                kind,
+                id: now.id,
+                label: now.label,
+                details: now.details,
+                account: now.account,
+                ..Default::default()
+            },
+            _ => now,
+        };
+        let one = [
+            (self.label, &mut o.label),
+            (self.holder, &mut o.holder),
+            (self.iban, &mut o.iban),
+            (self.bic, &mut o.bic),
+            (self.network, &mut o.network),
+            (self.address, &mut o.address),
+            (self.account, &mut o.account),
+        ];
+        for (given, field) in one {
+            if let Some(v) = given {
+                *field = v;
+            }
+        }
+        for (given, field) in [(self.bank, &mut o.bank), (self.details, &mut o.details)] {
+            if !given.is_empty() {
+                *field = given.join("\n");
+            }
+        }
+        o
     }
 }
 
@@ -543,41 +600,40 @@ async fn run(cli: Cli) -> Result<()> {
         Cmd::PaymentOptions { change } => {
             let ctx = Ctx::open(&here)?;
             let declared = journal::declared_accounts(&ctx)?;
+            let company = &ctx.cfg.company.name;
             let others = |id: &str| ctx.cfg.payment.iter().filter(|p| p.id != id).map(|p| p.id.clone()).collect::<Vec<_>>();
             let (options, commit) = match change {
                 None | Some(PaymentCmd::List) => (ctx.cfg.payment.clone(), None),
                 Some(PaymentCmd::Add { id, parts }) => {
-                    let o = match (id, parts.given()) {
-                        (Some(id), true) => repo::PaymentOption {
-                            id,
-                            label: parts.label.unwrap_or_default(),
-                            details: parts.details.join("\n"),
-                            account: parts.account.unwrap_or_else(|| "assets:bank".into()),
-                        },
-                        (None, true) => bail!("an option added with --label, --detail or --account needs an id"),
-                        (id, false) => {
-                            let start = id.map(|id| repo::PaymentOption { id, ..Default::default() });
-                            let asked = ask_option(start.as_ref(), &others(""), Some(&declared))?;
-                            asked.context("no id, so no option added")?
-                        }
+                    let o = if parts.given() {
+                        let id = id.context("an option added with flags needs an id")?;
+                        let kind = parts.kind.unwrap_or_default();
+                        parts.over(repo::PaymentOption { id, kind, account: kind.account().into(), ..Default::default() })
+                    } else {
+                        let start = id.map(|id| repo::PaymentOption { id, ..Default::default() });
+                        let asked = ask_option(start.as_ref(), &others(""), Some(&declared), company, "bank")?;
+                        let Some(o) = asked else {
+                            println!("Nothing added.");
+                            return Ok(());
+                        };
+                        o
                     };
                     let r = payment::add(&ctx, o)?;
                     (r.options, Some(r.commit))
                 }
                 Some(PaymentCmd::Edit { id, new_id, parts }) => {
                     let now = payment::find(&ctx.cfg.payment, &id)?.clone();
-                    let o = match new_id.is_some() || parts.given() {
-                        true => repo::PaymentOption {
-                            id: new_id.unwrap_or(now.id.clone()),
-                            label: parts.label.unwrap_or(now.label.clone()),
-                            details: match parts.details.is_empty() {
-                                true => now.details.clone(),
-                                false => parts.details.join("\n"),
-                            },
-                            account: parts.account.unwrap_or(now.account.clone()),
-                        },
-                        false => ask_option(Some(&now), &others(&now.id), Some(&declared))?
-                            .context("no id, so nothing changed")?,
+                    let o = if new_id.is_some() || parts.given() {
+                        let mut o = parts.over(now.clone());
+                        o.id = new_id.unwrap_or(o.id);
+                        o
+                    } else {
+                        let asked = ask_option(Some(&now), &others(&now.id), Some(&declared), company, now.kind.name())?;
+                        let Some(o) = asked else {
+                            println!("Nothing changed.");
+                            return Ok(());
+                        };
+                        o
                     };
                     let r = payment::edit(&ctx, &now.id, o)?;
                     (r.options, Some(r.commit))
@@ -590,8 +646,8 @@ async fn run(cli: Cli) -> Result<()> {
             let r = serde_json::json!({ "options": options, "commit": commit });
             emit(cli.json, &r, || {
                 let mut s: String = options.iter().map(|o| {
-                    let details: String = o.details.lines().map(|l| format!("    {l}\n")).collect();
-                    format!("{}: {} -> {}\n{details}", o.id, o.label, o.account)
+                    let lines: String = o.lines().iter().map(|l| format!("    {l}\n")).collect();
+                    format!("{} ({}): {} -> {}\n{lines}", o.id, o.kind.name(), o.label, o.account)
                 }).collect();
                 if options.is_empty() {
                     s += "No payment options; invoices say only when to pay.\n";
@@ -899,15 +955,19 @@ fn ask(name: String) -> Result<Answers> {
     let country = prompt("Country", "")?;
     let tax_id = prompt("Tax registration number (blank if not registered)", "")?;
     println!(
-        "Where invoices ask to be paid: none, one or several options, each with an id\n\
-         for abo commands, a name and details for invoices, and the account the money\n\
-         arrives in. A blank id skips them, or ends them; `abo payment-options` changes\n\
-         them later."
+        "Where invoices ask to be paid: none, one or several options. Choose a kind for\n\
+         each and answer its questions; skip when there are no more. `abo payment-options`\n\
+         changes them later."
     );
     let mut payment: Vec<repo::PaymentOption> = vec![];
     // The accounts are not declared yet: init declares the ones named here.
-    while let Some(o) = ask_option(None, &payment.iter().map(|p| p.id.clone()).collect::<Vec<_>>(), None)? {
-        payment.push(o);
+    loop {
+        let taken: Vec<String> = payment.iter().map(|p| p.id.clone()).collect();
+        let first = if payment.is_empty() { "bank" } else { "skip" };
+        match ask_option(None, &taken, None, &name, first)? {
+            Some(o) => payment.push(o),
+            None => break,
+        }
     }
     let currency = prompt_until("Currency", "", answer::currency)?;
     let vat = match choose("VAT method", &answer::METHODS, "none", answer::method)? {
@@ -951,33 +1011,69 @@ fn ask(name: String) -> Result<Answers> {
     ))
 }
 
-/// One payment option, part by part, starting from `start`'s parts where it
-/// has them; `None` for a blank id. The id must not be one of `taken`, and
-/// the account one of `declared` when that is given.
+/// One payment option: its kind from a list starting at `kind`, then the
+/// questions for that kind, each answer starting on the line as `start` has
+/// it, or as most would answer. `None` when skipped. The id must not be one
+/// of `taken`, and the account one of `declared` when that is given.
 fn ask_option(
     start: Option<&repo::PaymentOption>,
     taken: &[String],
     declared: Option<&[String]>,
+    company: &str,
+    kind: &'static str,
 ) -> Result<Option<repo::PaymentOption>> {
-    // Each part is put on the line as it stands, to change or keep.
+    use repo::Kind;
+    const KINDS: [&str; 4] = ["bank", "cash", "crypto", "skip"];
+    let kind = choose("Payment option", &KINDS, kind, |s| answer::one_of(s, &KINDS, "a kind of payment option"))?;
+    let Some(kind) = Kind::from_name(kind) else { return Ok(None) };
     let was = start.cloned().unwrap_or_default();
-    let id = prompt_over_until("Id, such as postfinance (blank: none)", &was.id, |s| match s {
-        "" => Ok(None),
+    // A field of the kind chosen, as it stands if that was the kind before.
+    let same = start.is_some_and(|s| s.kind == kind);
+    let was_or = |v: &String, or: &str| if same && !v.is_empty() { v.clone() } else { or.to_string() };
+    let lines_of = |v: &String| if same { v.lines().map(str::to_string).collect() } else { vec![] };
+    let nonempty = |what: &'static str| move |s: &str| if s.is_empty() { Err(format!("{what} is needed.")) } else { Ok(s.to_string()) };
+    let blank_or = |check: fn(&str) -> Result<String, String>| move |s: &str| if s.is_empty() { Ok(String::new()) } else { check(s) };
+
+    let mut o = repo::PaymentOption { kind, ..Default::default() };
+    match kind {
+        Kind::Bank => {
+            o.holder = read_over("Account holder", &was_or(&was.holder, company))?.unwrap_or_default();
+            o.iban = prompt_over_until("IBAN (blank if none)", &was_or(&was.iban, ""), blank_or(answer::iban))?;
+            o.bic = prompt_over_until("BIC (blank if none)", &was_or(&was.bic, ""), blank_or(answer::bic))?;
+            let now = lines_of(&was.bank);
+            let intro = "The bank's name and address, a line at a time; an empty line ends them:";
+            o.bank = prompt_lines_over(intro, &now.iter().map(String::as_str).collect::<Vec<_>>())?.join("\n");
+        }
+        Kind::Cash => {}
+        Kind::Crypto => {
+            let network = "Network, such as Bitcoin, Ethereum or Lightning";
+            o.network = prompt_over_until(network, &was_or(&was.network, ""), nonempty("A network"))?;
+            o.address = prompt_over_until("Wallet address", &was_or(&was.address, ""), nonempty("An address"))?;
+        }
+    }
+    let intro = match kind {
+        Kind::Bank => "Anything else invoices should print, such as an account or routing number;",
+        Kind::Cash => "What invoices should say, such as where and when to pay;",
+        Kind::Crypto => "Anything else invoices should print, such as a memo to include;",
+    };
+    let now: Vec<&str> = was.details.lines().collect();
+    o.details = prompt_lines_over(&format!("{intro}\na line at a time, an empty line ends it:"), &now)?.join("\n");
+    let suggested = match kind {
+        Kind::Bank => "Bank transfer",
+        Kind::Cash => "Cash",
+        Kind::Crypto => &o.network,
+    };
+    let label = if was.label.is_empty() { suggested.to_string() } else { was.label.clone() };
+    o.label = read_over("Name on invoices", &label)?.unwrap_or_default();
+    // An id free to take: the kind's name, numbered if need be.
+    let free = (1..).map(|n| if n == 1 { kind.name().to_string() } else { format!("{}-{n}", kind.name()) });
+    let id = if was.id.is_empty() { free.into_iter().find(|i| !taken.contains(i)).unwrap() } else { was.id.clone() };
+    o.id = prompt_over_until("Id, for abo commands", &id, |s| match s {
         s if taken.iter().any(|t| t == s) => Err(format!("{s:?} is already the id of a payment option.")),
-        s => answer::option_id(s).map(Some),
+        s => answer::option_id(s),
     })?;
-    let Some(id) = id else { return Ok(None) };
-    let label = read_over("Name on invoices, such as PostFinance bank account", &was.label)?.unwrap_or(was.label);
-    let details = prompt_lines_over(
-        "Details on invoices, a line at a time (holder, IBAN, BIC, bank address);\n\
-         an empty line ends them:",
-        &was.details.lines().collect::<Vec<_>>(),
-    )?;
-    // Without a terminal the lines could not be offered; none keeps them.
-    let offered = std::io::IsTerminal::is_terminal(&std::io::stdin());
-    let details = if details.is_empty() && !offered { was.details } else { details.join("\n") };
-    let default = if was.account.is_empty() { "assets:bank" } else { &was.account };
-    let account = prompt_over_until("Account the money arrives in", default, |s| {
+    let account = if same && !was.account.is_empty() { was.account.clone() } else { kind.account().to_string() };
+    o.account = prompt_over_until("Account the money arrives in", &account, |s| {
         let a = answer::account(s)?;
         match declared {
             Some(d) if !d.contains(&a) => {
@@ -986,11 +1082,11 @@ fn ask_option(
             _ => Ok(a),
         }
     })?;
-    if label.is_empty() && details.is_empty() {
-        eprintln!("  An option needs a name or details for invoices to print; asking again.");
-        return ask_option(Some(&repo::PaymentOption { id, label, details, account }), taken, declared);
+    if let Some(p) = o.problem() {
+        eprintln!("  But {p}; asking again.");
+        return ask_option(Some(&o), taken, declared, company, kind.name());
     }
-    Ok(Some(repo::PaymentOption { id, label, details, account }))
+    Ok(Some(o))
 }
 
 fn git_global(key: &str) -> Option<String> {

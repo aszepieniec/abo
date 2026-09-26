@@ -243,9 +243,11 @@ invoice can be denominated in any of them (`abo invoice --currency BTC`), and
 stated in: two for most money, eight for a wallet. Rounding happens in exactly
 one place, `invoice::round`, half away from zero.
 
-A payment option's details are free text for the same reason: bank details,
-a wallet address, "cash on collection". abo never parses them, it only prints
-them. The option also has an id for commands, a name for invoices and the
+A payment option's fields are free text for the same reason: a wallet
+address, a bank's address, "at our office, weekdays 9-17". abo never parses
+them, it only prints them. The one exception is the IBAN, whose check digits
+are checked, because a mistyped IBAN on an invoice sends a customer's money
+nowhere. The option also has an id for commands, a name for invoices and the
 account the money arrives in; `abo payment-options` adds, edits and removes
 options.
 
@@ -404,11 +406,21 @@ decimals   = 2
 
 [[payment]]                    # none, one or several, in the order invoices print them
 id      = "postfinance"        # for commands: abo invoice --pay-to postfinance
+kind    = "bank"               # "bank" | "cash" | "crypto"
 label   = "PostFinance bank account"
-details = """Account holder: Example Ltd
-IBAN CH93 0076 2011 6238 5295 7
-BIC POFICHBEXXX"""
+holder  = "Example Ltd"        # bank: holder, iban, bic, bank
+iban    = "CH93 0076 2011 6238 5295 7"
+bic     = "POFICHBEXXX"
+bank    = "PostFinance AG\nMingerstrasse 20, 3030 Bern"
 account = "assets:bank:postfinance"   # declared; where the money arrives
+
+[[payment]]
+id      = "wallet"
+kind    = "crypto"             # crypto: network, address
+network = "Bitcoin"
+address = "bc1q..."
+details = "Please send the exact amount"  # any kind: further lines
+account = "assets:crypto"
 ```
 
 ```rust
