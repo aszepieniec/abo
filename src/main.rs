@@ -185,7 +185,7 @@ struct Dep {
 const DEPS: &[Dep] = &[
     Dep {
         name: "git",
-        needed_for: "every commit — the repository is the database",
+        needed_for: "every commit: the repository is the database",
         install: "https://git-scm.com/downloads",
         required: true,
     },
@@ -382,7 +382,7 @@ async fn run(cli: Cli) -> Result<()> {
             };
             let r = invoice::issue(&ctx, &args)?;
             emit(cli.json, &r, || {
-                format!("Invoice {} for {} — {}\nCommitted {}.", r.number, r.total, r.pdf, r.commit)
+                format!("Invoice {} for {}: {}\nCommitted {}.", r.number, r.total, r.pdf, r.commit)
             })
         }
         Cmd::Pl { period, pdf } => {
@@ -426,7 +426,7 @@ async fn run(cli: Cli) -> Result<()> {
                 if r.outstanding.is_empty() {
                     s += "\nNothing outstanding.";
                 } else {
-                    s += "\nOutstanding — `abo clear <key>` once the statement shows it:\n";
+                    s += "\nOutstanding; `abo clear <key>` once the statement shows it:\n";
                     for i in &r.outstanding {
                         s += &format!("  {:<22} {} {:>12}  {}\n", i.key, i.date, i.amount, i.description);
                     }
@@ -537,7 +537,7 @@ fn statement(
     }
     emit(json, &s, || {
         let money = statement::money;
-        let mut out = format!("{}\n{} — {}\n", s.company, s.title, s.period);
+        let mut out = format!("{}\n{}, {}\n", s.company, s.title, s.period);
         for section in &s.sections {
             if !section.title.is_empty() {
                 out += &format!("\n{}\n", section.title);

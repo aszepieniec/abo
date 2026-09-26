@@ -24,8 +24,9 @@ last such run.
 
 ### A1. Open the books — Supported (CLI)
 `abo init <name>`, run in a data directory, makes the company's directory
-there: the name in lower case, every run of anything but letters and digits
-made one dash (`Smith & Sons, LLC` → `smith-sons-llc`). It then asks, one per
+there: the name spelled in ASCII and in lower case, every run of anything but
+letters and digits made one dash (`Smith & Sons, LLC` → `smith-sons-llc`,
+`Łódź Straße` → `lodz-strasse`). It then asks, one per
 line: the company's address (a line at a time, ended by an empty line),
 country, tax number, payment details, currency and VAT method; then what the
 method needs — for `effective` the input and the output VAT accounts, for

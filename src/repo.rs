@@ -218,10 +218,11 @@ pub struct InitReport {
     pub commit: String,
 }
 
-/// A company's directory name: its name in lower case, with every run of
-/// anything but letters and digits made one dash.
+/// A company's directory name: its name in ASCII, lower case, with every run
+/// of anything but letters and digits made one dash. ASCII so that it can be
+/// typed on any keyboard; letters outside it are spelled in it, not dropped.
 pub fn slug(name: &str) -> String {
-    name.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join("-")
+    deunicode::deunicode(name).to_ascii_lowercase().split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join("-")
 }
 
 /// The books `dir` is in, if any: the nearest of it and its parents that
@@ -442,7 +443,9 @@ mod tests {
     #[test]
     fn slug() {
         assert_eq!(super::slug("Smith & Sons, LLC"), "smith-sons-llc");
-        assert_eq!(super::slug("  Ünïcode GmbH "), "ünïcode-gmbh");
+        assert_eq!(super::slug("  Ünïcode GmbH "), "unicode-gmbh");
+        assert_eq!(super::slug("Łódź Straße"), "lodz-strasse");
+        assert_eq!(super::slug("北京"), "bei-jing");
         assert_eq!(super::slug("&&"), "");
     }
 }
