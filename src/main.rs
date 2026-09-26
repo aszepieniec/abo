@@ -262,10 +262,13 @@ async fn run(cli: Cli) -> Result<()> {
     }
     // `abo init` makes its own directory.
     if let Some(d) = cli.dir.as_ref().filter(|d| !d.exists() && !matches!(cli.cmd, Cmd::Init)) {
-        if !confirm(&format!("{} does not exist. Create it?", d.display()), 5)? {
+        if !confirm(&format!("{} does not exist. Create it and open books there?", d.display()), 5)? {
             bail!("{} does not exist", d.display());
         }
-        std::fs::create_dir_all(d)?;
+        // An empty directory is no use to any command, so open books in it.
+        let (company, vat, sales_rate) = ask()?;
+        let r = repo::init(d, &company, &vat, sales_rate)?;
+        eprintln!("Books opened in {} ({}).", r.root, r.commit);
     }
     let here = cli.dir.clone().unwrap_or(std::env::current_dir()?);
 
