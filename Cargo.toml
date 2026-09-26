@@ -19,5 +19,10 @@ tokio = { version = "1", features = ["rt", "macros", "net", "signal"] }
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-rustyline = { version = "18.0.1", default-features = false }
+# Pinned: it reads every answer to init, and nothing tests its keys.
+rustyline = { version = "=18.0.1", default-features = false }
 deunicode = "1.6.2"
+
+# Already built for rustyline; used directly for the key-by-key VAT method list.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["term"] }

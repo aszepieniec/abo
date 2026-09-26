@@ -602,6 +602,89 @@ fn prompt_until<T>(question: &str, default: &str, check: impl Fn(&str) -> Result
     }
 }
 
+/// One of `options`, from a list on a terminal: up and down, or a letter for
+/// the next option starting with it, then space or enter. Without a terminal
+/// the answer is typed, and `check` reads it.
+fn choose(
+    question: &str,
+    options: &[&'static str],
+    default: &'static str,
+    check: impl Fn(&str) -> Result<&'static str, String>,
+) -> Result<&'static str> {
+    #[cfg(unix)]
+    {
+        use std::io::IsTerminal as _;
+        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+            return pick(question, options, default);
+        }
+    }
+    prompt_until(&format!("{question} ({})", options.join(" / ")), default, check)
+}
+
+#[cfg(unix)]
+fn pick(question: &str, options: &[&'static str], default: &'static str) -> Result<&'static str> {
+    use nix::sys::termios::{tcgetattr, tcsetattr, LocalFlags, SetArg};
+
+    /// Puts the terminal back however the choosing ends, a refusal included.
+    struct Restore(nix::sys::termios::Termios);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = tcsetattr(std::io::stdin(), SetArg::TCSANOW, &self.0);
+            print!("\x1b[?25h");
+            let _ = std::io::stdout().flush();
+        }
+    }
+    let saved = tcgetattr(std::io::stdin())?;
+    let mut keys = saved.clone();
+    // Key by key and unechoed, with Ctrl-C read as a key rather than a
+    // signal, so that the terminal is put back before stopping.
+    keys.local_flags.remove(LocalFlags::ICANON | LocalFlags::ECHO | LocalFlags::ISIG);
+    tcsetattr(std::io::stdin(), SetArg::TCSANOW, &keys)?;
+    let _restore = Restore(saved);
+
+    let n = options.len();
+    let mut at = options.iter().position(|o| *o == default).unwrap_or(0);
+    let mut out = std::io::stdout();
+    // The cursor is hidden while the marker shows where it is.
+    writeln!(out, "\x1b[?25l{question} (up/down or a letter, then space):")?;
+    'choosing: loop {
+        for (i, o) in options.iter().enumerate() {
+            writeln!(out, "\r\x1b[K  ({}) {o}", if i == at { '*' } else { ' ' })?;
+        }
+        out.flush()?;
+        // Straight from the descriptor: a buffered read could take keys
+        // typed ahead for the next question. One read may hold several keys.
+        let mut buf = [0u8; 64];
+        let len = nix::unistd::read(std::io::stdin(), &mut buf)?;
+        if len == 0 {
+            bail!("{question}: no answer");
+        }
+        let mut keys = &buf[..len];
+        while !keys.is_empty() {
+            let used = match keys {
+                [b' ' | b'\n' | b'\r', ..] => break 'choosing,
+                [0x1b, b'[' | b'O', b'A', ..] => { at = (at + n - 1) % n; 3 }
+                [0x1b, b'[' | b'O', b'B', ..] => { at = (at + 1) % n; 3 }
+                [0x03, ..] => bail!("interrupted"),
+                [0x04, ..] => bail!("{question}: no answer"),
+                [c, ..] if c.is_ascii_alphabetic() => {
+                    let c = c.to_ascii_lowercase() as char;
+                    if let Some(i) = (1..=n).map(|k| (at + k) % n).find(|&i| options[i].starts_with(c)) {
+                        at = i;
+                    }
+                    1
+                }
+                _ => 1,
+            };
+            keys = &keys[used..];
+        }
+        write!(out, "\x1b[{n}A")?;
+    }
+    // The list gives way to one line, as every other question leaves.
+    writeln!(out, "\x1b[{}A\r\x1b[J{question}: {}", n + 1, options[at])?;
+    Ok(options[at])
+}
+
 /// Asks y/n on stderr, counting down; silence, or no terminal to ask on, is no.
 fn confirm(question: &str, secs: u8) -> Result<bool> {
     use std::io::IsTerminal as _;
@@ -646,7 +729,7 @@ fn ask(name: String) -> Result<(repo::Company, Vat, Decimal, Option<(String, Str
     let tax_id = prompt("Tax registration number (blank if not registered)", "")?;
     let payment = prompt("How customers pay you (bank details, wallet, cash)", "")?;
     let currency = prompt_until("Currency", "", answer::currency)?;
-    let vat = match prompt_until("VAT method (effective / flat / none)", "none", answer::method)? {
+    let vat = match choose("VAT method", &answer::METHODS, "none", answer::method)? {
         "none" => Vat::None,
         // A flat percentage of gross turnover with no input deduction. Sold
         // under different names in different places.
