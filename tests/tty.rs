@@ -166,7 +166,7 @@ fn editing() {
             ("Country: ", "BE\r"),
             ("Tax registration", "\r"),
             (PAYMENT, "s "),
-            ("Currency: ", "eur\r"),
+            ("Currency code", "eur\r"),
             (METHOD, &format!("{UP} ")),
             ("Flat rate", "5\r"),
             ("VAT account [liabilities:vat]: ", CTRL_D),
@@ -204,7 +204,7 @@ fn vat_method_list() {
             blank("Country: "),
             blank("Tax registration"),
             (PAYMENT, "s "),
-            ("Currency: ", "EUR\r"),
+            ("Currency code", "EUR\r"),
             (METHOD, keys.as_str()),
         ];
         match method {
@@ -223,9 +223,9 @@ fn vat_method_list() {
 #[test]
 fn giving_up() {
     let to_currency = |keys| {
-        vec![(ADDRESS, "\r"), ("Country: ", "\r"), ("Tax registration", "\r"), (PAYMENT, "s "), ("Currency: ", keys)]
+        vec![(ADDRESS, "\r"), ("Country: ", "\r"), ("Tax registration", "\r"), (PAYMENT, "s "), ("Currency code", keys)]
     };
-    refused(&init("ctrl-d", "Acme", &to_currency(CTRL_D)), "Currency: A currency is needed");
+    refused(&init("ctrl-d", "Acme", &to_currency(CTRL_D)), "A currency is needed");
     refused(&init("ctrl-c", "Acme", &to_currency(CTRL_C)), "Error:");
     let mut steps = to_currency("EUR\r");
     steps.push((METHOD, CTRL_C));
@@ -262,7 +262,7 @@ fn payment_options() {
         ("Id, for abo commands: ", "\r"),
         ("Account the money arrives in: ", "\r"),
         ("Add another payment option [no]: ", "\r"),
-        ("Currency: ", "EUR\r"),
+        ("Currency code", "EUR\r"),
         (METHOD, "n "),
         ("git user.name", "\r"),
         ("git user.email", "\r"),

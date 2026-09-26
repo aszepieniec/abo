@@ -342,13 +342,14 @@ pub mod answer {
     use rust_decimal::Decimal;
     use std::str::FromStr;
 
-    /// A currency code, in letters, upper-cased: `eur` is EUR.
+    /// A currency code, three or four letters, upper-cased: `eur` is EUR,
+    /// `usdt` USDT.
     pub fn currency(s: &str) -> Result<String, String> {
         if s.is_empty() {
-            return Err("A currency is needed, such as EUR.".into());
+            return Err("A currency is needed, such as USD.".into());
         }
-        if !s.chars().all(|c| c.is_ascii_alphabetic()) {
-            return Err(format!("{s:?} is not a currency code: letters only, such as EUR."));
+        if !(3..=4).contains(&s.len()) || !s.chars().all(|c| c.is_ascii_alphabetic()) {
+            return Err(format!("{s:?} is not a currency code: three or four letters, such as USD."));
         }
         Ok(s.to_ascii_uppercase())
     }
@@ -727,7 +728,10 @@ mod tests {
         use super::answer::*;
         use rust_decimal::Decimal;
         assert_eq!(currency("eur"), Ok("EUR".into()));
-        assert!(currency("").is_err() && currency("E U R").is_err() && currency("$").is_err());
+        assert_eq!(currency("usdt"), Ok("USDT".into()));
+        for bad in ["", "E U R", "$", "euros", "EU"] {
+            assert!(currency(bad).is_err(), "{bad}");
+        }
         for (typed, m) in [("e", "effective"), ("FL", "flat"), ("none", "none"), ("N", "none")] {
             assert_eq!(method(typed), Ok(m), "{typed}");
         }

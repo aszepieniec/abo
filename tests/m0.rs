@@ -544,7 +544,7 @@ fn init_asks_again() {
     }
 
     let o = abo(&base, &["init", "Other"], "\n\n\nskip\n");
-    assert!(!o.status.success() && err(&o).contains("Currency: A currency is needed"), "{}", err(&o));
+    assert!(!o.status.success() && err(&o).contains("Currency code, such as USD, EUR or BTC: A currency is needed"), "{}", err(&o));
     assert!(!base.join("other").exists());
 
     std::fs::remove_dir_all(&base).unwrap();

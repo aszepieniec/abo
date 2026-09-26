@@ -970,7 +970,7 @@ fn ask(name: String) -> Result<Answers> {
             None => break,
         }
     }
-    let currency = prompt_until("Currency", "", answer::currency)?;
+    let currency = prompt_until("Currency code, such as USD, EUR or BTC", "", answer::currency)?;
     let vat = match choose("VAT method", &answer::METHODS, "none", answer::method)? {
         "none" => Vat::None,
         // A flat percentage of gross turnover with no input deduction. Sold
