@@ -553,14 +553,12 @@ fn emit<T: serde::Serialize>(json: bool, value: &T, human: impl FnOnce() -> Stri
 }
 
 fn prompt(question: &str, default: &str) -> Result<String> {
-    if default.is_empty() {
-        print!("{question}: ");
-    } else {
-        print!("{question} [{default}]: ");
-    }
-    std::io::stdout().flush()?;
-    let mut s = String::new();
-    std::io::stdin().read_line(&mut s)?;
+    let question = if default.is_empty() { format!("{question}: ") } else { format!("{question} [{default}]: ") };
+    // A line editor, so the arrow keys move along what has been typed.
+    let s = match rustyline::DefaultEditor::new()?.readline(&question) {
+        Err(rustyline::error::ReadlineError::Eof) => String::new(),
+        r => r?,
+    };
     let s = s.trim();
     Ok(if s.is_empty() { default.to_string() } else { s.to_string() })
 }

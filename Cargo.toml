@@ -19,3 +19,4 @@ tokio = { version = "1", features = ["rt", "macros", "net", "signal"] }
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rustyline = { version = "18.0.1", default-features = false }
