@@ -58,7 +58,7 @@ fn m0() {
     // balanced: commits
     let o = abo(
         &dir,
-        &["add", "--date", "2026-09-21", "--desc", "Acme Hosting",
+        &["post", "--date", "2026-09-21", "--desc", "Acme Hosting",
           "--tag", "sha256=9f2a", "expenses:general=100.00", "liabilities:payable=-100.00"],
         "",
     );
@@ -68,32 +68,35 @@ fn m0() {
     // the same document again: duplicate
     let o = abo(
         &dir,
-        &["add", "--date", "2026-09-22", "--desc", "Acme Hosting again",
+        &["post", "--date", "2026-09-22", "--desc", "Acme Hosting again",
           "--tag", "sha256=9f2a", "expenses:general=100.00", "liabilities:payable=-100.00"],
         "",
     );
     assert!(err(&o).contains("already booked"), "duplicate not caught: {}", err(&o));
 
-    // both attempts are in the log: the first with its commit, the refusal with why
+    // the log holds the changes, each as the command that made it: init,
+    // then the entry; the refusal changed nothing and is not there
     let log = std::fs::read_to_string(dir.join(".abo/log.jsonl")).unwrap();
     let lines: Vec<serde_json::Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(lines.len(), 2, "{log}");
-    assert_eq!(lines[0]["op"], "entry");
-    assert!(lines[0]["ok"]["commit"].is_string(), "{log}");
-    assert!(lines[1]["error"].as_str().unwrap().contains("already booked"), "{log}");
+    assert_eq!(lines[0]["argv"][0], "init");
+    assert_eq!(
+        lines[1]["argv"],
+        serde_json::json!(["post", "--date", "2026-09-21", "--desc", "Acme Hosting", "--tag", "sha256=9f2a",
+                           "expenses:general=100.00 EUR", "liabilities:payable=-100.00 EUR"]),
+    );
+    assert!(lines[1]["ok"]["commit"].is_string(), "{log}");
 
     // a commit that fails leaves the journal as it was, so the next commit
     // cannot sweep up an entry nobody saw booked
     let journal = std::fs::read_to_string(dir.join("journal/2026.journal")).unwrap();
-    let o = Command::new(env!("CARGO_BIN_EXE_abo"))
-        .args(["add", "--date", "2026-09-23", "--desc", "Uncommitted",
-               "expenses:general=5.00", "liabilities:payable=-5.00"])
-        .current_dir(&dir)
-        .env("GIT_AUTHOR_NAME", "abo test").env("GIT_AUTHOR_EMAIL", "test@example.invalid")
-        .env("GIT_COMMITTER_NAME", "").env("GIT_COMMITTER_EMAIL", "")
-        .output()
-        .unwrap();
-    assert!(!o.status.success(), "commit with an empty identity succeeded");
+    let hook = dir.join(".git/hooks/pre-commit");
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    Command::new("chmod").arg("+x").arg(&hook).status().unwrap();
+    let o = abo(&dir, &["post", "--date", "2026-09-23", "--desc", "Uncommitted",
+                        "expenses:general=5.00", "liabilities:payable=-5.00"], "");
+    std::fs::remove_file(&hook).unwrap();
+    assert!(!o.status.success(), "commit refused by a hook succeeded");
     assert_eq!(std::fs::read_to_string(dir.join("journal/2026.journal")).unwrap(), journal);
     assert_eq!(commits(&dir), 2);
     let status = Command::new("git").args(["status", "--porcelain"]).current_dir(&dir).output().unwrap();
@@ -102,7 +105,7 @@ fn m0() {
     // unbalanced: rejected
     let o = abo(
         &dir,
-        &["add", "--date", "2026-09-22", "--desc", "Wrong",
+        &["post", "--date", "2026-09-22", "--desc", "Wrong",
           "expenses:general=100.00", "liabilities:payable=-90.00"],
         "",
     );
@@ -111,7 +114,7 @@ fn m0() {
     // undeclared account: rejected
     let o = abo(
         &dir,
-        &["add", "--date", "2026-09-22", "--desc", "Typo",
+        &["post", "--date", "2026-09-22", "--desc", "Typo",
           "expenses:hostng=100.00", "liabilities:payable=-100.00"],
         "",
     );
@@ -125,7 +128,7 @@ fn m0() {
     std::fs::write(&acc, text).unwrap();
     let o = abo(
         &dir,
-        &["add", "--date", "2026-09-22", "--desc", "Acme Hosting",
+        &["post", "--date", "2026-09-22", "--desc", "Acme Hosting",
           "expenses:general=100.00", "assets:vat:input=8.10", "liabilities:payable=-108.10"],
         "",
     );
@@ -137,7 +140,7 @@ fn m0() {
     for desc in ["Acme ; sha256: forged", "Acme\n2026-09-22 Sneaky\n  equity:opening  1.00 EUR"] {
         let o = abo(
             &dir,
-            &["add", "--date", "2026-09-22", "--desc", desc,
+            &["post", "--date", "2026-09-22", "--desc", desc,
               "expenses:general=100.00", "liabilities:payable=-100.00"],
             "",
         );
@@ -255,7 +258,7 @@ fn reconciliation() {
     let book = |date: &str, desc: &str, amount: &str| {
         let o = abo(
             &dir,
-            &["add", "--date", date, "--desc", desc,
+            &["post", "--date", date, "--desc", desc,
               &format!("assets:bank={amount}"), "equity:opening"],
             "",
         );
@@ -329,7 +332,7 @@ fn reconciliation() {
 
     // a back-dated entry lands in date order, so the assertion still holds
     // and hledger still loads the books
-    let o = abo(&dir, &["add", "--date", "2026-02-20", "--desc", "Late arrival",
+    let o = abo(&dir, &["post", "--date", "2026-02-20", "--desc", "Late arrival",
                         "expenses:general=15.00", "liabilities:payable=-15.00"], "");
     assert!(o.status.success(), "back-dated entry rejected: {}", err(&o));
     let text = std::fs::read_to_string(dir.join("journal/2026.journal")).unwrap();
@@ -347,7 +350,7 @@ fn reconciliation() {
 
     // a transfer ticked off against the cash box is still outstanding against
     // the bank, whose statement has not shown it yet
-    let o = abo(&dir, &["add", "--date", "2026-04-02", "--desc", "Petty cash",
+    let o = abo(&dir, &["post", "--date", "2026-04-02", "--desc", "Petty cash",
                         "assets:cash=100.00", "assets:bank=-100.00"], "");
     assert!(o.status.success(), "{}", err(&o));
     let outstanding = |account: &str| -> Vec<String> {
@@ -383,9 +386,9 @@ fn statements() {
         let o = abo(&dir, args, "");
         assert!(o.status.success(), "add failed: {}", err(&o));
     };
-    add(&["add", "--date", "2026-02-01", "--desc", "Sale",
+    add(&["post", "--date", "2026-02-01", "--desc", "Sale",
           "assets:receivable=1100.00", "income:sales=-1000.00", "liabilities:vat:output=-100.00"]);
-    add(&["add", "--date", "2026-03-01", "--desc", "Purchase",
+    add(&["post", "--date", "2026-03-01", "--desc", "Purchase",
           "expenses:general=200.00", "assets:vat:input=20.00", "liabilities:payable=-220.00"]);
 
     let run = |args: &[&str]| -> serde_json::Value {
@@ -476,24 +479,28 @@ fn undo_and_revert() {
     };
 
     for (date, desc, amount) in [("2026-01-10", "Coffee", "5.00"), ("2026-01-11", "Paper", "7.00")] {
-        let o = abo(&dir, &["add", "--date", date, "--desc", desc,
+        let o = abo(&dir, &["post", "--date", date, "--desc", desc,
                             &format!("expenses:general={amount}"), "assets:cash"], "");
         assert!(o.status.success(), "{}", err(&o));
     }
-    assert_eq!(log()[0]["undoable"], true);
+    // line 1 opened the books, and that stays
+    assert_eq!(log()[0]["undoable"], false);
+    assert_eq!(log()[1]["undoable"], true);
+    let o = abo(&dir, &["undo", "1"], "");
+    assert!(err(&o).contains("opened the books"), "{}", err(&o));
 
     // undo the first booking: gone from the journal, kept in git
-    let o = abo(&dir, &["undo", "1"], "");
+    let o = abo(&dir, &["undo", "2"], "");
     assert!(o.status.success(), "undo failed: {}", err(&o));
     assert!(!journal().contains("Coffee") && journal().contains("Paper"), "{}", journal());
-    let o = abo(&dir, &["undo", "1"], "");
+    let o = abo(&dir, &["undo", "2"], "");
     assert!(err(&o).contains("cannot be undone"), "undone twice: {}", err(&o));
     let l = log();
-    assert_eq!(l[0]["undoable"], false);
-    // the undo is an operation too, and can itself be undone
-    assert_eq!(l[2]["op"], "undo");
-    assert_eq!(l[2]["undoable"], true);
-    let o = abo(&dir, &["undo", "3"], "");
+    assert_eq!(l[1]["undoable"], false);
+    // the undo is a change too, and can itself be undone
+    assert_eq!(l[3]["argv"], serde_json::json!(["undo", "2"]));
+    assert_eq!(l[3]["undoable"], true);
+    let o = abo(&dir, &["undo", "4"], "");
     assert!(o.status.success(), "undoing the undo failed: {}", err(&o));
     assert!(journal().contains("Coffee") && journal().contains("Paper"), "{}", journal());
     let o = abo(&dir, &["bal"], "");
@@ -561,6 +568,9 @@ fn payment_options() {
     // address, country, tax id, no payment option, currency, method
     let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
+    let toml = dir.join("abo.toml");
+    let text = std::fs::read_to_string(&toml).unwrap();
+    std::fs::write(&toml, format!("# Kept through every change\n{text}")).unwrap();
     let po = |args: &[&str]| abo(&dir, &[&["payment-options"][..], args].concat(), "");
     let list = || String::from_utf8_lossy(&po(&["list"]).stdout).into_owned();
     assert!(list().contains("No payment options"), "{}", list());
@@ -602,15 +612,13 @@ fn payment_options() {
     let o = po(&["remove", "coun"]);
     assert!(o.status.success(), "remove failed: {}", err(&o));
     assert_eq!(list(), "cash (cash): Cash -> assets:cash\n    At our office\n");
-    // The log: two adds, ten refusals (not the two about the arguments: no
-    // id, no option to edit), the edit, the remove.
-    let o = abo(&dir, &["undo", "14"], "");
+    // The log: init, two adds, the edit, the remove.
+    let o = abo(&dir, &["undo", "5"], "");
     assert!(o.status.success(), "undo failed: {}", err(&o));
     assert!(list().starts_with("counter (cash)"), "{}", list());
 
-    let toml = dir.join("abo.toml");
     let text = std::fs::read_to_string(&toml).unwrap();
-    assert!(text.contains("# Handed to the model"), "comments lost:\n{text}");
+    assert!(text.contains("# Kept through every change"), "comments lost:\n{text}");
     std::fs::write(&toml, text.replace("[company]\n", "[company]\npayment = \"IBAN OLD\"\n")).unwrap();
     let o = po(&["list"]);
     assert!(!o.status.success() && err(&o).contains("no longer read"), "{}", err(&o));

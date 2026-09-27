@@ -57,6 +57,15 @@ impl Posting {
         };
         Ok(Posting { account: account.to_string(), amount, commodity, assertion: None })
     }
+
+    /// As `parse` reads it back: `expenses:hosting=100.00 EUR`, or the bare
+    /// account when the amount is elided.
+    pub fn arg(&self) -> String {
+        match self.amount {
+            Some(a) => format!("{}={a} {}", self.account, self.commodity),
+            None => self.account.clone(),
+        }
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -229,10 +238,17 @@ pub struct AddReport {
     pub entry: Entry,
 }
 
-/// An entry typed by a person, from the CLI or the form: `add`, logged.
+/// An entry typed by a person, from the CLI or the form: `abo post`, logged.
 /// Workflows that book through `add` log themselves, once.
-pub fn book(ctx: &Ctx, e: &Entry) -> Result<AddReport> {
-    ctx.logged("entry", &format!("{} {}", e.date, e.description), serde_json::json!(e), add(ctx, e))
+pub fn post(ctx: &Ctx, e: &Entry) -> Result<AddReport> {
+    let mut argv = vec!["post".to_string()];
+    crate::repo::flag(&mut argv, "--date", &e.date);
+    crate::repo::flag(&mut argv, "--desc", &e.description);
+    for (k, v) in &e.tags {
+        crate::repo::flag(&mut argv, "--tag", &format!("{k}={v}"));
+    }
+    argv.extend(e.postings.iter().map(Posting::arg));
+    ctx.logged(argv, &format!("{} {}", e.date, e.description), add(ctx, e))
 }
 
 /// Validate, prove it against hledger, append, commit.
@@ -460,12 +476,12 @@ pub fn booking(ctx: &Ctx, key: &str) -> Result<Booking> {
     })
 }
 
-/// Revert a booking the bookkeeping way: a new entry, dated today, with every
+/// Revert a booking the bookkeeping way: a new entry, dated `date`, with every
 /// amount of the original negated and tagged `reverses:` with the commit that
 /// booked it. The original stays in the books and the two cancel. Tags such as
 /// `sha256:` and `invoice:` are not copied, since they say what the original
 /// is, not what the reversal is.
-pub fn reverse(ctx: &Ctx, key: &str) -> Result<AddReport> {
+pub fn reverse(ctx: &Ctx, key: &str, date: &str) -> Result<AddReport> {
     let r = (|| {
         let b = booking(ctx, key)?;
         if let Some(by) = &b.reversed_by {
@@ -477,12 +493,15 @@ pub fn reverse(ctx: &Ctx, key: &str) -> Result<AddReport> {
         add(
             ctx,
             &Entry {
-                date: jiff::Zoned::now().date().to_string(),
+                date: date.to_string(),
                 description,
                 tags: vec![("reverses".into(), commit)],
                 postings,
             },
         )
     })();
-    ctx.logged("revert", key, serde_json::json!({ "key": key }), r)
+    let mut argv = vec!["revert".to_string()];
+    crate::repo::flag(&mut argv, "--date", date);
+    argv.push(key.to_string());
+    ctx.logged(argv, key, r)
 }

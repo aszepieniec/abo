@@ -505,7 +505,6 @@ pub fn books(a: &Answers) -> NewBooks {
             tax_id: get("tax_id"),
             old_payment: None,
             currency: get("currency"),
-            tax_notes: String::new(),
             closed_through: None,
         },
         sales_rate: if matches!(vat, Vat::None) { Decimal::ZERO } else { rate("sales_rate") },
@@ -513,4 +512,65 @@ pub fn books(a: &Answers) -> NewBooks {
         payment,
         author: (!git_name.is_empty() || !git_email.is_empty()).then_some((git_name, git_email)),
     }
+}
+
+impl NewBooks {
+    /// The `abo init` that opens these books without asking anything.
+    pub fn argv(&self) -> Vec<String> {
+        let c = &self.company;
+        let mut a = vec!["init".to_string(), c.name.clone()];
+        let mut flag = |f: &str, v: &str| crate::repo::flag(&mut a, f, v);
+        for line in c.address.lines() {
+            flag("--address", line);
+        }
+        for (f, v) in [("--country", &c.country), ("--tax-id", &c.tax_id)] {
+            if !v.is_empty() {
+                flag(f, v);
+            }
+        }
+        flag("--currency", &c.currency);
+        match &self.vat {
+            Vat::None => flag("--vat", "none"),
+            Vat::Flat { rate, account } => {
+                flag("--vat", "flat");
+                flag("--flat-rate", &rate.to_string());
+                flag("--flat-account", account);
+            }
+            Vat::Effective { input, output } => {
+                flag("--vat", "effective");
+                flag("--vat-input", input);
+                flag("--vat-output", output);
+            }
+        }
+        if !matches!(self.vat, Vat::None) {
+            flag("--sales-rate", &self.sales_rate.to_string());
+        }
+        if let Some((name, email)) = &self.author {
+            flag("--git-name", name);
+            flag("--git-email", email);
+        }
+        for o in &self.payment {
+            flag("--payment", &toml::Value::try_from(o).map(|v| v.to_string()).unwrap_or_default());
+        }
+        a
+    }
+}
+
+/// `--payment`'s value, a TOML inline table of a payment option's answers,
+/// such as `{ kind = "bank", iban = "CH93 0076 2011 6238 5295 7" }`, as the
+/// answers under `prefix`. What it leaves out is what the question offers.
+pub fn payment_flag(s: &str, prefix: &str) -> Result<Answers> {
+    use anyhow::Context as _;
+    let t: toml::Table = toml::from_str(&format!("p = {s}")).with_context(|| format!("--payment {s}: not a TOML inline table"))?;
+    let t = t.get("p").and_then(toml::Value::as_table).with_context(|| format!("--payment {s}: not a TOML inline table"))?;
+    let fields = ["kind", "id", "label", "holder", "iban", "bic", "bank", "network", "address", "details", "account"];
+    t.iter()
+        .map(|(k, v)| {
+            if !fields.contains(&k.as_str()) {
+                anyhow::bail!("--payment {s}: {k:?} is not one of {}", fields.join(", "));
+            }
+            let v = v.as_str().with_context(|| format!("--payment {s}: {k} is not a string"))?;
+            Ok((format!("{prefix}{k}"), v.to_string()))
+        })
+        .collect()
 }

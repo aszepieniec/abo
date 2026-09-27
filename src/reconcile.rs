@@ -128,7 +128,8 @@ pub struct ClearReport {
 /// journal — the posting, not the transaction, so a transfer ticked off
 /// against one account stays outstanding against the other.
 pub fn clear(ctx: &Ctx, keys: &[String]) -> Result<ClearReport> {
-    ctx.logged("clear", &plural(keys.len()), serde_json::json!({ "keys": keys }), mark(ctx, keys))
+    let argv = ["clear".to_string()].into_iter().chain(keys.iter().cloned()).collect();
+    ctx.logged(argv, &plural(keys.len()), mark(ctx, keys))
 }
 
 fn mark(ctx: &Ctx, keys: &[String]) -> Result<ClearReport> {
@@ -251,8 +252,12 @@ fn plural(n: usize) -> String {
 /// untrue, so the entry is recorded without one and only carries the tags.
 pub fn record(ctx: &Ctx, r: &Reconciliation, balance: Decimal) -> Result<AddReport> {
     let what = format!("{} at {}: {balance} {}", r.account, r.date, r.commodity);
-    let input = serde_json::json!({ "account": r.account, "commodity": r.commodity, "date": r.date, "balance": balance.to_string() });
-    ctx.logged("record", &what, input, assert_balance(ctx, r, balance))
+    let mut argv = vec!["reconcile".to_string()];
+    for (f, v) in [("--account", &r.account), ("--commodity", &r.commodity), ("--date", &r.date), ("--balance", &balance.to_string())] {
+        crate::repo::flag(&mut argv, f, v);
+    }
+    argv.push("--record".into());
+    ctx.logged(argv, &what, assert_balance(ctx, r, balance))
 }
 
 fn assert_balance(ctx: &Ctx, r: &Reconciliation, balance: Decimal) -> Result<AddReport> {

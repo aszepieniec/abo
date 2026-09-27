@@ -44,6 +44,12 @@ may be the start of one (`e`, `f`, `n`), a rate must be a number from 0 up to
 directory of that name already there, a name with no letters or digits,
 `--dir`, and running it inside a company's books. The accounts the payment
 options name are declared along with the default ones.
+With any flag, `abo init` asks nothing: `--address` (a line each),
+`--country`, `--tax-id`, `--currency`, `--vat`, `--vat-input`, `--vat-output`,
+`--flat-rate`, `--flat-account`, `--sales-rate`, `--git-name`, `--git-email`,
+and `--payment '{ kind = "bank", iban = "..." }'` per payment option. What is
+not given is what the question offers; what is given is checked as a typed
+answer is, and a wrong one is refused.
 In the browser, `abo serve` on a data directory offers the same questions as
 one form at `/new`: both are drawn from one description of them
 (`src/questions.rs`), so they come in the same order, with the same checks and
@@ -53,7 +59,9 @@ only when asked for with its button. Each wrong answer says why under it and
 the form comes back as filled in; sent twice, it opens one company.
 **Done when** the company's directory is a git repository with one commit
 holding `abo.toml`, `journal/main.journal`, `journal/accounts.journal` (the
-default accounts, plus the VAT accounts the method needs) and `.gitignore`.
+default accounts, plus the VAT accounts the method needs) and `.gitignore`,
+and the first line of `abo log` is the `abo init` with flags that opens the
+same books without asking.
 
 ### A2. Declare an account or a commodity — Supported (editor, by design)
 Add an `account …` or `commodity …` line to `journal/accounts.journal` and
@@ -106,7 +114,7 @@ kept, logged and undoable like any other.
 
 ### B1. Book an entry by hand — Supported (browser, CLI)
 Browser: **Entry**, fill in date, description and one posting per line
-(`account=amount`, one amount may be left off). CLI: `abo add`.
+(`account=amount`, one amount may be left off). CLI: `abo post`.
 **Done when** the entry is in the year's journal file in date order, one commit
 holds it, and the front page says **Booked** with that commit. An entry that
 does not balance, names an undeclared account, posts to a VAT account the
@@ -115,35 +123,21 @@ form comes back filled in. Sending the same form twice — a double click, a
 reload — books it once.
 
 ### B2. Book a supplier bill from a document — Supported (browser, CLI)
-Browser: **Book a bill**, choose a PDF or take a photograph, read the proposed
-entry, **Approve and commit**. CLI: `abo bill <file>`, then `a`.
-**Done when** the document is filed under `bills/<year>/`, the entry carries
-`bill:` and `sha256:` tags pointing at it, and both are in one commit.
+Browser: **Book a bill**, choose a PDF or take a photograph, give the date on
+it, who issued it, a description and the postings, **File and book it**. CLI:
+`abo file <scan> --date <date> --issuer <name>`, which says where it filed the
+document, then `abo bill --desc <text> <that path> <postings>`.
+**Done when** the document is filed as
+`bills/<year>/<date>-<issuer>-<hash>.<ext>` in one commit, and the entry,
+dated as the document, carries `bill:` and `sha256:` tags pointing at it in
+the next. In the browser an entry the validator refuses files nothing, and
+the form comes back filled in but for the document.
 
-### B3. Correct a proposal before approving — Supported (browser, CLI)
-On the proposal, type a correction in plain words ("that is hosting, not
-general expenses") and send it; the model proposes again. Approval is blocked
-while the model is asking a question or the validator objects, and the reason
-is shown.
-**Done when** the new proposal reflects the correction, and nothing was
-committed before approval. While approval is blocked, the reason is given
-beside the button; a refused approval or correction comes back on the bill's
-own page. A correction with no words in it is refused without
-asking the model.
+### B3. The same bill twice — Supported
+Filing a document already filed is refused, naming where it is; booking a
+document already booked is refused, naming the entry that holds it.
 
-### B4. Come back to a bill later — Supported (browser, CLI)
-A proposal not yet approved waits. The front page lists it under
-**waiting for you** and Bills shows a count; uploading the same document again,
-or re-running `abo bill` on it, resumes the same conversation.
-**Done when** the resumed proposal is the one left, with its corrections, and no
-second request was paid for. The page says it was picked up from before, and
-lists what you have told the model so far.
-
-### B5. The same bill twice — Supported
-Uploading a document already booked is refused before any request to the model.
-**Done when** the refusal names the entry that already holds it.
-
-### B6. Record a payment or a receipt — Supported (as B1)
+### B4. Record a payment or a receipt — Supported (as B1)
 Paying a bill, a customer paying an invoice, moving cash: an ordinary entry
 (B1) between the bank or cash account and payables or receivables.
 **Done when** the payable or receivable it settles goes to zero, and shows
@@ -233,19 +227,21 @@ leaving the amount out.
 ## F. Checking and correcting
 
 ### F1. See what was done — Supported (browser)
-**Log**: every operation asked for, newest first, including refusals. Each
-opens to its input and, for a commit, the diff it made. A commit undone since
-with `git revert` is struck through and says so.
-**Done when** the last action appears with the right input and outcome.
+**Log**: every change to the books, newest first, as the `abo` command that
+made it, with every default it used written out; reads and refusals change
+nothing and are not there. Each opens to the command and the diff its commit
+made. A commit undone since is struck through and says so. CLI: `abo log`.
+**Done when** the last change appears as a command that, typed, would make it
+again.
 
 ### F2. Undo something just done — Supported (browser, CLI)
 Every operation that succeeds says so in a green notice that fades after a
 couple of seconds (hovering holds it), with **Undo** on it. The **Log** offers
-**Undo** on every line, greyed out where there is nothing to undo: a failure, a
-correction, a PDF, or something already undone. CLI: `abo log`, then
-`abo undo <line>`.
-Undoing a booking, a bill, an invoice, a clearing or a recorded balance takes
-its change back out of the books — the entry, and any document it filed — as a
+**Undo** on every line, greyed out where it cannot: the opening of the books,
+a filed document that is booked, or something already undone. CLI: `abo log`,
+then `abo undo <line>`.
+Undoing a booking, a filing, an invoice, a clearing or a recorded balance
+takes its change back out of the books — the entry, or the document — as a
 new commit, so git keeps both. An undo is itself undoable.
 **Done when** the books are as they were before the operation and the Log
 shows it struck through. Refused, with nothing changed, when something since
@@ -256,14 +252,15 @@ invoice frees its number for the next one; undo only one not yet sent.
 ### F3. Un-tick a transaction cleared by mistake — Supported (as F2)
 Undo the clearing.
 
-### F4. Throw away a pending bill — Supported (browser, as F2)
-**Discard** on the bill's page, or undo its upload in the Log.
+### F4. Take back a filed document — Supported (as F2)
+Undo its `abo file` line, once nothing books it.
 
 ### F7. Revert a booking — Supported (browser, CLI)
 For a booking that stands and turns out wrong, the bookkeeping way: click it
 among the recent entries to open its page — the entry as it is in the journal,
 its invoice or reversal if any, and the commit that booked it — and
-**Revert**. CLI: `abo revert <file:line:date>`.
+**Revert**. CLI: `abo revert <file:line:date>`, dated today unless `--date`
+says otherwise.
 **Done when** a new entry dated today carries the opposite amounts and a
 `reverses:` tag naming the commit that booked the original, which stays where
 it is. A booking already reversed says so and cannot be reversed again.
@@ -301,6 +298,10 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 ---
 
 ## Last verified: 2026-09-24
+
+Before the model was taken out of abo and the log became a list of commands:
+B2 to B6 below are that run's numbering, when a bill was a model's proposal
+approved or corrected, and F1, F2 and F4 checked the log as it was then.
 
 Four fresh agents, each with its own copy of the demo books and its own
 server, the bill workflows against a stand-in for the model (`ABO_STAND_IN`,

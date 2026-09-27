@@ -1,16 +1,19 @@
 # abo — accountant back office
 
 Bookkeeping for a small company. A git repository holds the books; a CLI
-operates on it; a web server wraps the same functions in a browser interface; an
-AI proposes bookings from scanned documents which a human approves.
+operates on it; a web server wraps the same functions in a browser interface.
+Every change to the books is one `abo` command, and the log records it as that
+command. `abo` asks no model anything; a model belongs in a larger application
+that helps a person arrive at the command (§5).
 
 This document exists so that work can resume on a different machine with a
 different agent. It records what was decided and **why**, so the decisions are
 not re-litigated. Where something was deliberately left out, the trigger for
 adding it is stated.
 
-Status: M0-M4 built — `abo init`, `add`, `bill`, `invoice`, `reconcile`,
-`clear`, `pl`, `bs`, `vat`, `bal`, `reg`, `serve`, `demo`. Next step is M5
+Status: M0-M4 built — `abo init`, `post`, `file`, `bill`, `invoice`,
+`reconcile`, `clear`, `revert`, `undo`, `payment-options`, `pl`, `bs`, `vat`,
+`bal`, `reg`, `log`, `serve`, `demo`. Next step is M5
 (companies and users).
 
 ---
@@ -33,7 +36,7 @@ Status: M0-M4 built — `abo init`, `add`, `bill`, `invoice`, `reconcile`,
 
 ### Crates
 
-`clap serde toml serde_json axum tokio maud reqwest base64 rust_decimal jiff sha2 anyhow`
+`clap serde toml serde_json axum tokio maud rust_decimal jiff sha2 anyhow`
 
 One tokio runtime; everything async. No ORM, no template engine, no JS toolchain.
 
@@ -51,7 +54,7 @@ company-books/
   templates/invoice.typ   # seeded on first use, then yours to edit
   bills/2026/2026-09-21-acme-a1b2c3d4.pdf
   invoices/2026/2026-0017.pdf
-  .abo/                   # gitignored: bills awaiting a decision, their threads
+  .abo/                   # gitignored: the log, typst's scratch files
 ```
 
 Documents are linked to entries by hledger tags, never by a join table:
@@ -80,22 +83,20 @@ numbered chart of accounts, `assets:1020:bank` also sorts correctly.
 src/main.rs      clap dispatch, #[tokio::main]
 src/repo.rs      abo.toml, path resolution, git add/commit
 src/journal.rs   read account declarations, build + validate + append entries
-src/ai.rs        one POST to /v1/messages
+src/bill.rs      file a bill's document; book it
 src/report.rs    hledger passthrough (-O json / -O csv)
 src/invoice.rs   fill typst template, compile
 src/web.rs       axum + maud
 ```
 
-Ten files plus two typst templates (`bill.rs` was split out of the plan's seven so
-that `ai.rs` stays pure transport and can be swapped or stubbed without touching
-the workflow). No `lib.rs`/`bin/` split, no workspace, no crate-per-module.
+No `lib.rs`/`bin/` split, no workspace, no crate-per-module.
 
 ### Three invariants that keep future work cheap
 
 These are free now and expensive to retrofit. Do not violate them.
 
-1. **Every workflow function takes a context first.** `propose_bill(&ctx, path)`,
-   never `propose_bill(path)` reading a global. Multi-company then means building
+1. **Every workflow function takes a context first.** `bill::file(&ctx, ...)`,
+   never `bill::file(...)` reading a global. Multi-company then means building
    a different `Ctx`; users mean `Ctx` carries an actor. Authorization has exactly
    one place to live.
 2. **No rendering below the dispatch layer.** No HTML, no terminal formatting, no
@@ -121,93 +122,47 @@ same answers to `abo init` and to `/new` and requires identical books.
 
 ## 4. The bill workflow (the core)
 
-1. `abo bill <file>` — hash the file, check `sha256:` for a duplicate.
-2. Build the request (§5), send, receive a structured proposal.
-3. Validate in Rust (§6). The model proposes; it never decides.
-4. Show the rendered entry. User approves, or types a correction.
-5. On correction: append the user's text to the message thread, re-request.
-   The thread is persisted as JSON keyed by the file's sha256, so the CLI and the
-   browser resume the same conversation.
-6. On approval: copy the document to its final path, `git add` it, then append
-   the entry — the commit inside `add` sweeps up the index, so the document and
-   its entry land in one commit or not at all. If the entry fails at that point
-   the copy is removed and the path reset.
+Two commands, each a commit and a line in the log.
 
-The destination is `bills/<year>/<date>-<vendor-slug>-<sha8>.<ext>`. The vendor
-slug keeps only `[a-z0-9]` and collapses the rest to `-`, so a vendor name of
-`../../.ssh/authorized_keys` cannot escape the directory. There is a test for
-exactly that. The supplier's own invoice number is tagged `ref:`, never
-`invoice:`, which is reserved for the numbering of invoices we issue.
+1. `abo file <scan> --date <date> --issuer <name>` copies the document to
+   `bills/<year>/<date>-<issuer-slug>-<sha8>.<ext>` and commits it. The content
+   type comes from the bytes. A document whose hash is filed already is
+   refused.
+2. `abo bill --desc <text> [--tag ref=...] <bills/...> <postings>` books an
+   entry against a filed document. The entry is dated as the file name says and
+   tagged `bill:` with the path and `sha256:` with the hash of the committed
+   bytes; the validator (§6) refuses a hash already booked. A document that is
+   not committed, or has changed since, is refused.
 
-Document filenames are derived from the sha256 and a sanitized vendor string —
-**never** from a client-supplied filename (§8).
+The issuer slug keeps only `[a-z0-9]` and collapses the rest to `-`, so an
+issuer of `../../.ssh/authorized_keys` cannot escape the directory. There is a
+test for exactly that. The supplier's own invoice number is tagged `ref:`,
+never `invoice:`, which is reserved for the numbering of invoices we issue.
+
+Document filenames are derived from the date, the issuer slug and the sha256 —
+**never** from a client-supplied filename (§8). The browser's **Book a bill**
+form asks for all of it at once and runs both commands, the entry validated
+before the document is filed, so a bill that cannot be booked is not filed.
+
+A filed document that is not booked stays in the books; undoing its `abo file`
+line removes it. Once it is booked, that undo is refused: the booking names it.
 
 ---
 
-## 5. The AI call
+## 5. Where a model fits
 
-Rust has no official Anthropic SDK, so this is raw HTTP with `reqwest` +
-`serde_json`. About 40 lines total.
+Not in `abo`. Reading a scanned bill and suggesting the entry is the kind of
+help a model gives, and it belongs in a larger application around `abo`: one
+that shows a person the `abo file` and `abo bill` it suggests, takes their
+corrections, and runs the commands they settle on. `abo` then sees only those
+commands, validates them as it would a typed one (§6), and logs them. Nothing
+in the books depends on what a model said, and a replay of the log (§7,
+"Logging") needs no model and no network.
 
-- `POST https://api.anthropic.com/v1/messages`, `x-api-key` from `ANTHROPIC_API_KEY`.
-- Model `claude-opus-5`. Thinking is on by default on this model; `output_config`
-  `effort` of `medium` is the starting point.
-- **System block** (stable — mark it with `cache_control` `ephemeral` so it caches):
-  company details from `abo.toml`, the VAT rules for the configured method, the
-  output of `hledger accounts`, and `hledger print` of recent entries for this
-  vendor if any exist.
-- **User block**: the document as a base64 `document` content block (PDF) or
-  `image` block, placed *before* the text instruction.
-- **Output**: a single structured result. Not an agent loop — the model has no
-  filesystem access and no tools that touch the repository.
-
-> An agent resuming here should load the bundled `claude-api` skill (or
-> `curl/examples.md` within it) to confirm the exact current request shape for
-> structured output and document blocks before writing `ai.rs`. The API surface
-> moves; the schema below is ours and does not.
-
-Proposal schema:
-
-```json
-{
-  "date": "2026-09-21",
-  "vendor": "Acme Hosting GmbH",
-  "description": "Hosting September 2026",
-  "currency": "EUR",
-  "postings": [{"account": "expenses:hosting", "amount": "100.00"}],
-  "invoice_ref": "INV-1234",
-  "confidence": "high",
-  "questions": []
-}
-```
-
-`questions` is how the model asks rather than guesses — a non-empty list blocks
-auto-approval even under `--yes`.
-
-As built: `output_config` carries both `effort` (`medium`) and
-`format: {type: "json_schema", schema}`, which is what makes the response a
-single text block of schema-valid JSON — `additionalProperties: false` and a
-complete `required` are mandatory there. Thinking is on by default on
-`claude-opus-5`, so the `thinking` parameter is omitted entirely. Amounts cross
-the wire as **decimal strings**: a JSON number is an `f64` by the time serde
-sees it. `stop_reason` is checked for `refusal` and `max_tokens` before the
-body is parsed.
-
-The conversation lives in `.abo/threads/<sha256>.json` and the document in
-`.abo/pending/<sha256>.<ext>`, both gitignored — working state, not books. The
-thread stores only text turns; the document is re-attached from disk on every
-request, so one copy of the bytes exists and the thread stays small. Re-running
-`abo bill` on the same file resumes that conversation instead of paying for a
-fresh proposal. Nothing is written until a call succeeds.
-
-`ABO_STAND_IN=<file>` replaces the call: every request returns the proposal in
-that file, so the bill workflow can be exercised with no key and no network,
-and a tester edits the file to play the model's next answer. Everything after
-the call — validation, filing, the commit — is the real code.
-
-Server-side refusal fallbacks (`fallbacks` + its beta header) are deliberately
-not enabled: silently re-running a booking on a different model is not a
-property this app should have. A refusal is an error the human sees.
+An earlier version called the Messages API from `abo bill` itself, with the
+conversation kept in `.abo/`. It was taken out so that the backbone is
+model-free; the design of that call is in git history if the larger
+application wants it.
 
 ---
 
@@ -232,8 +187,7 @@ first failure.
 Step 6 is free and catches everything the first five miss. It is also the test.
 
 Money is `rust_decimal::Decimal`, or `i64` minor units tagged with a commodity.
-**Never `f64`.** Rates may be `Decimal`. Amounts cross the AI boundary as
-decimal *strings*, because a JSON number is an `f64` by the time serde sees it.
+**Never `f64`.** Rates may be `Decimal`.
 
 ### Commodities
 
@@ -364,10 +318,7 @@ Everything else is configuration, which means changing it is not a rebuild:
 - **`[invoice] vat_rate`** — the rate charged to customers. Statutory, therefore
   not in the code. `--vat-rate` overrides it per invoice, which is how an export,
   a reduced rate or an exempt supply is issued.
-- **`[company] tax_notes`** — free text handed to the model with every bill:
-  what is deductible here, what is reverse charged, how import tax arrives, what
-  the scheme is called locally. This is where local rules live.
-- **`[company] country`** — only the model reads it.
+- **`[company] country`** — printed on invoices.
 - **`[[report.vat]]`** — the tax return, one entry per box on the form. Each
   has a `code` and a `label`, and is one of three things: a `query` (any hledger
   query; its balance over the period is the figure, with `invert` for the
@@ -400,7 +351,6 @@ address   = "1 Example Street\n10000 Example City"
 country   = "Exampleland"
 tax_id    = ""                 # blank if not registered
 currency  = "EUR"
-tax_notes = """..."""          # see Appendix A
 
 [vat]
 method  = "flat"               # "effective" | "flat" | "none"
@@ -459,6 +409,14 @@ this only bites if the company switches methods and then re-runs an old period.
 ### CLI
 One binary, clap subcommands. `--json` on every read command.
 
+A command that changes the books takes everything it needs as arguments. One
+that asks — `abo init` without flags, `abo payment-options add` without flags
+— asks only to arrive at those arguments: what it logs is the command the
+answers amount to, and running that command instead asks nothing. `abo init`
+takes a flag per question, a payment option as `--payment` with a TOML inline
+table of its fields, and with any flag given asks nothing, taking for what is
+not given what the question offers.
+
 abo shells out to three programs and owns none of them, so `main` checks for
 all three before dispatching anything. `git` and `hledger` are required and a
 missing one is a startup error naming what it is for and where to get it;
@@ -470,8 +428,8 @@ workflow, and for `abo serve` it means the server declines to boot broken
 instead of raising an error on the first request that needs a PDF.
 
 ### Web
-axum + maud, server-rendered forms: balances and recent entries, bill upload and
-proposal card, invoice form, reconciliation checkboxes, statements with a PDF
+axum + maud, server-rendered forms: balances and recent entries, the bill
+form, invoice form, reconciliation checkboxes, statements with a PDF
 link, hand-typed entry.
 
 A sidebar on the left, white cards with 12px radii on a warm stone ground,
@@ -519,11 +477,13 @@ from the query, so a link cannot put words on the page. It fades by CSS alone
 after two seconds, held while pointed at or focused, and carries **Undo**. The
 Log offers Undo on every line.
 
-Undo and revert are two things. **Undo** takes an operation back: a commit's
-change leaves the books as a new commit, and a pending bill is thrown away.
-It is for a mistake just made. **Revert**, on a booking's own page, is the
+Undo and revert are two things. **Undo** takes a line of the log back: its
+commit's change leaves the books as a new commit. It is for a mistake just
+made. The first line, `abo init`, cannot be undone, nor can the filing of a
+document that is booked. **Revert**, on a booking's own page, is the
 bookkeeping correction of one that stands: a new entry with the opposite
-amounts, dated today, tagged `reverses: <commit>`; the original stays.
+amounts, dated today unless `--date` says otherwise, tagged `reverses:
+<commit>`; the original stays.
 
 Undo is not `git revert`. That merges with three lines of context, and since
 entries are written in date order the next booking usually sits right beside
@@ -548,16 +508,28 @@ looks.
 Logging is `tracing`, off for the short-lived commands and `abo=info` for these
 two. `RUST_LOG` overrides it.
 
-Separately, every operation someone asks for — an entry, a bill proposed,
-corrected or approved, an invoice, clearing, recording a balance, a PDF —
-appends one line to `.abo/log.jsonl`, from the CLI and the browser alike: when,
-who (git's author name, until there are users), the input as given, and either
-what came back, with its commit, or the error. Refusals are logged too; for
-checking that what you did is what happened they are the most useful lines.
-`/log` shows the last fifty, each opening to its input and, for a commit, the
-diff it made. The log is working state like the rest of `.abo/` and is not
-committed: who changed the books is already in git, and a shared record of
-failed attempts would be noise in the books' history.
+Separately, every change to the books appends one line to `.abo/log.jsonl`,
+from the CLI and the browser alike, and nothing else does: not a read, not a
+refusal, not a PDF of a report. A line is the `abo` command that made the
+change, as an argument vector, with every default it used written out — the
+date that was today, the VAT rate from `abo.toml`, the payment options an
+invoice printed — so that the same command means the same thing on any day.
+The first line is always `abo init`. An action in the browser is logged as the
+command it amounts to; the bill form is two, `abo file` and `abo bill`.
+
+Beside the command is its stamp: git's author name and email and the second
+the operation began. Every commit the operation makes carries the stamp as
+both author and committer date, and an invoice PDF carries it as its creation
+date. Run the lines in order, each with `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`
+and `GIT_AUTHOR_DATE` set from its stamp, and the books come out the same,
+commit hash for commit hash. `tests/replay.rs` does exactly that. An `abo file`
+line names the document it was given, so a replay needs the documents at those
+paths; the browser's names only what the upload was called, so a replay has
+to supply that document itself, identified by the hash in the line.
+
+`/log` and `abo log` show the lines, each with the command as it would be
+typed and, on `/log`, the diff its commit made. The log is working state like
+the rest of `.abo/` and is not committed.
 
 ### Phone
 A **PWA** over the same server-rendered pages: a manifest plus a responsive
@@ -567,8 +539,8 @@ stylesheet. The camera is a platform feature and needs no library:
 <input type="file" accept="image/*" capture="environment">
 ```
 
-The bill workflow on a phone is photograph → read proposal → tap approve. That is
-a form and two buttons. No JSON API is needed for this path at all.
+The bill workflow on a phone is photograph → date, issuer and postings →
+submit. That is one form. No JSON API is needed for this path at all.
 
 Go native only when one of these is true: App Store distribution is required, the
 iOS Share → Add to Home Screen install flow is unacceptable friction, or
@@ -586,43 +558,30 @@ Two items are day-one, not deferred to exposure.
   page open in the browser can POST to localhost. `SameSite=Strict` plus an
   Origin check. This shortcut is not available.
 - **Never derive a filesystem path from an uploaded filename.** Build it from the
-  sha256 and a sanitized vendor string. Path traversal through a multipart
+  date, a sanitized issuer string and the sha256. Path traversal through a multipart
   filename is how a file-upload feature becomes a shell.
 
-### The model is an untrusted input source
+### Every string is an untrusted input
 
-Treat model output exactly like a form field submitted by a stranger. Then
-"jailbreaking" is not a category: persuading the model to *want* something is
-only an attack if the model *holds* something. Three rules keep it holding
-nothing. Each is cheap now and each is the sort of thing that gets given away
-casually later.
+A description, an issuer, a tag value: whatever typed or suggested it, a
+string reaches the journal only through the validator, which runs on entries
+from every source. Two rules keep that boundary where it is.
 
-1. **The model gets no tools.** It receives a document and returns one JSON
-   proposal. No filesystem, no shell, no hledger, no network. If a future
-   feature wants the model to look things up, it gets a fixed set of
-   parameterized queries — `recent_entries(vendor)` — never a command string.
-   The moment a model-supplied string can select *what runs* rather than *what
-   is proposed*, this section is void and the whole design needs re-reading.
-2. **abo never invokes a shell.** `Command::new("hledger").args([...])` with an
+1. **abo never invokes a shell.** `Command::new("hledger").args([...])` with an
    argument vector, never `sh -c`. No string concatenation into a command line.
-   With no shell there is no shell injection, whatever the model writes.
-3. **Every model-supplied string is validated before it touches disk.** The
-   validator, not the prompt, is the boundary. It runs on entries from every
-   source, so the CLI and the web form are covered by the same code.
+   With no shell there is no shell injection, whatever a field holds.
+2. **Every string is validated before it touches disk.** Amounts parse as
+   `Decimal` or fail; accounts must already be declared; document paths are
+   derived from the date, the issuer slug and the sha256. What remains is the
+   free-text fields, and journal syntax is what they can smuggle — a newline
+   opens a second transaction, and because hledger reads tags out of comments,
+   a `;` in a description forges the `sha256:` tag that the duplicate check
+   depends on. Step 0 of the chain rejects control characters, `;` and
+   over-long values.
 
-The adversary is not hypothetical and does not require a hostile user: a
-supplier emails a PDF, and the PDF contains text addressed to the model. What
-that text can reach is (a) the strings in the proposal and (b) nothing else.
-Amounts parse as `Decimal` or fail; accounts must already be declared;
-document paths are derived from the sha256, never from the model. What remains
-is the free-text fields, and journal syntax is what they can smuggle — a
-newline opens a second transaction, and because hledger reads tags out of
-comments, a `;` in a vendor name forges the `sha256:` tag that the duplicate
-check depends on. Step 0 of the chain rejects control characters, `;` and
-over-long values.
-
-The prompt is not a security control. Nothing about the system may depend on
-the model refusing to do something.
+This matters most for the application a model lives in (§5). A supplier's PDF
+can contain text addressed to the model, and what that text can reach is the
+command the model suggests, which `abo` treats as it treats a typed one.
 
 Deferred, with triggers:
 
@@ -662,15 +621,16 @@ Not legal advice, but none of this is controversial.
 ## 10. Milestones
 
 - **M0 — foundation, no AI.** `abo init` (six prompts → `abo.toml`, seeded
-  `accounts.journal`, `.gitignore`, `git init`, first commit). `abo add` with the
+  `accounts.journal`, `.gitignore`, `git init`, first commit). `abo add` (now `abo post`) with the
   full validation chain. `abo bal` / `abo reg` passthrough. One test: a balanced
   entry commits; an unbalanced one is rejected; an input-VAT posting under
   `method = "flat"` is rejected. ~300 lines. **Done.**
-- **M1** — `abo bill <file>`: AI proposal, terminal approve/refine. **Done.**
+- **M1** — `abo bill <file>`: AI proposal, terminal approve/refine. **Done**,
+  and since taken out of `abo` (§5): `abo file` and `abo bill` are model-free.
 - **M2** — `abo serve`: balance, register, a booking form, and the bill upload
   and proposal card. **Done.** `abo demo` serves the same pages against a
   throwaway repository of toy data in the temp directory, rebuilt on every
-  start, through the ordinary validated `add`.
+  start, through the ordinary validated `post`.
 - **M3** — invoices: typst template, numbering from the journal. **Done.**
   `templates/invoice.typ` is seeded into the books on first use and committed;
   it belongs to the company, not to abo. abo writes `.abo/invoice.json` and runs
@@ -768,7 +728,6 @@ Each with the trigger for revisiting.
 | Not built | Add when |
 |---|---|
 | Account / commodity editor UI | You are editing `accounts.journal` weekly. It is `$EDITOR` plus `hledger check accounts`. |
-| Any abstraction over "AI provider" | There is a second provider. |
 | Database | Never, for the books. Only for users (§8). |
 | Client-side JavaScript | A workflow genuinely cannot be a form submission. |
 | Bootstrap, Tailwind, or any CSS framework | The hand-written stylesheet stops fitting on one screen, or a component needs behaviour rather than style. |
@@ -785,73 +744,3 @@ Each with the trigger for revisiting.
 | Committing rendered statements | A filing needs archiving. Today they are handed to you. |
 | Closing entries at year end | A balance sheet needs to show a closed prior year. Today unclosed profit is a computed equity line. |
 
----
-
-## Appendix A — an example `tax_notes`
-
-Nothing below is in the code. It is what one company's `[company] tax_notes`
-might contain, shown because it is the kind of thing the field is for: the
-local rules a model needs in order to propose a correct booking, in prose,
-in `abo.toml`, changeable without a rebuild.
-
-```toml
-tax_notes = """
-Rates are 8.1% standard, 2.6% reduced (food, non-alcoholic drinks, books,
-medicines), 3.8% accommodation.
-
-This is a third country for EU VAT: there is no intra-community anything.
-Goods crossing the border are imports and exports. Import tax is assessed by
-customs and arrives on a SEPARATE customs document, not on the supplier
-invoice. A foreign supplier's invoice showing no VAT therefore carries no
-reclaimable input tax — the deductible amount is on different paper. This is
-the most likely place to propose a wrong booking.
-
-Services bought from abroad (hosting, SaaS, foreign consultants) are subject
-to acquisition tax, self-assessed by the buyer. Frequent for a software
-company. Flag them rather than guessing.
-
-Foreign-currency bills convert at the published rate of the tax authority, so
-the journal needs a price directive rather than a converted amount.
-
-The return is filed by box number: 200-series turnover, 300-series tax,
-400-series input tax. Quarterly under the effective method, semi-annual under
-the flat scheme.
-"""
-```
-
-An example return for the same company, in the same file:
-
-```toml
-[[report.vat]]
-code   = "200"
-label  = "Total agreed consideration"
-query  = "acct:^income(:|$)"
-invert = true
-
-[[report.vat]]
-code   = "302"
-label  = "Tax at the standard rate"
-query  = "acct:^liabilities:vat:output(:|$)"
-invert = true
-
-[[report.vat]]
-code  = "400"
-label = "Input tax on materials and services"
-query = "acct:^assets:vat:input(:|$)"
-
-[[report.vat]]
-code  = "500"
-label = "Amount payable"
-sum   = ["302", "-400"]
-```
-
-Under a flat scheme the tax owed is a percentage of gross turnover rather than
-a collected figure, which is the `of` form:
-
-```toml
-[[report.vat]]
-code  = "322"
-label = "Tax at the flat rate"
-of    = "200"
-rate  = 5.3
-```

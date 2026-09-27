@@ -306,11 +306,10 @@ const TEMPLATE_REL: &str = "templates/report.typ";
 const DATA_REL: &str = ".abo/report.json";
 const TEMPLATE: &str = include_str!("report.typ");
 
-/// Render to PDF at `out`. Seeds the template into the books on first use,
-/// exactly as the invoice does.
+/// Render to PDF at `out`. It changes nothing in the books, so it is not
+/// logged.
 pub fn pdf(ctx: &Ctx, s: &Statement, out: &std::path::Path) -> Result<()> {
-    let what = format!("{}, {}", s.title, s.period);
-    ctx.logged("pdf", &what, serde_json::json!({ "out": out.display().to_string() }), render(ctx, s, out))
+    render(ctx, s, out)
 }
 
 /// The books' own `templates/report.typ` if they have one; otherwise abo's,
@@ -380,13 +379,14 @@ pub fn compile(
 
 /// Compile a template to PDF. The one place abo runs typst.
 pub fn typst(ctx: &Ctx, template: &std::path::Path, out: &std::path::Path) -> Result<()> {
-    let result = Command::new("typst")
-        .arg("compile")
-        .arg("--root")
-        .arg(&ctx.root)
-        .arg(template)
-        .arg(out)
-        .output();
+    let mut typst = Command::new("typst");
+    typst.arg("compile").arg("--root").arg(&ctx.root);
+    // Dated by the operation's stamp, not the clock: an invoice replayed
+    // from the log is the same PDF, byte for byte.
+    if let Ok(s) = ctx.stamp() {
+        typst.arg("--creation-timestamp").arg(s.time.to_string());
+    }
+    let result = typst.arg(template).arg(out).output();
     let result = match result {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             bail!("typst is not installed; see https://github.com/typst/typst#installation")

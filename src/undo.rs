@@ -1,14 +1,10 @@
 //! Undo: take back an operation from the log.
 //!
-//! An operation that committed is undone by `git revert`: its change leaves
-//! the journal, and git keeps both the change and its undoing. That is for
-//! a mistake noticed soon. A booking that stands in the books and turns out
-//! wrong is corrected the bookkeeping way instead — a reversing entry, see
-//! `journal::reverse` — which adds rather than removes.
-//!
-//! A bill proposed and not yet approved has no commit; undoing it throws the
-//! pending bill away. Corrections and PDFs change nothing in the books and
-//! cannot be undone.
+//! Every line of the log is a commit, and it is undone by reversing it: its
+//! change leaves the books, and git keeps both the change and its undoing.
+//! That is for a mistake noticed soon. A booking that stands in the books and
+//! turns out wrong is corrected the bookkeeping way instead — a reversing
+//! entry, see `journal::reverse` — which adds rather than removes.
 
 use crate::repo::Ctx;
 use anyhow::{bail, Context as _, Result};
@@ -26,6 +22,22 @@ pub fn lines(ctx: &Ctx) -> Vec<Value> {
         .collect()
 }
 
+/// A line's command as it would be typed: `abo post --date 2026-09-21 ...`,
+/// each argument quoted for a POSIX shell where it needs to be.
+pub fn command(line: &Value) -> String {
+    let quote = |a: &str| {
+        let plain = !a.is_empty() && a.chars().all(|c| c.is_ascii_alphanumeric() || "-_=:./,+@%".contains(c));
+        if plain { a.to_string() } else { format!("'{}'", a.replace('\'', "'\\''")) }
+    };
+    let argv = line["argv"].as_array().map(Vec::as_slice).unwrap_or_default();
+    std::iter::once("abo".to_string()).chain(argv.iter().map(|a| quote(a.as_str().unwrap_or_default()))).collect::<Vec<_>>().join(" ")
+}
+
+/// The line's command name: `post`, `invoice`, `payment-options`.
+pub fn op(line: &Value) -> &str {
+    line["argv"][0].as_str().unwrap_or_default()
+}
+
 /// The commits `git revert` has undone, as full hashes, from the "This
 /// reverts commit" line git writes into every revert.
 pub fn reverted(ctx: &Ctx) -> Vec<String> {
@@ -37,23 +49,23 @@ pub fn reverted(ctx: &Ctx) -> Vec<String> {
         .collect()
 }
 
-/// What undoing this line would do, or None if it cannot be undone.
-pub fn how(ctx: &Ctx, line: &Value, reverted: &[String]) -> Option<How> {
-    if !line["error"].is_null() {
-        return None;
+/// The commit undoing this line would reverse, or why it cannot be undone.
+pub fn how(ctx: &Ctx, line: &Value, reverted: &[String]) -> Result<String> {
+    let h = line["ok"]["commit"].as_str().context("it made no commit")?;
+    if op(line) == "init" {
+        bail!("it opened the books");
     }
-    if let Some(h) = line["ok"]["commit"].as_str() {
-        let taken_back = reverted.iter().any(|full| full.starts_with(h));
-        return (!taken_back).then(|| How::Revert(h.to_string()));
+    if reverted.iter().any(|full| full.starts_with(h)) {
+        bail!("it is undone already");
     }
-    // A bill that is still pending: its proposal can be thrown away.
-    let sha = line["ok"]["sha256"].as_str()?;
-    (line["op"] == "bill.propose" && crate::bill::is_pending(ctx, sha)).then(|| How::Discard(sha.to_string()))
-}
-
-pub enum How {
-    Revert(String),
-    Discard(String),
+    // A filed document that is booked stays: the booking names it.
+    if let Some(sha) = line["ok"]["sha256"].as_str().filter(|_| op(line) == "file") {
+        let booked = crate::journal::hledger(ctx, &["print", &format!("tag:sha256={sha}")])?;
+        if !booked.trim().is_empty() {
+            bail!("the document is booked; undo or revert its booking first");
+        }
+    }
+    Ok(h.to_string())
 }
 
 #[derive(Serialize)]
@@ -61,28 +73,21 @@ pub struct UndoReport {
     /// The log line undone.
     pub line: usize,
     pub op: String,
-    /// The revert's commit, when the operation had one.
-    pub commit: Option<String>,
+    /// The commit that reverses it.
+    pub commit: String,
 }
 
 /// Undo the operation on line `n` of the log.
 pub fn undo(ctx: &Ctx, n: usize) -> Result<UndoReport> {
-    let all = lines(ctx);
-    let line = n.checked_sub(1).and_then(|i| all.get(i)).with_context(|| format!("the log has no line {n}"))?;
-    let op = line["op"].as_str().unwrap_or_default().to_string();
-    let what = format!("{op} {}", line["what"].as_str().unwrap_or_default());
     let r = (|| {
-        let commit = match how(ctx, line, &reverted(ctx)) {
-            None => bail!("{what} cannot be undone"),
-            Some(How::Discard(sha)) => {
-                crate::bill::remove_pending(ctx, &sha)?;
-                None
-            }
-            Some(How::Revert(h)) => Some(revert_commit(ctx, &h)?),
-        };
-        Ok(UndoReport { line: n, op: op.clone(), commit })
+        let all = lines(ctx);
+        let line = n.checked_sub(1).and_then(|i| all.get(i)).with_context(|| format!("the log has no line {n}"))?;
+        let what = format!("{} {}", op(line), line["what"].as_str().unwrap_or_default());
+        let h = how(ctx, line, &reverted(ctx)).map_err(|e| anyhow::anyhow!("{what} cannot be undone: {e}"))?;
+        Ok(UndoReport { line: n, op: op(line).to_string(), commit: revert_commit(ctx, &h)? })
     })();
-    ctx.logged("undo", &what, serde_json::json!({ "line": n }), r)
+    let what = r.as_ref().map(|u| format!("line {n}, {}", u.op)).unwrap_or_default();
+    ctx.logged(vec!["undo".into(), n.to_string()], &what, r)
 }
 
 /// Take a commit's change back out of the books, check the result the way any

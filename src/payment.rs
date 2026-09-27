@@ -55,18 +55,25 @@ pub fn check(ctx: &Ctx, mut o: PaymentOption, others: &[&PaymentOption]) -> Resu
 
 pub fn add(ctx: &Ctx, o: PaymentOption) -> Result<PaymentReport> {
     let what = o.id.clone();
-    let input = serde_json::json!(o);
+    let mut argv = vec!["payment-options".to_string(), "add".to_string(), o.id.clone()];
+    fields(&mut argv, &o, &PaymentOption::default());
     let r = change(ctx, &format!("Add payment option {}", o.id), |options| {
         let o = check(ctx, o, &options.iter().collect::<Vec<_>>())?;
         options.push(o);
         Ok(())
     });
-    ctx.logged("payment-options.add", &what, input, r)
+    ctx.logged(argv, &what, r)
 }
 
 /// Replace the option `id` names with `o`, which may carry a new id.
 pub fn edit(ctx: &Ctx, id: &str, o: PaymentOption) -> Result<PaymentReport> {
-    let input = serde_json::json!({ "id": id, "option": o });
+    let mut argv = vec!["payment-options".to_string(), "edit".to_string(), id.to_string()];
+    if let Ok(now) = find(&ctx.cfg.payment, id) {
+        if now.id != o.id {
+            crate::repo::flag(&mut argv, "--id", &o.id);
+        }
+        fields(&mut argv, &o, now);
+    }
     let r = change(ctx, &format!("Change payment option {id}"), |options| {
         let old = find(options, id)?.clone();
         let o = check(ctx, o, &options.iter().filter(|p| p.id != old.id).collect::<Vec<_>>())?;
@@ -76,7 +83,7 @@ pub fn edit(ctx: &Ctx, id: &str, o: PaymentOption) -> Result<PaymentReport> {
         *options.iter_mut().find(|p| p.id == old.id).unwrap() = o;
         Ok(())
     });
-    ctx.logged("payment-options.edit", id, input, r)
+    ctx.logged(argv, id, r)
 }
 
 pub fn remove(ctx: &Ctx, id: &str) -> Result<PaymentReport> {
@@ -85,7 +92,35 @@ pub fn remove(ctx: &Ctx, id: &str) -> Result<PaymentReport> {
         options.retain(|p| p.id != old);
         Ok(())
     });
-    ctx.logged("payment-options.remove", id, serde_json::json!({ "id": id }), r)
+    ctx.logged(vec!["payment-options".into(), "remove".into(), id.into()], id, r)
+}
+
+/// The flags that make `now` into `o`: the kind always, and every field
+/// either has, a blank one given blank so that it is cleared.
+fn fields(argv: &mut Vec<String>, o: &PaymentOption, now: &PaymentOption) {
+    crate::repo::flag(argv, "--kind", o.kind.name());
+    let one = [
+        ("--label", &o.label, &now.label),
+        ("--holder", &o.holder, &now.holder),
+        ("--iban", &o.iban, &now.iban),
+        ("--bic", &o.bic, &now.bic),
+        ("--network", &o.network, &now.network),
+        ("--address", &o.address, &now.address),
+        ("--account", &o.account, &now.account),
+    ];
+    for (f, v, was) in one {
+        if !v.is_empty() || !was.is_empty() {
+            crate::repo::flag(argv, f, v);
+        }
+    }
+    for (f, v, was) in [("--bank", &o.bank, &now.bank), ("--detail", &o.details, &now.details)] {
+        if v.is_empty() && !was.is_empty() {
+            crate::repo::flag(argv, f, "");
+        }
+        for line in v.lines() {
+            crate::repo::flag(argv, f, line);
+        }
+    }
 }
 
 /// Rewrite the `[[payment]]` tables in abo.toml, leaving the rest of the

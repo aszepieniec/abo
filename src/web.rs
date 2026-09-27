@@ -48,23 +48,17 @@ pub async fn serve(ctx: Ctx, port: u16) -> Result<()> {
     let root = ctx.root.clone();
     let app = Router::new()
         .route("/", get(index))
-        .route("/add", get(add_form).post(add_submit))
+        .route("/post", get(post_form).post(post_submit))
         .route("/log", get(activity))
         .route("/report/{kind}", get(report))
         .route("/reconcile", get(reconcile_view).post(reconcile_act))
         .route("/invoice", get(invoice_form).post(invoice_submit))
         .route("/invoice/{number}", get(invoice_pdf))
-        .route("/bill", get(upload_form).post(upload))
-        .route("/bill/{sha}", get(card))
-        .route("/bill/{sha}/document", get(document))
-        .route("/bill/{sha}/approve", post(approve))
-        .route("/bill/{sha}/refine", post(refine))
-        .route("/bill/{sha}/discard", post(discard))
+        .route("/bill", get(bill_form).post(bill_submit))
         .route("/entry/{key}", get(booking))
         .route("/entry/{key}/revert", post(revert))
         .route("/undo/{line}", post(undo_line))
-        // A scanned bill is much bigger than a form post, and 32 MB is the
-        // API's own request limit.
+        // A scanned bill is much bigger than a form post.
         .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
         .layer(axum::middleware::from_fn(csrf))
         .layer(axum::middleware::from_fn(log))
@@ -382,8 +376,7 @@ async fn new_submit(axum::extract::State(root): axum::extract::State<Arc<PathBuf
             bail!("answers to look at again");
         }
         let b = questions::books(&answers);
-        let author = b.author.as_ref().map(|(n, e)| (n.as_str(), e.as_str()));
-        crate::repo::init(&root.join(&b.slug), &b.company, &b.vat, b.sales_rate, &b.payment, author)?;
+        crate::repo::init(&root.join(&b.slug), &b)?;
         info!(company = %b.company.name, dir = %b.slug, "books opened");
         Ok(format!("/?opened={}", enc(&b.slug)))
     });
@@ -505,7 +498,6 @@ async fn index(Books(ctx): Books) -> Response {
         // -E: an account that has come back to zero stays listed, at 0.00
         let accounts = statement::balances(&ctx, "", &["-E"])?;
         let recent = recent_entries(&ctx, 12)?;
-        let waiting = bill::waiting(&ctx)?;
         let tiles = tiles(&ctx, &accounts);
         Ok(html! {
             div.head {
@@ -523,27 +515,6 @@ async fn index(Books(ctx): Books) -> Response {
                             span.muted.small { (label) }
                             @for a in statement::amounts(bag) {
                                 span.figure { (a.quantity) " " span.muted.small { (a.commodity) } }
-                            }
-                        }
-                    }
-                }
-            }
-            @if !waiting.is_empty() {
-                div.flash.flash-info {
-                    (icon("info"))
-                    div {
-                        strong { (waiting.len()) @if waiting.len() == 1 { " bill" } @else { " bills" } " waiting for you" }
-                        ul.plain {
-                            @for sha in &waiting {
-                                li {
-                                    @match bill::review(&ctx, sha) {
-                                        Ok(p) => {
-                                            a href={"/bill/" (sha)} { (p.proposal.vendor) }
-                                            " · " (p.proposal.date) " · confidence " (p.proposal.confidence)
-                                        },
-                                        Err(_) => a href={"/bill/" (sha)} { (sha.get(..8).unwrap_or(sha)) },
-                                    }
-                                }
                             }
                         }
                     }
@@ -609,23 +580,20 @@ fn done(ctx: &Ctx, to: &str) -> String {
 /// it shows; the Log keeps offering it after that.
 fn toast(ctx: &Ctx, n: usize) -> Option<Markup> {
     let line = undo::lines(ctx).into_iter().nth(n.checked_sub(1)?)?;
-    if !line["error"].is_null() || line.is_null() {
-        return None;
-    }
-    let title = match line["op"].as_str()? {
-        "entry" => "Booked",
-        "bill.approve" => "Bill booked",
-        "bill.discard" => "Bill thrown away",
+    let title = match undo::op(&line) {
+        "post" => "Booked",
+        "file" => "Filed",
+        "bill" => "Bill booked",
         "invoice" => "Invoice issued",
         "clear" => "Cleared",
-        "record" => "Balance recorded",
+        "reconcile" => "Balance recorded",
         "revert" => "Reversed",
         "undo" => "Undone",
         _ => return None,
     };
     let commit = line["ok"]["commit"].as_str();
     let invoice = line["ok"]["number"].as_str();
-    let undoable = undo::how(ctx, &line, &undo::reverted(ctx)).is_some();
+    let undoable = undo::how(ctx, &line, &undo::reverted(ctx)).is_ok();
     Some(html! {
         div.flash.flash-ok.toast role="status" {
             (icon("success"))
@@ -683,9 +651,8 @@ fn is_hash(s: &str) -> bool {
     (4..=40).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// The last operations from `.abo/log.jsonl`, newest first. Each opens to the
-/// input as given, the error or what came back, and for a commit the diff it
-/// made, which is the thing to check.
+/// The last changes from `.abo/log.jsonl`, newest first. Each opens to the
+/// command that made it and the diff it made, which is the thing to check.
 /// ponytail: one `git show` per row with a commit, so 50 rows; page it if more
 /// are ever needed.
 async fn activity(Books(ctx): Books) -> Response {
@@ -694,55 +661,45 @@ async fn activity(Books(ctx): Books) -> Response {
         // (line number, line), newest first
         let lines: Vec<(usize, &serde_json::Value)> =
             all.iter().enumerate().rev().take(50).map(|(i, l)| (i + 1, l)).filter(|(_, l)| !l.is_null()).collect();
-        let pretty = |v: &serde_json::Value| serde_json::to_string_pretty(v).unwrap_or_default();
         let reverted = undo::reverted(&ctx);
         let was_reverted = |h: &str| reverted.iter().any(|full| full.starts_with(h));
         Ok(html! {
             h1 { "Log" }
             @if lines.is_empty() {
-                div.flash.flash-info { (icon("info")) div { "Nothing done yet. Every entry, bill, invoice, reconciliation and PDF is recorded here, including the ones that failed." } }
+                div.flash.flash-info { (icon("info")) div { "Nothing changed yet. Every change to the books is recorded here, as the command that made it." } }
             } @else {
                 div.box {
                     table.list.log {
-                        thead { tr { th { "When" } th { "Who" } th { "Operation" } th { "What" } th.amt { "Outcome" } th {} } }
+                        thead { tr { th { "When" } th { "Who" } th { "Command" } th { "What" } th.amt { "Commit" } th {} } }
                         tbody {
                             @for (n, l) in &lines {
                                 @let commit = l["ok"]["commit"].as_str().filter(|h| is_hash(h));
-                                @let error = l["error"].as_str();
                                 tr {
                                     td.date { (l["at"].as_str().unwrap_or("").get(..16).unwrap_or("").replace('T', " ")) }
                                     td { (l["who"].as_str().unwrap_or("")) }
-                                    td { code { (l["op"].as_str().unwrap_or("")) } }
+                                    td { code { (undo::op(l)) } }
                                     td.what {
                                         details {
                                             summary { (l["what"].as_str().unwrap_or("")) }
-                                            h2 { "Input" }
-                                            pre { (pretty(&l["input"])) }
-                                            @if let Some(e) = error {
-                                                h2 { "Error" }
-                                                pre { (e) }
-                                            } @else if let Some(h) = commit {
+                                            h2 { "Command" }
+                                            pre { (undo::command(l)) }
+                                            @if let Some(h) = commit {
                                                 h2 { "Commit " (h) }
                                                 pre { (ctx.git(&["show", "--format=%s%n", "--stat", "--patch", h, "--"]).unwrap_or_else(|e| e.to_string())) }
-                                            } @else {
-                                                h2 { "Result" }
-                                                pre { (pretty(&l["ok"])) }
                                             }
                                         }
                                     }
                                     td.amt {
-                                        @if error.is_some() { span.failed { "failed" } }
-                                        @else if let Some(h) = commit.filter(|h| was_reverted(h)) {
+                                        @if let Some(h) = commit.filter(|h| was_reverted(h)) {
                                             code.reverted { (h) } br; span.muted.small { "reverted since" }
                                         }
                                         @else if let Some(h) = commit { code { (h) } }
-                                        @else { span.muted { "done" } }
                                     }
                                     td {
                                         form method="post" action={"/undo/" (n)} {
                                             (token())
                                             button.small type="submit" title="Undo"
-                                                   disabled[undo::how(&ctx, l, &reverted).is_none()] { (icon("undo")) " Undo" }
+                                                   disabled[undo::how(&ctx, l, &reverted).is_err()] { (icon("undo")) " Undo" }
                                         }
                                     }
                                 }
@@ -873,25 +830,19 @@ async fn booking(Books(ctx): Books, Path(key): Path<String>) -> Response {
 }
 
 async fn revert(Books(ctx): Books, Path(key): Path<String>, Form(f): Form<Once>) -> Response {
-    match once(&f.token, || journal::reverse(&ctx, &key).map(|_| done(&ctx, "/"))) {
+    let today = jiff::Zoned::now().date().to_string();
+    match once(&f.token, || journal::reverse(&ctx, &key, &today).map(|_| done(&ctx, "/"))) {
         Ok(to) => Redirect::to(&to).into_response(),
         Err(e) => or_error(&ctx, "Booking", || Err(e)),
     }
 }
 
-async fn discard(Books(ctx): Books, Path(sha): Path<String>, Form(f): Form<Once>) -> Response {
-    match once(&f.token, || bill::discard(&ctx, &sha).map(|()| done(&ctx, "/"))) {
-        Ok(to) => Redirect::to(&to).into_response(),
-        Err(e) => or_error(&ctx, "Proposal", || card_page(&ctx, &sha, Some(refused(&e)))),
-    }
-}
-
-async fn add_form(Books(ctx): Books) -> Response {
+async fn post_form(Books(ctx): Books) -> Response {
     or_error(&ctx, "Book an entry", || form(&ctx, "", "", "", None))
 }
 
 #[derive(Deserialize)]
-struct AddForm {
+struct PostForm {
     date: String,
     description: String,
     postings: String,
@@ -899,19 +850,10 @@ struct AddForm {
     token: String,
 }
 
-async fn add_submit(Books(ctx): Books, Form(f): Form<AddForm>) -> Response {
+async fn post_submit(Books(ctx): Books, Form(f): Form<PostForm>) -> Response {
     let booked = once(&f.token, || {
-        let postings: Vec<Posting> = f
-            .postings
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(|l| Posting::parse(l, &ctx.cfg.company.currency))
-            .collect::<Result<_>>()?;
-        journal::book(
-            &ctx,
-            &Entry { date: f.date.clone(), description: f.description.clone(), tags: vec![], postings },
-        )?;
+        let postings = postings(&ctx, &f.postings)?;
+        journal::post(&ctx, &Entry { date: f.date.clone(), description: f.description.clone(), tags: vec![], postings })?;
         Ok(done(&ctx, "/"))
     });
 
@@ -1260,15 +1202,20 @@ fn invoice_page(ctx: &Ctx, f: &InvoiceForm, error: Option<&str>) -> Result<Marku
     })
 }
 
-async fn upload_form(Books(ctx): Books) -> Response {
-    or_error(&ctx, "Book a bill", || upload_page(None))
+async fn bill_form(Books(ctx): Books) -> Response {
+    or_error(&ctx, "Book a bill", || bill_page(&ctx, &Fields::new(), None))
 }
 
-fn upload_page(notice: Option<Markup>) -> Result<Markup> {
+/// A bill: its document, what it says, and the entry. Sent, it is two
+/// commands, `abo file` and `abo bill`, and two lines in the log.
+fn bill_page(ctx: &Ctx, f: &Fields, notice: Option<Markup>) -> Result<Markup> {
+    let accounts = journal::declared_accounts(ctx)?;
+    let get = |k: &str| f.get(k).cloned().unwrap_or_default();
     Ok(html! {
         h1 { "Book a bill" }
         @if let Some(n) = notice { (n) }
         form method="post" action="/bill" enctype="multipart/form-data" {
+            (token())
             div.box {
                 div.box-body {
                     label.field { "The bill"
@@ -1278,11 +1225,29 @@ fn upload_page(notice: Option<Markup>) -> Result<Markup> {
                         input type="file" name="document" accept="image/*,application/pdf"
                               capture="environment" required;
                     }
-                    div.actions { button.btn-primary type="submit" { (icon("camera")) " Read it" } }
+                    label.field { "Date on the bill"
+                        input type="date" name="date" required value=(get("date"));
+                    }
+                    label.field { "Issuer"
+                        span.hint { "Who sent it. The document is filed under this name and the date." }
+                        input type="text" name="issuer" required value=(get("issuer"));
+                    }
+                    label.field { "Description"
+                        input type="text" name="description" required value=(get("description"));
+                    }
+                    label.field { "Postings"
+                        span.hint { "One per line, " code { "account=amount" } ". Leave one amount off and hledger infers it." }
+                        textarea name="postings" rows="5" required
+                                 placeholder="expenses:hosting=100.00\nliabilities:payable=-100.00" { (get("postings")) }
+                    }
+                    div.actions { button.btn-primary type="submit" { (icon("check")) " File and book it" } }
                 }
             }
         }
-        p { a.btn href="/" { (icon("left")) " Back" } }
+        div.box {
+            div.box-header { (icon("book")) "Declared accounts" }
+            div.box-body { ul.accounts { @for a in accounts { li { code { (a) } } } } }
+        }
     })
 }
 
@@ -1290,136 +1255,40 @@ fn refused(e: &anyhow::Error) -> Markup {
     html! { div.flash.flash-error { (icon("error")) div { strong { "Not done" } pre { (e) } } } }
 }
 
-async fn upload(Books(ctx): Books, mut mp: Multipart) -> Response {
-    // The filename is deliberately not read: the path comes from the hash (§8).
-    let bytes = match mp.next_field().await {
-        Ok(Some(f)) => f.bytes().await.ok(),
-        _ => None,
-    };
-    let Some(bytes) = bytes else {
-        let e = anyhow::anyhow!("no document in the upload");
-        return or_error(&ctx, "Book a bill", || upload_page(Some(refused(&e))));
-    };
-    match bill::propose(&ctx, bytes.to_vec()).await {
-        Ok(p) if p.resumed => Redirect::to(&format!("/bill/{}?resumed=1", p.sha256)).into_response(),
-        Ok(p) => Redirect::to(&format!("/bill/{}", p.sha256)).into_response(),
-        Err(e) => or_error(&ctx, "Book a bill", || upload_page(Some(refused(&e)))),
+async fn bill_submit(Books(ctx): Books, mut mp: Multipart) -> Response {
+    let mut f = Fields::new();
+    let mut doc: Option<(String, Vec<u8>)> = None;
+    while let Ok(Some(field)) = mp.next_field().await {
+        let name = field.name().unwrap_or_default().to_string();
+        if name == "document" {
+            // The name is only written into the log, as the command's argument (§8).
+            let src = field.file_name().unwrap_or("upload").to_string();
+            doc = field.bytes().await.ok().map(|b| (src, b.to_vec()));
+        } else if let Ok(v) = field.text().await {
+            f.insert(name, v);
+        }
     }
-}
-
-async fn card(Books(ctx): Books, Path(sha): Path<String>, Query(q): Query<Fields>) -> Response {
-    let notice = q.contains_key("resumed").then(|| html! {
-        div.flash.flash-info { (icon("info")) div {
-            strong { "Picked up where you left off" }
-            "This is the proposal from before, with your corrections. Nothing new was asked of the model."
-        } }
+    let get = |k: &str| f.get(k).map_or("", |v| v.trim());
+    let booked = once(get("token"), || {
+        let (src, bytes) = doc.as_ref().context("no document in the upload")?;
+        let postings = postings(&ctx, get("postings"))?;
+        let entry = Entry { date: get("date").to_string(), description: get("description").to_string(), tags: vec![], postings };
+        // Refused before filing, so a bill that cannot be booked is not filed.
+        journal::validate(&ctx, &entry)?;
+        let filed = bill::file(&ctx, src, bytes, &entry.date, get("issuer"))?;
+        let r = bill::bill(&ctx, &filed.file, &entry.description, vec![], entry.postings)?;
+        info!(commit = %r.commit, file = %filed.file, "bill booked");
+        Ok(done(&ctx, "/"))
     });
-    or_error(&ctx, "Proposal", || card_page(&ctx, &sha, notice))
-}
-
-/// A bill's proposal. A refused approval or correction comes back here, with
-/// the reason on top, rather than on a page of its own.
-fn card_page(ctx: &Ctx, sha: &str, notice: Option<Markup>) -> Result<Markup> {
-    let p = bill::review(ctx, sha)?;
-    let ready = p.problem.is_none() && p.proposal.questions.is_empty();
-    // said beside the button, not only at the top of the page
-    let blocked = if !p.proposal.questions.is_empty() {
-        Some("Answer the model's question first: send it a correction.")
-    } else if p.problem.is_some() {
-        Some("Fix what the validator rejects first: send a correction.")
-    } else {
-        None
-    };
-    Ok(html! {
-        h1 { (p.proposal.vendor) }
-        p.muted.small {
-            "Confidence: " (p.proposal.confidence) " · "
-            a href={"/bill/" (sha) "/document"} { (icon("doc")) " the document" }
-        }
-        @if let Some(n) = notice { (n) }
-        @if let Some(problem) = &p.problem {
-            div.flash.flash-error { (icon("error")) div { strong { "The validator rejects this" } (problem) } }
-        }
-        @if !p.proposal.questions.is_empty() {
-            div.flash.flash-warn {
-                (icon("alert"))
-                div {
-                    strong { "The model is asking" }
-                    ul { @for q in &p.proposal.questions { li { (q) } } }
-                }
-            }
-        }
-        div.box {
-            div.box-header { (icon("book")) "The entry it proposes" }
-            div.box-body { pre { (p.entry) } }
-        }
-        @if !p.corrections.is_empty() {
-            div.box {
-                div.box-header { (icon("pencil")) "What you have told it" }
-                div.box-body { ol.said { @for c in &p.corrections { li { (c) } } } }
-            }
-        }
-        form method="post" action={"/bill/" (sha) "/refine"} {
-            div.box {
-                div.box-body {
-                    label.field { "Correct it in your own words"
-                        span.hint { "This goes back to the model with the document and it proposes again." }
-                        textarea name="correction" rows="3" required
-                                 placeholder="That is hosting, not general expenses." {}
-                    }
-                    div.actions { button type="submit" { (icon("pencil")) " Send the correction" } }
-                }
-            }
-        }
-        div.actions {
-            form method="post" action={"/bill/" (sha) "/approve"} {
-                button.btn-primary type="submit" disabled[!ready] { (icon("check")) " Approve and commit" }
-            }
-            form method="post" action={"/bill/" (sha) "/discard"} {
-                (token())
-                button type="submit" { (icon("trash")) " Discard" }
-            }
-            a.btn href="/" { (icon("left")) " Back" }
-            @if let Some(why) = blocked { span.muted.small { (why) } }
-        }
-    })
-}
-
-async fn document(Books(ctx): Books, Path(sha): Path<String>) -> Response {
-    match bill::document(&ctx, &sha) {
-        Ok((media_type, bytes)) => (
-            [("content-type", media_type), ("x-content-type-options", "nosniff".into())],
-            bytes,
-        )
-            .into_response(),
-        Err(e) => or_error(&ctx, "Proposal", || Err(e)),
+    match booked {
+        Ok(to) => Redirect::to(&to).into_response(),
+        Err(e) => or_error(&ctx, "Book a bill", || bill_page(&ctx, &f, Some(refused(&e)))),
     }
 }
 
-#[derive(Deserialize)]
-struct Correction {
-    correction: String,
-}
-
-async fn refine(
-    Books(ctx): Books,
-    Path(sha): Path<String>,
-    Form(f): Form<Correction>,
-) -> Response {
-    match bill::refine(&ctx, &sha, &f.correction).await {
-        Ok(_) => Redirect::to(&format!("/bill/{sha}")).into_response(),
-        Err(e) => or_error(&ctx, "Proposal", || card_page(&ctx, &sha, Some(refused(&e)))),
-    }
-}
-
-async fn approve(Books(ctx): Books, Path(sha): Path<String>) -> Response {
-    match bill::approve(&ctx, &sha) {
-        Ok(r) => {
-            info!(commit = %r.commit, "approved");
-            Redirect::to(&done(&ctx, "/")).into_response()
-        }
-        Err(e) => or_error(&ctx, "Proposal", || card_page(&ctx, &sha, Some(refused(&e)))),
-    }
+/// A form's postings, one per line.
+fn postings(ctx: &Ctx, text: &str) -> Result<Vec<Posting>> {
+    text.lines().map(str::trim).filter(|l| !l.is_empty()).map(|l| Posting::parse(l, &ctx.cfg.company.currency)).collect()
 }
 
 fn form(ctx: &Ctx, date: &str, description: &str, postings: &str, error: Option<&str>) -> Result<Markup> {
@@ -1430,7 +1299,7 @@ fn form(ctx: &Ctx, date: &str, description: &str, postings: &str, error: Option<
         @if let Some(e) = error {
             div.flash.flash-error { (icon("error")) div { "Rejected: " (e) } }
         }
-        form method="post" action="/add" {
+        form method="post" action="/post" {
             (token())
             div.box {
                 div.box-body {
@@ -1547,12 +1416,11 @@ fn page(ctx: &Ctx, title: &str, body: Markup) -> Html<String> {
         ("/invoice", "outbox", "Invoices", "/invoice"),
         ("/reconcile", "checks", "Reconcile", "/reconcile"),
         ("/report/pl", "chart", "Statements", "/report"),
-        ("/add", "plus", "Entry", "/add"),
+        ("/post", "plus", "Entry", "/post"),
         ("/log", "clock", "Log", "/log"),
     ];
     let here = PATH.try_with(String::clone).unwrap_or_default();
     let current = |section: &str| if section == "/" { here == "/" } else { here.starts_with(section) };
-    let waiting = bill::waiting(ctx).map_or(0, |w| w.len());
     Html(
         html! {
             (DOCTYPE)
@@ -1572,7 +1440,6 @@ fn page(ctx: &Ctx, title: &str, body: Markup) -> Html<String> {
                             @for (href, ic, label, section) in nav {
                                 a href=(href) class=[current(section).then_some("current")] {
                                     (icon(ic)) span { (label) }
-                                    @if href == "/bill" && waiting > 0 { span.badge { (waiting) } }
                                 }
                             }
                         }

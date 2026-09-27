@@ -1,4 +1,3 @@
-mod ai;
 mod bill;
 mod invoice;
 mod journal;
@@ -57,6 +56,73 @@ enum PaymentCmd {
     },
     /// Remove the option ID names, or starts, the id of.
     Remove { id: String },
+}
+
+/// `abo init`'s answers as flags, named as its questions' keys are.
+#[derive(clap::Args)]
+struct InitFlags {
+    /// A line of the address. Repeatable.
+    #[arg(long = "address")]
+    address: Vec<String>,
+    #[arg(long)]
+    country: Option<String>,
+    #[arg(long)]
+    tax_id: Option<String>,
+    #[arg(long)]
+    currency: Option<String>,
+    /// effective, flat or none.
+    #[arg(long = "vat")]
+    method: Option<String>,
+    /// Effective: the input VAT account.
+    #[arg(long = "vat-input")]
+    input: Option<String>,
+    /// Effective: the output VAT account.
+    #[arg(long = "vat-output")]
+    output: Option<String>,
+    /// Flat: the rate remitted on gross turnover, percent.
+    #[arg(long)]
+    flat_rate: Option<String>,
+    /// Flat: the VAT account.
+    #[arg(long)]
+    flat_account: Option<String>,
+    /// The VAT rate charged to customers, percent.
+    #[arg(long)]
+    sales_rate: Option<String>,
+    #[arg(long)]
+    git_name: Option<String>,
+    #[arg(long)]
+    git_email: Option<String>,
+    /// A payment option, as a TOML inline table of its fields: `{ kind =
+    /// "bank", iban = "CH93 0076 2011 6238 5295 7" }`. Repeatable.
+    #[arg(long = "payment")]
+    payment: Vec<String>,
+}
+
+impl InitFlags {
+    /// The answers given, or None if no flag was.
+    fn answers(&self) -> Result<Option<questions::Answers>> {
+        let one = [
+            ("country", &self.country),
+            ("tax_id", &self.tax_id),
+            ("currency", &self.currency),
+            ("method", &self.method),
+            ("input", &self.input),
+            ("output", &self.output),
+            ("flat_rate", &self.flat_rate),
+            ("flat_account", &self.flat_account),
+            ("sales_rate", &self.sales_rate),
+            ("git_name", &self.git_name),
+            ("git_email", &self.git_email),
+        ];
+        let mut a: questions::Answers = one.into_iter().filter_map(|(k, v)| Some((k.to_string(), v.clone()?))).collect();
+        if !self.address.is_empty() {
+            a.insert("address".into(), self.address.join("\n"));
+        }
+        for (i, p) in self.payment.iter().enumerate() {
+            a.extend(questions::payment_flag(p, &format!("p{i}."))?);
+        }
+        Ok((!a.is_empty()).then_some(a))
+    }
 }
 
 #[derive(clap::Args)]
@@ -141,25 +207,42 @@ impl OptionParts {
 #[derive(Subcommand)]
 enum Cmd {
     /// Open the books for a new company, in a directory of its own named
-    /// after it, inside the working directory.
+    /// after it, inside the working directory. With no flags it asks its
+    /// questions; with any, it asks nothing, and what is not given is what
+    /// the question offers.
     Init {
         /// The company's name; its words need no quotes. The directory is the
         /// name spelled in ASCII and in lower case, with anything but letters
         /// and digits made into single dashes.
         #[arg(required = true)]
         name: Vec<String>,
+        #[command(flatten)]
+        flags: InitFlags,
     },
-    /// Book an entry. POSTINGs are `account=amount [COMMODITY]`, one may omit the amount.
-    Add {
+    /// Post an entry to the journal. POSTINGs are `account=amount
+    /// [COMMODITY]`; one may omit the amount.
+    Post {
         #[arg(long)]
         date: String,
         #[arg(long = "desc")]
         description: String,
-        /// `key=value`, repeatable. e.g. --tag sha256=9f2a...
+        /// `key=value`, repeatable. e.g. --tag ref=INV-1234
         #[arg(long = "tag")]
         tags: Vec<String>,
         #[arg(required = true)]
         postings: Vec<String>,
+    },
+    /// Put a bill's document under version control, at
+    /// bills/<year>/<date>-<issuer>-<hash>.<ext>. `abo bill` then books it.
+    File {
+        /// The date on the bill.
+        #[arg(long)]
+        date: String,
+        /// Who issued it.
+        #[arg(long)]
+        issuer: String,
+        /// A PDF, JPEG, PNG or WebP.
+        src: PathBuf,
     },
     /// hledger balance.
     #[command(alias = "balance")]
@@ -167,13 +250,18 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Propose a booking for a scanned bill, then approve or refine it.
+    /// Book a bill whose document is filed, dated as the document is and
+    /// tagged with its path and hash.
     Bill {
-        file: PathBuf,
-        /// Book it without asking, unless the model asked a question or the
-        /// validator objected.
-        #[arg(long)]
-        yes: bool,
+        #[arg(long = "desc")]
+        description: String,
+        /// `key=value`, repeatable. e.g. --tag ref=INV-1234
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        /// The document's path in the books, as `abo file` gave it.
+        file: String,
+        #[arg(required = true)]
+        postings: Vec<String>,
     },
     /// Issue an invoice: render the PDF and book the receivable.
     Invoice {
@@ -264,9 +352,14 @@ enum Cmd {
         #[command(subcommand)]
         change: Option<PaymentCmd>,
     },
-    /// Book the opposite of an entry, dated today. KEY is `file:line:date`,
-    /// as `abo reconcile` and the web interface give it.
-    Revert { key: String },
+    /// Book the opposite of an entry. KEY is `file:line:date`, as `abo
+    /// reconcile` and the web interface give it.
+    Revert {
+        /// Defaults to today.
+        #[arg(long)]
+        date: Option<String>,
+        key: String,
+    },
     /// Mark transactions cleared. Keys come from `abo reconcile`.
     Clear {
         #[arg(required = true)]
@@ -394,7 +487,7 @@ async fn run(cli: Cli) -> Result<()> {
     let here = cli.dir.clone().unwrap_or(std::env::current_dir()?);
 
     match cli.cmd {
-        Cmd::Init { name } => {
+        Cmd::Init { name, flags } => {
             // `abo init Test LLC` is one name, its words one space apart.
             let name = name.join(" ");
             // Refusals before the questions, not after them.
@@ -412,13 +505,19 @@ async fn run(cli: Cli) -> Result<()> {
             if dir.exists() {
                 bail!("{} already exists; choose another name, or move it out of the way", dir.display());
             }
-            let mut term = Terminal { given: questions::Answers::from([("name".into(), name)]), start: Default::default() };
             let context = questions::Context { root: Some(&here), ..Default::default() };
             let mut answers = questions::Answers::new();
-            questions::walk(questions::INIT, "", &mut answers, &context, &mut term)?;
-            let b = questions::books(&answers);
-            let author = b.author.as_ref().map(|(n, e)| (n.as_str(), e.as_str()));
-            let r = repo::init(&dir, &b.company, &b.vat, b.sales_rate, &b.payment, author)?;
+            match flags.answers()? {
+                Some(mut given) => {
+                    given.insert("name".into(), name);
+                    questions::walk(questions::INIT, "", &mut answers, &context, &mut Flags(given))?;
+                }
+                None => {
+                    let mut term = Terminal { given: questions::Answers::from([("name".into(), name)]), start: Default::default() };
+                    questions::walk(questions::INIT, "", &mut answers, &context, &mut term)?;
+                }
+            }
+            let r = repo::init(&dir, &questions::books(&answers))?;
             emit(cli.json, &r, || {
                 format!(
                     "Books opened in {} ({}).\nNext: cd {slug}, edit journal/accounts.journal, then `abo add`.",
@@ -426,71 +525,22 @@ async fn run(cli: Cli) -> Result<()> {
                 )
             })
         }
-        Cmd::Add { date, description, tags, postings } => {
+        Cmd::Post { date, description, tags, postings } => {
             let ctx = Ctx::open(&here)?;
-            let entry = Entry {
-                date,
-                description,
-                tags: tags
-                    .iter()
-                    .map(|t| {
-                        t.split_once('=')
-                            .map(|(k, v)| (k.to_string(), v.to_string()))
-                            .with_context(|| format!("tag {t:?} is not key=value"))
-                    })
-                    .collect::<Result<_>>()?,
-                postings: postings
-                    .iter()
-                    .map(|p| Posting::parse(p, &ctx.cfg.company.currency))
-                    .collect::<Result<_>>()?,
-            };
-            let r = journal::book(&ctx, &entry)?;
+            let entry = Entry { date, description, tags: tag_pairs(&tags)?, postings: parse_postings(&ctx, &postings)? };
+            let r = journal::post(&ctx, &entry)?;
             emit(cli.json, &r, || format!("{}\nCommitted {} to {}.", entry.render(), r.commit, r.file))
         }
-        Cmd::Bill { file, yes } => {
+        Cmd::File { date, issuer, src } => {
             let ctx = Ctx::open(&here)?;
-            let bytes = std::fs::read(&file).with_context(|| format!("{}", file.display()))?;
-            let mut p = bill::propose(&ctx, bytes).await?;
-            if cli.json {
-                return emit(true, &p, String::new);
-            }
-            if p.resumed {
-                println!("Picked up where you left off; nothing new was asked of the model.");
-            }
-            loop {
-                for c in &p.corrections {
-                    println!("  you said: {c}");
-                }
-                println!("\n{}", p.entry);
-                println!("confidence: {}", p.proposal.confidence);
-                for q in &p.proposal.questions {
-                    println!("  ? {q}");
-                }
-                if let Some(problem) = &p.problem {
-                    println!("  rejected: {problem}");
-                }
-                let ready = p.problem.is_none() && p.proposal.questions.is_empty();
-                if yes {
-                    if !ready {
-                        bail!("--yes given but the entry is not ready to book");
-                    }
-                } else {
-                    let a = prompt("\n[a]pprove, [q]uit, or type a correction", "q")?;
-                    match a.as_str() {
-                        "q" => {
-                            println!("Left pending. Run the same command again to resume.");
-                            return Ok(());
-                        }
-                        "a" | "y" => {}
-                        correction => {
-                            p = bill::refine(&ctx, &p.sha256, correction).await?;
-                            continue;
-                        }
-                    }
-                }
-                let r = bill::approve(&ctx, &p.sha256)?;
-                return emit(cli.json, &r, || format!("Committed {} to {}.", r.commit, r.file));
-            }
+            let bytes = std::fs::read(&src).with_context(|| format!("{}", src.display()))?;
+            let r = bill::file(&ctx, &src.to_string_lossy(), &bytes, &date, &issuer)?;
+            emit(cli.json, &r, || format!("Filed {}. Committed {}.\nNext: abo bill --desc ... {} POSTINGS", r.file, r.commit, r.file))
+        }
+        Cmd::Bill { description, tags, file, postings } => {
+            let ctx = Ctx::open(&here)?;
+            let r = bill::bill(&ctx, &file, &description, tag_pairs(&tags)?, parse_postings(&ctx, &postings)?)?;
+            emit(cli.json, &r, || format!("{}\nCommitted {} to {}.", r.entry.render(), r.commit, r.file))
         }
         Cmd::Invoice { to, items, date, due_days, vat_rate, currency, decimals, reference, pay_to, note } => {
             let ctx = Ctx::open(&here)?;
@@ -576,26 +626,21 @@ async fn run(cli: Cli) -> Result<()> {
                 .map(|(i, l)| {
                     let mut l = l.clone();
                     l["line"] = (i + 1).into();
-                    l["undoable"] = undo::how(&ctx, &l, &reverted).is_some().into();
+                    l["undoable"] = undo::how(&ctx, &l, &reverted).is_ok().into();
                     l
                 })
                 .collect();
             emit(cli.json, &rows, || {
                 rows.iter()
                     .map(|l| {
-                        let outcome = match (l["error"].as_str(), l["ok"]["commit"].as_str()) {
-                            (Some(_), _) => "failed".to_string(),
-                            (None, Some(c)) => c.to_string(),
-                            (None, None) => "done".to_string(),
-                        };
                         let undo = if l["undoable"] == true { "  (undo)" } else { "" };
                         format!(
-                            "{:>4}  {}  {:<13} {:<10} {}{undo}",
+                            "{:>4}  {}  {:<9} {}{undo}\n      {}",
                             l["line"],
                             l["at"].as_str().unwrap_or_default().get(..16).unwrap_or_default().replace('T', " "),
-                            l["op"].as_str().unwrap_or_default(),
-                            outcome,
-                            l["what"].as_str().unwrap_or_default()
+                            l["ok"]["commit"].as_str().unwrap_or_default(),
+                            l["what"].as_str().unwrap_or_default(),
+                            undo::command(l),
                         )
                     })
                     .collect::<Vec<_>>()
@@ -664,14 +709,12 @@ async fn run(cli: Cli) -> Result<()> {
         Cmd::Undo { line } => {
             let ctx = Ctx::open(&here)?;
             let r = undo::undo(&ctx, line)?;
-            emit(cli.json, &r, || match &r.commit {
-                Some(c) => format!("Undid line {} ({}). Committed {c}.", r.line, r.op),
-                None => format!("Undid line {} ({}).", r.line, r.op),
-            })
+            emit(cli.json, &r, || format!("Undid line {} ({}). Committed {}.", r.line, r.op, r.commit))
         }
-        Cmd::Revert { key } => {
+        Cmd::Revert { date, key } => {
             let ctx = Ctx::open(&here)?;
-            let r = journal::reverse(&ctx, &key)?;
+            let date = date.unwrap_or_else(|| jiff::Zoned::now().date().to_string());
+            let r = journal::reverse(&ctx, &key, &date)?;
             emit(cli.json, &r, || format!("{}\nCommitted {} to {}.", r.entry.render(), r.commit, r.file))
         }
         Cmd::Bal { args } => passthrough(&here, "balance", &args, cli.json),
@@ -743,6 +786,17 @@ fn statement(
     })
 }
 
+/// `key=value` pairs, in order.
+fn tag_pairs(tags: &[String]) -> Result<Vec<(String, String)>> {
+    tags.iter()
+        .map(|t| t.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())).with_context(|| format!("tag {t:?} is not key=value")))
+        .collect()
+}
+
+fn parse_postings(ctx: &Ctx, postings: &[String]) -> Result<Vec<Posting>> {
+    postings.iter().map(|p| Posting::parse(p, &ctx.cfg.company.currency)).collect()
+}
+
 fn passthrough(here: &std::path::Path, cmd: &str, args: &[String], json: bool) -> Result<()> {
     let ctx = Ctx::open(here)?;
     print!("{}", report::run(&ctx, cmd, args, json)?);
@@ -782,10 +836,6 @@ fn read_over(question: &str, now: &str) -> Result<Option<String>> {
     };
     let s = s.trim();
     Ok(Some(if s.is_empty() && !std::io::stdin().is_terminal() { now.to_string() } else { s.to_string() }))
-}
-
-fn prompt(question: &str, default: &str) -> Result<String> {
-    Ok(read(question, default)?.unwrap_or_else(|| default.to_string()))
 }
 
 /// Asks until `check` accepts the answer, saying each time what was wrong.
@@ -1025,6 +1075,42 @@ impl questions::Source for Terminal {
         eprintln!("  {problem} Asking again.");
         self.start.extend(answers.iter().filter(|(k, _)| k.starts_with(prefix)).map(|(k, v)| (k.clone(), v.clone())));
         Ok(true)
+    }
+}
+
+/// Answers given as flags: nothing is asked. What is not given is what the
+/// question offers, as a blank answer is on the terminal; what is given is
+/// checked as a typed answer is, and refused rather than asked again.
+struct Flags(questions::Answers);
+
+impl questions::Source for Flags {
+    fn note(&mut self, _: &str, _: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn text(&mut self, key: &str, label: &str, _: &str, _: &str, check: &dyn Fn(&str) -> Result<String, String>) -> Result<String> {
+        check(self.0.get(key).map_or("", String::as_str)).map_err(|e| anyhow::anyhow!("{label}: {e}"))
+    }
+
+    fn lines(&mut self, key: &str, _: &str, _: &str) -> Result<String> {
+        Ok(self.0.get(key).cloned().unwrap_or_default())
+    }
+
+    fn choice(&mut self, key: &str, label: &str, noun: &str, options: &[&'static str], offer: &str) -> Result<String> {
+        match self.0.get(key) {
+            None => Ok(offer.to_string()),
+            Some(v) => Ok(answer::one_of(v, options, noun).map_err(|e| anyhow::anyhow!("{label}: {e}"))?.to_string()),
+        }
+    }
+
+    fn another(&mut self, key: &str, _: &str, n: usize, _: bool) -> Result<bool> {
+        let prefix = format!("{key}{n}.");
+        Ok(self.0.keys().any(|k| k.starts_with(&prefix)))
+    }
+
+    fn item_problem(&mut self, prefix: &str, _: &str, problem: String, _: &questions::Answers) -> Result<bool> {
+        let n: usize = prefix.trim_start_matches('p').trim_end_matches('.').parse().unwrap_or(0);
+        bail!("--payment number {}: {problem}", n + 1)
     }
 }
 

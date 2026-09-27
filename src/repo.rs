@@ -200,13 +200,9 @@ pub struct Company {
     /// read to say so.
     #[serde(default, rename = "payment")]
     pub old_payment: Option<serde::de::IgnoredAny>,
-    /// Where the company is registered. Only the model reads it.
+    /// Where the company is registered. Printed on invoices.
     #[serde(default)]
     pub country: String,
-    /// Free text handed to the model with every bill: the tax rules that
-    /// apply here. Jurisdictions differ, so this is configuration, never code.
-    #[serde(default)]
-    pub tax_notes: String,
     /// Everything up to and including this date is filed. Inclusive. ISO 8601.
     #[serde(default)]
     pub closed_through: Option<String>,
@@ -230,6 +226,7 @@ pub enum Vat {
 pub struct Ctx {
     pub root: PathBuf,
     pub cfg: Config,
+    stamp: std::sync::OnceLock<Stamp>,
 }
 
 impl Ctx {
@@ -248,7 +245,7 @@ impl Ctx {
                         f.display()
                     );
                 }
-                return Ok(Ctx { root: root.to_path_buf(), cfg });
+                return Ok(Ctx { root: root.to_path_buf(), cfg, stamp: Default::default() });
             }
         }
         bail!("no abo.toml in {} or any parent directory", dir.display())
@@ -266,61 +263,59 @@ impl Ctx {
         self.journal_dir().join("accounts.journal")
     }
 
-    /// Append one line to `.abo/log.jsonl` for an operation someone asked
-    /// for, whether it worked or not, and hand the result back unchanged. The
-    /// log is for checking that what you did is what happened: the input as
-    /// given, then either what came back (with the commit, when there is one)
-    /// or the error. A failure to write it is warned about, never fatal.
-    /// ponytail: grows by a line per action and is never trimmed; rotate it if
-    /// the /log page ever gets slow to read.
-    pub fn logged<T: serde::Serialize>(
-        &self,
-        op: &str,
-        what: &str,
-        input: serde_json::Value,
-        r: Result<T>,
-    ) -> Result<T> {
-        let mut line = serde_json::json!({
-            "at": jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string(),
-            "who": self.who(),
-            "op": op,
-            "what": what,
-            "input": input,
-        });
-        match &r {
-            Ok(t) => line["ok"] = serde_json::json!(t),
-            Err(e) => line["error"] = format!("{e:#}").into(),
-        }
-        let write = || -> Result<()> {
-            use std::io::Write as _;
-            crate::bill::ensure_ignored(self)?;
-            std::fs::create_dir_all(self.root.join(".abo"))?;
-            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(self.log_path())?;
-            writeln!(f, "{line}")?;
-            Ok(())
-        };
-        if let Err(e) = write() {
-            tracing::warn!(%e, op, "could not write the log");
+    /// Append a line to `.abo/log.jsonl` for an operation that changed the
+    /// books, and hand the result back unchanged. The line is the command
+    /// that did it, as `abo` takes it, every default it used written out, and
+    /// the stamp its commits carry: running the lines in order, each under
+    /// its stamp, makes the same books, commit for commit. A refusal changes
+    /// nothing and leaves no line. A failure to write is warned about, never
+    /// fatal.
+    /// ponytail: grows by a line per change and is never trimmed; rotate it
+    /// if the /log page ever gets slow to read.
+    pub fn logged<T: serde::Serialize>(&self, argv: Vec<String>, what: &str, r: Result<T>) -> Result<T> {
+        if let Ok(t) = &r {
+            if let Err(e) = self.log(&argv, what, t) {
+                tracing::warn!(%e, cmd = %argv.join(" "), "could not write the log");
+            }
         }
         r
+    }
+
+    fn log(&self, argv: &[String], what: &str, t: &impl serde::Serialize) -> Result<()> {
+        use std::io::Write as _;
+        let s = self.stamp()?;
+        let line = serde_json::json!({
+            "at": s.at(),
+            "who": s.name,
+            "email": s.email,
+            "git_date": s.git_date(),
+            "argv": argv,
+            "what": what,
+            "ok": t,
+        });
+        crate::bill::ensure_ignored(self)?;
+        std::fs::create_dir_all(self.root.join(".abo"))?;
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(self.log_path())?;
+        writeln!(f, "{line}")?;
+        Ok(())
     }
 
     pub fn log_path(&self) -> PathBuf {
         self.root.join(".abo/log.jsonl")
     }
 
-    /// Whoever git would name as the author. The actor slot, until there are
-    /// users.
-    fn who(&self) -> String {
-        std::env::var("GIT_AUTHOR_NAME")
-            .ok()
-            .or_else(|| self.git(&["config", "user.name"]).ok())
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default()
+    /// This operation's stamp, taken the first time it is asked for.
+    pub fn stamp(&self) -> Result<&Stamp> {
+        if self.stamp.get().is_none() {
+            let _ = self.stamp.set(Stamp::now(&self.root)?);
+        }
+        Ok(self.stamp.get().unwrap())
     }
 
+    /// Commits carry the operation's stamp; see `Stamp`.
     pub fn git(&self, args: &[&str]) -> Result<String> {
-        git_in(&self.root, args)
+        let env = if args.first() == Some(&"commit") { self.stamp()?.env() } else { vec![] };
+        git_env(&self.root, args, &env)
     }
 
     /// Stage and commit. Returns the short hash.
@@ -334,10 +329,72 @@ impl Ctx {
     }
 }
 
+/// Who does an operation and when, as git records it: the author git would
+/// name, and the second the operation first needed it. Every commit the
+/// operation makes carries it, as author and as committer, and so does its
+/// line in the log. The same command under the same stamp makes the same
+/// commits, so GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL and GIT_AUTHOR_DATE set
+/// from a log line replay it exactly.
+pub struct Stamp {
+    pub name: String,
+    pub email: String,
+    /// Seconds since 1970-01-01 UTC.
+    pub time: i64,
+    /// The offset from UTC as git writes it: +0200.
+    pub tz: String,
+}
+
+impl Stamp {
+    /// Whoever and whenever git would put on a commit made in `dir` now.
+    pub fn now(dir: &Path) -> Result<Stamp> {
+        let ident = git_in(dir, &["var", "GIT_AUTHOR_IDENT"])?;
+        // `Name <email> 1727431200 +0200`
+        let parse = || -> Option<Stamp> {
+            let (name, rest) = ident.trim().rsplit_once(" <")?;
+            let (email, when) = rest.split_once("> ")?;
+            let (time, tz) = when.split_once(' ')?;
+            Some(Stamp { name: name.into(), email: email.into(), time: time.parse().ok()?, tz: tz.into() })
+        };
+        parse().with_context(|| format!("git names an author abo cannot read: {}", ident.trim()))
+    }
+
+    /// As GIT_AUTHOR_DATE takes it.
+    pub fn git_date(&self) -> String {
+        format!("{} {}", self.time, self.tz)
+    }
+
+    fn env(&self) -> Vec<(&'static str, String)> {
+        let (n, e, d) = (&self.name, &self.email, self.git_date());
+        vec![
+            ("GIT_AUTHOR_NAME", n.clone()),
+            ("GIT_AUTHOR_EMAIL", e.clone()),
+            ("GIT_AUTHOR_DATE", d.clone()),
+            ("GIT_COMMITTER_NAME", n.clone()),
+            ("GIT_COMMITTER_EMAIL", e.clone()),
+            ("GIT_COMMITTER_DATE", d),
+        ]
+    }
+
+    /// ISO 8601, at the stamp's own offset.
+    pub fn at(&self) -> String {
+        let n = |r| self.tz.get(r).and_then(|s: &str| s.parse::<i32>().ok()).unwrap_or(0);
+        let sign = if self.tz.starts_with('-') { -1 } else { 1 };
+        let offset = jiff::tz::Offset::from_seconds(sign * (n(1..3) * 3600 + n(3..5) * 60)).unwrap_or(jiff::tz::Offset::UTC);
+        jiff::Timestamp::from_second(self.time)
+            .map(|t| t.to_zoned(offset.to_time_zone()).strftime("%Y-%m-%dT%H:%M:%S%:z").to_string())
+            .unwrap_or_default()
+    }
+}
+
 pub fn git_in(dir: &Path, args: &[&str]) -> Result<String> {
+    git_env(dir, args, &[])
+}
+
+fn git_env(dir: &Path, args: &[&str], env: &[(&str, String)]) -> Result<String> {
     let out = Command::new("git")
         .current_dir(dir)
         .args(args)
+        .envs(env.iter().map(|(k, v)| (k, v)))
         .output()
         .context("running git")?;
     if !out.status.success() {
@@ -449,6 +506,17 @@ pub mod answer {
     }
 }
 
+/// Push `--name value`, or `--name=value` when the value starts with a dash
+/// and would otherwise read as a flag.
+pub fn flag(argv: &mut Vec<String>, name: &str, value: &str) {
+    if value.starts_with('-') {
+        argv.push(format!("{name}={value}"));
+    } else {
+        argv.push(name.to_string());
+        argv.push(value.to_string());
+    }
+}
+
 /// A company's directory name: its name in ASCII, lower case, with every run
 /// of anything but letters and digits made one dash. ASCII so that it can be
 /// typed on any keyboard; letters outside it are spelled in it, not dropped.
@@ -469,15 +537,10 @@ pub fn git_global(key: &str) -> Option<String> {
     Some(String::from_utf8(o.stdout).ok()?.trim().to_string()).filter(|s| !s.is_empty())
 }
 
-/// Create a books repository. `answers` come from the dispatch layer.
-pub fn init(
-    dir: &Path,
-    c: &Company,
-    vat: &Vat,
-    sales_rate: Decimal,
-    payment: &[PaymentOption],
-    author: Option<(&str, &str)>,
-) -> Result<InitReport> {
+/// Create a books repository, its first commit, and the first line of its
+/// log: `abo init` with everything it was told.
+pub fn init(dir: &Path, b: &crate::questions::NewBooks) -> Result<InitReport> {
+    let (c, vat, sales_rate, payment) = (&b.company, &b.vat, b.sales_rate, &b.payment[..]);
     if dir.join("abo.toml").exists() {
         bail!("{} is already a books repository", dir.display());
     }
@@ -506,10 +569,6 @@ pub fn init(
              country   = {country}\n\
              tax_id    = {tax_id}\n\
              currency  = {currency}\n\
-             # Handed to the model with every bill. Put the rules that apply\n\
-             # where you are here: what is deductible, what is reverse charged,\n\
-             # how imports arrive. This is configuration, not code.\n\
-             tax_notes = \"\"\n\
              \n[vat]\n{vat_toml}\
              \n[invoice]\nvat_rate = {sales_rate}\n{payment}",
             name = q(&c.name),
@@ -560,24 +619,26 @@ pub fn init(
         git_in(dir, &["init", "-q", "-b", "master"])?;
     }
     // Set in this repository only, so every commit abo makes here carries it.
-    if let Some((name, email)) = author {
+    if let Some((name, email)) = &b.author {
         for (key, value) in [("user.name", name), ("user.email", email)] {
             if !value.is_empty() {
                 git_in(dir, &["config", key, value])?;
             }
         }
     }
-    git_in(dir, &["add", "-A"])?;
-    git_in(dir, &["commit", "-q", "-m", &format!("Open the books for {}", c.name)])?;
-    let commit = git_in(dir, &["rev-parse", "--short", "HEAD"])?.trim().to_string();
-
-    Ok(InitReport { root: dir.display().to_string(), commit })
+    let ctx = Ctx::open(dir)?;
+    let r = (|| {
+        ctx.git(&["add", "-A"])?;
+        let commit = ctx.commit(&[], &format!("Open the books for {}", c.name))?;
+        Ok(InitReport { root: dir.display().to_string(), commit })
+    })();
+    ctx.logged(b.argv(), &c.name, r)
 }
 
 /// A throwaway books repository with toy data, rebuilt from scratch every time.
-/// Same code path as a real one: `init`, then the ordinary validated `add`.
+/// Same code path as a real one: `init`, then the ordinary validated `post`.
 pub fn demo(dir: &Path) -> Result<Ctx> {
-    use crate::journal::{add, Entry, Posting};
+    use crate::journal::{post, Entry, Posting};
 
     if dir.exists() {
         std::fs::remove_dir_all(dir).with_context(|| format!("clearing {}", dir.display()))?;
@@ -601,7 +662,6 @@ pub fn demo(dir: &Path) -> Result<Ctx> {
         tax_id: "TAX-123456789".into(),
         old_payment: None,
         currency: "EUR".into(),
-        tax_notes: String::new(),
         closed_through: None,
     };
     // 10% is obviously a placeholder: real rates are statutory and belong in
@@ -617,7 +677,15 @@ pub fn demo(dir: &Path) -> Result<Ctx> {
         account: "assets:bank".into(),
         ..Default::default()
     }];
-    init(dir, &company, &vat, Decimal::TEN, &payment, None)?;
+    let books = crate::questions::NewBooks {
+        slug: String::new(),
+        company,
+        vat,
+        sales_rate: Decimal::TEN,
+        payment: payment.to_vec(),
+        author: None,
+    };
+    init(dir, &books)?;
 
     // An illustrative return. Which accounts feed which numbered box is set
     // by the tax authority wherever the company is, so this is config.
@@ -688,7 +756,7 @@ sum   = ["2", "-3"]
             vec![p("assets:wallet:btc", "0.05 BTC"), p("income:sales", "-0.05 BTC")]),
     ];
     for (date, description, tags, postings) in entries {
-        add(&ctx, &Entry { date: date.into(), description: description.into(), tags, postings })?;
+        post(&ctx, &Entry { date: date.into(), description: description.into(), tags, postings })?;
     }
     Ok(ctx)
 }

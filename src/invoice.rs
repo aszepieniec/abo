@@ -83,36 +83,81 @@ struct ItemOut {
 
 pub fn issue(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
     let what = format!("to {}", args.customer.lines().next().unwrap_or("").trim());
-    ctx.logged("invoice", &what, serde_json::json!(args), issue_it(ctx, args))
+    let args = resolved(ctx, args);
+    ctx.logged(args.argv(), &what, issue_it(ctx, &args))
+}
+
+/// `args` with every default taken: what the invoice is issued with, and so
+/// what its log line says.
+fn resolved(ctx: &Ctx, args: &IssueArgs) -> IssueArgs {
+    let c = &ctx.cfg;
+    IssueArgs {
+        customer: args.customer.clone(),
+        currency: Some(args.currency.clone().unwrap_or_else(|| c.company.currency.clone())),
+        decimals: Some(args.decimals.unwrap_or(c.invoice.decimals)),
+        items: args.items.clone(),
+        date: Some(args.date.clone().unwrap_or_else(|| jiff::Zoned::now().date().to_string())),
+        due_days: Some(args.due_days.unwrap_or(c.invoice.terms_days)),
+        // Rates are set by statute wherever the company is, so they come from
+        // abo.toml, never from abo. --vat-rate covers a line that differs from
+        // the usual one: an export, a reduced rate, an exempt supply.
+        vat_rate: Some(match (&c.vat, args.vat_rate) {
+            (Vat::None, _) => Decimal::ZERO,
+            (_, Some(r)) => r,
+            (_, None) => c.invoice.vat_rate,
+        }),
+        reference: args.reference.clone(),
+        pay_to: match &args.pay_to[..] {
+            [] => c.payment.iter().map(|p| p.id.clone()).collect(),
+            ids => ids.to_vec(),
+        },
+        note: args.note.clone(),
+    }
+}
+
+impl IssueArgs {
+    /// As `abo invoice` takes it: `--to` with its lines joined by `\n`.
+    fn argv(&self) -> Vec<String> {
+        let mut a = vec!["invoice".to_string()];
+        let mut flag = |f: &str, v: &str| crate::repo::flag(&mut a, f, v);
+        flag("--to", &self.customer.replace('\n', "\\n"));
+        for i in &self.items {
+            flag("--item", i);
+        }
+        let opt = |v: &Option<String>| v.clone().unwrap_or_default();
+        flag("--date", &opt(&self.date));
+        flag("--due-days", &self.due_days.map(|d| d.to_string()).unwrap_or_default());
+        flag("--vat-rate", &self.vat_rate.map(|d| d.to_string()).unwrap_or_default());
+        flag("--currency", &opt(&self.currency));
+        flag("--decimals", &self.decimals.map(|d| d.to_string()).unwrap_or_default());
+        for (f, v) in [("--reference", &self.reference), ("--note", &self.note)] {
+            if !v.is_empty() {
+                flag(f, v);
+            }
+        }
+        for id in &self.pay_to {
+            flag("--pay-to", id);
+        }
+        a
+    }
 }
 
 fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
     if args.customer.trim().is_empty() {
         bail!("an invoice needs a customer");
     }
-    let date = match &args.date {
-        Some(d) => d.clone(),
-        None => jiff::Zoned::now().date().to_string(),
-    };
+    // Every default is taken already, by `resolved`.
+    let date = args.date.clone().unwrap_or_default();
     let year = date.get(..4).context("bad date")?.to_string();
     let number = next_number(ctx, &year)?;
 
-    let currency = args.currency.clone().unwrap_or_else(|| ctx.cfg.company.currency.clone());
-    let dp = args.decimals.unwrap_or(ctx.cfg.invoice.decimals);
-    let due_days = args.due_days.unwrap_or(ctx.cfg.invoice.terms_days);
+    let currency = args.currency.clone().unwrap_or_default();
+    let dp = args.decimals.unwrap_or_default();
     let due = jiff::civil::Date::strptime("%Y-%m-%d", &date)
         .context("bad date")?
-        .checked_add(jiff::Span::new().days(due_days))?
+        .checked_add(jiff::Span::new().days(args.due_days.unwrap_or_default()))?
         .to_string();
-
-    // Rates are set by statute wherever the company is, so they come from
-    // abo.toml, never from abo. --vat-rate covers a line that differs from the
-    // usual one: an export, a reduced rate, an exempt supply.
-    let rate = match (&ctx.cfg.vat, args.vat_rate) {
-        (Vat::None, _) => Decimal::ZERO,
-        (_, Some(r)) => r,
-        (_, None) => ctx.cfg.invoice.vat_rate,
-    };
+    let rate = args.vat_rate.unwrap_or_default();
 
     let mut items = Vec::new();
     let mut net = Decimal::ZERO;
