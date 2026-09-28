@@ -87,12 +87,13 @@ Name, address, country and tax registration number: what invoices print about
 who sends them. The company page (the company's name in the sidebar) shows
 them as init's questions, filled in, and saving runs `abo company --name ...
 --address ... --country ... --tax-id ...` with only the details that changed.
-`abo company` alone prints them. The directory keeps its name; currency, VAT
-method and payment options are shown there, not changed there.
+`abo company` alone prints them. The directory keeps its name; currency and
+VAT method are shown there, not changed there. Payment options are below, see
+A4.
 **Done when** a change shows on the next invoice, is one line in the log, and
 undo puts it back.
 
-### A4. Change where invoices ask to be paid — Supported (CLI)
+### A4. Change where invoices ask to be paid — Supported (browser, CLI)
 A payment option is one of three kinds. A **bank** option has an account
 holder, an IBAN (its check digits checked, and kept in groups of four), a BIC
 and the bank's name and address; it needs an IBAN or, for places without
@@ -115,7 +116,9 @@ id is asked for, its start will do when it names one option. A taken id, a
 bad IBAN or BIC, a field of another kind, too little to pay by, an undeclared
 account and an edit that changes nothing are refused; asked on the terminal,
 the question comes again. Each change is a commit to `abo.toml`, comments
-kept, logged and undoable like any other.
+kept, logged and undoable like any other. The company page lists them, each
+with Edit and Remove, and a button to add one: the same questions as a form,
+each problem under its field, saving by the same commands.
 **Done when** the next invoice prints the options as they now stand.
 
 ---

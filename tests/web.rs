@@ -255,3 +255,57 @@ fn terminal_and_form_agree() {
     }
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+/// The company page changes the details and the payment options with the
+/// commands the terminal would run: each a line in the log, as typed.
+#[test]
+fn company_page() {
+    let base = std::env::temp_dir().join(format!("abo-company-page-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_abo"))
+        .args(["init", "Test Ltd", "--currency", "EUR", "--vat", "none", "--git-name", "Ann", "--git-email", "ann@example.invalid"])
+        .current_dir(&base)
+        .env("HOME", &base)
+        .env("XDG_CONFIG_HOME", &base)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "init failed: {}", String::from_utf8_lossy(&o.stderr));
+    let books = base.join("test-ltd");
+    let s = serve(&books, &base);
+    let argv = || -> serde_json::Value {
+        let log = std::fs::read_to_string(books.join(".abo/log.jsonl")).unwrap();
+        serde_json::from_str::<serde_json::Value>(log.lines().last().unwrap()).unwrap()["argv"].clone()
+    };
+
+    let (_, _, page) = http(&s, "GET", "/", &[]);
+    assert!(page.contains("class=\"brand\" href=\"/company\""), "{page}");
+
+    let (status, to, _) = http(&s, "POST", "/company", &[("token", "c"), ("name", "Test Ltd"), ("address", "1 Street"), ("country", "CH"), ("tax_id", "")]);
+    assert_eq!((status, to.as_str()), (303, "/company?done=2"));
+    assert_eq!(argv(), serde_json::json!(["company", "--country", "CH", "--address", "1 Street"]));
+
+    // Refused answers say why under their fields, and nothing is added.
+    let (status, _, page) = http(&s, "POST", "/company/payment", &[("token", "p0"), ("was", ""), ("kind", "crypto"), ("account", "Assets:Nope")]);
+    assert_eq!(status, 200);
+    assert!(page.contains("A network is needed") && page.contains("Assets:Nope is not declared"), "{page}");
+
+    let add = [("token", "p1"), ("was", ""), ("kind", "cash"), ("details", "At our office")];
+    let (status, to, _) = http(&s, "POST", "/company/payment", &add);
+    assert_eq!((status, to.as_str()), (303, "/company?done=3"));
+    assert_eq!(argv(), serde_json::json!(["payment-options", "add", "cash", "--kind", "cash", "--label", "Cash", "--account", "Assets:Cash", "--detail", "At our office"]));
+
+    let (_, _, page) = http(&s, "GET", "/company/payment?id=cash", &[]);
+    assert!(page.contains("name=\"was\" value=\"cash\"") && page.contains("At our office"), "{page}");
+    let edit = [("token", "p2"), ("was", "cash"), ("kind", "cash"), ("details", "At the till"), ("label", "Cash"), ("id", "cash"), ("account", "Assets:Cash")];
+    let (status, _, _) = http(&s, "POST", "/company/payment", &edit);
+    assert_eq!(status, 303);
+    assert_eq!(argv(), serde_json::json!(["payment-options", "edit", "cash", "--kind", "cash", "--label", "Cash", "--account", "Assets:Cash", "--detail", "At the till"]));
+
+    let (status, _, _) = http(&s, "POST", "/company/payment/remove", &[("token", "p3"), ("id", "cash")]);
+    assert_eq!(status, 303);
+    assert_eq!(argv(), serde_json::json!(["payment-options", "remove", "cash"]));
+
+    drop(s);
+    std::fs::remove_dir_all(&base).unwrap();
+}

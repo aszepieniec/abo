@@ -4,6 +4,7 @@
 
 use crate::bill;
 use crate::company;
+use crate::payment;
 use crate::invoice;
 use crate::journal::{self, Entry, Posting};
 use crate::reconcile;
@@ -59,6 +60,8 @@ pub async fn serve(ctx: Ctx, port: u16) -> Result<()> {
         .route("/entry/{key}", get(booking))
         .route("/account", get(register))
         .route("/company", get(company_view).post(company_submit))
+        .route("/company/payment", get(option_view).post(option_submit))
+        .route("/company/payment/remove", post(option_remove))
         .route("/entry/{key}/file", post(entry_file))
         .route("/bills/{*rest}", get(bill_doc))
         .route("/entry/{key}/revert", post(revert))
@@ -480,14 +483,126 @@ fn company_page(ctx: &Ctx, f: &Fields, problems: &Problems, refused: Option<&any
                             Vat::Effective { input, output } => { "Output less input: " code { (input) } ", " code { (output) } }
                         }
                     } }
-                    tr { td { "Where invoices ask to be paid" } td {
-                        @if cfg.payment.is_empty() { "Nowhere yet" }
-                        @for p in &cfg.payment {
-                            div { code { (p.id) } " " (if p.label.is_empty() { p.kind.name() } else { &p.label }) ", into " code { (p.account) } }
-                        }
-                        div.muted.small { code { "abo payment-options" } " changes these." }
-                    } }
                 }
+            }
+        }
+        div.box {
+            div.box-header { (icon("inbox")) "Where invoices ask to be paid" }
+            table.list {
+                tbody {
+                    @for p in &cfg.payment {
+                        tr {
+                            td {
+                                strong { (if p.label.is_empty() { p.kind.name() } else { &p.label }) }
+                                " " code { (p.id) }
+                                @for l in p.lines() { div.muted.small { (l) } }
+                            }
+                            td { "Into " code { (p.account) } }
+                            td {
+                                div.actions {
+                                    a.btn href={ "/company/payment?id=" (enc(&p.id)) } { "Edit" }
+                                    form method="post" action="/company/payment/remove" {
+                                        (token())
+                                        input type="hidden" name="id" value=(p.id);
+                                        button type="submit" { "Remove" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            div.box-body {
+                @if cfg.payment.is_empty() { p.muted { "None yet: invoices say only when to pay." } }
+                div.actions { a.btn href="/company/payment" { (icon("plus")) " Add a payment option" } }
+            }
+        }
+    }
+}
+
+/// A payment option's questions: for the option `?id=` names, filled in
+/// from it, or for a new one.
+async fn option_view(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
+    or_error(&ctx, "Payment option", || {
+        let mut f = Fields::new();
+        match q.get("id") {
+            Some(id) => {
+                let now = payment::find(&ctx.cfg.payment, id)?;
+                f.extend(questions::option_answers(now));
+                f.insert("was".into(), now.id.clone());
+            }
+            None => initial(questions::OPTION, "", &mut f),
+        }
+        Ok(option_page(&f, &Problems::new(), None))
+    })
+}
+
+async fn option_submit(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
+    let mut problems = Problems::new();
+    let was = f.get("was").filter(|w| !w.is_empty()).cloned();
+    let saved = once(f.get("token").map_or("", String::as_str), || {
+        let now = was.as_deref().map(|w| payment::find(&ctx.cfg.payment, w)).transpose()?;
+        let ids = ctx.cfg.payment.iter().filter(|p| Some(&p.id) != now.map(|n| &n.id)).map(|p| p.id.clone()).collect();
+        let context = questions::Context { root: None, ids, declared: Some(journal::declared_accounts(&ctx)?) };
+        // The company's name, offered as the account holder.
+        let mut a = questions::Answers::from([("name".into(), ctx.cfg.company.name.clone())]);
+        let mut posted = Posted { f: &f, problems: Problems::new() };
+        let skipped = questions::ask_item(questions::OPTION, "", "skip", questions::option_problem, &mut a, &context, &mut posted)?;
+        if !posted.problems.is_empty() {
+            problems = posted.problems;
+            bail!("answers to look at again");
+        }
+        let o = questions::option(&a, "");
+        match now {
+            _ if skipped => {}
+            // Sent as it stood: nothing to change, and nothing to log.
+            Some(n) if *n == o => {}
+            Some(n) => _ = payment::edit(&ctx, &n.id, o)?,
+            None => _ = payment::add(&ctx, o)?,
+        }
+        Ok(done(&ctx, "/company"))
+    });
+    match saved {
+        Ok(to) => Redirect::to(&to).into_response(),
+        Err(e) => {
+            let refused = problems.is_empty().then_some(&e);
+            or_error(&ctx, "Payment option", || Ok(option_page(&f, &problems, refused)))
+        }
+    }
+}
+
+async fn option_remove(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
+    let id = f.get("id").cloned().unwrap_or_default();
+    match once(f.get("token").map_or("", String::as_str), || payment::remove(&ctx, &id).map(|_| done(&ctx, "/company"))) {
+        Ok(to) => Redirect::to(&to).into_response(),
+        Err(e) => or_error(&ctx, "Payment option", || Err(e)),
+    }
+}
+
+fn option_page(f: &Fields, problems: &Problems, refused: Option<&anyhow::Error>) -> Markup {
+    let mut css = vec![];
+    let fields = render(questions::OPTION, "", f, problems, &mut css);
+    let was = f.get("was").cloned().unwrap_or_default();
+    html! {
+        h1 { @if was.is_empty() { "Add a payment option" } @else { "Payment option " code { (was) } } }
+        @if let Some(e) = refused { (self::refused(e)) }
+        @else if !problems.is_empty() {
+            div.flash.flash-error { (icon("error")) div {
+                strong { "Not done" }
+                "Some answers need another look; each says why under it."
+            } }
+        }
+        style { (PreEscaped(css.join("\n"))) }
+        form method="post" action="/company/payment" {
+            (token())
+            input type="hidden" name="was" value=(was);
+            div.box { div.box-body {
+                p.muted.small { "Blank fields take what is offered under them. " code { "skip" } " leaves things as they are." }
+                (fields)
+            } }
+            div.actions {
+                button.btn-primary type="submit" { (icon("check")) " Save" }
+                span.nav { a.btn href="/company" { (icon("left")) " Back" } }
             }
         }
     }
