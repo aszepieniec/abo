@@ -275,10 +275,10 @@ pub static INIT: &[Q] = &[
                 label: "VAT method",
                 noun: "a VAT method",
                 options: &[
-                    ("effective", &[account("input", "Input VAT account", "assets:vat:input"), account("output", "Output VAT account", "liabilities:vat:output")]),
+                    ("effective", &[account("input", "Input VAT account", "Assets:VAT:Input"), account("output", "Output VAT account", "Liabilities:VAT:Output")]),
                     // A flat percentage of gross turnover with no input
                     // deduction. Sold under different names in different places.
-                    ("flat", &[percent("flat_rate", "Flat rate remitted on gross turnover, percent", Offer::None), account("flat_account", "VAT account", "liabilities:vat")]),
+                    ("flat", &[percent("flat_rate", "Flat rate remitted on gross turnover, percent", Offer::None), account("flat_account", "VAT account", "Liabilities:VAT")]),
                     ("none", &[]),
                 ],
                 offer: "none",
@@ -385,7 +385,7 @@ pub static OPTION: &[Q] = &[
                 key: "account",
                 label: "Account the money arrives in",
                 hint: "",
-                offer: Offer::From("assets:bank, assets:cash or assets:crypto, by kind", |env| env.kind().account().to_string()),
+                offer: Offer::From("Assets:Bank, Assets:Cash or Assets:Crypto, by kind", |env| env.kind().account().to_string()),
                 check: Check::By(account_check),
             },
         ],

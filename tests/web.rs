@@ -103,7 +103,7 @@ fn new_company() {
             ("currency", "eu"),
             ("method", "flat"),
             ("flat_rate", "abc"),
-            ("flat_account", "liabilities:vat"),
+            ("flat_account", "Liabilities:VAT"),
             ("sales_rate", "150"),
         ],
     );
@@ -137,8 +137,8 @@ fn new_company() {
         ("p2.details", "At our office"),
         ("currency", "chf"),
         ("method", "effective"),
-        ("input", "assets:vat:input"),
-        ("output", "liabilities:vat:output"),
+        ("input", "Assets:VAT:Input"),
+        ("output", "Liabilities:VAT:Output"),
         ("sales_rate", "8.1"),
         ("git_name", "Ann"),
         ("git_email", "ann@example.invalid"),
@@ -250,7 +250,7 @@ fn terminal_and_form_agree() {
         assert_eq!(read(&typed), read(&posted), "{file} differs");
     }
     let config = std::fs::read_to_string(typed.join("parity-ltd/abo.toml")).unwrap();
-    for has in ["id = \"bank\"", "iban = \"CH93 0076 2011 6238 5295 7\"", "id = \"crypto\"", "account = \"assets:crypto\"", "rate    = 5.3"] {
+    for has in ["id = \"bank\"", "iban = \"CH93 0076 2011 6238 5295 7\"", "id = \"crypto\"", "account = \"Assets:Crypto\"", "rate    = 5.3"] {
         assert!(config.contains(has), "no {has:?} in\n{config}");
     }
     std::fs::remove_dir_all(&base).unwrap();

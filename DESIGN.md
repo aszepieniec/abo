@@ -63,17 +63,18 @@ Documents are linked to entries by hledger tags, never by a join table:
 2026-09-21 Acme Hosting
     ; bill: bills/2026/2026-09-21-acme-inv1234.pdf
     ; sha256: 9f2a...
-    expenses:hosting        100.00 EUR
-    assets:vat:input          10.00 EUR
-    liabilities:payable    -1010.00 EUR
+    Expenses:Hosting        100.00 EUR
+    Assets:VAT:Input          10.00 EUR
+    Liabilities:Payable    -1010.00 EUR
 ```
 
 - `sha256:` is the duplicate check. Before booking a document, `hledger print tag:sha256=<hash>` must return nothing.
 - `invoice:` on issued invoices carries the invoice number. The next number is
   `max(invoice:) + 1` read from the journal — no counter file, no state to corrupt.
 
-Account naming: `assets:bank`, `expenses:telecom`. If your accountant wants a
-numbered chart of accounts, `assets:1020:bank` also sorts correctly.
+Account naming: CamelCase segments, acronyms in capitals: `Assets:Bank`,
+`Expenses:Telecom`, `Liabilities:VAT:Output`. If your accountant wants a
+numbered chart of accounts, `Assets:1020:Bank` also sorts correctly.
 
 ---
 
@@ -197,10 +198,10 @@ separately, and nothing anywhere assumes there is only one. Bank balances, notes
 in a drawer and a wallet are all just asset accounts:
 
 ```
-assets:bank      assets:cash      assets:wallet:btc
+Assets:Bank      Assets:Cash      Assets:Wallet:BTC
 ```
 
-`abo init` seeds `assets:bank` and `assets:cash`; anything else is an `account`
+`abo init` seeds `Assets:Bank` and `Assets:Cash`; anything else is an `account`
 line in `accounts.journal`, and a second commodity is a `commodity` line. An
 invoice can be denominated in any of them (`abo invoice --currency BTC`), and
 `[invoice] decimals` — or `--decimals` — says how many places that commodity is
@@ -232,7 +233,7 @@ it off against one must leave it outstanding against the other. A `*` on the
 transaction line, as older books may have, still counts for all its postings.
 
 ```
-abo reconcile --account assets:bank --date 2026-04-30 --balance 24390.00
+abo reconcile --account Assets:Bank --date 2026-04-30 --balance 24390.00
 abo clear 2026.journal:11:2026-02-28 ...
 abo reconcile ... --record
 ```
@@ -355,12 +356,12 @@ currency  = "EUR"
 [vat]
 method  = "flat"               # "effective" | "flat" | "none"
 rate    = 5.3                  # flat only: the percentage remitted on gross
-account = "liabilities:vat"
+account = "Liabilities:VAT"
 
 [invoice]
 vat_rate   = 8.1               # charged to customers
-receivable = "assets:receivable"
-income     = "income:sales"
+receivable = "Assets:Receivable"
+income     = "Income:Sales"
 terms_days = 30
 decimals   = 2
 
@@ -372,7 +373,7 @@ holder  = "Example Ltd"        # bank: holder, iban, bic, bank
 iban    = "CH93 0076 2011 6238 5295 7"
 bic     = "POFICHBEXXX"
 bank    = "PostFinance AG\nMingerstrasse 20, 3030 Bern"
-account = "assets:bank:postfinance"   # declared; where the money arrives
+account = "Assets:Bank:PostFinance"   # declared; where the money arrives
 
 [[payment]]
 id      = "wallet"
@@ -380,7 +381,7 @@ kind    = "crypto"             # crypto: network, address
 network = "Bitcoin"
 address = "bc1q..."
 details = "Please send the exact amount"  # any kind: further lines
-account = "assets:crypto"
+account = "Assets:Crypto"
 ```
 
 ```rust

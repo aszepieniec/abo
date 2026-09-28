@@ -90,8 +90,8 @@ IBANs, further lines such as account and routing numbers. A **crypto** option
 has a network and a wallet address, both needed. A **cash** option has lines
 saying where and when. Each also has an id for commands (`postfinance`:
 lower-case letters, digits, dashes), a name for invoices, further lines, and
-the declared account the money arrives in (by kind `assets:bank`,
-`assets:cash` or `assets:crypto`).
+the declared account the money arrives in (by kind `Assets:Bank`,
+`Assets:Cash` or `Assets:Crypto`).
 `abo payment-options` (or `... list`) shows them in the order invoices print
 them. `... add` puts up a list: bank, cash, crypto or skip, chosen as the VAT
 method is; then the questions for the kind chosen, each answer starting on the

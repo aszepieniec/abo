@@ -59,7 +59,7 @@ fn m0() {
     let o = abo(
         &dir,
         &["post", "--date", "2026-09-21", "--desc", "Acme Hosting",
-          "--tag", "sha256=9f2a", "expenses:general=100.00", "liabilities:payable=-100.00"],
+          "--tag", "sha256=9f2a", "Expenses:General=100.00", "Liabilities:Payable=-100.00"],
         "",
     );
     assert!(o.status.success(), "balanced entry rejected: {}", err(&o));
@@ -69,7 +69,7 @@ fn m0() {
     let o = abo(
         &dir,
         &["post", "--date", "2026-09-22", "--desc", "Acme Hosting again",
-          "--tag", "sha256=9f2a", "expenses:general=100.00", "liabilities:payable=-100.00"],
+          "--tag", "sha256=9f2a", "Expenses:General=100.00", "Liabilities:Payable=-100.00"],
         "",
     );
     assert!(err(&o).contains("already booked"), "duplicate not caught: {}", err(&o));
@@ -83,7 +83,7 @@ fn m0() {
     assert_eq!(
         lines[1]["argv"],
         serde_json::json!(["post", "--date", "2026-09-21", "--desc", "Acme Hosting", "--tag", "sha256=9f2a",
-                           "expenses:general=100.00 EUR", "liabilities:payable=-100.00 EUR"]),
+                           "Expenses:General=100.00 EUR", "Liabilities:Payable=-100.00 EUR"]),
     );
     assert!(lines[1]["ok"]["commit"].is_string(), "{log}");
 
@@ -94,7 +94,7 @@ fn m0() {
     std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
     Command::new("chmod").arg("+x").arg(&hook).status().unwrap();
     let o = abo(&dir, &["post", "--date", "2026-09-23", "--desc", "Uncommitted",
-                        "expenses:general=5.00", "liabilities:payable=-5.00"], "");
+                        "Expenses:General=5.00", "Liabilities:Payable=-5.00"], "");
     std::fs::remove_file(&hook).unwrap();
     assert!(!o.status.success(), "commit refused by a hook succeeded");
     assert_eq!(std::fs::read_to_string(dir.join("journal/2026.journal")).unwrap(), journal);
@@ -106,7 +106,7 @@ fn m0() {
     let o = abo(
         &dir,
         &["post", "--date", "2026-09-22", "--desc", "Wrong",
-          "expenses:general=100.00", "liabilities:payable=-90.00"],
+          "Expenses:General=100.00", "Liabilities:Payable=-90.00"],
         "",
     );
     assert!(err(&o).contains("do not balance"), "unbalanced not caught: {}", err(&o));
@@ -115,7 +115,7 @@ fn m0() {
     let o = abo(
         &dir,
         &["post", "--date", "2026-09-22", "--desc", "Typo",
-          "expenses:hostng=100.00", "liabilities:payable=-100.00"],
+          "Expenses:Hostng=100.00", "Liabilities:Payable=-100.00"],
         "",
     );
     assert!(err(&o).contains("not declared"), "undeclared account not caught: {}", err(&o));
@@ -124,12 +124,12 @@ fn m0() {
     // declared and the entry balances
     let acc = dir.join("journal/accounts.journal");
     let mut text = std::fs::read_to_string(&acc).unwrap();
-    text.push_str("account assets:vat:input\n");
+    text.push_str("account Assets:VAT:Input\n");
     std::fs::write(&acc, text).unwrap();
     let o = abo(
         &dir,
         &["post", "--date", "2026-09-22", "--desc", "Acme Hosting",
-          "expenses:general=100.00", "assets:vat:input=8.10", "liabilities:payable=-108.10"],
+          "Expenses:General=100.00", "Assets:VAT:Input=8.10", "Liabilities:Payable=-108.10"],
         "",
     );
     assert!(err(&o).contains("no input VAT is deductible"), "flat-rate input VAT not caught: {}", err(&o));
@@ -137,11 +137,11 @@ fn m0() {
     // journal syntax smuggled through a string field: rejected.
     // `; sha256: 9f2a` in the description would otherwise forge the tag that
     // the duplicate check reads, and a newline would open a second transaction.
-    for desc in ["Acme ; sha256: forged", "Acme\n2026-09-22 Sneaky\n  equity:opening  1.00 EUR"] {
+    for desc in ["Acme ; sha256: forged", "Acme\n2026-09-22 Sneaky\n  Equity:Opening  1.00 EUR"] {
         let o = abo(
             &dir,
             &["post", "--date", "2026-09-22", "--desc", desc,
-              "expenses:general=100.00", "liabilities:payable=-100.00"],
+              "Expenses:General=100.00", "Liabilities:Payable=-100.00"],
             "",
         );
         assert!(err(&o).contains("journal syntax"), "injection not caught in {desc:?}: {}", err(&o));
@@ -153,7 +153,7 @@ fn m0() {
     // reports go through hledger
     let o = abo(&dir, &["bal", "--json"], "");
     assert!(o.status.success(), "bal failed: {}", err(&o));
-    assert!(String::from_utf8_lossy(&o.stdout).contains("expenses:general"));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("Expenses:General"));
 
     std::fs::remove_dir_all(&base).unwrap();
 }
@@ -236,7 +236,7 @@ fn invoices() {
     let o = abo(&dir, &["invoice", "--to", "Foreign Customer", "--item", "1|500.00|Consulting",
                         "--date", "2026-10-02", "--vat-rate", "0", "--json"], "");
     assert!(o.status.success(), "zero-rated invoice failed: {}", err(&o));
-    let o = abo(&dir, &["bal", "liabilities:vat:output"], "");
+    let o = abo(&dir, &["bal", "Liabilities:VAT:Output"], "");
     // 1760 - 1600 = 160, plus 1.00 from the second invoice
     assert!(String::from_utf8_lossy(&o.stdout).contains("161.00"), "{}",
             String::from_utf8_lossy(&o.stdout));
@@ -259,7 +259,7 @@ fn reconciliation() {
         let o = abo(
             &dir,
             &["post", "--date", date, "--desc", desc,
-              &format!("assets:bank={amount}"), "equity:opening"],
+              &format!("Assets:Bank={amount}"), "Equity:Opening"],
             "",
         );
         assert!(o.status.success(), "{desc}: {}", err(&o));
@@ -269,7 +269,7 @@ fn reconciliation() {
     book("2026-03-10", "Three", "-40.00");
 
     let keys = |balance: Option<&str>| -> serde_json::Value {
-        let mut args = vec!["reconcile", "--account", "assets:bank", "--date", "2026-03-31", "--json"];
+        let mut args = vec!["reconcile", "--account", "Assets:Bank", "--date", "2026-03-31", "--json"];
         if let Some(b) = balance {
             args.extend(["--balance", b]);
         }
@@ -306,13 +306,13 @@ fn reconciliation() {
     assert!(err(&o).contains("stale"), "stale key not caught: {}", err(&o));
 
     // recording refuses until the books agree
-    let o = abo(&dir, &["reconcile", "--account", "assets:bank", "--date", "2026-03-31",
+    let o = abo(&dir, &["reconcile", "--account", "Assets:Bank", "--date", "2026-03-31",
                         "--balance", "700.00", "--record"], "");
     assert!(err(&o).contains("not reconciled"), "{}", err(&o));
 
     // with an item still outstanding, the statement balance is NOT the
     // account's balance, so it is recorded as a note and not asserted
-    let o = abo(&dir, &["reconcile", "--account", "assets:bank", "--date", "2026-03-31",
+    let o = abo(&dir, &["reconcile", "--account", "Assets:Bank", "--date", "2026-03-31",
                         "--balance", "750.00", "--record"], "");
     assert!(o.status.success(), "record failed: {}", err(&o));
     let text = std::fs::read_to_string(dir.join("journal/2026.journal")).unwrap();
@@ -324,7 +324,7 @@ fn reconciliation() {
     let last = r["outstanding"].as_array().unwrap()[0]["key"].as_str().unwrap().to_string();
     let o = abo(&dir, &["clear", &last], "");
     assert!(o.status.success(), "clear failed: {}", err(&o));
-    let o = abo(&dir, &["reconcile", "--account", "assets:bank", "--date", "2026-03-31",
+    let o = abo(&dir, &["reconcile", "--account", "Assets:Bank", "--date", "2026-03-31",
                         "--balance", "710.00", "--record"], "");
     assert!(o.status.success(), "record failed: {}", err(&o));
     let text = std::fs::read_to_string(dir.join("journal/2026.journal")).unwrap();
@@ -333,7 +333,7 @@ fn reconciliation() {
     // a back-dated entry lands in date order, so the assertion still holds
     // and hledger still loads the books
     let o = abo(&dir, &["post", "--date", "2026-02-20", "--desc", "Late arrival",
-                        "expenses:general=15.00", "liabilities:payable=-15.00"], "");
+                        "Expenses:General=15.00", "Liabilities:Payable=-15.00"], "");
     assert!(o.status.success(), "back-dated entry rejected: {}", err(&o));
     let text = std::fs::read_to_string(dir.join("journal/2026.journal")).unwrap();
     let dates: Vec<&str> = text
@@ -345,25 +345,25 @@ fn reconciliation() {
     sorted.sort();
     assert_eq!(dates, sorted, "entries are not in date order: {dates:?}");
 
-    let o = abo(&dir, &["bal", "assets:bank"], "");
+    let o = abo(&dir, &["bal", "Assets:Bank"], "");
     assert!(o.status.success(), "assertion broke the books: {}", err(&o));
 
     // a transfer ticked off against the cash box is still outstanding against
     // the bank, whose statement has not shown it yet
     let o = abo(&dir, &["post", "--date", "2026-04-02", "--desc", "Petty cash",
-                        "assets:cash=100.00", "assets:bank=-100.00"], "");
+                        "Assets:Cash=100.00", "Assets:Bank=-100.00"], "");
     assert!(o.status.success(), "{}", err(&o));
     let outstanding = |account: &str| -> Vec<String> {
         let o = abo(&dir, &["reconcile", "--account", account, "--date", "2026-04-30", "--json"], "");
         let r: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
         r["outstanding"].as_array().unwrap().iter().map(|i| i["key"].as_str().unwrap().to_string()).collect()
     };
-    let cash = outstanding("assets:cash");
+    let cash = outstanding("Assets:Cash");
     assert_eq!(cash.len(), 1);
     let o = abo(&dir, &["clear", &cash[0]], "");
     assert!(o.status.success(), "{}", err(&o));
-    assert!(outstanding("assets:cash").is_empty());
-    assert_eq!(outstanding("assets:bank").len(), 1, "clearing cash cleared the bank side too");
+    assert!(outstanding("Assets:Cash").is_empty());
+    assert_eq!(outstanding("Assets:Bank").len(), 1, "clearing cash cleared the bank side too");
 
     std::fs::remove_dir_all(&base).unwrap();
 }
@@ -387,9 +387,9 @@ fn statements() {
         assert!(o.status.success(), "add failed: {}", err(&o));
     };
     add(&["post", "--date", "2026-02-01", "--desc", "Sale",
-          "assets:receivable=1100.00", "income:sales=-1000.00", "liabilities:vat:output=-100.00"]);
+          "Assets:Receivable=1100.00", "Income:Sales=-1000.00", "Liabilities:VAT:Output=-100.00"]);
     add(&["post", "--date", "2026-03-01", "--desc", "Purchase",
-          "expenses:general=200.00", "assets:vat:input=20.00", "liabilities:payable=-220.00"]);
+          "Expenses:General=200.00", "Assets:VAT:Input=20.00", "Liabilities:Payable=-220.00"]);
 
     let run = |args: &[&str]| -> serde_json::Value {
         let o = abo(&dir, args, "");
@@ -432,7 +432,7 @@ rate  = 10
 [[report.vat]]
 code  = "3"
 label = "Input tax"
-query = "acct:^assets:vat:input(:|$)"
+query = "acct:^Assets:VAT:Input(:|$)"
 
 [[report.vat]]
 code  = "4"
@@ -480,7 +480,7 @@ fn undo_and_revert() {
 
     for (date, desc, amount) in [("2026-01-10", "Coffee", "5.00"), ("2026-01-11", "Paper", "7.00")] {
         let o = abo(&dir, &["post", "--date", date, "--desc", desc,
-                            &format!("expenses:general={amount}"), "assets:cash"], "");
+                            &format!("Expenses:General={amount}"), "Assets:Cash"], "");
         assert!(o.status.success(), "{}", err(&o));
     }
     // line 1 opened the books, and that stays
@@ -507,7 +507,7 @@ fn undo_and_revert() {
     assert!(o.status.success(), "books no longer load: {}", err(&o));
 
     // revert the second: a new entry with the opposite amounts; the original stays
-    let o = abo(&dir, &["reconcile", "--account", "assets:cash", "--date", "2026-12-31", "--json"], "");
+    let o = abo(&dir, &["reconcile", "--account", "Assets:Cash", "--date", "2026-12-31", "--json"], "");
     let r: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     let paper = r["outstanding"].as_array().unwrap().iter().find(|i| i["description"] == "Paper").unwrap();
     let k: Vec<&str> = paper["key"].as_str().unwrap().splitn(4, ':').collect();
@@ -583,15 +583,15 @@ fn payment_options() {
         let o = po(args);
         assert!(o.status.success(), "{args:?}: {}", err(&o));
     }
-    let postfinance = "postfinance (bank): PostFinance -> assets:bank\n\
+    let postfinance = "postfinance (bank): PostFinance -> Assets:Bank\n\
                        \x20   IBAN: CH93 0076 2011 6238 5295 7\n    BIC: POFICHBEXXX\n\
                        \x20   PostFinance AG\n    3030 Bern\n";
-    assert_eq!(list(), format!("{postfinance}cash (cash): Cash -> assets:cash\n    At our office\n"));
+    assert_eq!(list(), format!("{postfinance}cash (cash): Cash -> Assets:Cash\n    At our office\n"));
     for (args, says) in [
         (&["add", "cash", "--kind", "cash", "--label", "Cash"][..], "already the id of a payment option"),
         (&["add", "Wallet", "--kind", "cash", "--label", "Wallet"][..], "is not an id"),
-        (&["add", "wallet", "--kind", "crypto", "--network", "Bitcoin", "--address", "bc1q"][..], "assets:crypto is not declared"),
-        (&["add", "wallet", "--kind", "crypto", "--network", "Bitcoin", "--account", "assets:bank"][..], "needs a network and an address"),
+        (&["add", "wallet", "--kind", "crypto", "--network", "Bitcoin", "--address", "bc1q"][..], "Assets:Crypto is not declared"),
+        (&["add", "wallet", "--kind", "crypto", "--network", "Bitcoin", "--account", "Assets:Bank"][..], "needs a network and an address"),
         (&["add", "iban", "--iban", "CH9300762011623852958"][..], "check digits do not match"),
         (&["add", "bank2", "--label", "Bank"][..], "needs an IBAN"),
         (&["add", "odd", "--kind", "cash", "--iban", "CH9300762011623852957"][..], "a cash option has no iban"),
@@ -608,10 +608,10 @@ fn payment_options() {
     // An id's start will do; another kind drops the old kind's fields.
     let o = po(&["edit", "post", "--kind", "cash", "--id", "counter"]);
     assert!(o.status.success(), "edit failed: {}", err(&o));
-    assert!(list().starts_with("counter (cash): PostFinance -> assets:bank\ncash"), "{}", list());
+    assert!(list().starts_with("counter (cash): PostFinance -> Assets:Bank\ncash"), "{}", list());
     let o = po(&["remove", "coun"]);
     assert!(o.status.success(), "remove failed: {}", err(&o));
-    assert_eq!(list(), "cash (cash): Cash -> assets:cash\n    At our office\n");
+    assert_eq!(list(), "cash (cash): Cash -> Assets:Cash\n    At our office\n");
     // The log: init, two adds, the edit, the remove.
     let o = abo(&dir, &["undo", "5"], "");
     assert!(o.status.success(), "undo failed: {}", err(&o));
@@ -624,4 +624,60 @@ fn payment_options() {
     assert!(!o.status.success() && err(&o).contains("no longer read"), "{}", err(&o));
 
     std::fs::remove_dir_all(&base).unwrap();
+}
+
+/// A bill whose document went missing: `file --for` files a new one under
+/// the old date and issuer, the booking's tags follow, and undo takes both
+/// back. A document the books have is not filed again.
+#[test]
+fn refile_missing_document() {
+    let base = std::env::temp_dir().join(format!("abo-refile-{}", std::process::id()));
+    let dir = base.join("test-ltd");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n");
+    assert!(o.status.success(), "init failed: {}", err(&o));
+    let (old_scan, new_scan) = (base.join("old.pdf"), base.join("new.pdf"));
+    std::fs::write(&old_scan, b"%PDF-1.4\n% lost\n").unwrap();
+    std::fs::write(&new_scan, b"%PDF-1.4\n% found\n").unwrap();
+
+    let o = abo(&dir, &["--json", "file", "--date", "2026-02-14", "--issuer", "Acme Hosting", &old_scan.to_string_lossy()], "");
+    assert!(o.status.success(), "{}", err(&o));
+    let old: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let old = old["file"].as_str().unwrap().to_string();
+    let o = abo(&dir, &["bill", "--desc", "Hosting", &old, "Expenses:General=10.00", "Assets:Cash"], "");
+    assert!(o.status.success(), "{}", err(&o));
+    let journal = || std::fs::read_to_string(dir.join("journal/2026.journal")).unwrap();
+    let line = journal().lines().position(|l| l.starts_with("2026-02-14")).unwrap() + 1;
+    let key = format!("2026.journal:{line}:2026-02-14");
+
+    let o = abo(&dir, &["file", "--for", &key, &new_scan.to_string_lossy()], "");
+    assert!(err(&o).contains("in the books already"), "{}", err(&o));
+
+    let git = |args: &[&str]| assert!(Command::new("git").args(args).current_dir(&dir).status().unwrap().success());
+    git(&["rm", "-q", &old]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "lose it"]);
+    let before = journal();
+    let o = abo(&dir, &["--json", "file", "--for", &key, &new_scan.to_string_lossy()], "");
+    assert!(o.status.success(), "{}", err(&o));
+    let new: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let new = new["file"].as_str().unwrap();
+    assert!(new.starts_with("bills/2026/2026-02-14-acme-hosting-") && new != old, "{new}");
+    assert!(dir.join(new).is_file());
+    let text = journal();
+    assert!(text.contains(&format!("; bill: {new}")) && !text.contains(&old), "{text}");
+    assert!(text.contains(&format!("; sha256: {}", new_scan_sha(&new_scan))), "{text}");
+
+    let n = serde_json::from_slice::<serde_json::Value>(&abo(&dir, &["log", "--json"], "").stdout).unwrap().as_array().unwrap().len();
+    let o = abo(&dir, &["undo", &n.to_string()], "");
+    assert!(o.status.success(), "{}", err(&o));
+    assert_eq!(journal(), before);
+    assert!(!dir.join(new).exists());
+
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+fn new_scan_sha(p: &Path) -> String {
+    let o = Command::new("sha256sum").arg(p).output().unwrap();
+    String::from_utf8_lossy(&o.stdout).split(' ').next().unwrap().to_string()
 }

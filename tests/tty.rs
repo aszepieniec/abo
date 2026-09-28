@@ -182,7 +182,7 @@ fn editing() {
     assert_eq!(company["tax_id"].as_str(), Some(""));
     assert_eq!(company["currency"].as_str(), Some("EUR"));
     assert_eq!(vat["method"].as_str(), Some("flat"));
-    assert_eq!(vat["account"].as_str(), Some("liabilities:vat"));
+    assert_eq!(vat["account"].as_str(), Some("Liabilities:VAT"));
 }
 
 /// Up and down, a letter, and space or enter; keys arriving together in one
@@ -302,18 +302,18 @@ fn payment_options() {
             ("Name on invoices: ", "\r"),
             ("Id, for abo commands: ", "\r"),
             ("Account the money arrives in: ", "\r"),
-            ("Account the money arrives in: ", &format!("{CTRL_A}{CTRL_K}assets:cash\r")),
+            ("Account the money arrives in: ", &format!("{CTRL_A}{CTRL_K}Assets:Cash\r")),
         ],
     );
     assert!(status.success() && restored, "add failed:\n{screen}");
-    assert!(screen.contains("assets:crypto is not declared"), "{screen}");
+    assert!(screen.contains("Assets:Crypto is not declared"), "{screen}");
 
     let c = done(&r);
     let (bank, cash, wallet) = (&c["payment"][0], &c["payment"][1], &c["payment"][2]);
     assert_eq!(cash["id"].as_str(), Some("cash"));
     assert_eq!(cash["label"].as_str(), Some("Cash"));
     assert_eq!(cash["details"].as_str(), Some("At our office"));
-    assert_eq!(cash["account"].as_str(), Some("assets:cash"));
+    assert_eq!(cash["account"].as_str(), Some("Assets:Cash"));
     assert_eq!(bank["id"].as_str(), Some("postfinance"));
     assert_eq!(bank["kind"].as_str(), Some("bank"));
     assert_eq!(bank["label"].as_str(), Some("PostFinance"));
@@ -321,10 +321,10 @@ fn payment_options() {
     assert_eq!(bank["iban"].as_str(), Some("CH93 0076 2011 6238 5295 7"));
     assert_eq!(bank["bic"].as_str(), Some("POFICHBEXXX"));
     assert_eq!(bank["bank"].as_str(), Some("PostFinance AG\n3030 Bern"));
-    assert_eq!(bank["account"].as_str(), Some("assets:bank"));
+    assert_eq!(bank["account"].as_str(), Some("Assets:Bank"));
     assert_eq!(wallet["id"].as_str(), Some("crypto"));
     assert_eq!(wallet["label"].as_str(), Some("Bitcoin"));
     assert_eq!(wallet["network"].as_str(), Some("Bitcoin"));
     assert_eq!(wallet["address"].as_str(), Some("bc1qexample"));
-    assert_eq!(wallet["account"].as_str(), Some("assets:cash"));
+    assert_eq!(wallet["account"].as_str(), Some("Assets:Cash"));
 }

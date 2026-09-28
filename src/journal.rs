@@ -25,7 +25,7 @@ pub struct Posting {
 }
 
 impl Posting {
-    /// `expenses:hosting=100.00` or `expenses:hosting=100.00 EUR` or `liabilities:payable`.
+    /// `Expenses:Hosting=100.00` or `Expenses:Hosting=100.00 EUR` or `Liabilities:Payable`.
     pub fn parse(s: &str, default_commodity: &str) -> Result<Posting> {
         let (account, rest) = match s.split_once('=') {
             Some((a, r)) => (a.trim(), Some(r.trim())),
@@ -34,7 +34,7 @@ impl Posting {
         if account.is_empty() {
             bail!("empty account in posting {s:?}");
         }
-        // `expenses:general 12.00` is an amount with its `=` forgotten, not an
+        // `Expenses:General 12.00` is an amount with its `=` forgotten, not an
         // account with a space in its name.
         if rest.is_none() {
             if let Some((a, n)) = account.rsplit_once(char::is_whitespace) {
@@ -58,7 +58,7 @@ impl Posting {
         Ok(Posting { account: account.to_string(), amount, commodity, assertion: None })
     }
 
-    /// As `parse` reads it back: `expenses:hosting=100.00 EUR`, or the bare
+    /// As `parse` reads it back: `Expenses:Hosting=100.00 EUR`, or the bare
     /// account when the amount is elided.
     pub fn arg(&self) -> String {
         match self.amount {

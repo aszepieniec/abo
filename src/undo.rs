@@ -58,8 +58,10 @@ pub fn how(ctx: &Ctx, line: &Value, reverted: &[String]) -> Result<String> {
     if reverted.iter().any(|full| full.starts_with(h)) {
         bail!("it is undone already");
     }
-    // A filed document that is booked stays: the booking names it.
-    if let Some(sha) = line["ok"]["sha256"].as_str().filter(|_| op(line) == "file") {
+    // A filed document that is booked stays: the booking names it. One filed
+    // `--for` a booking goes with the tags its commit changed.
+    let for_booking = line["argv"][1] == "--for";
+    if let Some(sha) = line["ok"]["sha256"].as_str().filter(|_| op(line) == "file" && !for_booking) {
         let booked = crate::journal::hledger(ctx, &["print", &format!("tag:sha256={sha}")])?;
         if !booked.trim().is_empty() {
             bail!("the document is booked; undo or revert its booking first");

@@ -44,6 +44,21 @@ pub fn file(ctx: &Ctx, src: &str, bytes: &[u8], date: &str, issuer: &str) -> Res
 }
 
 fn file_it(ctx: &Ctx, bytes: &[u8], date: &str, issuer: &str) -> Result<FileReport> {
+    let (rel, sha256) = place(ctx, bytes, date, issuer)?;
+    let dest = ctx.root.join(&rel);
+    match ctx.commit(&[&dest], &format!("File {rel}")) {
+        Ok(commit) => Ok(FileReport { file: rel, sha256, commit }),
+        Err(e) => {
+            let _ = ctx.git(&["reset", "-q", "--", &rel]);
+            let _ = std::fs::remove_file(&dest);
+            Err(e)
+        }
+    }
+}
+
+/// Write the document where `abo file` puts it, uncommitted: its path in the
+/// books and its hash.
+fn place(ctx: &Ctx, bytes: &[u8], date: &str, issuer: &str) -> Result<(String, String)> {
     let (ext, _) = sniff(bytes)?;
     let sha256 = hex(&Sha256::digest(bytes));
     if let Some(there) = filed(ctx, &sha256)? {
@@ -53,11 +68,66 @@ fn file_it(ctx: &Ctx, bytes: &[u8], date: &str, issuer: &str) -> Result<FileRepo
     let dest = ctx.root.join(&rel);
     std::fs::create_dir_all(dest.parent().unwrap())?;
     std::fs::write(&dest, bytes)?;
-    match ctx.commit(&[&dest], &format!("File {rel}")) {
+    Ok((rel, sha256))
+}
+
+/// File the document the booking `key` names but the books lack. A bill's
+/// is filed as `abo file` files it, under the date and issuer of the name it
+/// had, and the booking's `bill` and `sha256` tags are changed to the new
+/// name and hash; an invoice's PDF goes where the invoice put it. One commit.
+pub fn refile(ctx: &Ctx, key: &str, src: &str, bytes: &[u8]) -> Result<FileReport> {
+    let argv = ["file", "--for", key, "--", src].map(str::to_string).to_vec();
+    ctx.logged(argv, key, refile_it(ctx, key, bytes))
+}
+
+fn refile_it(ctx: &Ctx, key: &str, bytes: &[u8]) -> Result<FileReport> {
+    let b = journal::booking(ctx, key)?;
+    let tag = |k: &str| b.tags.iter().find(|(t, _)| t == k).map(|(_, v)| v.clone());
+    let old = match tag("invoice") {
+        Some(n) => crate::invoice::pdf_path(&n).with_context(|| format!("{n:?} is not an invoice number"))?,
+        None => tag("bill").with_context(|| format!("{key} names no document: it has no bill or invoice tag"))?,
+    };
+    if ctx.root.join(&old).exists() {
+        bail!("{old} is in the books already");
+    }
+
+    let journal_file = ctx.journal_dir().join(key.split(':').next().unwrap_or_default());
+    let before = std::fs::read_to_string(&journal_file)?;
+    let (rel, sha256) = if tag("invoice").is_some() {
+        if sniff(bytes)?.0 != "pdf" {
+            bail!("an invoice is a PDF");
+        }
+        std::fs::create_dir_all(ctx.root.join(&old).parent().unwrap())?;
+        std::fs::write(ctx.root.join(&old), bytes)?;
+        (old.clone(), hex(&Sha256::digest(bytes)))
+    } else {
+        // bills/2026/2026-09-21-acme-a1b2c3d4.pdf: the date, then the issuer.
+        let name = old.rsplit('/').next().unwrap_or_default();
+        let issuer = name.get(11..).and_then(|r| r.rsplit_once('-')).map_or("", |(i, _)| i);
+        let (rel, sha256) = place(ctx, bytes, name.get(..10).unwrap_or_default(), issuer)?;
+        // The entry's lines run from its date line to the first unindented one.
+        let line: usize = key.split(':').nth(1).unwrap_or_default().parse()?;
+        let mut lines: Vec<String> = before.lines().map(str::to_owned).collect();
+        for row in lines.iter_mut().skip(line).take_while(|l| l.starts_with([' ', '\t'])) {
+            let indent = &row[..row.len() - row.trim_start().len()];
+            let comment = row.trim_start().strip_prefix(';').map(str::trim_start);
+            if comment.is_some_and(|c| c.starts_with("bill:")) {
+                *row = format!("{indent}; bill: {rel}");
+            } else if comment.is_some_and(|c| c.starts_with("sha256:")) {
+                *row = format!("{indent}; sha256: {sha256}");
+            }
+        }
+        std::fs::write(&journal_file, lines.join("\n") + "\n")?;
+        (rel, sha256)
+    };
+
+    let dest = ctx.root.join(&rel);
+    match ctx.commit(&[&dest, &journal_file], &format!("File {rel} for {}", b.description)) {
         Ok(commit) => Ok(FileReport { file: rel, sha256, commit }),
         Err(e) => {
             let _ = ctx.git(&["reset", "-q", "--", &rel]);
             let _ = std::fs::remove_file(&dest);
+            let _ = std::fs::write(&journal_file, before);
             Err(e)
         }
     }

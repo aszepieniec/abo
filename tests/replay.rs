@@ -54,9 +54,9 @@ fn replaying_the_log_makes_the_same_books() {
         "1 Example Street\n\nExampleland\nTAX-1\nbank\n\nCH9300762011623852957\n\n\n\n\n\n\n\nEUR\neffective\n\n\n10\n",
         &[],
     ));
-    run(&["post", "--date", "2026-01-01", "--desc", "Opening balance", "assets:bank=5000.00", "equity:opening"]);
+    run(&["post", "--date", "2026-01-01", "--desc", "Opening balance", "Assets:Bank=5000.00", "Equity:Opening"]);
     // A description that reads like a flag must come back as a description.
-    run(&["post", "--date", "2026-01-02", "--desc=-5% on the float", "assets:cash=50.00", "assets:bank=-50.00"]);
+    run(&["post", "--date", "2026-01-02", "--desc=-5% on the float", "Assets:Cash=50.00", "Assets:Bank=-50.00"]);
 
     let scan = base.join("scan.pdf");
     std::fs::write(&scan, b"%PDF-1.4\n% a bill\n").unwrap();
@@ -70,7 +70,7 @@ fn replaying_the_log_makes_the_same_books() {
     let rel = filed["file"].as_str().unwrap();
     assert!(rel.starts_with("bills/2026/2026-02-14-acme-hosting-ag-"), "{rel}");
     run(&["bill", "--desc", "Acme Hosting AG | Hosting", "--tag", "ref=INV-1", rel,
-          "expenses:general=100.00", "assets:vat:input=10.00", "liabilities:payable=-110.00"]);
+          "Expenses:General=100.00", "Assets:VAT:Input=10.00", "Liabilities:Payable=-110.00"]);
 
     if Command::new("typst").arg("--version").output().is_ok() {
         run(&["invoice", "--to", "Customer Ltd\n2 Other Street", "--item", "10|150.00|Consulting", "--date", "2026-03-31"]);
@@ -80,21 +80,21 @@ fn replaying_the_log_makes_the_same_books() {
     run(&["payment-options", "edit", "cash", "--detail", "At our office"]);
     run(&["payment-options", "remove", "bank"]);
 
-    run(&["post", "--date", "2026-04-01", "--desc", "Coffee", "expenses:general=5.00", "assets:cash"]);
+    run(&["post", "--date", "2026-04-01", "--desc", "Coffee", "Expenses:General=5.00", "Assets:Cash"]);
     let n = log(&dir).len().to_string();
     run(&["undo", &n]);
 
     // Tick off what the statement shows, record the balance, and revert a
     // booking: dated today, and today is in the log line.
     let r: serde_json::Value =
-        serde_json::from_str(&run(&["reconcile", "--account", "assets:bank", "--date", "2026-12-31", "--json"])).unwrap();
+        serde_json::from_str(&run(&["reconcile", "--account", "Assets:Bank", "--date", "2026-12-31", "--json"])).unwrap();
     let keys: Vec<&str> = r["outstanding"].as_array().unwrap().iter().map(|i| i["key"].as_str().unwrap()).collect();
     run(&[&["clear"][..], &keys].concat());
-    run(&["reconcile", "--account", "assets:bank", "--date", "2026-12-31", "--balance", "4950.00", "--record"]);
+    run(&["reconcile", "--account", "Assets:Bank", "--date", "2026-12-31", "--balance", "4950.00", "--record"]);
     // Revert the bill, which touches no account the record asserts. A
     // booking's key is a posting's without the account: file:line:date.
     let r: serde_json::Value =
-        serde_json::from_str(&run(&["reconcile", "--account", "liabilities:payable", "--json"])).unwrap();
+        serde_json::from_str(&run(&["reconcile", "--account", "Liabilities:Payable", "--json"])).unwrap();
     let key = r["outstanding"][0]["key"].as_str().unwrap();
     run(&["revert", &key.splitn(4, ':').take(3).collect::<Vec<_>>().join(":")]);
 

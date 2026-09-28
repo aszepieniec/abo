@@ -242,7 +242,7 @@ fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
     let entry = entry(ctx, &number, &date, args, &currency, net, vat, total)?;
     journal::validate(ctx, &entry)?;
 
-    let rel = format!("invoices/{year}/{number}.pdf");
+    let rel = format!("invoices/{year}/{number}.pdf"); // see pdf_path
     render(ctx, &data, &rel)?;
 
     ctx.git(&["add", "--", &rel])?;
@@ -361,4 +361,12 @@ mod tests {
         assert_eq!(vat.to_string(), "100.00");
         assert_eq!((net + vat).to_string(), "1334.55");
     }
+}
+
+/// Where invoice `number`'s PDF is in the books, if `number` is one:
+/// `2026-0017` is `invoices/2026/2026-0017.pdf`.
+pub fn pdf_path(number: &str) -> Option<String> {
+    let (y, n) = number.split_once('-')?;
+    let digits = y.len() == 4 && n.len() == 4 && y.chars().chain(n.chars()).all(|c| c.is_ascii_digit());
+    digits.then(|| format!("invoices/{y}/{number}.pdf"))
 }

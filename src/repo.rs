@@ -77,7 +77,7 @@ impl Kind {
     /// Where money paid this way arrives, unless said otherwise. Only the
     /// first two are declared at init without being named.
     pub fn account(self) -> &'static str {
-        ["assets:bank", "assets:cash", "assets:crypto"][self as usize]
+        ["Assets:Bank", "Assets:Cash", "Assets:Crypto"][self as usize]
     }
 
     /// What invoices call an option of this kind, unless said otherwise.
@@ -168,8 +168,8 @@ pub struct InvoiceCfg {
     pub vat_rate: Decimal,
 }
 
-fn d_receivable() -> String { "assets:receivable".into() }
-fn d_income() -> String { "income:sales".into() }
+fn d_receivable() -> String { "Assets:Receivable".into() }
+fn d_income() -> String { "Income:Sales".into() }
 fn d_terms() -> i64 { 30 }
 fn d_decimals() -> u32 { 2 }
 
@@ -490,7 +490,7 @@ pub mod answer {
         if s.is_empty() || s.contains(';') || s.contains("  ") || s.chars().any(char::is_control)
             || s.split(':').any(|part| part.trim().is_empty() || part.trim() != part)
         {
-            return Err(format!("{s:?} is not an account name, such as assets:bank:postfinance."));
+            return Err(format!("{s:?} is not an account name, such as Assets:Bank:PostFinance."));
         }
         Ok(s.to_string())
     }
@@ -585,13 +585,13 @@ pub fn init(dir: &Path, b: &crate::questions::NewBooks) -> Result<InitReport> {
     )?;
 
     let mut accounts = vec![
-        "assets:bank".to_string(),
-        "assets:cash".to_string(),
-        "assets:receivable".to_string(),
-        "expenses:general".to_string(),
-        "income:sales".to_string(),
-        "liabilities:payable".to_string(),
-        "equity:opening".to_string(),
+        "Assets:Bank".to_string(),
+        "Assets:Cash".to_string(),
+        "Assets:Receivable".to_string(),
+        "Expenses:General".to_string(),
+        "Income:Sales".to_string(),
+        "Liabilities:Payable".to_string(),
+        "Equity:Opening".to_string(),
     ];
     match vat {
         Vat::None => {}
@@ -652,8 +652,8 @@ pub fn demo(dir: &Path) -> Result<Ctx> {
     std::env::set_var("GIT_COMMITTER_EMAIL", "demo@example.invalid");
 
     let vat = Vat::Effective {
-        input: "assets:vat:input".into(),
-        output: "liabilities:vat:output".into(),
+        input: "Assets:VAT:Input".into(),
+        output: "Liabilities:VAT:Output".into(),
     };
     let company = Company {
         name: "Example Ltd".into(),
@@ -674,7 +674,7 @@ pub fn demo(dir: &Path) -> Result<Ctx> {
         // The IBAN of the ISO 13616 examples: it passes the check.
         iban: "CH93 0076 2011 6238 5295 7".into(),
         bic: "POFICHBEXXX".into(),
-        account: "assets:bank".into(),
+        account: "Assets:Bank".into(),
         ..Default::default()
     }];
     let books = crate::questions::NewBooks {
@@ -702,13 +702,13 @@ invert = true
 [[report.vat]]
 code   = "2"
 label  = "Tax charged on turnover"
-query  = "acct:^liabilities:vat:output(:|$)"
+query  = "acct:^Liabilities:VAT:Output(:|$)"
 invert = true
 
 [[report.vat]]
 code   = "3"
 label  = "Input tax paid"
-query  = "acct:^assets:vat:input(:|$)"
+query  = "acct:^Assets:VAT:Input(:|$)"
 
 [[report.vat]]
 code  = "4"
@@ -718,7 +718,7 @@ sum   = ["2", "-3"]
     )?;
 
     let ctx = Ctx::open(dir)?;
-    let extra = ["expenses:hosting", "expenses:salary", "assets:wallet:btc"];
+    let extra = ["Expenses:Hosting", "Expenses:Salary", "Assets:Wallet:BTC"];
     let decls: String = extra.iter().map(|a| format!("account {a}\n")).collect();
     let acc = ctx.accounts_journal();
     // A second commodity, to show that the books are not single-currency, and
@@ -732,28 +732,28 @@ sum   = ["2", "-3"]
     let no_tags: Vec<(String, String)> = vec![];
     let entries = [
         ("2026-01-01", "Opening balance", no_tags.clone(),
-            vec![p("assets:bank", "25000.00"), p("equity:opening", "-25000.00")]),
+            vec![p("Assets:Bank", "25000.00"), p("Equity:Opening", "-25000.00")]),
         ("2026-02-14", "Acme Hosting AG", no_tags.clone(),
-            vec![p("expenses:hosting", "100.00"), p("assets:vat:input", "10.00"), p("liabilities:payable", "-110.00")]),
+            vec![p("Expenses:Hosting", "100.00"), p("Assets:VAT:Input", "10.00"), p("Liabilities:Payable", "-110.00")]),
         ("2026-02-28", "Pay Acme Hosting AG", no_tags.clone(),
-            vec![p("liabilities:payable", "110.00"), p("assets:bank", "-110.00")]),
+            vec![p("Liabilities:Payable", "110.00"), p("Assets:Bank", "-110.00")]),
         // tagged, so `abo invoice` numbers the next one 2026-0002
         ("2026-03-31", "Customer One | Invoice 2026-0001",
             vec![("invoice".to_string(), "2026-0001".to_string())],
-            vec![p("assets:receivable", "5500.00"), p("income:sales", "-5000.00"), p("liabilities:vat:output", "-500.00")]),
+            vec![p("Assets:Receivable", "5500.00"), p("Income:Sales", "-5000.00"), p("Liabilities:VAT:Output", "-500.00")]),
         ("2026-04-15", "Customer One pays 2026-0001", no_tags.clone(),
-            vec![p("assets:bank", "5500.00"), p("assets:receivable", "-5500.00")]),
+            vec![p("Assets:Bank", "5500.00"), p("Assets:Receivable", "-5500.00")]),
         ("2026-04-30", "Salary April", no_tags.clone(),
-            vec![p("expenses:salary", "6000.00"), p("assets:bank", "-6000.00")]),
+            vec![p("Expenses:Salary", "6000.00"), p("Assets:Bank", "-6000.00")]),
         ("2026-05-05", "Petty cash", no_tags.clone(),
-            vec![p("assets:cash", "500.00"), p("assets:bank", "-500.00")]),
+            vec![p("Assets:Cash", "500.00"), p("Assets:Bank", "-500.00")]),
         ("2026-05-08", "Stationery, paid in cash", no_tags.clone(),
-            vec![p("expenses:general", "42.50"), p("assets:cash", "-42.50")]),
+            vec![p("Expenses:General", "42.50"), p("Assets:Cash", "-42.50")]),
         // priced and settled in a second commodity; hledger balances each
         // commodity on its own, so nothing here is special-cased
         ("2026-05-10", "Customer Two | Invoice 2026-0002",
             vec![("invoice".to_string(), "2026-0002".to_string())],
-            vec![p("assets:wallet:btc", "0.05 BTC"), p("income:sales", "-0.05 BTC")]),
+            vec![p("Assets:Wallet:BTC", "0.05 BTC"), p("Income:Sales", "-0.05 BTC")]),
     ];
     for (date, description, tags, postings) in entries {
         post(&ctx, &Entry { date: date.into(), description: description.into(), tags, postings })?;

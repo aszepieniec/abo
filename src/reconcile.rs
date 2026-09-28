@@ -293,17 +293,17 @@ mod tests {
 
     #[test]
     fn marks_the_posting_not_the_transfer() {
-        let bank = "    assets:bank                     -500.00 EUR";
-        let cash = "    assets:cash                     500.00 EUR";
-        assert_eq!(clear_posting(cash, "assets:cash").unwrap(), "    * assets:cash                     500.00 EUR");
-        assert_eq!(clear_posting(bank, "assets:cash"), None);
+        let bank = "    Assets:Bank                     -500.00 EUR";
+        let cash = "    Assets:Cash                     500.00 EUR";
+        assert_eq!(clear_posting(cash, "Assets:Cash").unwrap(), "    * Assets:Cash                     500.00 EUR");
+        assert_eq!(clear_posting(bank, "Assets:Cash"), None);
         // a pending mark becomes cleared; a cleared one is left alone
-        assert_eq!(clear_posting("    ! assets:cash  1 EUR", "assets:cash").unwrap(), "    * assets:cash  1 EUR");
-        assert_eq!(clear_posting("    * assets:cash  1 EUR", "assets:cash"), None);
+        assert_eq!(clear_posting("    ! Assets:Cash  1 EUR", "Assets:Cash").unwrap(), "    * Assets:Cash  1 EUR");
+        assert_eq!(clear_posting("    * Assets:Cash  1 EUR", "Assets:Cash"), None);
         // a sub-account is a different account, and a comment is not a posting
-        assert_eq!(clear_posting("    assets:cash:box  1 EUR", "assets:cash"), None);
-        assert_eq!(clear_posting("    ; assets:cash  note", "assets:cash"), None);
+        assert_eq!(clear_posting("    Assets:Cash:Box  1 EUR", "Assets:Cash"), None);
+        assert_eq!(clear_posting("    ; Assets:Cash  note", "Assets:Cash"), None);
         // an elided amount: the account is the whole line
-        assert_eq!(clear_posting("    assets:cash", "assets:cash").unwrap(), "    * assets:cash");
+        assert_eq!(clear_posting("    Assets:Cash", "Assets:Cash").unwrap(), "    * Assets:Cash");
     }
 }

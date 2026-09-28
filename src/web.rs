@@ -56,6 +56,9 @@ pub async fn serve(ctx: Ctx, port: u16) -> Result<()> {
         .route("/invoice/{number}", get(invoice_pdf))
         .route("/bill", get(bill_form).post(bill_submit))
         .route("/entry/{key}", get(booking))
+        .route("/account", get(register))
+        .route("/entry/{key}/file", post(entry_file))
+        .route("/bills/{*rest}", get(bill_doc))
         .route("/entry/{key}/revert", post(revert))
         .route("/undo/{line}", post(undo_line))
         // A scanned bill is much bigger than a form post.
@@ -530,7 +533,7 @@ async fn index(Books(ctx): Books) -> Response {
                         tbody {
                             @for (account, bag) in &accounts {
                                 tr {
-                                    td { code { (account) } }
+                                    td { a href=(account_href(account)) { code { (account) } } }
                                     td.amt { (money(&statement::amounts(bag))) }
                                 }
                             }
@@ -718,8 +721,8 @@ async fn activity(Books(ctx): Books) -> Response {
 fn tiles(ctx: &Ctx, accounts: &[(String, statement::Bag)]) -> Vec<(String, statement::Bag)> {
     let mut t: Vec<_> = accounts
         .iter()
-        .filter(|(a, b)| a.starts_with("assets:") && !journal::is_vat_account(a) && b.values().any(|v| !v.is_zero()))
-        .map(|(a, b)| (a["assets:".len()..].to_string(), b.clone()))
+        .filter(|(a, b)| a.get(..7).is_some_and(|t| t.eq_ignore_ascii_case("assets:")) && !journal::is_vat_account(a) && b.values().any(|v| !v.is_zero()))
+        .map(|(a, b)| (a[7..].to_string(), b.clone()))
         .collect();
     if let Vat::Effective { input, output } = &ctx.cfg.vat {
         let mut due = statement::Bag::new();
@@ -807,7 +810,7 @@ async fn booking(Books(ctx): Books, Path(key): Path<String>) -> Response {
             }
             div.box {
                 div.box-header { (icon("book")) "In the journal" }
-                div.box-body { pre { (b.text) } }
+                div.box-body { pre { (linked_postings(&b.text, |k, v| doc(&ctx, k, v))) } }
             }
             @if let (Some(h), Some(sub)) = (&b.commit, &subject) {
                 p.muted.small { "Booked by commit " code { (h) } ": " (sub.trim()) }
@@ -819,12 +822,208 @@ async fn booking(Books(ctx): Books, Path(key): Path<String>) -> Response {
                         (icon("undo")) " Revert"
                     }
                 }
-                a.btn href="/" { (icon("left")) " Back" }
                 span.muted.small {
                     @if b.reversed_by.is_some() { "Already reversed." }
                     @else { "Books the opposite amounts as a new entry, dated today. This one stays." }
                 }
+                span.nav { a.btn href="/" { (icon("left")) " Back" } }
             }
+            div #upload .modal popover {
+                h2 { "The document is missing" }
+                p.muted.small { "The booking names a document the books do not have. Upload it and it is filed where the booking says." }
+                form method="post" action={"/entry/" (key) "/file"} enctype="multipart/form-data" {
+                    (token())
+                    label.field { "The document"
+                        span.hint { "A PDF, or a photograph. On a phone this opens the camera." }
+                        input type="file" name="document" accept="image/*,application/pdf" capture="environment" required;
+                    }
+                    div.actions {
+                        button.btn-primary type="submit" { (icon("check")) " File it" }
+                        span.nav { button type="button" popovertarget="upload" popovertargetaction="hide" { "Cancel" } }
+                    }
+                }
+            }
+        })
+    })
+}
+
+/// A document a booking's tag names: where it is served, and whether the
+/// books have it.
+fn doc(ctx: &Ctx, tag: &str, value: &str) -> Option<(String, bool)> {
+    let (rel, href) = match tag {
+        "bill" if value.starts_with("bills/") => (value.to_string(), format!("/{value}")),
+        "invoice" => (invoice::pdf_path(value)?, format!("/invoice/{value}")),
+        _ => return None,
+    };
+    Some((href, ctx.root.join(rel).is_file()))
+}
+
+async fn entry_file(Books(ctx): Books, Path(key): Path<String>, mut mp: Multipart) -> Response {
+    let (mut token, mut upload) = (String::new(), None);
+    while let Ok(Some(field)) = mp.next_field().await {
+        match field.name().unwrap_or_default() {
+            "document" => {
+                let src = field.file_name().unwrap_or("upload").to_string();
+                upload = field.bytes().await.ok().map(|b| (src, b.to_vec()));
+            }
+            "token" => token = field.text().await.unwrap_or_default(),
+            _ => {}
+        }
+    }
+    let filed = once(&token, || {
+        let (src, bytes) = upload.as_ref().context("no document in the upload")?;
+        bill::refile(&ctx, &key, src, bytes).map(|_| done(&ctx, &format!("/entry/{key}")))
+    });
+    match filed {
+        Ok(to) => Redirect::to(&to).into_response(),
+        Err(e) => or_error(&ctx, "Booking", || Err(e)),
+    }
+}
+
+/// A filed bill's document.
+async fn bill_doc(Books(ctx): Books, Path(rest): Path<String>) -> Response {
+    // Only what is under bills/ (§8).
+    if rest.split('/').any(|p| p.is_empty() || p.starts_with('.')) {
+        return (StatusCode::NOT_FOUND, "no such document").into_response();
+    }
+    match std::fs::read(ctx.root.join("bills").join(&rest)) {
+        Ok(bytes) => match bill::sniff(&bytes) {
+            Ok((_, mime)) => ([("content-type", mime), ("x-content-type-options", "nosniff")], bytes).into_response(),
+            Err(_) => (StatusCode::NOT_FOUND, "no such document").into_response(),
+        },
+        Err(_) => (StatusCode::NOT_FOUND, "no such document").into_response(),
+    }
+}
+
+/// Where an account's register is.
+fn account_href(account: &str) -> String {
+    let mut s = String::from("/account?name=");
+    for b in account.bytes() {
+        match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b':' | b'-' | b'_' | b'.' => s.push(b as char),
+            _ => s.push_str(&format!("%{b:02X}")),
+        }
+    }
+    s
+}
+
+/// Journal text with each posting's account a link to its register, the
+/// amounts lined up on their decimal marks, and each document a tag names a
+/// link to it; `doc(tag, value)` says where it is and whether the books have
+/// it. One they lack opens the #upload popover instead.
+// ponytail: links a virtual posting's account with its brackets; strip them if those ever appear.
+fn linked_postings(text: &str, doc: impl Fn(&str, &str) -> Option<(String, bool)>) -> Markup {
+    // Each line, and for a posting: what precedes the account, the account,
+    // the amount, and how many characters of the amount precede its mark.
+    let lines: Vec<(&str, Option<(&str, &str, &str, usize)>)> = text
+        .lines()
+        .map(|line| {
+            let body = line.trim_start();
+            let mark = if body.starts_with("* ") || body.starts_with("! ") { 2 } else { 0 };
+            let rest = &body[mark..];
+            if body.len() == line.len() || rest.is_empty() || rest.starts_with(';') {
+                return (line, None);
+            }
+            let end = [rest.find("  "), rest.find('\t')].into_iter().flatten().min().unwrap_or(rest.len());
+            let amount = rest[end..].trim();
+            (line, Some((&line[..line.len() - rest.len()], &rest[..end], amount, point(amount))))
+        })
+        .collect();
+    let postings = || lines.iter().filter_map(|(_, p)| p.as_ref()).filter(|p| !p.2.is_empty());
+    let width = postings().map(|(h, a, ..)| h.chars().count() + a.chars().count()).max().unwrap_or(0);
+    let int = postings().map(|p| p.3).max().unwrap_or(0);
+    html! {
+        @for (line, posting) in &lines {
+            @if let Some((head, account, amount, point)) = posting {
+                (head) a href=(account_href(account)) { (account) }
+                @if !amount.is_empty() {
+                    (" ".repeat(width - head.chars().count() - account.chars().count() + 2 + int - point))
+                    (amount)
+                }
+            } @else if let Some((head, value, href, present)) = tag_doc(line, &doc) {
+                (head)
+                @if present { a href=(href) { (value) } }
+                @else { button.missing type="button" popovertarget="upload" title="Not in the books: upload it" { (value) } }
+            } @else { (line) }
+            "\n"
+        }
+    }
+}
+
+/// A `; tag: value` line whose value is a document: the line up to the
+/// value, the value, and what `doc` says of it.
+fn tag_doc<'a>(line: &'a str, doc: impl Fn(&str, &str) -> Option<(String, bool)>) -> Option<(&'a str, &'a str, String, bool)> {
+    let (tag, value) = line.trim_start().strip_prefix(';')?.split_once(':')?;
+    let value = value.trim();
+    let line = line.trim_end();
+    let (href, present) = doc(tag.trim(), value)?;
+    Some((&line[..line.len() - value.len()], value, href, present))
+}
+
+/// Characters of an amount before its decimal mark: the last `.` or `,`
+/// followed by a digit in its number, else the number's end.
+// ponytail: reads a lone digit-group comma, as in `1,000`, as the decimal mark.
+fn point(amount: &str) -> usize {
+    let Some(start) = amount.find(|c: char| c.is_ascii_digit()) else { return amount.chars().count() };
+    let num = |c: char| c.is_ascii_digit() || c == '.' || c == ',';
+    let end = amount[start..].find(|c| !num(c)).map_or(amount.len(), |e| start + e);
+    let at = amount[start..end].rfind(['.', ',']).filter(|&i| start + i + 1 < end).map_or(end, |i| start + i);
+    amount[..at].chars().count()
+}
+
+/// One account's register: every entry that touches it, oldest first, with
+/// the running balance.
+async fn register(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
+    let name = q.get("name").cloned().unwrap_or_default();
+    or_error(&ctx, &name, || {
+        let escaped: String = name.chars().flat_map(|c| {
+            let e = "\\.^$|()[]{}*+?".contains(c).then_some('\\');
+            e.into_iter().chain([c])
+        }).collect();
+        let out = journal::hledger(&ctx, &["print", "-O", "json", &format!("acct:^{escaped}$")])?;
+        let txns: Vec<serde_json::Value> = serde_json::from_str(&out)?;
+        let mut balance = statement::Bag::new();
+        let mut rows = Vec::new();
+        for t in &txns {
+            let mut change = statement::Bag::new();
+            for p in t["tpostings"].as_array().into_iter().flatten().filter(|p| p["paccount"] == name.as_str()) {
+                for a in p["pamount"].as_array().into_iter().flatten() {
+                    let c = a["acommodity"].as_str().unwrap_or_default().to_string();
+                    let d = journal::decimal(&a["aquantity"])?;
+                    *change.entry(c.clone()).or_default() += d;
+                    *balance.entry(c).or_default() += d;
+                }
+            }
+            rows.push((
+                t["tdate"].as_str().unwrap_or_default().to_string(),
+                t["tdescription"].as_str().unwrap_or_default().to_string(),
+                reconcile::key_of(t).ok().map(|k| format!("/entry/{k}")),
+                money(&statement::amounts(&change)),
+                money(&statement::amounts(&balance)),
+            ));
+        }
+        Ok(html! {
+            h1 { code { (name) } }
+            div.box {
+                table.list {
+                    thead { tr { th { "Date" } th { "Description" } th.amt { "Amount" } th.amt { "Balance" } } }
+                    tbody {
+                        @for (date, description, href, change, balance) in &rows {
+                            tr {
+                                td.date { (date) }
+                                td {
+                                    @if let Some(h) = href { a href=(h) { (description) } }
+                                    @else { (description) }
+                                }
+                                td.amt { (change) }
+                                td.amt { (balance) }
+                            }
+                        }
+                    }
+                }
+            }
+            @if rows.is_empty() { p.muted { "Nothing booked to this account." } }
+            div.actions { span.nav { a.btn href="/" { (icon("left")) " Back" } } }
         })
     })
 }
@@ -1019,7 +1218,7 @@ fn params(ctx: &Ctx, f: &Fields) -> (String, String, String) {
         _ => d.to_string(),
     };
     (
-        pick("account", "assets:bank"),
+        pick("account", "Assets:Bank"),
         pick("commodity", &ctx.cfg.company.currency),
         pick("date", &jiff::Zoned::now().date().to_string()),
     )
@@ -1095,7 +1294,7 @@ fn reconcile_page(ctx: &Ctx, f: &Fields, notice: Option<Markup>) -> Result<Marku
                         (icon("book")) " Record this balance"
                     }
                 }
-                a.btn href="/" { (icon("left")) " Back" }
+                span.nav { a.btn href="/" { (icon("left")) " Back" } }
             }
         }
     })
@@ -1238,7 +1437,7 @@ fn bill_page(ctx: &Ctx, f: &Fields, notice: Option<Markup>) -> Result<Markup> {
                     label.field { "Postings"
                         span.hint { "One per line, " code { "account=amount" } ". Leave one amount off and hledger infers it." }
                         textarea name="postings" rows="5" required
-                                 placeholder="expenses:hosting=100.00\nliabilities:payable=-100.00" { (get("postings")) }
+                                 placeholder="Expenses:Hosting=100.00\nliabilities:payable=-100.00" { (get("postings")) }
                     }
                     div.actions { button.btn-primary type="submit" { (icon("check")) " File and book it" } }
                 }
@@ -1313,7 +1512,7 @@ fn form(ctx: &Ctx, date: &str, description: &str, postings: &str, error: Option<
                     label.field { "Postings"
                         span.hint { "One per line, " code { "account=amount" } ". Leave one amount off and hledger infers it." }
                         textarea name="postings" rows="5" required
-                                 placeholder="expenses:hosting=100.00\nliabilities:payable=-100.00" { (postings) }
+                                 placeholder="Expenses:Hosting=100.00\nliabilities:payable=-100.00" { (postings) }
                     }
                     div.actions { button.btn-primary type="submit" { (icon("check")) " Book it" } }
                 }
@@ -1398,8 +1597,10 @@ fn or_error(ctx: &Ctx, title: &str, body: impl FnOnce() -> Result<Markup>) -> Re
                     h1 { "That did not go through" }
                     div.flash.flash-error { (icon("error")) pre { (e) } }
                     div.actions {
-                        @if let Some(b) = back { a.btn href=(b) { (icon("left")) " Back" } }
-                        a.btn href="/" { (icon("book")) " Books" }
+                        span.nav {
+                            @if let Some(b) = back { a.btn href=(b) { (icon("left")) " Back" } }
+                            a.btn href="/" { (icon("book")) " Books" }
+                        }
                     }
                 },
             )
@@ -1574,6 +1775,11 @@ pre { overflow-x: auto; margin: 0; padding: 12px 16px; background: var(--inset);
 button[disabled] { opacity: .5; cursor: not-allowed; }
 button[disabled]:hover { border-color: var(--btn-border); }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+pre .missing { font: inherit; color: var(--error); background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; }
+.modal { max-width: 440px; padding: 20px; border: 1px solid var(--card-border); border-radius: 12px; background: var(--card); color: var(--fg); }
+.modal::backdrop { background: rgb(0 0 0 / .4); }
+.modal h2 { margin-top: 0; }
+.actions .nav { margin-left: auto; display: flex; gap: 8px; }
 
 /* forms */
 label.field { display: block; margin: 0 0 16px; font-weight: 600; }
@@ -1719,5 +1925,25 @@ mod tests {
         // non-browser clients and old browsers send no Origin; they do not get to write
         assert!(!ok(&[("host", "127.0.0.1:8801")]));
         assert!(!ok(&[]));
+    }
+
+    #[test]
+    fn postings_link_their_accounts() {
+        let text = "2026-03-31 Customer One\n    ; invoice: 1\n    Assets:Receivable  5500.00 EUR\n    \
+                    * Income:Sales   -5000 EUR\n    Liabilities:VAT:Output  EUR -500.0\n    equity\n";
+        let text = super::linked_postings(text, |_, _| None).into_string();
+        let a = |n: &str| format!("<a href=\"/account?name={n}\">{n}</a>");
+        assert_eq!(
+            text,
+            format!(
+                "2026-03-31 Customer One\n    ; invoice: 1\n\
+                 \x20   {}           5500.00 EUR\n\
+                 \x20   * {}             -5000 EUR\n\
+                 \x20   {}  EUR -500.0\n\
+                 \x20   {}\n",
+                a("Assets:Receivable"), a("Income:Sales"), a("Liabilities:VAT:Output"), a("equity"),
+            )
+        );
+        assert_eq!(super::account_href("Assets:Bank x&y"), "/account?name=Assets:Bank%20x%26y");
     }
 }

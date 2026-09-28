@@ -156,7 +156,7 @@ struct OptionParts {
     #[arg(long = "detail")]
     details: Vec<String>,
     /// The declared account money paid this way arrives in. Adding, it
-    /// defaults to assets:bank, assets:cash or assets:crypto by kind.
+    /// defaults to Assets:Bank, Assets:Cash or Assets:Crypto by kind.
     #[arg(long)]
     account: Option<String>,
 }
@@ -236,11 +236,16 @@ enum Cmd {
     /// bills/<year>/<date>-<issuer>-<hash>.<ext>. `abo bill` then books it.
     File {
         /// The date on the bill.
-        #[arg(long)]
-        date: String,
+        #[arg(long, required_unless_present = "entry")]
+        date: Option<String>,
         /// Who issued it.
-        #[arg(long)]
-        issuer: String,
+        #[arg(long, required_unless_present = "entry")]
+        issuer: Option<String>,
+        /// The document a booking names but the books lack, by the booking's
+        /// key: a bill's is filed under its old date and issuer and the
+        /// booking's tags follow; an invoice's goes where the invoice put it.
+        #[arg(long = "for", value_name = "KEY", conflicts_with_all = ["date", "issuer"])]
+        entry: Option<String>,
         /// A PDF, JPEG, PNG or WebP.
         src: PathBuf,
     },
@@ -323,7 +328,7 @@ enum Cmd {
     },
     /// Tick booked transactions off against a statement.
     Reconcile {
-        #[arg(long, default_value = "assets:bank")]
+        #[arg(long, default_value = "Assets:Bank")]
         account: String,
         /// Which commodity to reconcile. Defaults to the company currency.
         #[arg(long)]
@@ -531,9 +536,14 @@ async fn run(cli: Cli) -> Result<()> {
             let r = journal::post(&ctx, &entry)?;
             emit(cli.json, &r, || format!("{}\nCommitted {} to {}.", entry.render(), r.commit, r.file))
         }
-        Cmd::File { date, issuer, src } => {
+        Cmd::File { date, issuer, entry, src } => {
             let ctx = Ctx::open(&here)?;
             let bytes = std::fs::read(&src).with_context(|| format!("{}", src.display()))?;
+            if let Some(key) = entry {
+                let r = bill::refile(&ctx, &key, &src.to_string_lossy(), &bytes)?;
+                return emit(cli.json, &r, || format!("Filed {} for {key}. Committed {}.", r.file, r.commit));
+            }
+            let (date, issuer) = (date.unwrap_or_default(), issuer.unwrap_or_default());
             let r = bill::file(&ctx, &src.to_string_lossy(), &bytes, &date, &issuer)?;
             emit(cli.json, &r, || format!("Filed {}. Committed {}.\nNext: abo bill --desc ... {} POSTINGS", r.file, r.commit, r.file))
         }
