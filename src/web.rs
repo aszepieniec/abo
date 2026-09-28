@@ -258,8 +258,9 @@ impl questions::Source for Posted<'_> {
 /// The questions as a form, filled in from `f`, each problem under its
 /// field. What follows a choice shows once it is chosen, through CSS rules
 /// written into `css` as the form is drawn: no script. Where `:has` is not
-/// supported every field shows, and the ones not chosen are ignored.
-fn render(qs: &[Q], prefix: &str, f: &Fields, problems: &Problems, css: &mut Vec<String>) -> Markup {
+/// supported every field shows, and the ones not chosen are ignored. A
+/// choice's options in `omit` are left out.
+fn render(qs: &[Q], prefix: &str, f: &Fields, problems: &Problems, omit: &[&str], css: &mut Vec<String>) -> Markup {
     let v = |k: &str| f.get(k).cloned().unwrap_or_default();
     let problem = |k: &str| html! { @if let Some(p) = problems.get(k) { span.problem { (p) } } };
     let mut out = html! {};
@@ -270,7 +271,7 @@ fn render(qs: &[Q], prefix: &str, f: &Fields, problems: &Problems, css: &mut Vec
                     div.box-header { (icon(ic)) (title) }
                     div.box-body {
                         @if !note.is_empty() { p.muted.small { (with_code(note)) } }
-                        (render(qs, prefix, f, problems, css))
+                        (render(qs, prefix, f, problems, omit, css))
                     }
                 }
             },
@@ -283,7 +284,9 @@ fn render(qs: &[Q], prefix: &str, f: &Fields, problems: &Problems, css: &mut Vec
                 html! {
                     label.field { (label)
                         @if !hint.is_empty() || !blank.is_empty() { span.hint { (hint) " " (blank) } }
-                        input type="text" name=(k) value=(v(&k));
+                        // An account field suggests the declared accounts, where
+                        // the page has them as #accounts.
+                        input type="text" name=(k) value=(v(&k)) list=[key.ends_with("account").then_some("accounts")];
                         (problem(&k))
                     }
                 }
@@ -306,27 +309,28 @@ fn render(qs: &[Q], prefix: &str, f: &Fields, problems: &Problems, css: &mut Vec
                     .map(|(o, then)| (shown_when(css, &k, &[o]), *then))
                     .collect();
                 html! {
-                    div.field-label { (label) }
-                    div.choice {
-                        @for (o, _) in options.iter() {
-                            label { input type="radio" name=(k) value=(o) checked[v(&k) == *o]; (o) }
+                    label.field { (label)
+                        select name=(k) {
+                            @for (o, _) in options.iter().filter(|(o, _)| !omit.contains(o)) {
+                                option value=(o) selected[v(&k) == *o] { (o) }
+                            }
                         }
+                        (problem(&k))
                     }
-                    (problem(&k))
                     @for (class, then) in &branches {
-                        div class=(class) { (render(then, prefix, f, problems, css)) }
+                        div class=(class) { (render(then, prefix, f, problems, omit, css)) }
                     }
                 }
             }
             Q::When { key, is, qs } => {
                 let class = shown_when(css, &format!("{prefix}{key}"), is);
-                html! { div class=(class) { (render(qs, prefix, f, problems, css)) } }
+                html! { div class=(class) { (render(qs, prefix, f, problems, omit, css)) } }
             }
             Q::Repeat { key, item, another, .. } => {
                 let n = v(&format!("{prefix}{key}.n")).parse().unwrap_or(1usize).clamp(1, MAX_OPTIONS);
                 html! {
                     @for i in 0..n {
-                        div.option { (render(item, &format!("{prefix}{key}{i}."), f, problems, css)) }
+                        div.option { (render(item, &format!("{prefix}{key}{i}."), f, problems, omit, css)) }
                     }
                     input type="hidden" name={ (prefix) (key) ".n" } value=(n);
                     @if n < MAX_OPTIONS {
@@ -349,7 +353,7 @@ fn with_code(s: &str) -> Markup {
 /// and the rule that does it.
 fn shown_when(css: &mut Vec<String>, key: &str, options: &[&str]) -> String {
     let class = format!("q{}", css.len());
-    let chosen: Vec<String> = options.iter().map(|o| format!("input[name=\"{key}\"][value=\"{o}\"]:checked")).collect();
+    let chosen: Vec<String> = options.iter().map(|o| format!("select[name=\"{key}\"] option[value=\"{o}\"]:checked")).collect();
     css.push(format!("form:not(:has({})) .{class} {{ display: none; }}", chosen.join(", ")));
     class
 }
@@ -449,7 +453,7 @@ async fn company_submit(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
 /// The company: its details as a form, and what else the books say about it.
 fn company_page(ctx: &Ctx, f: &Fields, problems: &Problems, refused: Option<&anyhow::Error>) -> Markup {
     let mut css = vec![];
-    let fields = render(questions::COMPANY, "", f, problems, &mut css);
+    let fields = render(questions::COMPANY, "", f, problems, &[], &mut css);
     let cfg = &ctx.cfg;
     html! {
         h1 { (cfg.company.name) }
@@ -500,11 +504,11 @@ fn company_page(ctx: &Ctx, f: &Fields, problems: &Problems, refused: Option<&any
                             td { "Into " code { (p.account) } }
                             td {
                                 div.actions {
-                                    a.btn href={ "/company/payment?id=" (enc(&p.id)) } { "Edit" }
+                                    a.btn href={ "/company/payment?id=" (enc(&p.id)) } { (icon("pencil")) " Edit" }
                                     form method="post" action="/company/payment/remove" {
                                         (token())
                                         input type="hidden" name="id" value=(p.id);
-                                        button type="submit" { "Remove" }
+                                        button type="submit" { (icon("trash")) " Remove" }
                                     }
                                 }
                             }
@@ -533,7 +537,7 @@ async fn option_view(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
             }
             None => initial(questions::OPTION, "", &mut f),
         }
-        Ok(option_page(&f, &Problems::new(), None))
+        Ok(option_page(&ctx, &f, &Problems::new(), None))
     })
 }
 
@@ -566,7 +570,7 @@ async fn option_submit(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
         Ok(to) => Redirect::to(&to).into_response(),
         Err(e) => {
             let refused = problems.is_empty().then_some(&e);
-            or_error(&ctx, "Payment option", || Ok(option_page(&f, &problems, refused)))
+            or_error(&ctx, "Payment option", || Ok(option_page(&ctx, &f, &problems, refused)))
         }
     }
 }
@@ -579,9 +583,10 @@ async fn option_remove(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
     }
 }
 
-fn option_page(f: &Fields, problems: &Problems, refused: Option<&anyhow::Error>) -> Markup {
+fn option_page(ctx: &Ctx, f: &Fields, problems: &Problems, refused: Option<&anyhow::Error>) -> Markup {
     let mut css = vec![];
-    let fields = render(questions::OPTION, "", f, problems, &mut css);
+    let fields = render(questions::OPTION, "", f, problems, &["skip"], &mut css);
+    let accounts = journal::declared_accounts(ctx).unwrap_or_default();
     let was = f.get("was").cloned().unwrap_or_default();
     html! {
         h1 { @if was.is_empty() { "Add a payment option" } @else { "Payment option " code { (was) } } }
@@ -593,11 +598,12 @@ fn option_page(f: &Fields, problems: &Problems, refused: Option<&anyhow::Error>)
             } }
         }
         style { (PreEscaped(css.join("\n"))) }
+        datalist #accounts { @for a in &accounts { option value=(a) {} } }
         form method="post" action="/company/payment" {
             (token())
             input type="hidden" name="was" value=(was);
             div.box { div.box-body {
-                p.muted.small { "Blank fields take what is offered under them. " code { "skip" } " leaves things as they are." }
+                p.muted.small { "Blank fields take what is offered under them." }
                 (fields)
             } }
             div.actions {
@@ -611,7 +617,7 @@ fn option_page(f: &Fields, problems: &Problems, refused: Option<&anyhow::Error>)
 /// init's questions as a form.
 fn new_page(f: &Fields, problems: &Problems, refused: Option<&anyhow::Error>) -> Markup {
     let mut css = vec![];
-    let form = render(questions::INIT, "", f, problems, &mut css);
+    let form = render(questions::INIT, "", f, problems, &[], &mut css);
     html! {
         h1 { "Open the books for a new company" }
         @if let Some(e) = refused {
@@ -1998,8 +2004,6 @@ input[type=text], input[type=date], input[type=file], textarea, select {
 textarea { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }
 label.field .problem, .problem { display: block; font-weight: 400; font-size: 12px; color: var(--error); margin-top: 4px; }
 .field-label { font-weight: 600; margin: 0 0 6px; }
-.choice { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 0 0 16px; }
-.choice label { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; }
 .option { padding-bottom: 8px; }
 .option + .option { border-top: 1px solid var(--card-border); padding-top: 16px; }
 .offscreen { position: absolute; left: -9999px; }

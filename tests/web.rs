@@ -79,12 +79,12 @@ fn new_company() {
     assert_eq!(status, 200);
     assert!(page.contains("No companies in") && page.contains("href=\"/new\""), "{page}");
     let (_, _, page) = http(&s, "GET", "/new", &[]);
-    assert!(page.contains("name=\"p0.kind\" value=\"bank\" checked"), "{page}");
+    assert!(page.contains("<select name=\"p0.kind\"><option value=\"bank\" selected>"), "{page}");
     assert!(!page.contains("name=\"p1.kind\""), "a second option before one was asked for");
 
     // Another payment option only when asked for; what was typed stays.
     let (_, _, page) = http(&s, "POST", "/new", &[("p.n", "1"), ("name", "Acme"), ("more", "p")]);
-    assert!(page.contains("name=\"p1.kind\" value=\"bank\" checked"), "{page}");
+    assert!(page.contains("<select name=\"p1.kind\"><option value=\"bank\" selected>"), "{page}");
     assert!(page.contains("name=\"name\" value=\"Acme\""), "{page}");
 
     // Every wrong answer says why under its field, and nothing is made.
@@ -295,6 +295,10 @@ fn company_page() {
     assert_eq!((status, to.as_str()), (303, "/company?done=3"));
     assert_eq!(argv(), serde_json::json!(["payment-options", "add", "cash", "--kind", "cash", "--label", "Cash", "--account", "Assets:Cash", "--detail", "At our office"]));
 
+    let (_, _, page) = http(&s, "GET", "/company/payment", &[]);
+    assert!(page.contains("<option value=\"crypto\">") && !page.contains("value=\"skip\""), "{page}");
+    // The account field suggests the declared accounts.
+    assert!(page.contains("name=\"account\" value=\"\" list=\"accounts\"") && page.contains("<option value=\"Assets:Cash\">"), "{page}");
     let (_, _, page) = http(&s, "GET", "/company/payment?id=cash", &[]);
     assert!(page.contains("name=\"was\" value=\"cash\"") && page.contains("At our office"), "{page}");
     let edit = [("token", "p2"), ("was", "cash"), ("kind", "cash"), ("details", "At the till"), ("label", "Cash"), ("id", "cash"), ("account", "Assets:Cash")];
