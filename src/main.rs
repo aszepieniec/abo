@@ -1,4 +1,5 @@
 mod bill;
+mod company;
 mod invoice;
 mod journal;
 mod payment;
@@ -357,6 +358,19 @@ enum Cmd {
         #[command(subcommand)]
         change: Option<PaymentCmd>,
     },
+    /// The company's details, as invoices print them. With flags, change
+    /// them; a flag left out leaves its detail as it is.
+    Company {
+        #[arg(long)]
+        name: Option<String>,
+        /// A line of the address. Repeatable; `--address ''` clears it.
+        #[arg(long)]
+        address: Vec<String>,
+        #[arg(long)]
+        country: Option<String>,
+        #[arg(long)]
+        tax_id: Option<String>,
+    },
     /// Book the opposite of an entry. KEY is `file:line:date`, as `abo
     /// reconcile` and the web interface give it.
     Revert {
@@ -656,6 +670,20 @@ async fn run(cli: Cli) -> Result<()> {
                     .collect::<Vec<_>>()
                     .join("\n")
             })
+        }
+        Cmd::Company { name, address, country, tax_id } => {
+            let ctx = Ctx::open(&here)?;
+            let address = (!address.is_empty()).then(|| address.join("\n"));
+            let c = company::Change { name, address, country, tax_id };
+            if c.name.is_none() && c.address.is_none() && c.country.is_none() && c.tax_id.is_none() {
+                let c = &ctx.cfg.company;
+                let shown = serde_json::json!({ "name": c.name, "address": c.address, "country": c.country, "tax_id": c.tax_id });
+                return emit(cli.json, &shown, || {
+                    [&c.name, &c.address, &c.country, &c.tax_id].iter().filter(|v| !v.is_empty()).map(|v| v.as_str()).collect::<Vec<_>>().join("\n")
+                });
+            }
+            let r = company::edit(&ctx, c)?;
+            emit(cli.json, &r, || format!("Changed the company's details. Committed {}.", r.commit))
         }
         Cmd::PaymentOptions { change } => {
             let ctx = Ctx::open(&here)?;

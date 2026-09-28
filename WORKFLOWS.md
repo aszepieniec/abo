@@ -82,6 +82,16 @@ new rate, a declared account — applies without a restart.
 entries; for a data directory, the name and directory of each company in it,
 and a button to open the books for a new one (A1).
 
+### A3b. Change the company's details — Supported
+Name, address, country and tax registration number: what invoices print about
+who sends them. The company page (the company's name in the sidebar) shows
+them as init's questions, filled in, and saving runs `abo company --name ...
+--address ... --country ... --tax-id ...` with only the details that changed.
+`abo company` alone prints them. The directory keeps its name; currency, VAT
+method and payment options are shown there, not changed there.
+**Done when** a change shows on the next invoice, is one line in the log, and
+undo puts it back.
+
 ### A4. Change where invoices ask to be paid — Supported (CLI)
 A payment option is one of three kinds. A **bank** option has an account
 holder, an IBAN (its check digits checked, and kept in groups of four), a BIC

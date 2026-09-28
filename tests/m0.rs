@@ -681,3 +681,34 @@ fn new_scan_sha(p: &Path) -> String {
     let o = Command::new("sha256sum").arg(p).output().unwrap();
     String::from_utf8_lossy(&o.stdout).split(' ').next().unwrap().to_string()
 }
+
+/// `abo company` shows the details, changes the ones given, logs exactly
+/// the flags that made the change, and undo puts them back.
+#[test]
+fn company_details() {
+    let base = std::env::temp_dir().join(format!("abo-company-{}", std::process::id()));
+    let dir = base.join("test-ltd");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let o = abo(&base, &["init", "Test Ltd", "--address", "1 Street", "--tax-id", "CHE-1", "--currency", "EUR", "--vat", "none"], "");
+    assert!(o.status.success(), "init failed: {}", err(&o));
+    let show = || String::from_utf8(abo(&dir, &["company"], "").stdout).unwrap();
+    assert_eq!(show(), "Test Ltd\n1 Street\nCHE-1\n");
+
+    let o = abo(&dir, &["company", "--name", "Test & Co", "--address", "2 Road", "--address", "3000 City", "--tax-id", ""], "");
+    assert!(o.status.success(), "{}", err(&o));
+    assert_eq!(show(), "Test & Co\n2 Road\n3000 City\n");
+    let log: serde_json::Value = serde_json::from_slice(&abo(&dir, &["log", "--json"], "").stdout).unwrap();
+    let last = log.as_array().unwrap().last().unwrap();
+    assert_eq!(last["argv"], serde_json::json!(["company", "--name", "Test & Co", "--tax-id", "", "--address", "2 Road", "--address", "3000 City"]));
+
+    let o = abo(&dir, &["company", "--name", "Test & Co"], "");
+    assert!(err(&o).contains("like that already"), "{}", err(&o));
+
+    let n = log.as_array().unwrap().len().to_string();
+    let o = abo(&dir, &["undo", &n], "");
+    assert!(o.status.success(), "{}", err(&o));
+    assert_eq!(show(), "Test Ltd\n1 Street\nCHE-1\n");
+
+    std::fs::remove_dir_all(&base).unwrap();
+}

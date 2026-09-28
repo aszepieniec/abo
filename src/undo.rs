@@ -161,10 +161,13 @@ fn revert_commit(ctx: &Ctx, hash: &str) -> Result<String> {
         }
         Ok(())
     });
-    if let Err(e) = checked {
-        apply(false)?; // put it back exactly
+    // Put back exactly if it is refused, or cannot be committed.
+    let committed = checked.and_then(|_| {
+        ctx.git(&["commit", "-q", "-m", &format!("Revert \"{}\"\n\nThis reverts commit {full}.", subject.trim())])
+    });
+    if let Err(e) = committed {
+        apply(false)?;
         return Err(e);
     }
-    ctx.git(&["commit", "-q", "-m", &format!("Revert \"{}\"\n\nThis reverts commit {full}.", subject.trim())])?;
     Ok(ctx.git(&["rev-parse", "--short", "HEAD"])?.trim().to_string())
 }

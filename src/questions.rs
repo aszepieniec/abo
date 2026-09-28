@@ -221,29 +221,26 @@ pub fn ask_item(
 
 // ---- the questions ----
 
+/// The company's details: asked at init, and again by the company page.
+pub static COMPANY: &[Q] = &[
+    Q::Text { key: "name", label: "Name", hint: "", offer: Offer::None, check: Check::By(name) },
+    Q::Lines { key: "address", label: "Address", hint: "" },
+    Q::Text { key: "country", label: "Country", hint: "", offer: Offer::None, check: Check::Free },
+    Q::Text {
+        key: "tax_id",
+        label: "Tax registration number",
+        hint: "Blank if not registered.",
+        offer: Offer::None,
+        check: Check::Free,
+    },
+];
+
 pub static INIT: &[Q] = &[
     Q::Group {
         title: "The company",
         icon: "book",
-        note: "",
-        qs: &[
-            Q::Text {
-                key: "name",
-                label: "Name",
-                hint: "Its directory is this in lower-case ASCII, with dashes between the words.",
-                offer: Offer::None,
-                check: Check::By(name),
-            },
-            Q::Lines { key: "address", label: "Address", hint: "" },
-            Q::Text { key: "country", label: "Country", hint: "", offer: Offer::None, check: Check::Free },
-            Q::Text {
-                key: "tax_id",
-                label: "Tax registration number",
-                hint: "Blank if not registered.",
-                offer: Offer::None,
-                check: Check::Free,
-            },
-        ],
+        note: "Its directory is its name in lower-case ASCII, with dashes between the words.",
+        qs: COMPANY,
     },
     Q::Group {
         title: "Where invoices ask to be paid",

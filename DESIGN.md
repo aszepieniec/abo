@@ -12,8 +12,8 @@ not re-litigated. Where something was deliberately left out, the trigger for
 adding it is stated.
 
 Status: M0-M4 built — `abo init`, `post`, `file`, `bill`, `invoice`,
-`reconcile`, `clear`, `revert`, `undo`, `payment-options`, `pl`, `bs`, `vat`,
-`bal`, `reg`, `log`, `serve`, `demo`. Next step is M5
+`reconcile`, `clear`, `revert`, `undo`, `company`, `payment-options`, `pl`, `bs`,
+`vat`, `bal`, `reg`, `log`, `serve`, `demo`. Next step is M5
 (companies and users).
 
 ---

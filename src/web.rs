@@ -3,6 +3,7 @@
 //! the CLI and never talk to themselves over HTTP.
 
 use crate::bill;
+use crate::company;
 use crate::invoice;
 use crate::journal::{self, Entry, Posting};
 use crate::reconcile;
@@ -57,6 +58,7 @@ pub async fn serve(ctx: Ctx, port: u16) -> Result<()> {
         .route("/bill", get(bill_form).post(bill_submit))
         .route("/entry/{key}", get(booking))
         .route("/account", get(register))
+        .route("/company", get(company_view).post(company_submit))
         .route("/entry/{key}/file", post(entry_file))
         .route("/bills/{*rest}", get(bill_doc))
         .route("/entry/{key}/revert", post(revert))
@@ -400,6 +402,95 @@ fn find_repeat<'a>(qs: &'a [Q], key: &str) -> Option<&'a Q> {
         Q::Choice { options, .. } => options.iter().find_map(|(_, then)| find_repeat(then, key)),
         _ => None,
     })
+}
+
+async fn company_view(Books(ctx): Books) -> Response {
+    let c = &ctx.cfg.company;
+    let f = Fields::from([
+        ("name".into(), c.name.clone()),
+        ("address".into(), c.address.clone()),
+        ("country".into(), c.country.clone()),
+        ("tax_id".into(), c.tax_id.clone()),
+    ]);
+    or_error(&ctx, "The company", || Ok(company_page(&ctx, &f, &Problems::new(), None)))
+}
+
+async fn company_submit(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
+    let mut problems = Problems::new();
+    let changed = once(f.get("token").map_or("", String::as_str), || {
+        let mut posted = Posted { f: &f, problems: Problems::new() };
+        let mut a = questions::Answers::new();
+        questions::walk(questions::COMPANY, "", &mut a, &Default::default(), &mut posted)?;
+        if !posted.problems.is_empty() {
+            problems = posted.problems;
+            bail!("answers to look at again");
+        }
+        let c = &ctx.cfg.company;
+        let mut take = |k: &str| a.remove(k).unwrap_or_default();
+        let (name, address, country, tax_id) = (take("name"), take("address"), take("country"), take("tax_id"));
+        // Sent as it stood: nothing to change, and nothing to log.
+        if (&name, &address, &country, &tax_id) != (&c.name, &c.address, &c.country, &c.tax_id) {
+            company::edit(&ctx, company::Change { name: Some(name), address: Some(address), country: Some(country), tax_id: Some(tax_id) })?;
+        }
+        Ok(done(&ctx, "/company"))
+    });
+    match changed {
+        Ok(to) => Redirect::to(&to).into_response(),
+        Err(e) => {
+            let refused = problems.is_empty().then_some(&e);
+            or_error(&ctx, "The company", || Ok(company_page(&ctx, &f, &problems, refused)))
+        }
+    }
+}
+
+/// The company: its details as a form, and what else the books say about it.
+fn company_page(ctx: &Ctx, f: &Fields, problems: &Problems, refused: Option<&anyhow::Error>) -> Markup {
+    let mut css = vec![];
+    let fields = render(questions::COMPANY, "", f, problems, &mut css);
+    let cfg = &ctx.cfg;
+    html! {
+        h1 { (cfg.company.name) }
+        @if let Some(e) = refused { (self::refused(e)) }
+        @else if !problems.is_empty() {
+            div.flash.flash-error { (icon("error")) div {
+                strong { "Not done" }
+                "Some answers need another look; each says why under it."
+            } }
+        }
+        form method="post" action="/company" {
+            (token())
+            div.box {
+                div.box-header { (icon("book")) "Details" }
+                div.box-body {
+                    p.muted.small { "Invoices print these." }
+                    (fields)
+                    div.actions { button.btn-primary type="submit" { (icon("check")) " Save" } }
+                }
+            }
+        }
+        div.box {
+            div.box-header { (icon("coins")) "Set when the books were opened" }
+            table.list {
+                tbody {
+                    tr { td { "Currency" } td { code { (cfg.company.currency) } } }
+                    tr { td { "VAT" } td {
+                        @match &cfg.vat {
+                            Vat::None => "Not registered",
+                            Vat::Flat { rate, account } => { "Flat rate, " (rate) "% of gross turnover, to " code { (account) } }
+                            Vat::Effective { input, output } => { "Output less input: " code { (input) } ", " code { (output) } }
+                        }
+                    } }
+                    tr { td { "Where invoices ask to be paid" } td {
+                        @if cfg.payment.is_empty() { "Nowhere yet" }
+                        @for p in &cfg.payment {
+                            div { code { (p.id) } " " (if p.label.is_empty() { p.kind.name() } else { &p.label }) ", into " code { (p.account) } }
+                        }
+                        div.muted.small { code { "abo payment-options" } " changes these." }
+                    } }
+                }
+            }
+        }
+    }
 }
 
 /// init's questions as a form.
@@ -1636,7 +1727,7 @@ fn page(ctx: &Ctx, title: &str, body: Markup) -> Html<String> {
                 }
                 body {
                     aside.side {
-                        a.brand href="/" { span.mark { "abo" } span.name { (ctx.cfg.company.name) } }
+                        a.brand href="/company" title="The company" { span.mark { "abo" } span.name { (ctx.cfg.company.name) } }
                         nav {
                             @for (href, ic, label, section) in nav {
                                 a href=(href) class=[current(section).then_some("current")] {
