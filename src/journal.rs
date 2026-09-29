@@ -115,6 +115,41 @@ pub fn declared_accounts(ctx: &Ctx) -> Result<Vec<String>> {
         .collect())
 }
 
+/// Commodities declared in accounts.journal, each with the places its
+/// `commodity` directive gives (`commodity 1000.00 EUR`: two), or none when
+/// it gives no amount.
+pub fn declared_commodities(ctx: &Ctx) -> Result<Vec<(String, Option<u32>)>> {
+    let path = ctx.accounts_journal();
+    let text = std::fs::read_to_string(&path).with_context(|| format!("{}", path.display()))?;
+    Ok(text
+        .lines()
+        .filter_map(|l| l.trim_start().strip_prefix("commodity "))
+        .filter_map(|rest| {
+            let words: Vec<&str> = rest.split(';').next()?.split_whitespace().collect();
+            let number = |w: &str| w.chars().any(|c| c.is_ascii_digit());
+            let symbol = words.iter().find(|w| !number(w))?.to_string();
+            let places = words.iter().find(|w| number(w)).map(|n| n.rsplit_once('.').map_or(0, |(_, d)| d.len() as u32));
+            Some((symbol, places))
+        })
+        .collect())
+}
+
+/// The commodity as declared, or why it cannot be used: not declared, with
+/// the declared one it differs from only in case where there is one.
+pub fn commodity(ctx: &Ctx, c: &str) -> Result<(String, Option<u32>)> {
+    let declared = declared_commodities(ctx)?;
+    if let Some(d) = declared.iter().find(|(s, _)| s == c) {
+        return Ok(d.clone());
+    }
+    match declared.iter().find(|(s, _)| s.eq_ignore_ascii_case(c)) {
+        Some((s, _)) => bail!("commodity {c:?} is not declared; did you mean {s}?"),
+        None => bail!(
+            "commodity {c:?} is not declared in journal/accounts.journal; declare it first, \
+             with its places, e.g. `commodity 1000.00 {c}`"
+        ),
+    }
+}
+
 /// Every string that reaches the journal is untrusted: it comes from a scanned
 /// document via a language model, or from a form. Journal syntax is the thing
 /// being protected. A newline starts a new transaction; `;` starts a comment,
@@ -154,8 +189,10 @@ pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
     }
     // One exception to needing two postings: an entry that moves nothing and
     // exists to record a balance, with or without an assertion on it.
-    let moves_nothing =
-        e.postings.len() == 1 && e.postings[0].amount.is_some_and(|a| a.is_zero());
+    // And an entry of tags alone, settling an invoice where the books do not
+    // show the payment.
+    let moves_nothing = e.postings.len() == 1 && e.postings[0].amount.is_some_and(|a| a.is_zero())
+        || e.postings.is_empty() && e.tag(crate::settle::SETTLES).is_some();
     if e.postings.len() < 2 && !moves_nothing {
         bail!("an entry needs at least two postings");
     }
@@ -171,7 +208,16 @@ pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
         }
     }
 
-    // 2. every account declared
+    // 2. every account and commodity declared, and no amount finer than its
+    // commodity's places
+    for p in &e.postings {
+        let (_, places) = commodity(ctx, &p.commodity)?;
+        if let (Some(dp), Some(a)) = (places, p.amount) {
+            if a.normalize().scale() > dp {
+                bail!("{a} {} has more places than {} has: {dp}", p.commodity, p.commodity);
+            }
+        }
+    }
     let declared = declared_accounts(ctx)?;
     for p in &e.postings {
         if !declared.contains(&p.account) {
@@ -217,6 +263,23 @@ pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
         if !found.trim().is_empty() {
             bail!("this document is already booked:\n{}", found.trim());
         }
+    }
+
+    // 4b. what it pays is an invoice still owed, named once, and it pays:
+    // it takes something off the receivable — but for the entry of the tag
+    // alone that settles an invoice where the books do not show the payment.
+    let paying: Vec<&(String, String)> =
+        e.tags.iter().filter(|(k, _)| k == crate::settle::PAYS || k == crate::settle::SETTLES).collect();
+    for (i, (k, v)) in paying.iter().enumerate() {
+        if paying[..i].iter().any(|(_, w)| w == v) {
+            bail!("invoice {v} is named twice; a payment {} it or {} it, once", crate::settle::PAYS, crate::settle::SETTLES);
+        }
+        crate::settle::check(ctx, k, v)?;
+    }
+    let receivable = &ctx.cfg.invoice.receivable;
+    let takes_off = e.postings.iter().any(|p| &p.account == receivable && p.amount.is_none_or(|a| a.is_sign_negative() && !a.is_zero()));
+    if !paying.is_empty() && !e.postings.is_empty() && !takes_off {
+        bail!("it names invoices it pays, but takes nothing off {receivable}");
     }
 
     // 5. date inside an open period
@@ -397,7 +460,7 @@ pub struct Booking {
     /// `date description` of the entry reversing this one.
     pub reversed_by: Option<String>,
     #[serde(skip)]
-    postings: Vec<Posting>,
+    pub(crate) postings: Vec<Posting>,
 }
 
 pub fn booking(ctx: &Ctx, key: &str) -> Result<Booking> {
@@ -486,6 +549,17 @@ pub fn reverse(ctx: &Ctx, key: &str, date: &str) -> Result<AddReport> {
         let b = booking(ctx, key)?;
         if let Some(by) = &b.reversed_by {
             bail!("it is already reversed, by {by}");
+        }
+        // An issued invoice is a document the customer has, and so is a
+        // credit note: neither is reversed behind the customer's back.
+        let tag = |k: &str| b.tags.iter().find(|(t, _)| t == k).map(|(_, v)| v.clone());
+        match (tag("invoice"), tag("credits")) {
+            (Some(n), Some(of)) => bail!("{n} is a credit note, cancelling invoice {of}; it stands. Issue invoice {of} again if it was cancelled by mistake"),
+            (Some(n), None) => bail!("{n} is an invoice; it is corrected by a credit note, not reverted: abo credit {n}"),
+            _ => {}
+        }
+        if date < b.date.as_str() {
+            bail!("a reversal may not be dated before what it reverses, {}", b.date);
         }
         let commit = b.commit.context("no commit booked it, so a reversal would have nothing to name")?;
         let description: String = format!("Reversal of {} {}", b.date, b.description).chars().take(200).collect();

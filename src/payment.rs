@@ -19,12 +19,12 @@ pub fn find<'a>(options: &'a [PaymentOption], id: &str) -> Result<&'a PaymentOpt
     if let Some(o) = options.iter().find(|o| o.id == id) {
         return Ok(o);
     }
-    let ids = || options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>().join(", ");
-    match options.iter().filter(|o| o.id.starts_with(id)).collect::<Vec<_>>()[..] {
+    let ids = |os: &[&PaymentOption]| os.iter().map(|o| o.id.as_str()).collect::<Vec<_>>().join(", ");
+    match &options.iter().filter(|o| o.id.starts_with(id)).collect::<Vec<_>>()[..] {
         [o] => Ok(o),
         [] if options.is_empty() => bail!("there is no payment option {id:?}; there are none yet"),
-        [] => bail!("there is no payment option {id:?}; there are {}", ids()),
-        _ => bail!("{id:?} is the start of more than one payment option: {}", ids()),
+        [] => bail!("there is no payment option {id:?}; there are {}", ids(&options.iter().collect::<Vec<_>>())),
+        some => bail!("{id:?} is the start of more than one payment option: {}", ids(some)),
     }
 }
 
@@ -53,7 +53,12 @@ pub fn check(ctx: &Ctx, mut o: PaymentOption, others: &[&PaymentOption]) -> Resu
     Ok(o)
 }
 
-pub fn add(ctx: &Ctx, o: PaymentOption) -> Result<PaymentReport> {
+pub fn add(ctx: &Ctx, mut o: PaymentOption) -> Result<PaymentReport> {
+    // Nameless, it prints as details under no heading: named as the
+    // question offers, Bank transfer, Cash, or the network.
+    if o.label.is_empty() {
+        o.label = o.kind.label(&o.network);
+    }
     let what = o.id.clone();
     let mut argv = vec!["payment-options".to_string(), "add".to_string(), o.id.clone()];
     fields(&mut argv, &o, &PaymentOption::default());
@@ -67,6 +72,9 @@ pub fn add(ctx: &Ctx, o: PaymentOption) -> Result<PaymentReport> {
 
 /// Replace the option `id` names with `o`, which may carry a new id.
 pub fn edit(ctx: &Ctx, id: &str, o: PaymentOption) -> Result<PaymentReport> {
+    // The id as found, not as typed: `cr` may name another option tomorrow.
+    let id = find(&ctx.cfg.payment, id).map(|o| o.id.clone()).unwrap_or_else(|_| id.to_string());
+    let id = id.as_str();
     let mut argv = vec!["payment-options".to_string(), "edit".to_string(), id.to_string()];
     if let Ok(now) = find(&ctx.cfg.payment, id) {
         if now.id != o.id {
@@ -87,6 +95,8 @@ pub fn edit(ctx: &Ctx, id: &str, o: PaymentOption) -> Result<PaymentReport> {
 }
 
 pub fn remove(ctx: &Ctx, id: &str) -> Result<PaymentReport> {
+    let id = find(&ctx.cfg.payment, id).map(|o| o.id.clone()).unwrap_or_else(|_| id.to_string());
+    let id = id.as_str();
     let r = change(ctx, &format!("Remove payment option {id}"), |options| {
         let old = find(options, id)?.id.clone();
         options.retain(|p| p.id != old);
@@ -135,7 +145,6 @@ fn change(ctx: &Ctx, msg: &str, f: impl FnOnce(&mut Vec<PaymentOption>) -> Resul
         Some(t) => doc["payment"] = t.clone(),
         None => _ = doc.remove("payment"),
     }
-    std::fs::write(&path, doc.to_string())?;
-    let commit = ctx.commit(&[&path], msg)?;
+    let commit = ctx.write_and_commit(&path, &doc.to_string(), msg)?;
     Ok(PaymentReport { options, commit })
 }

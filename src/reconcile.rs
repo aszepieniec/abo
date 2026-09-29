@@ -56,6 +56,14 @@ pub fn status(
     if account.starts_with('-') {
         bail!("bad account {account:?}");
     }
+    // What a statement shows: money held, in a commodity the books know.
+    if !journal::declared_accounts(ctx)?.iter().any(|a| a == account) {
+        bail!("account {account:?} is not declared in journal/accounts.journal");
+    }
+    if !account.split(':').next().is_some_and(|a| a.eq_ignore_ascii_case("assets")) {
+        bail!("{account} is not an asset account; a statement is of money held, such as a bank account, cash or a wallet");
+    }
+    journal::commodity(ctx, commodity)?;
     // -e is exclusive, so ask for everything before the day after.
     let end = jiff::civil::Date::strptime("%Y-%m-%d", date)
         .context("bad date")?
@@ -171,17 +179,20 @@ fn mark(ctx: &Ctx, keys: &[String]) -> Result<ClearReport> {
             );
         }
         // The transaction's postings are the indented lines under its date.
-        let mut found = false;
+        let (mut found, mut changed) = (false, false);
         for row in text[head + 1..].iter_mut().take_while(|l| l.starts_with([' ', '\t'])) {
             if let Some(marked) = clear_posting(row, account) {
                 *row = marked;
-                found = true;
+                (found, changed) = (true, true);
             } else if posting_account(row) == Some(account) {
                 found = true; // already cleared
             }
         }
         if !found {
             bail!("{key}: that transaction has no posting to {account}");
+        }
+        if !changed {
+            bail!("{key}: its posting to {account} is cleared already");
         }
         marked.push(key.clone());
     }
@@ -203,7 +214,13 @@ fn mark(ctx: &Ctx, keys: &[String]) -> Result<ClearReport> {
     }
 
     let paths: Vec<&std::path::Path> = files.keys().map(|p| p.as_path()).collect();
-    let commit = ctx.commit(&paths, &format!("Mark {} cleared", plural(marked.len())))?;
+    let commit = ctx.commit(&paths, &format!("Mark {} cleared", plural(marked.len()))).inspect_err(|_| {
+        for (path, text) in &before {
+            let _ = std::fs::write(path, text);
+            let rel = path.strip_prefix(&ctx.root).unwrap_or(path).to_string_lossy().to_string();
+            let _ = ctx.git(&["reset", "-q", "--", &rel]);
+        }
+    })?;
     Ok(ClearReport { marked, commit })
 }
 
@@ -265,6 +282,16 @@ fn assert_balance(ctx: &Ctx, r: &Reconciliation, balance: Decimal) -> Result<Add
         bail!("not reconciled: off by {} {}", r.difference.as_deref().unwrap_or_default(), r.commodity);
     }
     let assertion = asserts(r).then_some(balance);
+    // A statement is recorded once — or once more, asserted, when what was
+    // outstanding at the first recording has cleared since.
+    let statement = format!("{balance} {}", r.commodity);
+    let tagged = journal::hledger(ctx, &["print", &format!("acct:^{}$", r.account), &format!("tag:reconciled=^{}$", r.date), "-O", "json"])?;
+    let recorded: Vec<serde_json::Value> = serde_json::from_str(&tagged)?;
+    let same = |t: &&serde_json::Value| t["ttags"].as_array().into_iter().flatten().any(|g| g[0] == "statement" && g[1] == statement.as_str());
+    let asserted = |t: &&serde_json::Value| !t["tpostings"][0]["pbalanceassertion"].is_null();
+    if recorded.iter().filter(same).any(|t| asserted(&t) || assertion.is_none()) {
+        bail!("the statement of {} for {} is recorded already, at {statement}", r.date, r.account);
+    }
     let entry = Entry {
         date: r.date.clone(),
         description: format!("Reconciled {} to statement", r.account),

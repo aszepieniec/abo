@@ -5,7 +5,7 @@ use crate::journal::{self, AddReport, Entry, Posting};
 use crate::repo::{Ctx, Vat};
 use anyhow::{bail, Context as _, Result};
 use rust_decimal::{Decimal, RoundingStrategy};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
 pub struct IssueArgs {
@@ -23,9 +23,17 @@ pub struct IssueArgs {
     pub due_days: Option<i64>,
     pub vat_rate: Option<Decimal>,
     pub reference: String,
-    /// Ids of the payment options to print; none means all of them.
+    /// Ids of the payment options to print. None: all of them, or for an
+    /// invoice in another commodity than the company's, its crypto options
+    /// if it has any.
     pub pay_to: Vec<String>,
     pub note: String,
+    /// The customer's tax registration number, which cross-border B2B
+    /// invoices usually need.
+    pub customer_tax_id: String,
+    /// Why no VAT is charged, printed on the invoice: an export, an exempt
+    /// supply, reverse charge. Needed when a VAT-registered company charges 0%.
+    pub vat_reason: String,
 }
 
 #[derive(Serialize)]
@@ -34,36 +42,62 @@ pub struct IssueReport {
     pub pdf: String,
     pub commit: String,
     pub total: String,
+    /// What the books' own template left off the PDF: fields newer than it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// What the template reads. Everything is pre-formatted: typst does layout,
-/// never arithmetic, so there is one place where rounding happens.
-#[derive(Serialize)]
-struct Data {
+/// never arithmetic, so there is one place where rounding happens. Committed
+/// beside the PDF as `invoices/<year>/<number>.json`, so a credit note can
+/// repeat what the invoice said.
+#[derive(Serialize, Deserialize)]
+pub struct Data {
     company: CompanyOut,
-    customer: String,
+    pub customer: String,
     number: String,
     date: String,
-    due: String,
-    currency: String,
-    reference: String,
-    items: Vec<ItemOut>,
+    pub due: String,
+    pub currency: String,
+    pub reference: String,
+    pub items: Vec<ItemOut>,
     net: String,
-    vat_rate: String,
+    pub vat_rate: String,
     vat: String,
     total: String,
-    note: String,
+    pub note: String,
     payment: Vec<PayOut>,
+    /// On a credit note, the invoice it cancels and that invoice's date.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    credits: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    credits_date: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub customer_tax_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vat_reason: String,
+    /// On an invoice in another commodity than the company's: the VAT in the
+    /// company currency, and the price it was converted at.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    vat_home: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    vat_home_currency: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    vat_home_price: String,
+    /// Made up from the journal entry for an invoice issued before abo kept
+    /// what an invoice printed; never written.
+    #[serde(skip)]
+    pub reconstructed: bool,
 }
 
-#[derive(Serialize)]
-struct PayOut {
+#[derive(Serialize, Deserialize)]
+pub struct PayOut {
     label: String,
     details: Vec<String>,
 }
 
-#[derive(Serialize)]
-struct CompanyOut {
+#[derive(Serialize, Deserialize)]
+pub struct CompanyOut {
     name: String,
     country: String,
     address: String,
@@ -73,16 +107,21 @@ struct CompanyOut {
     payment: String,
 }
 
-#[derive(Serialize)]
-struct ItemOut {
-    description: String,
-    quantity: String,
-    unit: String,
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ItemOut {
+    pub description: String,
+    pub quantity: String,
+    pub unit: String,
     amount: String,
 }
 
 pub fn issue(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
     let what = format!("to {}", args.customer.lines().next().unwrap_or("").trim());
+    // Not registered, it charges none: a rate asked for is a mistake, not
+    // something to drop without a word.
+    if matches!(ctx.cfg.vat, Vat::None) && args.vat_rate.is_some_and(|r| !r.is_zero()) {
+        bail!("the company is not VAT registered (vat.method = \"none\"), so an invoice charges no VAT");
+    }
     let args = resolved(ctx, args);
     ctx.logged(args.argv(), &what, issue_it(ctx, &args))
 }
@@ -91,10 +130,13 @@ pub fn issue(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
 /// what its log line says.
 fn resolved(ctx: &Ctx, args: &IssueArgs) -> IssueArgs {
     let c = &ctx.cfg;
+    let currency = args.currency.clone().unwrap_or_else(|| c.company.currency.clone());
+    // The places its `commodity` directive gives, else [invoice] decimals.
+    let places = journal::commodity(ctx, &currency).ok().and_then(|(_, p)| p);
     IssueArgs {
         customer: args.customer.clone(),
-        currency: Some(args.currency.clone().unwrap_or_else(|| c.company.currency.clone())),
-        decimals: Some(args.decimals.unwrap_or(c.invoice.decimals)),
+        currency: Some(currency),
+        decimals: Some(args.decimals.or(places).unwrap_or(c.invoice.decimals)),
         items: args.items.clone(),
         date: Some(args.date.clone().unwrap_or_else(|| jiff::Zoned::now().date().to_string())),
         due_days: Some(args.due_days.unwrap_or(c.invoice.terms_days)),
@@ -108,10 +150,18 @@ fn resolved(ctx: &Ctx, args: &IssueArgs) -> IssueArgs {
         }),
         reference: args.reference.clone(),
         pay_to: match &args.pay_to[..] {
-            [] => c.payment.iter().map(|p| p.id.clone()).collect(),
+            // Bank details are no way to pay an invoice in bitcoin.
+            [] => {
+                let foreign = args.currency.as_ref().is_some_and(|x| x != &c.company.currency);
+                let crypto: Vec<String> =
+                    c.payment.iter().filter(|p| p.kind == crate::repo::Kind::Crypto).map(|p| p.id.clone()).collect();
+                if foreign && !crypto.is_empty() { crypto } else { c.payment.iter().map(|p| p.id.clone()).collect() }
+            }
             ids => ids.to_vec(),
         },
         note: args.note.clone(),
+        customer_tax_id: args.customer_tax_id.trim().to_string(),
+        vat_reason: args.vat_reason.trim().to_string(),
     }
 }
 
@@ -130,7 +180,12 @@ impl IssueArgs {
         flag("--vat-rate", &self.vat_rate.map(|d| d.to_string()).unwrap_or_default());
         flag("--currency", &opt(&self.currency));
         flag("--decimals", &self.decimals.map(|d| d.to_string()).unwrap_or_default());
-        for (f, v) in [("--reference", &self.reference), ("--note", &self.note)] {
+        for (f, v) in [
+            ("--reference", &self.reference),
+            ("--note", &self.note),
+            ("--customer-tax-id", &self.customer_tax_id),
+            ("--vat-reason", &self.vat_reason),
+        ] {
             if !v.is_empty() {
                 flag(f, v);
             }
@@ -150,14 +205,19 @@ fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
     let date = args.date.clone().unwrap_or_default();
     let year = date.get(..4).context("bad date")?.to_string();
     let number = next_number(ctx, &year)?;
+    in_order(ctx, &year, &date)?;
 
     let currency = args.currency.clone().unwrap_or_default();
+    journal::commodity(ctx, &currency)?;
     let dp = args.decimals.unwrap_or_default();
     let due = jiff::civil::Date::strptime("%Y-%m-%d", &date)
         .context("bad date")?
         .checked_add(jiff::Span::new().days(args.due_days.unwrap_or_default()))?
         .to_string();
     let rate = args.vat_rate.unwrap_or_default();
+    if rate.is_sign_negative() || rate > Decimal::ONE_HUNDRED {
+        bail!("a VAT rate is a percentage from 0 up to 100, not {rate}");
+    }
 
     let mut items = Vec::new();
     let mut net = Decimal::ZERO;
@@ -182,6 +242,9 @@ fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
             }
         };
         let amount = round(quantity * unit, dp);
+        if amount.is_zero() {
+            bail!("line {n}, {raw:?}, comes to nothing at {dp} places of {currency}");
+        }
         net += amount;
         items.push(ItemOut {
             description: d.to_string(),
@@ -193,9 +256,29 @@ fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
     if items.is_empty() {
         bail!("an invoice needs at least one line");
     }
+    if !net.is_sign_positive() {
+        bail!("an invoice comes to more than nought, not {net} {currency}; to take one back, issue a credit note");
+    }
 
     let vat = round(net * rate / Decimal::ONE_HUNDRED, dp);
     let total = net + vat;
+    if rate.is_zero() && !matches!(ctx.cfg.vat, Vat::None) && args.vat_reason.is_empty() {
+        bail!("an invoice at 0% VAT says why none is charged: an export, an exempt supply, reverse charge (\"Why no VAT\", or --vat-reason)");
+    }
+    // VAT law usually wants the tax in the national currency as well.
+    let home = &ctx.cfg.company.currency;
+    let (vat_home, vat_home_price) = if &currency != home && !vat.is_zero() {
+        let (price, on) = price(ctx, &currency, home, &date)?.with_context(|| {
+            format!(
+                "the VAT has to be stated in {home} too, and the books have no {currency} price in {home} \
+                 on or before {date}. Add one to journal/accounts.journal: `P {date} {currency} <price> {home}`."
+            )
+        })?;
+        // [invoice] decimals: the places of the company currency.
+        (round(vat * price, ctx.cfg.invoice.decimals).to_string(), format!("1 {currency} = {price} {home}, {on}"))
+    } else {
+        (String::new(), String::new())
+    };
 
     let c = &ctx.cfg.company;
     // The options asked for, each once, in the order asked; else all.
@@ -237,29 +320,284 @@ fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
             .iter()
             .map(|p| PayOut { label: p.label.clone(), details: p.lines() })
             .collect(),
+        credits: String::new(),
+        credits_date: String::new(),
+        customer_tax_id: args.customer_tax_id.clone(),
+        vat_reason: args.vat_reason.clone(),
+        vat_home_currency: if vat_home.is_empty() { String::new() } else { home.clone() },
+        vat_home,
+        vat_home_price,
+        reconstructed: false,
     };
 
     let entry = entry(ctx, &number, &date, args, &currency, net, vat, total)?;
-    journal::validate(ctx, &entry)?;
+    publish(ctx, &data, &entry, TEMPLATE_REL, TEMPLATE, DATA_REL)
+}
 
-    let rel = format!("invoices/{year}/{number}.pdf"); // see pdf_path
-    render(ctx, &data, &rel)?;
-
-    ctx.git(&["add", "--", &rel])?;
-    ctx.git(&["add", "--", TEMPLATE_REL])?;
-    match journal::add(ctx, &entry) {
+/// Check the entry, render the PDF, and commit the PDF, what it printed and
+/// the entry together — or leave nothing behind.
+fn publish(ctx: &Ctx, data: &Data, entry: &Entry, template: &str, src: &str, data_rel: &str) -> Result<IssueReport> {
+    journal::validate(ctx, entry)?;
+    let pdf = pdf_path(&data.number).context("bad number")?;
+    let json = pdf.replace(".pdf", ".json");
+    crate::statement::compile(ctx, template, src, data_rel, data, &ctx.root.join(&pdf))?;
+    std::fs::write(ctx.root.join(&json), serde_json::to_vec_pretty(data)?)?;
+    let files = [pdf.as_str(), json.as_str(), template];
+    let r = ctx.git(&[&["add", "--"][..], &files].concat()).and_then(|_| journal::add(ctx, entry));
+    match r {
         Ok(AddReport { commit, .. }) => Ok(IssueReport {
-            number,
-            pdf: rel,
+            number: data.number.clone(),
+            pdf,
             commit,
-            total: format!("{total} {currency}"),
+            total: format!("{} {}", data.total, data.currency),
+            warnings: unprinted(ctx, template, data),
         }),
         Err(e) => {
-            let _ = std::fs::remove_file(ctx.root.join(&rel));
-            let _ = ctx.git(&["reset", "-q", "--", &rel]);
+            for f in &files[..2] {
+                let _ = std::fs::remove_file(ctx.root.join(f));
+            }
+            let _ = ctx.git(&[&["reset", "-q", "--"][..], &files[..2]].concat());
             Err(e)
         }
     }
+}
+
+#[derive(Serialize)]
+pub struct CreditArgs {
+    /// The invoice cancelled.
+    pub number: String,
+    pub date: Option<String>,
+    pub note: String,
+}
+
+/// Cancel an issued invoice in full with a credit note: numbered next in the
+/// same series, its lines those of the invoice negated, its entry every
+/// amount of the invoice's entry negated, tagged `invoice:` with its own
+/// number and `credits:` with the invoice's. The invoice stays in the books
+/// and the two cancel; a corrected invoice is then issued as any other.
+pub fn credit(ctx: &Ctx, args: &CreditArgs) -> Result<IssueReport> {
+    let date = args.date.clone().unwrap_or_else(|| jiff::Zoned::now().date().to_string());
+    let r = credit_it(ctx, &args.number, &date, &args.note);
+    let mut argv = vec!["credit".to_string()];
+    crate::repo::flag(&mut argv, "--date", &date);
+    if !args.note.is_empty() {
+        crate::repo::flag(&mut argv, "--note", &args.note);
+    }
+    argv.push(args.number.clone());
+    ctx.logged(argv, &format!("cancelling {}", args.number), r)
+}
+
+fn credit_it(ctx: &Ctx, number: &str, date: &str, note: &str) -> Result<IssueReport> {
+    pdf_path(number).with_context(|| format!("{number:?} is not an invoice number such as 2026-0017"))?;
+    let tagged = |tag: &str| -> Result<Vec<serde_json::Value>> {
+        Ok(serde_json::from_str(&journal::hledger(ctx, &["print", &format!("tag:{tag}=^{number}$"), "-O", "json"])?)?)
+    };
+    let found = tagged("invoice")?;
+    let t = found.first().with_context(|| format!("the books have no invoice {number}"))?;
+    let b = journal::booking(ctx, &crate::reconcile::key_of(t)?)?;
+    if let Some((_, v)) = b.tags.iter().find(|(k, _)| k == "credits") {
+        bail!("{number} is a credit note, for invoice {v}; it cannot be cancelled in turn");
+    }
+    if let Some(c) = tagged("credits")?.first() {
+        bail!("invoice {number} is cancelled already, by {}", c["tdescription"].as_str().unwrap_or_default());
+    }
+    if let Some(by) = &b.reversed_by {
+        bail!("invoice {number} is reversed already, by {by}");
+    }
+    let old = printed(ctx, number)?;
+
+    let year = date.get(..4).context("bad date")?;
+    let new = next_number(ctx, year)?;
+    in_order(ctx, year, date)?;
+    let c = &ctx.cfg.company;
+    let data = Data {
+        company: CompanyOut {
+            name: c.name.clone(),
+            country: c.country.clone(),
+            address: c.address.clone(),
+            tax_id: c.tax_id.clone(),
+            payment: String::new(),
+        },
+        number: new.clone(),
+        date: date.to_string(),
+        due: String::new(),
+        items: old
+            .items
+            .iter()
+            .map(|i| Ok(ItemOut { quantity: negated(&i.quantity)?, amount: negated(&i.amount)?, ..i.clone() }))
+            .collect::<Result<_>>()?,
+        net: negated(&old.net)?,
+        vat: negated(&old.vat)?,
+        total: negated(&old.total)?,
+        note: note.to_string(),
+        payment: vec![],
+        credits: number.to_string(),
+        credits_date: old.date.clone(),
+        vat_home: if old.vat_home.is_empty() { String::new() } else { negated(&old.vat_home)? },
+        ..old
+    };
+    let customer = data.customer.lines().next().unwrap_or("").trim().to_string();
+    let entry = Entry {
+        date: date.to_string(),
+        description: format!("{customer} | Credit note {new} for invoice {number}"),
+        tags: vec![("invoice".into(), new), ("credits".into(), number.to_string())],
+        postings: b.postings.into_iter().map(|p| Posting { amount: p.amount.map(|a| -a), ..p }).collect(),
+    };
+    publish(ctx, &data, &entry, CREDIT_TEMPLATE_REL, CREDIT_TEMPLATE, CREDIT_DATA_REL)
+}
+
+/// What invoice `number` printed, from the data committed beside its PDF;
+/// for one issued before abo kept that, what its journal entry says.
+pub fn printed(ctx: &Ctx, number: &str) -> Result<Data> {
+    let json = pdf_path(number).with_context(|| format!("{number:?} is not an invoice number such as 2026-0017"))?.replace(".pdf", ".json");
+    match std::fs::read_to_string(ctx.root.join(&json)) {
+        Ok(text) => serde_json::from_str(&text).with_context(|| json.clone()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => booked(ctx, number),
+        Err(e) => Err(e).context(json),
+    }
+}
+
+/// An invoice as its journal entry has it: the customer's name, one line for
+/// the whole of it, the VAT the effective method booked, and the due date the
+/// configured terms give. Enough for a credit note that cancels it exactly.
+fn booked(ctx: &Ctx, number: &str) -> Result<Data> {
+    let found: Vec<serde_json::Value> =
+        serde_json::from_str(&journal::hledger(ctx, &["print", &format!("tag:invoice=^{number}$"), "-O", "json"])?)?;
+    let t = found.first().with_context(|| format!("the books have no invoice {number}"))?;
+    let date = t["tdate"].as_str().unwrap_or_default().to_string();
+    let description = t["tdescription"].as_str().unwrap_or_default();
+    let mut postings = vec![];
+    for p in t["tpostings"].as_array().into_iter().flatten() {
+        for a in p["pamount"].as_array().into_iter().flatten() {
+            postings.push((p["paccount"].as_str().unwrap_or_default().to_string(), journal::decimal(&a["aquantity"])?, a["acommodity"].as_str().unwrap_or_default().to_string()));
+        }
+    }
+    // What the customer owes, or for one paid on the spot, what came in.
+    let receivable = &ctx.cfg.invoice.receivable;
+    let owed: Vec<_> = match postings.iter().filter(|(a, ..)| a == receivable).collect::<Vec<_>>() {
+        r if !r.is_empty() => r,
+        _ => postings.iter().filter(|(_, q, _)| q.is_sign_positive()).collect(),
+    };
+    let currency = owed.first().map(|(.., c)| c.clone()).unwrap_or_default();
+    if owed.iter().any(|(.., c)| c != &currency) {
+        bail!("invoice {number} is in more than one commodity");
+    }
+    let total: Decimal = owed.iter().map(|(_, q, _)| *q).sum();
+    let vat: Decimal = match &ctx.cfg.vat {
+        Vat::Effective { output, .. } => -postings.iter().filter(|(a, ..)| a == output).map(|(_, q, _)| *q).sum::<Decimal>(),
+        _ => Decimal::ZERO,
+    };
+    let net = total - vat;
+    let rate = if net.is_zero() { Decimal::ZERO } else { (vat / net * Decimal::ONE_HUNDRED).round_dp(2).normalize() };
+    // Stated to the company currency's places, as an issued invoice is.
+    let places = |mut d: Decimal| {
+        if currency == ctx.cfg.company.currency && d.scale() < ctx.cfg.invoice.decimals {
+            d.rescale(ctx.cfg.invoice.decimals);
+        }
+        d
+    };
+    let (total, vat, net) = (places(total), places(vat), places(net));
+    let due = jiff::civil::Date::strptime("%Y-%m-%d", &date)
+        .context("bad date")?
+        .checked_add(jiff::Span::new().days(ctx.cfg.invoice.terms_days))?
+        .to_string();
+    let c = &ctx.cfg.company;
+    Ok(Data {
+        company: CompanyOut {
+            name: c.name.clone(),
+            country: c.country.clone(),
+            address: c.address.clone(),
+            tax_id: c.tax_id.clone(),
+            payment: String::new(),
+        },
+        customer: description.split(" | ").next().unwrap_or(description).to_string(),
+        number: number.to_string(),
+        items: vec![ItemOut {
+            description: format!("Invoice {number} of {date}"),
+            quantity: "1".into(),
+            unit: net.to_string(),
+            amount: net.to_string(),
+        }],
+        date,
+        due,
+        currency,
+        reference: String::new(),
+        net: net.to_string(),
+        vat_rate: rate.to_string(),
+        vat: vat.to_string(),
+        total: total.to_string(),
+        note: String::new(),
+        payment: vec![],
+        credits: String::new(),
+        credits_date: String::new(),
+        customer_tax_id: String::new(),
+        vat_reason: String::new(),
+        vat_home: String::new(),
+        vat_home_currency: String::new(),
+        vat_home_price: String::new(),
+        reconstructed: true,
+    })
+}
+
+/// The fields `data` fills that the template in the books never reads: a
+/// template copied in before they were added prints none of them.
+fn unprinted(ctx: &Ctx, template: &str, data: &Data) -> Vec<String> {
+    let text = std::fs::read_to_string(ctx.root.join(template)).unwrap_or_default();
+    [
+        ("customer_tax_id", &data.customer_tax_id, "the customer's tax number"),
+        ("vat_reason", &data.vat_reason, "why no VAT is charged"),
+        ("vat_home", &data.vat_home, "the VAT in the company currency"),
+    ]
+    .into_iter()
+    .filter(|(field, value, _)| !value.is_empty() && !text.contains(field))
+    .map(|(field, _, what)| {
+        format!(
+            "{template} does not print {what} (`{field}`): it is older than that. \
+             Add it as abo's own template does, or remove the file to have abo's put back on the next one."
+        )
+    })
+    .collect()
+}
+
+/// Invoice numbers follow dates: none may be dated before the one numbered
+/// ahead of it, as many places require.
+fn in_order(ctx: &Ctx, year: &str, date: &str) -> Result<()> {
+    let found: Vec<serde_json::Value> =
+        serde_json::from_str(&journal::hledger(ctx, &["print", &format!("tag:invoice=^{year}-"), "-O", "json"])?)?;
+    let last = found
+        .iter()
+        .filter_map(|t| {
+            let n = t["ttags"].as_array()?.iter().find(|g| g[0] == "invoice")?[1].as_str()?.to_string();
+            Some((n, t["tdate"].as_str()?.to_string()))
+        })
+        .max();
+    match last {
+        Some((n, d)) if date < d.as_str() => bail!("{n}, the last invoice numbered, is dated {d}; the next may not be dated before it, {date}"),
+        _ => Ok(()),
+    }
+}
+
+/// The price of one `commodity` in `currency` on `date`, from the books' own
+/// `P` directives: the latest on or before it, and the day it was set.
+fn price(ctx: &Ctx, commodity: &str, currency: &str, date: &str) -> Result<Option<(Decimal, String)>> {
+    let out = journal::hledger(ctx, &["prices", &format!("cur:^{commodity}$")])?;
+    Ok(out
+        .lines()
+        .filter_map(|l| {
+            let w: Vec<&str> = l.split_whitespace().collect();
+            match w[..] {
+                ["P", d, c, q, cur] if c == commodity && cur == currency && d <= date => Some((d.to_string(), Decimal::from_str_exact(q).ok()?)),
+                _ => None,
+            }
+        })
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(d, q)| (q, d)))
+}
+
+/// `-s`, keeping its places; nought stays unsigned.
+fn negated(s: &str) -> Result<String> {
+    let d = Decimal::from_str_exact(s).with_context(|| format!("{s:?} is not a number"))?;
+    Ok(if d.is_zero() { s.to_string() } else { (-d).to_string() })
 }
 
 /// `max(invoice:) + 1` read from the journal. No counter file, no state to
@@ -323,11 +661,9 @@ fn entry(
 
 const TEMPLATE_REL: &str = "templates/invoice.typ";
 const DATA_REL: &str = ".abo/invoice.json";
-
-/// The template is committed with the invoice, by `issue`.
-fn render(ctx: &Ctx, data: &Data, rel: &str) -> Result<()> {
-    crate::statement::compile(ctx, TEMPLATE_REL, TEMPLATE, DATA_REL, data, &ctx.root.join(rel)).map(|_| ())
-}
+const CREDIT_TEMPLATE_REL: &str = "templates/credit-note.typ";
+const CREDIT_DATA_REL: &str = ".abo/credit-note.json";
+const CREDIT_TEMPLATE: &str = include_str!("credit-note.typ");
 
 /// Rounded, and stated to exactly `dp` places: 0.0005 BTC is 0.00050000 on
 /// the invoice, and nothing is "EUR 0".

@@ -38,19 +38,79 @@ pub fn op(line: &Value) -> &str {
     line["argv"][0].as_str().unwrap_or_default()
 }
 
-/// The commits `git revert` has undone, as full hashes, from the "This
-/// reverts commit" line git writes into every revert.
+/// The commits undone, as full hashes, from the "This reverts commit" line
+/// git writes into every revert. An undo that is itself undone undoes
+/// nothing: the commit it reversed stands again.
 pub fn reverted(ctx: &Ctx) -> Vec<String> {
-    ctx.git(&["log", "--grep=This reverts commit", "--format=%B"])
+    // (the revert, the commit it reverses)
+    let pairs: Vec<(String, String)> = ctx
+        .git(&["log", "--grep=This reverts commit", "--format=%H%n%B%x00"])
         .unwrap_or_default()
-        .split("This reverts commit ")
-        .skip(1)
-        .filter_map(|rest| rest.get(..40).map(str::to_string))
-        .collect()
+        .split('\0')
+        .filter_map(|c| {
+            let c = c.trim();
+            let (h, body) = c.split_once('\n')?;
+            let target = body.split("This reverts commit ").nth(1)?.get(..40)?;
+            Some((h.to_string(), target.to_string()))
+        })
+        .collect();
+    fn undone(c: &str, pairs: &[(String, String)]) -> bool {
+        pairs.iter().any(|(r, t)| t == c && !undone(r, pairs))
+    }
+    pairs.iter().map(|(_, t)| t.clone()).filter(|t| undone(t, &pairs)).collect()
 }
 
 /// The commit undoing this line would reverse, or why it cannot be undone.
+/// As `plain`, and also refused where undoing it would be refused: the
+/// change no longer reverses cleanly, or it touches a closed period. For
+/// the Log and the success notice, to grey out an Undo that would fail.
+/// ponytail: a git diff and a git apply --check per line shown; cache by
+/// commit if the Log grows slow.
 pub fn how(ctx: &Ctx, line: &Value, reverted: &[String]) -> Result<String> {
+    let h = plain(ctx, line, reverted)?;
+    let full = ctx.git(&["rev-parse", "--verify", &format!("{h}^{{commit}}")])?;
+    let full = full.trim();
+    if closed_touched(ctx, full)? {
+        bail!("it would change a closed period");
+    }
+    let (patch, attr) = reversal(ctx, full, "check")?;
+    let path = patch.to_string_lossy();
+    if ctx.git(&["-c", &attr, "apply", "--check", "--unidiff-zero", "--index", "-R", &path]).is_err() {
+        bail!("something done since has changed the same lines");
+    }
+    Ok(h)
+}
+
+/// Whether a commit's change to the journal touches an entry dated in the
+/// closed period, before or after it.
+fn closed_touched(ctx: &Ctx, full: &str) -> Result<bool> {
+    let Some(closed) = &ctx.cfg.company.closed_through else { return Ok(false) };
+    let diff = ctx.git(&["diff", "-U0", &format!("{full}^"), full, "--", "journal/", ":!journal/main.journal"])?;
+    let mut file = String::new();
+    for l in diff.lines() {
+        if let Some(rest) = l.strip_prefix("+++ b/") {
+            file = rest.to_string();
+        }
+        let Some(ranges) = l.strip_prefix("@@ -").and_then(|r| r.split(" @@").next()) else { continue };
+        // Each side: the entry the changed line is in, found by looking up
+        // from it to the line that starts with its date.
+        for (side, range) in [(format!("{full}^"), ranges.split(' ').next()), (full.to_string(), ranges.split(" +").nth(1))] {
+            let Some(start) = range.and_then(|r| r.split(',').next()?.parse::<usize>().ok()) else { continue };
+            let Ok(text) = ctx.git(&["show", &format!("{side}:{file}")]) else { continue };
+            let lines: Vec<&str> = text.lines().collect();
+            let at = start.max(1).min(lines.len());
+            let date = lines[..at].iter().rev().find(|l| l.starts_with(|c: char| c.is_ascii_digit())).and_then(|l| l.get(..10));
+            if date.is_some_and(|d| d <= closed.as_str()) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Whether line `line` can be undone as far as the log and the books'
+/// documents go; see `how` for the rest.
+fn plain(ctx: &Ctx, line: &Value, reverted: &[String]) -> Result<String> {
     let h = line["ok"]["commit"].as_str().context("it made no commit")?;
     if op(line) == "init" {
         bail!("it opened the books");
@@ -64,7 +124,7 @@ pub fn how(ctx: &Ctx, line: &Value, reverted: &[String]) -> Result<String> {
     if let Some(sha) = line["ok"]["sha256"].as_str().filter(|_| op(line) == "file" && !for_booking) {
         let booked = crate::journal::hledger(ctx, &["print", &format!("tag:sha256={sha}")])?;
         if !booked.trim().is_empty() {
-            bail!("the document is booked; undo or revert its booking first");
+            bail!("the document is booked; undo its booking first");
         }
     }
     Ok(h.to_string())
@@ -85,11 +145,111 @@ pub fn undo(ctx: &Ctx, n: usize) -> Result<UndoReport> {
         let all = lines(ctx);
         let line = n.checked_sub(1).and_then(|i| all.get(i)).with_context(|| format!("the log has no line {n}"))?;
         let what = format!("{} {}", op(line), line["what"].as_str().unwrap_or_default());
-        let h = how(ctx, line, &reverted(ctx)).map_err(|e| anyhow::anyhow!("{what} cannot be undone: {e}"))?;
+        let h = plain(ctx, line, &reverted(ctx)).map_err(|e| anyhow::anyhow!("{what} cannot be undone: {e}"))?;
         Ok(UndoReport { line: n, op: op(line).to_string(), commit: revert_commit(ctx, &h)? })
     })();
     let what = r.as_ref().map(|u| format!("line {n}, {}", u.op)).unwrap_or_default();
     ctx.logged(vec!["undo".into(), n.to_string()], &what, r)
+}
+
+/// The patch that takes a commit's change back out, written to
+/// `.abo/<name>.patch`, and the git setting it is to be read with.
+fn reversal(ctx: &Ctx, full: &str, name: &str) -> Result<(std::path::PathBuf, String)> {
+    // Documents are binary, whatever git would guess: typst's PDFs look like
+    // text to it, and a PDF reversed line by line does not apply.
+    let attributes = ctx.root.join(".abo/attributes");
+    std::fs::create_dir_all(attributes.parent().unwrap())?;
+    std::fs::write(&attributes, "*.pdf binary\n*.png binary\n*.jpg binary\n*.jpeg binary\n*.webp binary\n")?;
+    let attr = format!("core.attributesFile={}", attributes.display());
+    let patch = ctx.git(&["-c", &attr, "diff", "--binary", "-U0", &format!("{full}^"), full, "--", ".", ":!journal/main.journal"])?;
+    // A commit that started a year's journal file shows as creating it, and
+    // reversing a creation deletes the file — which git refuses once later
+    // entries share it. Said as lines added to an empty file instead, the
+    // reversal removes just those lines. Documents (bills, invoices) stay as
+    // they are: undoing their commit deletes them, as it should.
+    let mut file = "";
+    let patch: String = patch
+        .lines()
+        .filter_map(|l| {
+            if let Some(rest) = l.strip_prefix("diff --git a/") {
+                file = rest.split(" b/").next().unwrap_or_default();
+            }
+            let journal = file.starts_with("journal/");
+            if journal && (l.starts_with("new file mode") || l.starts_with("index 0000000")) {
+                return None;
+            }
+            Some(if journal && l == "--- /dev/null" { format!("--- a/{file}") } else { l.to_string() })
+        })
+        .map(|l| l + "\n")
+        .collect();
+    let file = ctx.root.join(format!(".abo/{name}.patch"));
+    std::fs::create_dir_all(file.parent().unwrap())?;
+    std::fs::write(&file, &patch)?;
+    Ok((file, attr))
+}
+
+/// A year's journal file with nothing left in it goes, and its `include`
+/// with it; one that has come back is included again. main.journal is left
+/// out of what an undo reverses, since later years' entries need it, so this
+/// is where it follows. What it changes is kept in `kept`, to put back.
+fn years(ctx: &Ctx, kept: &mut Vec<(std::path::PathBuf, String)>) -> Result<()> {
+    let dir = ctx.journal_dir();
+    let main = ctx.main_journal();
+    let text = std::fs::read_to_string(&main)?;
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    for e in std::fs::read_dir(&dir)? {
+        let path = e?.path();
+        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let year = name.strip_suffix(".journal").is_some_and(|y| y.len() == 4 && y.chars().all(|c| c.is_ascii_digit()));
+        if !year {
+            continue;
+        }
+        let include = format!("include {name}");
+        let body = std::fs::read_to_string(&path)?;
+        if body.trim().is_empty() {
+            kept.push((path.clone(), body));
+            ctx.git(&["rm", "-q", "-f", "--", &format!("journal/{name}")])?;
+            lines.retain(|l| l.trim() != include);
+        } else if !lines.iter().any(|l| l.trim() == include) {
+            lines.push(include);
+        }
+    }
+    let new = lines.join("\n") + "\n";
+    if new != text {
+        kept.push((main.clone(), text));
+        std::fs::write(&main, new)?;
+        ctx.git(&["add", "--", "journal/main.journal"])?;
+    }
+    Ok(())
+}
+
+/// Why a commit's change cannot be taken back out: the first later change
+/// after which its reversal no longer applies, by its line in the log.
+/// Each later commit is tried in a scratch index, never the books' own.
+fn since(ctx: &Ctx, full: &str, patch: &str, attr: &str) -> String {
+    let index = ctx.root.join(".abo/undo.index");
+    let env = [("GIT_INDEX_FILE", index.display().to_string())];
+    let applies_at = |commit: &str| {
+        crate::repo::git_env(&ctx.root, &["read-tree", commit], &env)
+            .and_then(|_| crate::repo::git_env(&ctx.root, &["-c", attr, "apply", "--cached", "--check", "--unidiff-zero", "-R", patch], &env))
+            .is_ok()
+    };
+    let later = ctx.git(&["rev-list", "--reverse", &format!("{full}..HEAD")]).unwrap_or_default();
+    let culprit = later.lines().find(|h| !applies_at(h)).map(str::to_string);
+    let _ = std::fs::remove_file(&index);
+    let all = lines(ctx);
+    let named = culprit.and_then(|h| {
+        all.iter().enumerate().rev().find(|(_, l)| l["ok"]["commit"].as_str().is_some_and(|c| !c.is_empty() && h.starts_with(c)))
+    });
+    match named {
+        Some((i, l)) => format!(
+            "it cannot be undone: line {} of the log, {} {}, has changed the same lines since. Undo that first.",
+            i + 1,
+            op(l),
+            l["what"].as_str().unwrap_or_default()
+        ),
+        None => "it cannot be undone: something has changed the same lines since. Undo that first.".to_string(),
+    }
 }
 
 /// Take a commit's change back out of the books, check the result the way any
@@ -116,33 +276,10 @@ fn revert_commit(ctx: &Ctx, hash: &str) -> Result<String> {
     };
     let before = closed(ctx)?;
 
-    let patch = ctx.git(&["diff", "--binary", "-U0", &format!("{full}^"), full, "--", ".", ":!journal/main.journal"])?;
-    // A commit that started a year's journal file shows as creating it, and
-    // reversing a creation deletes the file — which git refuses once later
-    // entries share it. Said as lines added to an empty file instead, the
-    // reversal removes just those lines. Documents (bills, invoices) stay as
-    // they are: undoing their commit deletes them, as it should.
-    let mut file = "";
-    let patch: String = patch
-        .lines()
-        .filter_map(|l| {
-            if let Some(rest) = l.strip_prefix("diff --git a/") {
-                file = rest.split(" b/").next().unwrap_or_default();
-            }
-            let journal = file.starts_with("journal/");
-            if journal && (l.starts_with("new file mode") || l.starts_with("index 0000000")) {
-                return None;
-            }
-            Some(if journal && l == "--- /dev/null" { format!("--- a/{file}") } else { l.to_string() })
-        })
-        .map(|l| l + "\n")
-        .collect();
-    let file = ctx.root.join(".abo/undo.patch");
-    std::fs::create_dir_all(file.parent().unwrap())?;
-    std::fs::write(&file, &patch)?;
+    let (file, attr) = reversal(ctx, full, "undo")?;
     let path = file.to_string_lossy();
     let apply = |reverse: bool| {
-        let mut args = vec!["apply", "--unidiff-zero", "--index"];
+        let mut args = vec!["-c", &attr, "apply", "--unidiff-zero", "--index"];
         if reverse {
             args.push("-R");
         }
@@ -150,10 +287,8 @@ fn revert_commit(ctx: &Ctx, hash: &str) -> Result<String> {
         ctx.git(&args)
     };
     if let Err(e) = apply(true) {
-        bail!(
-            "it cannot be undone, because something since has changed the same lines \
-             (clearing it, say). Undo that first, or revert the booking instead.\n{e}"
-        );
+        tracing::warn!(%e, commit = %full, "undo does not apply");
+        bail!("{}", since(ctx, full, &path, &attr));
     }
     let checked = crate::journal::hledger(ctx, &["check", "accounts", "balanced", "ordereddates"]).and_then(|_| {
         if closed(ctx)? != before {
@@ -162,10 +297,15 @@ fn revert_commit(ctx: &Ctx, hash: &str) -> Result<String> {
         Ok(())
     });
     // Put back exactly if it is refused, or cannot be committed.
-    let committed = checked.and_then(|_| {
+    let mut kept = vec![];
+    let committed = checked.and_then(|_| years(ctx, &mut kept)).and_then(|_| {
         ctx.git(&["commit", "-q", "-m", &format!("Revert \"{}\"\n\nThis reverts commit {full}.", subject.trim())])
     });
     if let Err(e) = committed {
+        for (path, text) in &kept {
+            std::fs::write(path, text)?;
+            ctx.git(&["add", "--", &path.strip_prefix(&ctx.root).unwrap_or(path).to_string_lossy()])?;
+        }
         apply(false)?;
         return Err(e);
     }

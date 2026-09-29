@@ -249,7 +249,7 @@ pub fn vat_return(ctx: &Ctx, period: &str) -> Result<Statement> {
                         bail!(
                             "line {} includes {x} {c} in {account}, and the books have no {c} price \
                              in {currency} to value it with. Add one to journal/accounts.journal, \
-                             e.g. `P 2026-05-10 {c} 60000.00 {currency}`, dated on or before the posting.",
+                             `P <date> {c} <price> {currency}`, dated on or before each posting.",
                             l.code
                         );
                     }

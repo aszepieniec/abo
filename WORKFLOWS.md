@@ -56,7 +56,10 @@ one form at `/new`: both are drawn from one description of them
 the same defaults for a blank answer, and the same answers open the same books. The fields of a payment option's kind and of the
 VAT method show once it is chosen (CSS, no script); another payment option
 only when asked for with its button. Each wrong answer says why under it and
-the form comes back as filled in; sent twice, it opens one company.
+the form comes back as filled in; sent twice, it opens one company. A flag
+no question asks for with the other answers — a sales rate under `--vat
+none`, a network on a bank option — is refused, not dropped; and input that
+runs out mid-way stops init with what was missing, rather than asking again.
 **Done when** the company's directory is a git repository with one commit
 holding `abo.toml`, `journal/main.journal`, `journal/accounts.journal` (the
 default accounts, plus the VAT accounts the method needs) and `.gitignore`,
@@ -66,13 +69,20 @@ same books without asking.
 ### A2. Declare an account or a commodity — Supported (editor, by design)
 Add an `account …` or `commodity …` line to `journal/accounts.journal` and
 commit it. There is deliberately no editor for this in abo (DESIGN §12).
-**Done when** the new account can be posted to; an undeclared one is refused
-with a message saying where to declare it.
+A commodity is declared with its places: `commodity 1000.00 EUR`, two.
+**Done when** the new account or commodity can be posted to; an undeclared
+one is refused with a message saying where to declare it (a commodity that
+differs from a declared one only in case, `eur`, asks whether EUR was meant),
+and so is an amount with more places than its commodity has. A declaration
+counts once it is saved; committing it is for the record.
 
 ### A3. Start the web interface — Supported
 `abo serve [--dir x]` serves one company when `x` (default: the working
 directory) is inside its books; otherwise `x` is a data directory, and the
-front page lists the companies in it. A missing `x` is created after a y/n
+front page lists the companies in it, each name a link to that company's own
+pages under `/c/<its directory>/` — the same pages, every link and form
+among them kept under that prefix, with **All companies** in the sidebar to
+come back. A missing `x` is created after a y/n
 question that counts down five seconds and takes silence as no. `abo demo`
 serves throwaway toy books. A missing `git` or `hledger` stops startup with a message naming
 what it is for; a missing `typst` is a warning. The server reads `abo.toml` and
@@ -80,14 +90,17 @@ the journal afresh on every request, so an edit to either — a closed period, a
 new rate, a declared account — applies without a restart.
 **Done when** the front page shows the company, its balances and recent
 entries; for a data directory, the name and directory of each company in it,
-and a button to open the books for a new one (A1).
+and a button to open the books for a new one (A1); and a change made in one
+company's pages lands in that company's books alone. A directory that holds
+no books, or a name that is no directory init would make, is "not found".
 
 ### A3b. Change the company's details — Supported
 Name, address, country and tax registration number: what invoices print about
 who sends them. The company page (the company's name in the sidebar) shows
 them as init's questions, filled in, and saving runs `abo company --name ...
 --address ... --country ... --tax-id ...` with only the details that changed.
-`abo company` alone prints them. The directory keeps its name; currency and
+`abo company` alone prints them. A bank option held in the company's old name
+is held in its new one, in the same commit. The directory keeps its name; currency and
 VAT method are shown there, not changed there. Payment options are below, see
 A4.
 **Done when** a change shows on the next invoice, is one line in the log, and
@@ -132,8 +145,9 @@ Browser: **Entry**, fill in date, description and one posting per line
 holds it, and the front page says **Booked** with that commit. An entry that
 does not balance, names an undeclared account, posts to a VAT account the
 method forbids, or falls in a closed period is refused with the reason, and the
-form comes back filled in. Sending the same form twice — a double click, a
-reload — books it once.
+form comes back filled in; so is one in an undeclared commodity or with more
+places than its commodity has (A2). Sending the same form twice — a double
+click, a reload — books it once.
 
 ### B2. Book a supplier bill from a document — Supported (browser, CLI)
 Browser: **Book a bill**, choose a PDF or take a photograph, give the date on
@@ -144,17 +158,53 @@ document, then `abo bill --desc <text> <that path> <postings>`.
 `bills/<year>/<date>-<issuer>-<hash>.<ext>` in one commit, and the entry,
 dated as the document, carries `bill:` and `sha256:` tags pointing at it in
 the next. In the browser an entry the validator refuses files nothing, and
-the form comes back filled in but for the document.
+the form comes back filled in but for the document. A document filed and not
+booked — with `abo file`, or left by a booking undone — is listed under the
+form as **Filed, not booked yet**; **Book it** opens the form with that
+document, and booking it files nothing again.
 
 ### B3. The same bill twice — Supported
 Filing a document already filed is refused, naming where it is; booking a
 document already booked is refused, naming the entry that holds it.
 
 ### B4. Record a payment or a receipt — Supported (as B1)
-Paying a bill, a customer paying an invoice, moving cash: an ordinary entry
-(B1) between the bank or cash account and payables or receivables.
+Paying a bill, moving cash: an ordinary entry (B1) between the bank or cash
+account and payables or receivables.
 **Done when** the payable or receivable it settles goes to zero, and shows
 as `0.00` on the front page.
+
+### B5. Record a customer's payment of invoices — Supported (browser, CLI)
+A payment names the invoices it pays by tag: `pays:` for part of one,
+`settles:` for the payment that settles it. One payment may tag several
+invoices, each either way, and an invoice may be paid in any number of parts.
+Browser: **Invoices**, **Pay** on an invoice: a page for the payment of that
+invoice, naming it and what has been paid on it, asks whether this payment
+settles it (the default) or pays part of it, then the date, what arrived and
+into which account. The amount starts at what is still owed when that is
+known — the total less every payment tagging this invoice alone — and blank
+when it is not: a payment of several invoices is not split between them. A payment that also
+pays other invoices opens **Also pays other invoices** and says, for each not
+yet settled, whether it pays part of it or settles it. CLI: `abo post ... --tag
+pays=<number> --tag settles=<number>`.
+**Done when** the entry takes the amount off the receivable into the account
+chosen, carries one tag per invoice, and **Invoices** shows each as part paid
+or settled. Refused: a tag naming a number the books have no invoice for, an
+invoice already settled or cancelled, or an invoice named twice; tags on an
+entry that takes nothing off the receivable; and on the Pay page, an amount
+that is not above nought, or the receivable as where the money arrived.
+
+### B6. Settle an invoice without a new payment — Supported (browser, CLI)
+For an invoice whose payment is booked without saying so, or was settled
+where the books do not show. **Invoices**, **Settle**: choose the booked
+payment (an entry taking something off the receivable) and it is tagged
+`settles:` that invoice, a `pays:` of it in that entry becoming `settles:`;
+or, without a payment, an entry dated as given that moves nothing and says
+only that the invoice is settled. CLI: `abo settle <number> --by <key>`, or
+`abo settle <number> [--date ...]`.
+**Done when** the tag is in the journal in one commit, logged and undoable,
+and the invoice shows as settled. Refused: an entry that takes nothing off the
+receivable, one in a closed period (settle without a payment instead), and an
+invoice already settled or cancelled.
 
 ---
 
@@ -163,28 +213,57 @@ as `0.00` on the front page.
 ### C1. Issue an invoice — Supported (browser, CLI)
 **Issue an invoice**: customer, one line per item
 (`quantity|unit price|description`), optionally date, VAT rate, commodity,
-their reference and a note. CLI: `abo invoice`, where `--pay-to <id>`,
-repeatable, chooses which payment options the invoice prints; the browser, and
-the CLI without it, print them all. With none it says only when to pay; with
-one or more, "to the following" or "to any of the following" and each
-option's name and details, side by side.
+the customer's tax number (printed under their address), why no VAT is
+charged, which payment options it prints, their reference and a note. CLI:
+`abo invoice`, with `--customer-tax-id`, `--vat-reason` and `--pay-to <id>`,
+repeatable. With no option chosen it prints them all, or for an invoice in
+another commodity than the company's, its crypto options if there are any. With
+none it says only when to pay; with one or more, "to the following" or "to
+any of the following" and each option's name and details, side by side.
+An invoice is stated to the places its commodity is declared with (A2) unless
+`--decimals` says otherwise.
 **Done when** the invoice is numbered one past the highest `invoice:` tag for
 its year, its PDF is under `invoices/<year>/`, the receivable, income and (under
 the effective method) output VAT are booked, and the PDF and entry are in one
 commit. VAT follows the configured method: none charged when not registered,
 the gross booked to income under a flat scheme. Sending the form twice issues
 one invoice. A failure — typst missing, say — leaves no commit, no files and
-the number unused.
+the number unused. Refused: an invoice at 0% VAT, from a company that is VAT
+registered, that does not say why; one dated before the invoice numbered
+ahead of it (numbers follow dates); and one in another commodity charging VAT
+when the books have no price for it in the company currency on or before its
+date — the VAT is printed in the company currency too, with the price used.
+Refused as well: an undeclared commodity; a VAT rate outside 0 to 100, or any
+rate at all when the company is not VAT registered; a line that comes to
+nothing at the invoice's places; and a total that is not above nought (to
+take an invoice back, a credit note, F5). Issued with a field the books' own
+template does not print — one copied in before the field existed — it says
+so, naming the field, on the terminal and in the notice.
 
-### C2. Find an issued invoice again — Partial
-`/invoice/<number>` serves its PDF, and the browser opens it right after
-issuing; a number with no PDF is a plain "not found". An invoice among the
-recent entries on the front page links to its PDF.
-**Gap:** nothing lists all issued invoices; older ones are found in
-`invoices/<year>/`.
+### C2. Find an issued invoice again — Supported (browser, CLI)
+**Invoices** lists every invoice and credit note, newest first: number, date,
+customer, total, due date, status, and a **PDF** button that downloads it —
+greyed out, saying why, when the books lack the PDF. Clicking anywhere else
+in a row opens the invoice's booking. The status
+is one mark per entry that tags the invoice, in order, each dated and a link
+to that booking: "part paid" for each `pays:`, "settled" for the `settles:`,
+"cancelled" for the credit note's `credits:`; with none, "open" (or "credit
+note" for one). An open or part-paid invoice past its due date is also marked
+overdue. **Not settled** shows only open and part-paid ones. CLI: `abo
+invoices [--open] [--json]`, the same marks on one line, newest first (the
+JSON in number order). Pay and Settle refuse an invoice already settled or
+cancelled. Status is read from the tags alone, never from amounts. An
+invoice's own page lists what paid, settled or cancelled it, and what is still
+owed where that is known; a `pays:`, `settles:` or `credits:` tag in any
+entry's journal text links to the invoice it names.
+**Done when** each invoice shows the marks its tags give it. An invoice
+issued before abo kept what it printed is due its date plus `[invoice]
+terms_days`. One paid on the spot, booking nothing to the receivable, is
+settled on its own date, needing no tag.
 
 ### C3. Invoice in another commodity — Supported
-The commodity field (`--currency`) and `[invoice] decimals` (`--decimals`).
+The commodity field (`--currency`); its places are those it is declared with,
+`--decimals` to say otherwise.
 **Done when** the entry and the PDF are in that commodity with its places.
 
 ---
@@ -203,6 +282,10 @@ against the cash box stays outstanding against the bank — each marking is a
 commit, and recording writes a dated entry, with a balance assertion when
 nothing is outstanding and without one otherwise. After a marking or a
 recording the page is reloaded fresh, so reloading it does not do it again.
+Refused: an account that is not declared or not an asset, an undeclared
+commodity, clearing what is cleared already, and recording a statement
+recorded already — but for recording it again, asserted, once what was
+outstanding at the first recording has cleared.
 
 ### D2. Reconcile cash or a wallet — Supported (as D1)
 Any asset account and any commodity.
@@ -251,15 +334,19 @@ again.
 Every operation that succeeds says so in a green notice that fades after a
 couple of seconds (hovering holds it), with **Undo** on it. The **Log** offers
 **Undo** on every line, greyed out where it cannot: the opening of the books,
-a filed document that is booked, or something already undone. CLI: `abo log`,
-then `abo undo <line>`.
+a filed document that is booked, something already undone, a change that
+something since has changed the same lines of, or one in a closed period. CLI:
+`abo log`, whose lines that can be undone say `(undo)`, then `abo undo <line>`.
 Undoing a booking, a filing, an invoice, a clearing or a recorded balance
 takes its change back out of the books — the entry, or the document — as a
 new commit, so git keeps both. An undo is itself undoable.
 **Done when** the books are as they were before the operation and the Log
-shows it struck through. Refused, with nothing changed, when something since
-has changed the same lines (a booking cleared since: undo the clearing first,
-or revert the booking), or when it would change a closed period. Undoing an
+shows it struck through; undoing the undo brings it back, and it is no longer
+shown undone. Undoing the first entry of a year takes its emptied year file
+and `include` line with it, and undoing that puts both back. Refused, with
+nothing changed, when something since has changed
+the same lines — the refusal names that line of the log, to undo first — or
+when it would change a closed period. Undoing an
 invoice frees its number for the next one; undo only one not yet sent.
 
 ### F3. Un-tick a transaction cleared by mistake — Supported (as F2)
@@ -276,24 +363,44 @@ its invoice or reversal if any, and the commit that booked it — and
 says otherwise.
 **Done when** a new entry dated today carries the opposite amounts and a
 `reverses:` tag naming the commit that booked the original, which stays where
-it is. A booking already reversed says so and cannot be reversed again.
+it is. A booking already reversed says so and cannot be reversed again; nor
+can one be reversed with a date before its own. An invoice is refused, in the
+browser and the CLI alike, with the `abo credit` that corrects it (F5), and a
+credit note is refused: both are documents the customer has.
 
-### F5. Correct an issued invoice — Missing
+### F5. Correct an issued invoice — Supported (browser, CLI)
 An issued invoice is a document the customer has; it is corrected by a credit
-note, not by editing.
-**Open decision:** whether a credit note is an invoice with negative lines and
-its own number series, and how it refers to the one it corrects.
+note that cancels it in full, and a new invoice. Browser: open the invoice's
+booking from the recent entries and **Correct**: a credit note is issued,
+dated today, and the invoice form opens filled in as the cancelled invoice
+was, to change and issue. CLI: `abo credit <number>` (`--date`, `--note`),
+then `abo invoice` as usual.
+**Done when** the credit note has the next number in the invoice series, its
+PDF under `invoices/<year>/` says "Credit note", names the invoice it cancels
+and its date, and repeats its lines with the quantities and amounts negated;
+its entry negates every posting of the invoice's and is tagged `invoice:` with
+its own number and `credits:` with the invoice's; PDF, its data and the entry
+are one commit, and the receivable and output VAT of the invoice net to zero.
+The corrected invoice is numbered after the credit note. An invoice issued
+before abo kept what it printed (`invoices/<year>/<number>.json`) is
+cancelled from its journal entry: one line, "Invoice N of date", with its net,
+VAT and total, and the customer's name; the corrected invoice's form is then
+filled in but for its lines. Refused: a number the books have no invoice for,
+an invoice already cancelled or reversed, and a credit note. The invoice's
+page then says what cancelled it and **Correct** is greyed out.
 
 ### F6. Close a period — Supported (config)
-`[company] closed_through` in `abo.toml`; entries dated on or before it are
-refused.
+`[company] closed_through` in `abo.toml`, a quoted date:
+`closed_through = "2026-06-30"`. Entries dated on or before it are refused, and
+so is filing a bill dated then (it could never be booked).
 
 ---
 
 ## G. Phone
 
 ### G1. Photograph and book a bill on a phone — Partial
-The pages work at phone width and the upload opens the camera.
+The pages work at phone width, and the upload offers the camera, the photo
+library or a file.
 **Gap:** no web app manifest yet, so it cannot be installed to the home screen
 (DESIGN M6).
 
@@ -303,52 +410,43 @@ The pages work at phone width and the upload opens the camera.
 
 Listed so the list is complete; each has its trigger in DESIGN.md.
 
-- **Companies and users** (M5) — who did what, per person; more than one set of books.
+- **Users** (M5, the rest) — who did what, per person, and who may open which books. More than one set of books is served already (A3).
 - **Bank import** (§11) — statement lines matched against booked items.
 - **Payroll** (§11) — gross to net, payslips.
 - **Year-end closing entries** (§12) — until then unclosed profit is a computed equity line.
 
 ---
 
-## Last verified: 2026-09-24
-
-Before the model was taken out of abo and the log became a list of commands:
-B2 to B6 below are that run's numbering, when a bill was a model's proposal
-approved or corrected, and F1, F2 and F4 checked the log as it was then.
+## Last verified: 2026-09-29
 
 Four fresh agents, each with its own copy of the demo books and its own
-server, the bill workflows against a stand-in for the model (`ABO_STAND_IN`,
-DESIGN §5). No API key on that machine; typst for the last of the four.
+server, typst installed, working from this file and not the source: setting
+up (A, F6); booking, reconciling and reports (B1–B4, D, E); invoicing and
+corrections (C1, C3, F5, F7); settling, the Log and undo (B5, B6, C2, F1–F4).
+Every **Done when** held but where the table says otherwise. What they found
+was fixed on 2026-09-30, with a test for each, and not yet verified again.
 
 | Workflow | Result |
 |---|---|
-| A1 | Verified after the fix: the documentation had left out the VAT-account questions |
-| A2, A3, B1–B6, D2, E1, E2, E4, F1 | Verified |
-| D1 | Verified after two fixes: clearing marked the whole transaction, and a resent form recorded twice |
-| E3 | Verified after the fix: income in another commodity was silently left out |
-| F6 | Verified after the fix: a running server ignored a newly closed period |
-| C1, C3 | Verified, with PDFs read back and checked, after two fixes: line amounts were not stated to the commodity's places ("0.0005 BTC", "EUR 0"), and a refused line did not say which line or everything wrong with it. Without typst the failure is clear and leaves nothing behind |
-| C2 | Partial, as documented; an unknown number now answers "not found" instead of an I/O error |
-| Statement PDFs | Verified against the screen and hledger; the template is committed with the first one only |
-| Any commit | Fixed in passing: a commit that failed (no git identity) left its entry in the journal, and the next commit swept it up — two invoices entered the books without PDFs. A failed commit now puts the journal back |
-| G1 | Partial, as documented |
-| F2–F5 | Missing, as documented |
+| A2, A3, B1–B4, B6, C2, D1, D2, E1–E4, F3, F5, F6 | Verified; the refusals found missing are fixed since (below) |
+| A1 | Failed, fixed: input that ran out mid-way asked again for ever; a flag no question asked for was dropped without a word; the closing message named `abo add` |
+| A3b, A4 | Failed, fixed: no success notice or Undo after saving in the browser; an edit that changed nothing said nothing; a change whose commit failed left `abo.toml` changed and staged, for the next commit to sweep up. Also: an option added with flags got no name, and "the start of more than one" listed every option |
+| B5 | Failed, fixed: the Pay page booked a negative or nought amount, or the receivable as where money arrived; `pays:`/`settles:` were taken on entries that pay nothing, and twice for one invoice |
+| C1, C3 | Failed, fixed: nought, negative and out-of-range VAT invoices were issued; any commodity was taken, `eur` beside EUR; an invoice in BTC without `--decimals` was stated to two places, and a line that rounded to nothing was kept |
+| F1, F2 | Failed, fixed: an undone invoice could not be undone (git read typst's PDFs as text); an undo undone left the original shown as undone; a refusal showed raw git output instead of naming the line in the way |
+| F4 | Failed, fixed: after a booked document's booking was reverted, the refusal still advised reverting it |
+| F7 | Failed, fixed: the CLI and a direct POST reverted invoices, cancelled ones included, and credit notes; a reversal could be dated before its original |
+| D1, D2 (in passing) | Fixed: clearing what was cleared gave a raw git error; a statement could be recorded twice; any account, not declared or not an asset, was taken |
+| B2 (in passing) | Fixed: `abo file` took a date in a closed period |
 
-Seen in that run and fixed since: a refusal now stays on its own page (the
-bill, the upload form) or offers **Back** to the page it came from; a disabled
-**Approve** says why beside it; a bill shows its corrections and says when it
-was resumed; a settled account shows 0.00 instead of vanishing; the typst
-warning comes only from commands that make a PDF; the Log marks a reverted
-commit; a statement PDF no longer commits anything; and recent entries link an
-invoice to its PDF.
+Known then, fixed on 2026-09-30 as well: a company in a data directory was
+listed but not served; a document filed from the CLI could not be booked from
+the browser; an invoice's page did not show its payments; undoing a year's
+first entry left its empty file and `include`; the Log offered Undo on lines
+it would refuse; on a phone the invoice list scrolled sideways and the bill
+upload went straight to the camera; a renamed company kept its old name as a
+bank option's holder; and an older invoice template left new fields off
+without a word.
 
-On the invoice as a document, for whoever owns the template and the rules:
-
-- An invoice in BTC still gives the bank details as the way to pay, and states
-  its VAT in BTC only; VAT law usually wants it in the national currency too.
-- A 0% invoice says nothing about why; the reason (export, exemption) has to be
-  typed into the note.
-- There is no field for the customer's tax number, which cross-border B2B
-  invoices usually need.
-- An invoice may be dated before the one numbered ahead of it; many places
-  require numbers to follow dates.
+Not yet done: users and logins (the rest of M5), and a web app manifest
+(M6, G1).

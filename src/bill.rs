@@ -44,6 +44,13 @@ pub fn file(ctx: &Ctx, src: &str, bytes: &[u8], date: &str, issuer: &str) -> Res
 }
 
 fn file_it(ctx: &Ctx, bytes: &[u8], date: &str, issuer: &str) -> Result<FileReport> {
+    // A bill dated in a closed period could never be booked: refused before
+    // it is filed, as the browser refuses it.
+    if let Some(closed) = &ctx.cfg.company.closed_through {
+        if date <= closed.as_str() {
+            bail!("{date} falls in a closed period (closed through {closed})");
+        }
+    }
     let (rel, sha256) = place(ctx, bytes, date, issuer)?;
     let dest = ctx.root.join(&rel);
     match ctx.commit(&[&dest], &format!("File {rel}")) {

@@ -13,8 +13,8 @@ adding it is stated.
 
 Status: M0-M4 built — `abo init`, `post`, `file`, `bill`, `invoice`,
 `reconcile`, `clear`, `revert`, `undo`, `company`, `payment-options`, `pl`, `bs`,
-`vat`, `bal`, `reg`, `log`, `serve`, `demo`. Next step is M5
-(companies and users).
+`vat`, `bal`, `reg`, `log`, `serve`, `demo`. M5 half built: a data
+directory serves each of its companies under `/c/<dir>/`; users are next.
 
 ---
 
@@ -52,8 +52,10 @@ company-books/
     accounts.journal      # account + commodity declarations
     2026.journal          # one file per year
   templates/invoice.typ   # seeded on first use, then yours to edit
+  templates/credit-note.typ
   bills/2026/2026-09-21-acme-a1b2c3d4.pdf
   invoices/2026/2026-0017.pdf
+  invoices/2026/2026-0017.json   # what the PDF printed, for a credit note
   .abo/                   # gitignored: the log, typst's scratch files
 ```
 
@@ -71,6 +73,19 @@ Documents are linked to entries by hledger tags, never by a join table:
 - `sha256:` is the duplicate check. Before booking a document, `hledger print tag:sha256=<hash>` must return nothing.
 - `invoice:` on issued invoices carries the invoice number. The next number is
   `max(invoice:) + 1` read from the journal — no counter file, no state to corrupt.
+- `credits:` on a credit note names the invoice it cancels. A credit note is
+  numbered in the same series (it carries `invoice:` too), repeats the
+  invoice's lines negated from the committed `.json`, and books the invoice's
+  entry negated. An issued invoice is never edited or undone once sent: it is
+  cancelled in full and a corrected one issued after it.
+- `pays:` and `settles:` on a payment name the invoices it pays: part of one,
+  or the payment that settles it. An invoice is paid once something
+  `settles:` it, part paid while only `pays:` name it. Status is read from the
+  tags, never from amounts, so a payment of several invoices is never split
+  between them by abo, and a payment booked untagged is settled by adding the
+  tag to it (`abo settle --by`). One settled where the books do not show gets
+  an entry of the tag alone, the one entry allowed no postings. An invoice paid on
+  the spot, booking nothing to the receivable, is settled as issued.
 
 Account naming: CamelCase segments, acronyms in capitals: `Assets:Bank`,
 `Expenses:Telecom`, `Liabilities:VAT:Output`. If your accountant wants a
@@ -537,7 +552,7 @@ A **PWA** over the same server-rendered pages: a manifest plus a responsive
 stylesheet. The camera is a platform feature and needs no library:
 
 ```html
-<input type="file" accept="image/*" capture="environment">
+<input type="file" accept="image/*,application/pdf">
 ```
 
 The bill workflow on a phone is photograph → date, issuer and postings →
@@ -644,7 +659,10 @@ Not legal advice, but none of this is controversial.
   as `--json`, and as PDFs through a second typst template. Bank import moved
   to §11 — the point of reconciliation is to notice what is wrong, and typing
   a closing balance is enough to do that.
-- **M5** — companies and users. **← next**
+- **M5** — companies and users. **← next.** Companies are done: `abo serve`
+  on a data directory hands `/c/<dir>/…` to that company's own router with
+  the prefix taken off, and puts it back on every link, form and redirect in
+  the answer, so no page knows where it is served. Users are not.
 - **M6** — PWA manifest, or the JSON API if native has been chosen.
 
 Reconciliation was not in the original list of workflows and is the one that

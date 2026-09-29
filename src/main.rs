@@ -7,6 +7,7 @@ mod questions;
 mod report;
 mod reconcile;
 mod repo;
+mod settle;
 mod statement;
 mod undo;
 mod web;
@@ -297,11 +298,20 @@ enum Cmd {
         #[arg(long, default_value = "")]
         reference: String,
         /// The id of a payment option to print, repeatable. Defaults to all
-        /// of them, as `abo payment-options` lists them.
+        /// of them, as `abo payment-options` lists them; for an invoice in
+        /// another commodity than the company's, to its crypto options if
+        /// there are any.
         #[arg(long)]
         pay_to: Vec<String>,
         #[arg(long, default_value = "")]
         note: String,
+        /// The customer's tax registration number, printed under their address.
+        #[arg(long, default_value = "")]
+        customer_tax_id: String,
+        /// Why no VAT is charged: needed at 0% unless the company is not
+        /// VAT registered. e.g. "Export of services, outside the scope of VAT".
+        #[arg(long, default_value = "")]
+        vat_reason: String,
     },
     /// Profit and loss for a period.
     Pl {
@@ -350,10 +360,11 @@ enum Cmd {
         #[arg(long, default_value_t = 20)]
         last: usize,
     },
-    /// Take back an operation, by its number in `abo log`: a commit is
-    /// reverted with git, a pending bill is thrown away.
+    /// Take back an operation, by its number in `abo log`: its change leaves
+    /// the books as a new commit, and git keeps both.
     Undo { line: usize },
-    /// List where invoices ask to be paid, numbered; add or remove an option.
+    /// List where invoices ask to be paid, in the order they print them;
+    /// add, change or remove an option.
     PaymentOptions {
         #[command(subcommand)]
         change: Option<PaymentCmd>,
@@ -370,6 +381,41 @@ enum Cmd {
         country: Option<String>,
         #[arg(long)]
         tax_id: Option<String>,
+    },
+    /// Cancel an issued invoice in full with a credit note: the next number,
+    /// the invoice's lines and entry negated. Issue the corrected invoice
+    /// after it with `abo invoice`.
+    Credit {
+        /// Defaults to today.
+        #[arg(long)]
+        date: Option<String>,
+        /// Printed at the foot, such as why it is cancelled.
+        #[arg(long, default_value = "")]
+        note: String,
+        /// The invoice's number, such as 2026-0017.
+        number: String,
+    },
+    /// Every invoice and credit note: total, due date and whether it is
+    /// settled. A payment settles one by tag: `--tag pays=<number>` for a
+    /// part, `--tag settles=<number>` for the one that settles it.
+    Invoices {
+        /// Only those not yet settled: open or part paid.
+        #[arg(long)]
+        open: bool,
+    },
+    /// Settle an invoice. With --by, a booked payment that forgot to say so
+    /// is tagged `settles:` it; without, an entry of the tag alone says it
+    /// was settled where the books do not show.
+    Settle {
+        /// A booked payment's key, as `abo reconcile` and the web interface
+        /// give it.
+        #[arg(long, value_name = "KEY", conflicts_with = "date")]
+        by: Option<String>,
+        /// Defaults to today.
+        #[arg(long)]
+        date: Option<String>,
+        /// The invoice's number, such as 2026-0017.
+        number: String,
     },
     /// Book the opposite of an entry. KEY is `file:line:date`, as `abo
     /// reconcile` and the web interface give it.
@@ -485,7 +531,7 @@ async fn run(cli: Cli) -> Result<()> {
     // The only optional program is typst, so the others say nothing about it.
     let makes_pdf = matches!(
         &cli.cmd,
-        Cmd::Invoice { .. } | Cmd::Pl { pdf: Some(_), .. } | Cmd::Bs { pdf: Some(_), .. } | Cmd::Vat { pdf: Some(_), .. }
+        Cmd::Invoice { .. } | Cmd::Credit { .. } | Cmd::Pl { pdf: Some(_), .. } | Cmd::Bs { pdf: Some(_), .. } | Cmd::Vat { pdf: Some(_), .. }
     );
     if makes_pdf {
         for d in &missing {
@@ -529,7 +575,19 @@ async fn run(cli: Cli) -> Result<()> {
             match flags.answers()? {
                 Some(mut given) => {
                     given.insert("name".into(), name);
-                    questions::walk(questions::INIT, "", &mut answers, &context, &mut Flags(given))?;
+                    questions::walk(questions::INIT, "", &mut answers, &context, &mut Flags(given.clone()))?;
+                    // A flag no question asked for would be dropped without
+                    // a word: a network on a bank option, a rate under none.
+                    if let Some(k) = given.keys().find(|k| !answers.contains_key(*k)) {
+                        match k.split_once('.') {
+                            Some((p, field)) => {
+                                let n: usize = p.trim_start_matches('p').parse().unwrap_or(0);
+                                let kind = answers.get(&format!("{p}.kind")).cloned().unwrap_or_default();
+                                bail!("--payment number {}: a {kind} option has no {field}", n + 1);
+                            }
+                            None => bail!("--{} does not apply with the other answers given", k.replace('_', "-")),
+                        }
+                    }
                 }
                 None => {
                     let mut term = Terminal { given: questions::Answers::from([("name".into(), name)]), start: Default::default() };
@@ -539,7 +597,7 @@ async fn run(cli: Cli) -> Result<()> {
             let r = repo::init(&dir, &questions::books(&answers))?;
             emit(cli.json, &r, || {
                 format!(
-                    "Books opened in {} ({}).\nNext: cd {slug}, edit journal/accounts.journal, then `abo add`.",
+                    "Books opened in {} ({}).\nNext: cd {slug}, edit journal/accounts.journal, then `abo post`.",
                     r.root, r.commit
                 )
             })
@@ -566,7 +624,7 @@ async fn run(cli: Cli) -> Result<()> {
             let r = bill::bill(&ctx, &file, &description, tag_pairs(&tags)?, parse_postings(&ctx, &postings)?)?;
             emit(cli.json, &r, || format!("{}\nCommitted {} to {}.", r.entry.render(), r.commit, r.file))
         }
-        Cmd::Invoice { to, items, date, due_days, vat_rate, currency, decimals, reference, pay_to, note } => {
+        Cmd::Invoice { to, items, date, due_days, vat_rate, currency, decimals, reference, pay_to, note, customer_tax_id, vat_reason } => {
             let ctx = Ctx::open(&here)?;
             let args = invoice::IssueArgs {
                 customer: to.replace("\\n", "\n"),
@@ -579,11 +637,53 @@ async fn run(cli: Cli) -> Result<()> {
                 reference,
                 pay_to,
                 note,
+                customer_tax_id,
+                vat_reason,
             };
             let r = invoice::issue(&ctx, &args)?;
+            for w in &r.warnings {
+                eprintln!("Warning: {w}");
+            }
             emit(cli.json, &r, || {
                 format!("Invoice {} for {}: {}\nCommitted {}.", r.number, r.total, r.pdf, r.commit)
             })
+        }
+        Cmd::Credit { date, note, number } => {
+            let ctx = Ctx::open(&here)?;
+            let r = invoice::credit(&ctx, &invoice::CreditArgs { number, date, note })?;
+            for w in &r.warnings {
+                eprintln!("Warning: {w}");
+            }
+            emit(cli.json, &r, || format!("Credit note {} for {}: {}\nCommitted {}.", r.number, r.total, r.pdf, r.commit))
+        }
+        Cmd::Invoices { open } => {
+            let ctx = Ctx::open(&here)?;
+            let all: Vec<_> = settle::invoices(&ctx)?.into_iter().filter(|i| !open || !i.status.settled()).collect();
+            // Newest first, as the browser lists them; --json in number order.
+            emit(cli.json, &all, || {
+                all.iter()
+                    .rev()
+                    .map(|i| {
+                        let due = if i.due.is_empty() { String::new() } else { format!("due {}", i.due) };
+                        let mut status: Vec<String> = i.settled_by.iter().map(|t| t.label()).collect();
+                        if status.is_empty() {
+                            status.push(i.status.label().to_string());
+                        }
+                        if i.overdue {
+                            status.push("overdue".into());
+                        }
+                        let status = status.join(", ");
+                        format!("{}  {}  {:<24}  {:>16}  {:<14}  {}", i.number, i.date, i.customer, i.total, due, status)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+        }
+        Cmd::Settle { by, date, number } => {
+            let ctx = Ctx::open(&here)?;
+            let date = date.unwrap_or_else(|| jiff::Zoned::now().date().to_string());
+            let r = settle::settle(&ctx, &number, by.as_deref(), &date)?;
+            emit(cli.json, &r, || format!("Invoice {} settled by {}.\nCommitted {}.", r.number, r.by, r.commit))
         }
         Cmd::Pl { period, pdf } => {
             let ctx = Ctx::open(&here)?;
@@ -775,7 +875,7 @@ async fn run(cli: Cli) -> Result<()> {
     }
 }
 
-/// Only the long-running commands log; `abo add` keeps stderr for its own errors.
+/// Only the long-running commands log; `abo post` keeps stderr for its own errors.
 fn logging(missing: &[&'static Dep]) {
     use tracing_subscriber::EnvFilter;
     tracing_subscriber::fmt()
@@ -851,12 +951,20 @@ fn emit<T: serde::Serialize>(json: bool, value: &T, human: impl FnOnce() -> Stri
     Ok(())
 }
 
+/// Set once the input has run out, so that nothing is asked again after it.
+static ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn ended() -> Result<Option<String>> {
+    ENDED.store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(None)
+}
+
 /// The answer, or the default for a blank one; `None` when the input has run out.
 fn read(question: &str, default: &str) -> Result<Option<String>> {
     let question = if default.is_empty() { format!("{question}: ") } else { format!("{question} [{default}]: ") };
     // A line editor, so the arrow keys move along what has been typed.
     let s = match rustyline::DefaultEditor::new()?.readline(&question) {
-        Err(rustyline::error::ReadlineError::Eof) => return Ok(None),
+        Err(rustyline::error::ReadlineError::Eof) => return ended(),
         r => r?,
     };
     let s = s.trim();
@@ -869,7 +977,7 @@ fn read(question: &str, default: &str) -> Result<Option<String>> {
 fn read_over(question: &str, now: &str) -> Result<Option<String>> {
     use std::io::IsTerminal as _;
     let s = match rustyline::DefaultEditor::new()?.readline_with_initial(&format!("{question}: "), (now, "")) {
-        Err(rustyline::error::ReadlineError::Eof) => return Ok(None),
+        Err(rustyline::error::ReadlineError::Eof) => return ended(),
         r => r?,
     };
     let s = s.trim();
@@ -915,7 +1023,10 @@ fn prompt_lines_over(intro: &str, now: &[&str]) -> Result<Vec<String>> {
         // Without a terminal there is no line to put them on.
         let now = if std::io::stdin().is_terminal() { now } else { "" };
         match editor.readline_with_initial("  ", (now, "")) {
-            Err(rustyline::error::ReadlineError::Eof) => break,
+            Err(rustyline::error::ReadlineError::Eof) => {
+                ended()?;
+                break;
+            }
             r if r.as_ref().is_ok_and(|l| l.trim().is_empty()) => break,
             r => lines.push(r?.trim().to_string()),
         }
@@ -1110,6 +1221,10 @@ impl questions::Source for Terminal {
     }
 
     fn item_problem(&mut self, prefix: &str, _first: &str, problem: String, answers: &questions::Answers) -> Result<bool> {
+        // With the input run out there is no asking again.
+        if ENDED.load(std::sync::atomic::Ordering::Relaxed) {
+            bail!("{problem}");
+        }
         eprintln!("  {problem} Asking again.");
         self.start.extend(answers.iter().filter(|(k, _)| k.starts_with(prefix)).map(|(k, v)| (k.clone(), v.clone())));
         Ok(true)

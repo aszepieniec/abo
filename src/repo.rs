@@ -318,6 +318,19 @@ impl Ctx {
         git_env(&self.root, args, &env)
     }
 
+    /// Write `text` to `path` and commit it alone; if the commit fails, the
+    /// file is as it was, and nothing is left staged for the next commit to
+    /// sweep up.
+    pub fn write_and_commit(&self, path: &Path, text: &str, msg: &str) -> Result<String> {
+        let before = std::fs::read_to_string(path)?;
+        std::fs::write(path, text)?;
+        self.commit(&[path], msg).inspect_err(|_| {
+            let rel = path.strip_prefix(&self.root).unwrap_or(path).to_string_lossy().to_string();
+            let _ = self.git(&["reset", "-q", "--", &rel]);
+            let _ = std::fs::write(path, &before);
+        })
+    }
+
     /// Stage and commit. Returns the short hash.
     pub fn commit(&self, paths: &[&Path], msg: &str) -> Result<String> {
         for p in paths {
@@ -390,7 +403,7 @@ pub fn git_in(dir: &Path, args: &[&str]) -> Result<String> {
     git_env(dir, args, &[])
 }
 
-fn git_env(dir: &Path, args: &[&str], env: &[(&str, String)]) -> Result<String> {
+pub(crate) fn git_env(dir: &Path, args: &[&str], env: &[(&str, String)]) -> Result<String> {
     let out = Command::new("git")
         .current_dir(dir)
         .args(args)
@@ -737,11 +750,12 @@ sum   = ["2", "-3"]
             vec![p("Expenses:Hosting", "100.00"), p("Assets:VAT:Input", "10.00"), p("Liabilities:Payable", "-110.00")]),
         ("2026-02-28", "Pay Acme Hosting AG", no_tags.clone(),
             vec![p("Liabilities:Payable", "110.00"), p("Assets:Bank", "-110.00")]),
-        // tagged, so `abo invoice` numbers the next one 2026-0002
+        // tagged, so `abo invoice` numbers the next one after the last
         ("2026-03-31", "Customer One | Invoice 2026-0001",
             vec![("invoice".to_string(), "2026-0001".to_string())],
             vec![p("Assets:Receivable", "5500.00"), p("Income:Sales", "-5000.00"), p("Liabilities:VAT:Output", "-500.00")]),
-        ("2026-04-15", "Customer One pays 2026-0001", no_tags.clone(),
+        ("2026-04-15", "Customer One pays 2026-0001",
+            vec![("settles".to_string(), "2026-0001".to_string())],
             vec![p("Assets:Bank", "5500.00"), p("Assets:Receivable", "-5500.00")]),
         ("2026-04-30", "Salary April", no_tags.clone(),
             vec![p("Expenses:Salary", "6000.00"), p("Assets:Bank", "-6000.00")]),
@@ -754,9 +768,44 @@ sum   = ["2", "-3"]
         ("2026-05-10", "Customer Two | Invoice 2026-0002",
             vec![("invoice".to_string(), "2026-0002".to_string())],
             vec![p("Assets:Wallet:BTC", "0.05 BTC"), p("Income:Sales", "-0.05 BTC")]),
+        // Two still owed: one paid in two parts so far, one not at all.
+        ("2026-08-14", "Customer One | Invoice 2026-0003",
+            vec![("invoice".to_string(), "2026-0003".to_string())],
+            vec![p("Assets:Receivable", "2200.00"), p("Income:Sales", "-2000.00"), p("Liabilities:VAT:Output", "-200.00")]),
+        ("2026-09-05", "Customer One pays part of 2026-0003",
+            vec![("pays".to_string(), "2026-0003".to_string())],
+            vec![p("Assets:Bank", "1000.00"), p("Assets:Receivable", "-1000.00")]),
+        ("2026-09-20", "Customer One pays part of 2026-0003",
+            vec![("pays".to_string(), "2026-0003".to_string())],
+            vec![p("Assets:Bank", "500.00"), p("Assets:Receivable", "-500.00")]),
     ];
     for (date, description, tags, postings) in entries {
         post(&ctx, &Entry { date: date.into(), description: description.into(), tags, postings })?;
+    }
+    // One issued the ordinary way, so it has its PDF, a due date and
+    // Correct. Without typst it is booked as the others are, PDF missing.
+    let invoice = crate::invoice::IssueArgs {
+        customer: "Customer Three\n3 Example Road\n10000 Example City".into(),
+        currency: None,
+        decimals: None,
+        items: vec!["4|200.00|Consulting, September".into()],
+        date: Some("2026-09-15".into()),
+        due_days: None,
+        vat_rate: None,
+        reference: String::new(),
+        pay_to: vec![],
+        note: String::new(),
+        customer_tax_id: "CHE-123.456.789".into(),
+        vat_reason: String::new(),
+    };
+    if let Err(e) = crate::invoice::issue(&ctx, &invoice) {
+        tracing::warn!(%e, "the demo's invoice 2026-0004 has no PDF");
+        post(&ctx, &Entry {
+            date: "2026-09-15".into(),
+            description: "Customer Three | Invoice 2026-0004".into(),
+            tags: vec![("invoice".to_string(), "2026-0004".to_string())],
+            postings: vec![p("Assets:Receivable", "880.00"), p("Income:Sales", "-800.00"), p("Liabilities:VAT:Output", "-80.00")],
+        })?;
     }
     Ok(ctx)
 }

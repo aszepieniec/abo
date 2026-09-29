@@ -5,6 +5,8 @@
 #let d = json("/.abo/invoice.json")
 #let multi(s) = s.split("\n").join(linebreak())
 #let amount(x) = [#d.currency #x]
+// Fields newer than some invoices' data: blank where they are missing.
+#let at(k) = d.at(k, default: "")
 
 #set page(paper: "a4", margin: (x: 2.2cm, top: 2cm, bottom: 2.2cm))
 // Change the typeface here, e.g. #set text(font: "EB Garamond", size: 10.5pt)
@@ -37,6 +39,7 @@
 
 #v(1.6cm)
 #multi(d.customer)
+#if at("customer_tax_id") != "" [ \ Tax no. #at("customer_tax_id") ]
 #v(1.2cm)
 
 #table(
@@ -60,9 +63,17 @@
   inset: (x: 0pt, y: 4pt),
   [Net], amount(d.net),
   ..if d.vat != "0.00" { ([VAT #d.vat_rate%], amount(d.vat)) } else { () },
+  ..if at("vat_home") != "" { ([VAT in #at("vat_home_currency")], [#at("vat_home_currency") #at("vat_home")]) } else { () },
   table.hline(stroke: 0.5pt),
   [*Total*], [*#amount(d.total)*],
 ))
+#if at("vat_home_price") != "" [
+  #align(right, text(size: 8.5pt)[VAT converted at #at("vat_home_price")])
+]
+#if at("vat_reason") != "" [
+  #v(0.3cm)
+  #at("vat_reason")
+]
 
 #v(1.4cm)
 #let pay = d.payment

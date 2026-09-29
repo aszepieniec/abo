@@ -149,7 +149,14 @@ fn new_company() {
     let (status, to, _) = http(&s, "POST", "/new", &good);
     assert_eq!((status, to.as_str()), (303, "/?opened=test-sons-ltd"));
     let (_, _, page) = http(&s, "GET", "/?opened=test-sons-ltd", &[]);
-    assert!(page.contains("Books opened") && page.contains("<td>Test &amp; Sons Ltd</td>"), "{page}");
+    assert!(page.contains("Books opened") && page.contains("<a href=\"/c/test-sons-ltd/\">Test &amp; Sons Ltd</a>"), "{page}");
+    // Its pages are served from here, every link under its directory.
+    let (status, _, page) = http(&s, "GET", "/c/test-sons-ltd/", &[]);
+    assert_eq!(status, 200, "{page}");
+    assert!(page.contains("href=\"/c/test-sons-ltd/invoices\"") && page.contains("href=\"/c/\""), "{page}");
+    assert!(!page.contains("href=\"/invoices\""), "{page}");
+    let (status, _, _) = http(&s, "GET", "/c/no-such-ltd/", &[]);
+    assert_eq!(status, 404);
 
     let books = data.join("test-sons-ltd");
     let c: toml::Value = toml::from_str(&std::fs::read_to_string(books.join("abo.toml")).unwrap()).unwrap();

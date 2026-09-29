@@ -92,11 +92,12 @@ fn replaying_the_log_makes_the_same_books() {
     run(&[&["clear"][..], &keys].concat());
     run(&["reconcile", "--account", "Assets:Bank", "--date", "2026-12-31", "--balance", "4950.00", "--record"]);
     // Revert the bill, which touches no account the record asserts. A
-    // booking's key is a posting's without the account: file:line:date.
-    let r: serde_json::Value =
-        serde_json::from_str(&run(&["reconcile", "--account", "Liabilities:Payable", "--json"])).unwrap();
-    let key = r["outstanding"][0]["key"].as_str().unwrap();
-    run(&["revert", &key.splitn(4, ':').take(3).collect::<Vec<_>>().join(":")]);
+    // booking's key is file:line:date, where hledger read it.
+    let out = Command::new("hledger").args(["-f", "journal/main.journal", "print", "tag:bill", "-O", "json"]).current_dir(&dir).output().unwrap();
+    let t: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let pos = &t[0]["tsourcepos"][0];
+    let file = Path::new(pos["sourceName"].as_str().unwrap()).file_name().unwrap().to_string_lossy().to_string();
+    run(&["revert", &format!("{file}:{}:{}", pos["sourceLine"], t[0]["tdate"].as_str().unwrap())]);
 
     // Nothing that only reads is logged.
     run(&["bal"]);

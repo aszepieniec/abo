@@ -66,8 +66,14 @@ pub fn edit(ctx: &Ctx, c: Change) -> Result<CompanyReport> {
         for (key, v) in [("name", &new.name), ("address", &new.address), ("country", &new.country), ("tax_id", &new.tax_id)] {
             doc["company"][key] = toml_edit::value(v.as_str());
         }
-        std::fs::write(&path, doc.to_string())?;
-        let commit = ctx.commit(&[&path], "Change the company's details")?;
+        // A bank account held in the company's name is held in its new one.
+        let old = &ctx.cfg.company.name;
+        if let Some(options) = doc.get_mut("payment").and_then(|p| p.as_array_of_tables_mut()) {
+            for o in options.iter_mut().filter(|o| o.get("holder").and_then(|h| h.as_str()) == Some(old.as_str())) {
+                o["holder"] = toml_edit::value(new.name.as_str());
+            }
+        }
+        let commit = ctx.write_and_commit(&path, &doc.to_string(), "Change the company's details")?;
         Ok(CompanyReport { name: new.name.clone(), address: new.address.clone(), country: new.country.clone(), tax_id: new.tax_id.clone(), commit })
     })();
     ctx.logged(argv, &new.name, r)

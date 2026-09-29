@@ -8,6 +8,7 @@ use crate::payment;
 use crate::invoice;
 use crate::journal::{self, Entry, Posting};
 use crate::reconcile;
+use crate::settle;
 use crate::statement::{self, money};
 use crate::undo;
 use crate::questions::{self, Q};
@@ -17,7 +18,7 @@ use axum::extract::{DefaultBodyLimit, Form, Multipart, Path, Query};
 use axum::http::header::{HOST, ORIGIN, REFERER};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::Router;
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 use serde::Deserialize;
@@ -48,7 +49,18 @@ pub async fn serve(ctx: Ctx, port: u16) -> Result<()> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let company = ctx.cfg.company.name.clone();
     let root = ctx.root.clone();
-    let app = Router::new()
+    let app = company_app(root.clone())
+        .layer(axum::middleware::from_fn(csrf))
+        .layer(axum::middleware::from_fn(log));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    info!(%company, books = %root.display(), "http://{addr}");
+    axum::serve(listener, app).with_graceful_shutdown(shutdown()).await?;
+    Ok(())
+}
+
+/// One company's pages, at the root of whatever serves them.
+fn company_app(root: PathBuf) -> Router {
+    Router::new()
         .route("/", get(index))
         .route("/post", get(post_form).post(post_submit))
         .route("/log", get(activity))
@@ -56,6 +68,10 @@ pub async fn serve(ctx: Ctx, port: u16) -> Result<()> {
         .route("/reconcile", get(reconcile_view).post(reconcile_act))
         .route("/invoice", get(invoice_form).post(invoice_submit))
         .route("/invoice/{number}", get(invoice_pdf))
+        .route("/invoice/{number}/correct", post(correct))
+        .route("/invoices", get(invoices))
+        .route("/invoices/pay", get(pay_form).post(pay_submit))
+        .route("/invoices/{number}/settle", get(settle_form).post(settle_submit))
         .route("/bill", get(bill_form).post(bill_submit))
         .route("/entry/{key}", get(booking))
         .route("/account", get(register))
@@ -68,25 +84,27 @@ pub async fn serve(ctx: Ctx, port: u16) -> Result<()> {
         .route("/undo/{line}", post(undo_line))
         // A scanned bill is much bigger than a form post.
         .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
-        .layer(axum::middleware::from_fn(csrf))
-        .layer(axum::middleware::from_fn(log))
-        .with_state(Arc::new(ctx.root.clone()));
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    info!(%company, books = %root.display(), "http://{addr}");
-    axum::serve(listener, app).with_graceful_shutdown(shutdown()).await?;
-    Ok(())
+        .layer(axum::middleware::from_fn(scope))
+        .with_state(Arc::new(root))
 }
 
+
 /// A data directory: any number of companies, each in a subdirectory that
-/// holds its books. A page listing them, and a form opening the books for a
-/// new one: init's questions, asked in the browser. Serving each company
-/// from here comes next.
+/// holds its books. A page listing them, a form opening the books for a new
+/// one — init's questions, asked in the browser — and each company's own
+/// pages under `/c/<its directory>/`.
 pub async fn serve_data(root: PathBuf, port: u16) -> Result<()> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let app = Router::new()
         .route("/", get(landing))
         .route("/new", get(new_form).post(new_submit))
+        .route("/c", get(|| async { Redirect::to("/") }))
+        .route("/c/", get(|| async { Redirect::to("/") }))
+        .route("/c/{slug}", any(company))
+        .route("/c/{slug}/", any(company))
+        .route("/c/{slug}/{*rest}", any(company))
+        .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
+        .layer(axum::middleware::from_fn(scope))
         .layer(axum::middleware::from_fn(csrf))
         .layer(axum::middleware::from_fn(log))
         .with_state(Arc::new(root.clone()));
@@ -151,7 +169,7 @@ async fn landing(axum::extract::State(root): axum::extract::State<Arc<PathBuf>>,
                             @for (dir, name) in &companies {
                                 tr {
                                     @match name {
-                                        Ok(n) => td { (n) },
+                                        Ok(n) => td { a href={"/c/" (dir) "/"} { (n) } },
                                         Err(e) => td.muted { "abo.toml unreadable: " (e) },
                                     }
                                     td { code { (dir) } }
@@ -432,13 +450,10 @@ async fn company_submit(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
             problems = posted.problems;
             bail!("answers to look at again");
         }
-        let c = &ctx.cfg.company;
         let mut take = |k: &str| a.remove(k).unwrap_or_default();
         let (name, address, country, tax_id) = (take("name"), take("address"), take("country"), take("tax_id"));
-        // Sent as it stood: nothing to change, and nothing to log.
-        if (&name, &address, &country, &tax_id) != (&c.name, &c.address, &c.country, &c.tax_id) {
-            company::edit(&ctx, company::Change { name: Some(name), address: Some(address), country: Some(country), tax_id: Some(tax_id) })?;
-        }
+        // Sent as it stood, it is refused as the CLI refuses it: like that already.
+        company::edit(&ctx, company::Change { name: Some(name), address: Some(address), country: Some(country), tax_id: Some(tax_id) })?;
         Ok(done(&ctx, "/company"))
     });
     match changed {
@@ -508,7 +523,7 @@ fn company_page(ctx: &Ctx, f: &Fields, problems: &Problems, refused: Option<&any
                                     form method="post" action="/company/payment/remove" {
                                         (token())
                                         input type="hidden" name="id" value=(p.id);
-                                        button type="submit" { (icon("trash")) " Remove" }
+                                        button.btn-danger type="submit" { (icon("trash")) " Remove" }
                                     }
                                 }
                             }
@@ -559,8 +574,7 @@ async fn option_submit(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
         let o = questions::option(&a, "");
         match now {
             _ if skipped => {}
-            // Sent as it stood: nothing to change, and nothing to log.
-            Some(n) if *n == o => {}
+            // Sent as it stood, it is refused: like that already.
             Some(n) => _ = payment::edit(&ctx, &n.id, o)?,
             None => _ = payment::add(&ctx, o)?,
         }
@@ -608,7 +622,7 @@ fn option_page(ctx: &Ctx, f: &Fields, problems: &Problems, refused: Option<&anyh
             } }
             div.actions {
                 button.btn-primary type="submit" { (icon("check")) " Save" }
-                span.nav { a.btn href="/company" { (icon("left")) " Back" } }
+                span.nav { a.btn href=(back_to("/company")) { (icon("left")) " Back" } }
             }
         }
     }
@@ -638,7 +652,7 @@ fn new_page(f: &Fields, problems: &Problems, refused: Option<&anyhow::Error>) ->
             (form)
             div.actions { button.btn-primary type="submit" { (icon("check")) " Open the books" } }
         }
-        p { a.btn href="/" { (icon("left")) " Back" } }
+        p { a.btn href=(back_to("/")) { (icon("left")) " Back" } }
     }
 }
 
@@ -668,6 +682,82 @@ tokio::task_local! {
     /// The query string, for `?done=<n>`, which any page answers with the
     /// success notice for line n of the log.
     static QUERY: String;
+    /// `/c/<dir>` when the company is served from a data directory.
+    static PREFIX: Option<String>;
+}
+
+const PREFIX_HEADER: &str = "x-abo-prefix";
+
+/// One company of a data directory: the request handed to its own router
+/// with `/c/<dir>` taken off, and the answer with it put back on every link,
+/// form and redirect, so its pages need not know where they are served.
+async fn company(
+    axum::extract::State(root): axum::extract::State<Arc<PathBuf>>,
+    Path(params): Path<std::collections::HashMap<String, String>>,
+    mut req: axum::extract::Request,
+) -> Response {
+    use tower::ServiceExt as _;
+    let slug = params.get("slug").cloned().unwrap_or_default();
+    // A directory name as init makes them, and nothing that could reach
+    // outside the data directory.
+    let dir = root.join(&slug);
+    if slug.is_empty() || !slug.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') || !dir.join("abo.toml").is_file() {
+        return (StatusCode::NOT_FOUND, format!("no company {slug:?} here")).into_response();
+    }
+    let prefix = format!("/c/{slug}");
+    let rest = req.uri().path().strip_prefix(&prefix).unwrap_or("").to_string();
+    let rest = if rest.is_empty() { "/".to_string() } else { rest };
+    let uri = match req.uri().query() {
+        Some(q) => format!("{rest}?{q}"),
+        None => rest,
+    };
+    *req.uri_mut() = match uri.parse() {
+        Ok(u) => u,
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    let h = req.headers_mut();
+    if let Some(r) = h.get(REFERER).and_then(|v| v.to_str().ok()).map(|r| r.replacen(&format!("{prefix}/"), "/", 1)) {
+        if let Ok(v) = r.parse() {
+            h.insert(REFERER, v);
+        }
+    }
+    if let Ok(v) = prefix.parse() {
+        h.insert(PREFIX_HEADER, v);
+    }
+    let mut res = company_app(dir).oneshot(req).await.unwrap_or_else(|e| match e {});
+    if let Some(loc) = res.headers().get(axum::http::header::LOCATION).and_then(|v| v.to_str().ok()) {
+        if loc.starts_with('/') && !loc.starts_with("/c/") {
+            if let Ok(v) = format!("{prefix}{loc}").parse() {
+                res.headers_mut().insert(axum::http::header::LOCATION, v);
+            }
+        }
+    }
+    let html = res.headers().get(axum::http::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).is_some_and(|t| t.starts_with("text/html"));
+    if !html {
+        return res;
+    }
+    let (mut parts, body) = res.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 16 * 1024 * 1024).await else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    parts.headers.remove(axum::http::header::CONTENT_LENGTH);
+    Response::from_parts(parts, axum::body::Body::from(prefixed(&String::from_utf8_lossy(&bytes), &prefix)))
+}
+
+/// Every `href`, `action` and `src` that starts at the root, `/c/<dir>` put
+/// in front: the ones already under `/c/` are left alone.
+fn prefixed(html: &str, prefix: &str) -> String {
+    let mut out = String::with_capacity(html.len() + 1024);
+    let mut rest = html;
+    while let Some(i) = ["href=\"/", "action=\"/", "src=\"/"].iter().filter_map(|p| rest.find(p).map(|i| i + p.len() - 1)).min() {
+        out.push_str(&rest[..i]);
+        rest = &rest[i..];
+        if !rest.starts_with("/c/") && !rest.starts_with("//") {
+            out.push_str(prefix);
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The path of a same-site Referer, or None. Anything from another host is
@@ -680,12 +770,42 @@ fn referer_path(h: &HeaderMap) -> Option<String> {
     path.starts_with('/').then(|| path.to_string())
 }
 
+/// Where **Back** goes: the page this one was reached from, or `fallback`
+/// when there is none or it is this page itself (a refused form, shown
+/// again). Its `done=` is dropped, so going back does not repeat a notice.
+/// ponytail: the Referer, not the browser's history (no script); from A to B
+/// and back to A, A's Back then leads to B.
+fn back_to(fallback: &str) -> String {
+    let here = PATH.try_with(String::clone).unwrap_or_default();
+    back_from(BACK.try_with(Clone::clone).ok().flatten(), &here, fallback)
+}
+
+fn back_from(referer: Option<String>, here: &str, fallback: &str) -> String {
+    referer
+        .filter(|b| b.split('?').next() != Some(here))
+        .map(|b| {
+            let (path, query) = b.split_once('?').unwrap_or((&b, ""));
+            let q: Vec<&str> = query.split('&').filter(|kv| !kv.is_empty() && !kv.starts_with("done=")).collect();
+            if q.is_empty() { path.to_string() } else { format!("{path}?{}", q.join("&")) }
+        })
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// The request's path, where it came from and its query, for the pages to
+/// read; for a company served from a data directory, as that company's own
+/// router sees them, its prefix taken off.
+async fn scope(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let path = req.uri().path().to_string();
+    let back = referer_path(req.headers());
+    let query = req.uri().query().unwrap_or_default().to_string();
+    let prefix = req.headers().get(PREFIX_HEADER).and_then(|v| v.to_str().ok()).map(str::to_string);
+    PATH.scope(path, BACK.scope(back, QUERY.scope(query, PREFIX.scope(prefix, next.run(req))))).await
+}
+
 async fn log(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
     let (method, path) = (req.method().clone(), req.uri().path().to_string());
     let start = Instant::now();
-    let back = referer_path(req.headers());
-    let query = req.uri().query().unwrap_or_default().to_string();
-    let res = PATH.scope(path.clone(), BACK.scope(back, QUERY.scope(query, next.run(req)))).await;
+    let res = next.run(req).await;
     let (status, ms) = (res.status().as_u16(), start.elapsed().as_millis());
     if status >= 500 {
         error!(%method, %path, status, ms, "request");
@@ -800,6 +920,10 @@ fn toast(ctx: &Ctx, n: usize) -> Option<Markup> {
         "file" => "Filed",
         "bill" => "Bill booked",
         "invoice" => "Invoice issued",
+        "credit" => "Credit note issued",
+        "company" => "Details saved",
+        "payment-options" => "Payment options changed",
+        "settle" => "Invoice settled",
         "clear" => "Cleared",
         "reconcile" => "Balance recorded",
         "revert" => "Reversed",
@@ -807,7 +931,8 @@ fn toast(ctx: &Ctx, n: usize) -> Option<Markup> {
         _ => return None,
     };
     let commit = line["ok"]["commit"].as_str();
-    let invoice = line["ok"]["number"].as_str();
+    // A link to the PDF only where there is one: a settled invoice may have none.
+    let invoice = line["ok"]["number"].as_str().filter(|n| invoice::pdf_path(n).is_some_and(|p| ctx.root.join(p).is_file()));
     let undoable = undo::how(ctx, &line, &undo::reverted(ctx)).is_ok();
     Some(html! {
         div.flash.flash-ok.toast role="status" {
@@ -817,11 +942,12 @@ fn toast(ctx: &Ctx, n: usize) -> Option<Markup> {
                 (line["what"].as_str().unwrap_or_default())
                 @if let Some(c) = commit { span.muted { " · " (c) } }
                 @if let Some(number) = invoice { " · " a href={"/invoice/" (number)} { "the PDF" } }
+                @for w in line["ok"]["warnings"].as_array().into_iter().flatten() { br; span.small { "Warning: " (w.as_str().unwrap_or_default()) } }
             }
             @if undoable {
                 form.undo method="post" action={"/undo/" (n)} {
                     (token())
-                    button type="submit" title="Undo" { (icon("undo")) " Undo" }
+                    button.btn-danger type="submit" title="Undo" { (icon("undo")) " Undo" }
                 }
             }
         }
@@ -913,7 +1039,7 @@ async fn activity(Books(ctx): Books) -> Response {
                                     td {
                                         form method="post" action={"/undo/" (n)} {
                                             (token())
-                                            button.small type="submit" title="Undo"
+                                            button.small.btn-danger type="submit" title="Undo"
                                                    disabled[undo::how(&ctx, l, &reverted).is_err()] { (icon("undo")) " Undo" }
                                         }
                                     }
@@ -1010,35 +1136,95 @@ async fn booking(Books(ctx): Books, Path(key): Path<String>) -> Response {
             n.get(..4).is_some_and(|y| ctx.root.join(format!("invoices/{y}/{n}.pdf")).is_file())
         });
         let subject = b.commit.as_ref().and_then(|h| ctx.git(&["log", "-1", "--format=%s  (%an, %ad)", "--date=short", h, "--"]).ok());
+        // An issued invoice is corrected by a credit note, not reverted; a
+        // credit note is neither.
+        let invoice = tag("invoice").filter(|_| tag("credits").is_none());
+        let all = settle::invoices(&ctx)?;
+        let credit_note = tag("credits").is_some();
+        let credited = match &invoice {
+            Some(n) => serde_json::from_str::<Vec<serde_json::Value>>(&journal::hledger(&ctx, &["print", &format!("tag:credits=^{n}$"), "-O", "json"])?)?
+                .first()
+                .map(|t| t["tdescription"].as_str().unwrap_or_default().to_string()),
+            None => None,
+        };
         Ok(html! {
             h1 { (b.description) }
             p.muted.small {
                 (b.date)
-                @if let Some(n) = &pdf { " · " a href={"/invoice/" (n)} { (icon("doc")) " invoice " (n) } }
+                @if let Some(n) = tag("invoice") { " · " @if credit_note { "credit note " } @else { "invoice " } (n) }
                 @if let Some(r) = tag("reverses") { " · reverses the booking of commit " code { (r) } }
             }
             @if let Some(by) = &b.reversed_by {
                 div.flash.flash-info { (icon("info")) div { strong { "Reversed" } "by " (by) } }
             }
+            // An invoice's payments, its settling and its credit note.
+            @if let Some(i) = invoice.as_ref().and_then(|n| all.iter().find(|i| &i.number == n)) {
+                div.box {
+                    div.box-header { (icon("coins")) "Paid" span.spacer.muted.small { (i.status.label()) } }
+                    @if i.settled_by.is_empty() {
+                        div.box-body { p.muted { "Nothing yet." @if !i.owed.is_empty() { " " (i.owed) " owed." } } }
+                    } @else {
+                        table.list { tbody {
+                            @for t in &i.settled_by {
+                                tr {
+                                    td.date { (t.date) }
+                                    td { a href={"/entry/" (t.key)} { (t.description) } }
+                                    td { span class=(match t.tag.as_str() { settle::SETTLES => "pill pill-ok", settle::PAYS => "pill pill-warn", _ => "pill" }) { (t.label()) } }
+                                }
+                            }
+                        } }
+                        @if !i.owed.is_empty() { div.box-body { p.muted.small { (i.owed) " still owed." } } }
+                    }
+                }
+            }
             div.box {
                 div.box-header { (icon("book")) "In the journal" }
-                div.box-body { pre { (linked_postings(&b.text, |k, v| doc(&ctx, k, v))) } }
+                div.box-body { pre { (linked_postings(&b.text, |k, v| {
+                    // What a payment or credit note names: the invoice's booking.
+                    match k {
+                        settle::PAYS | settle::SETTLES | "credits" => {
+                            all.iter().find(|i| i.number == v).map(|i| (format!("/entry/{}", i.key), true))
+                        }
+                        _ => doc(&ctx, k, v),
+                    }
+                })) } }
             }
             @if let (Some(h), Some(sub)) = (&b.commit, &subject) {
                 p.muted.small { "Booked by commit " code { (h) } ": " (sub.trim()) }
             }
             div.actions {
-                form method="post" action={"/entry/" (key) "/revert"} {
-                    (token())
-                    button type="submit" disabled[b.reversed_by.is_some() || b.commit.is_none()] {
-                        (icon("undo")) " Revert"
+                @if let Some(n) = tag("invoice") {
+                    @if pdf.is_some() {
+                        a.btn href={"/invoice/" (n) ".pdf"} download { (icon("doc")) " PDF" }
+                    } @else {
+                        button type="button" disabled title="The PDF is not in the books" { (icon("doc")) " PDF" }
                     }
                 }
-                span.muted.small {
-                    @if b.reversed_by.is_some() { "Already reversed." }
-                    @else { "Books the opposite amounts as a new entry, dated today. This one stays." }
+                @if let Some(n) = &invoice {
+                    form method="post" action={"/invoice/" (n) "/correct"} {
+                        (token())
+                        button.btn-danger type="submit" disabled[credited.is_some() || b.reversed_by.is_some()] {
+                            (icon("undo")) " Correct"
+                        }
+                    }
+                    span.muted.small {
+                        @if let Some(c) = &credited { "Cancelled by " (c) "." }
+                        @else if b.reversed_by.is_some() { "Already reversed." }
+                        @else { "Cancels it with a credit note dated today, then opens a new invoice filled in as this one was." }
+                    }
+                } @else if !credit_note {
+                    form method="post" action={"/entry/" (key) "/revert"} {
+                        (token())
+                        button.btn-danger type="submit" disabled[b.reversed_by.is_some() || b.commit.is_none()] {
+                            (icon("undo")) " Revert"
+                        }
+                    }
+                    span.muted.small {
+                        @if b.reversed_by.is_some() { "Already reversed." }
+                        @else { "Books the opposite amounts as a new entry, dated today. This one stays." }
+                    }
                 }
-                span.nav { a.btn href="/" { (icon("left")) " Back" } }
+                span.nav { a.btn href=(back_to("/")) { (icon("left")) " Back" } }
             }
             div #upload .modal popover {
                 h2 { "The document is missing" }
@@ -1046,8 +1232,8 @@ async fn booking(Books(ctx): Books, Path(key): Path<String>) -> Response {
                 form method="post" action={"/entry/" (key) "/file"} enctype="multipart/form-data" {
                     (token())
                     label.field { "The document"
-                        span.hint { "A PDF, or a photograph. On a phone this opens the camera." }
-                        input type="file" name="document" accept="image/*,application/pdf" capture="environment" required;
+                        span.hint { "A PDF, or a photograph. On a phone: the camera, the photo library or a file." }
+                        input type="file" name="document" accept="image/*,application/pdf" required;
                     }
                     div.actions {
                         button.btn-primary type="submit" { (icon("check")) " File it" }
@@ -1235,7 +1421,7 @@ async fn register(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
                 }
             }
             @if rows.is_empty() { p.muted { "Nothing booked to this account." } }
-            div.actions { span.nav { a.btn href="/" { (icon("left")) " Back" } } }
+            div.actions { span.nav { a.btn href=(back_to("/")) { (icon("left")) " Back" } } }
         })
     })
 }
@@ -1287,7 +1473,14 @@ struct InvoiceForm {
     vat_rate: String,
     currency: String,
     #[serde(default)]
+    customer_tax_id: String,
+    #[serde(default)]
+    vat_reason: String,
+    #[serde(default)]
     token: String,
+    /// `pay-<id>`, one per payment option ticked.
+    #[serde(flatten)]
+    rest: Fields,
 }
 
 type Fields = std::collections::BTreeMap<String, String>;
@@ -1499,21 +1692,59 @@ fn reconcile_page(ctx: &Ctx, f: &Fields, notice: Option<Markup>) -> Result<Marku
 
             div.actions {
                 @if !r.outstanding.is_empty() {
-                    button type="submit" name="action" value="clear" { (icon("check")) " Mark ticked as cleared" }
+                    button.btn-primary type="submit" name="action" value="clear" { (icon("check")) " Mark ticked as cleared" }
                 }
                 @if r.reconciled {
                     button.btn-primary type="submit" name="action" value="record" {
                         (icon("book")) " Record this balance"
                     }
                 }
-                span.nav { a.btn href="/" { (icon("left")) " Back" } }
+                span.nav { a.btn href=(back_to("/")) { (icon("left")) " Back" } }
             }
         }
     })
 }
 
-async fn invoice_form(Books(ctx): Books) -> Response {
-    or_error(&ctx, "Issue an invoice", || invoice_page(&ctx, &InvoiceForm::default(), None))
+/// `?from=<number>`: filled in as that invoice was, for its correction.
+async fn invoice_form(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
+    or_error(&ctx, "Issue an invoice", || {
+        let f = match q.get("from") {
+            Some(n) => {
+                let d = invoice::printed(&ctx, n)?;
+                InvoiceForm {
+                    to: d.customer,
+                    // One made up from the journal has a single line for the
+                    // whole of it: no use as the lines of a corrected invoice.
+                    items: if d.reconstructed { String::new() } else {
+                        d.items.iter().map(|i| format!("{}|{}|{}", i.quantity, i.unit, i.description)).collect::<Vec<_>>().join("\n")
+                    },
+                    customer_tax_id: d.customer_tax_id,
+                    vat_reason: d.vat_reason,
+                    reference: d.reference,
+                    note: d.note,
+                    vat_rate: d.vat_rate,
+                    currency: if d.currency == ctx.cfg.company.currency { String::new() } else { d.currency },
+                    ..Default::default()
+                }
+            }
+            None => InvoiceForm::default(),
+        };
+        invoice_page(&ctx, &f, None)
+    })
+}
+
+/// Cancel an invoice with a credit note, then offer the invoice form filled
+/// in as it was: the correction is the new invoice.
+async fn correct(Books(ctx): Books, Path(number): Path<String>, Form(f): Form<Fields>) -> Response {
+    let token = f.get("token").cloned().unwrap_or_default();
+    let r = once(&token, || {
+        invoice::credit(&ctx, &invoice::CreditArgs { number: number.clone(), date: None, note: String::new() })?;
+        Ok(done(&ctx, &format!("/invoice?from={number}")))
+    });
+    match r {
+        Ok(to) => Redirect::to(&to).into_response(),
+        Err(e) => or_error(&ctx, "Correct an invoice", || Err(e)),
+    }
 }
 
 async fn invoice_submit(
@@ -1533,10 +1764,10 @@ async fn invoice_submit(
             currency: (!f.currency.trim().is_empty()).then(|| f.currency.trim().to_owned()),
             decimals: None,
             reference: f.reference.clone(),
-            // ponytail: every option; a choice on the form comes with the
-            // form for payment options.
-            pay_to: vec![],
+            pay_to: f.rest.keys().filter_map(|k| k.strip_prefix("pay-")).map(str::to_owned).collect(),
             note: f.note.clone(),
+            customer_tax_id: f.customer_tax_id.clone(),
+            vat_reason: f.vat_reason.clone(),
         };
         let r = invoice::issue(&ctx, &args)?;
         info!(number = %r.number, commit = %r.commit, "invoiced");
@@ -1603,18 +1834,383 @@ fn invoice_page(ctx: &Ctx, f: &InvoiceForm, error: Option<&str>) -> Result<Marku
                         span.hint { "Blank for " (ctx.cfg.company.currency) "." }
                         input type="text" name="currency" value=(f.currency);
                     }
+                    label.field { "Their tax number"
+                        span.hint { "Printed under their address; cross-border invoices to businesses usually need it." }
+                        input type="text" name="customer_tax_id" value=(f.customer_tax_id);
+                    }
+                    label.field { "Why no VAT"
+                        span.hint { "Needed at 0%: an export, an exempt supply, reverse charge. Printed on the invoice." }
+                        input type="text" name="vat_reason" value=(f.vat_reason);
+                    }
+                    @if !ctx.cfg.payment.is_empty() {
+                        fieldset.field {
+                            legend { "Where it asks to be paid" }
+                            span.hint { "None ticked: all of them, or for an invoice in another commodity its crypto options, if any." }
+                            @for p in &ctx.cfg.payment {
+                                @let k = format!("pay-{}", p.id);
+                                label.choice { input type="checkbox" name=(k) checked[f.rest.contains_key(&k)]; " " (p.label) span.muted.small { " " (p.id) } }
+                            }
+                        }
+                    }
                     label.field { "Their reference" input type="text" name="reference" value=(f.reference); }
                     label.field { "Note" input type="text" name="note" value=(f.note); }
                     div.actions { button.btn-primary type="submit" { (icon("check")) " Issue it" } }
                 }
             }
         }
-        p { a.btn href="/" { (icon("left")) " Back" } }
+        p { a.btn href=(back_to("/invoices")) { (icon("left")) " Back" } }
     })
 }
 
-async fn bill_form(Books(ctx): Books) -> Response {
-    or_error(&ctx, "Book a bill", || bill_page(&ctx, &Fields::new(), None))
+/// Every invoice, or with `?open=1` those not yet settled, each with what
+/// settles it: Pay books a payment tagged for it, Settle names one booked
+/// already or says it was settled where the books do not show.
+async fn invoices(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
+    let open = q.contains_key("open");
+    or_error(&ctx, "Invoices", || {
+        let all: Vec<_> = settle::invoices(&ctx)?.into_iter().filter(|i| !open || !i.status.settled()).rev().collect();
+        Ok(html! {
+            h1 { "Invoices" }
+            nav.tabs {
+                a href="/invoices?open=1" class=(if open { "current" } else { "" }) { (icon("clock")) " Not settled" }
+                a href="/invoices" class=(if open { "" } else { "current" }) { (icon("outbox")) " All" }
+            }
+            div.box.scroll {
+                @if all.is_empty() {
+                    div.box-body { p.muted { @if open { "Every invoice is settled." } @else { "No invoices yet." } } }
+                } @else {
+                    table.list {
+                        thead { tr { th { "Number" } th.wide { "Date" } th { "Customer" } th.amt.wide { "Total" } th.wide { "Due" } th { "Status" } th.wide {} } }
+                        tbody {
+                            @for i in &all {
+                                // The whole row opens the invoice's booking, but for
+                                // the buttons and status marks over it (CSS, no script).
+                                tr.row-link {
+                                    td.nowrap { a.stretch href={"/entry/" (i.key)} { code { (i.number) } }
+                                        div.narrow.small.muted { (i.total) } }
+                                    td.date.wide { (i.date) }
+                                    td { (i.customer) }
+                                    td.amt.wide { (i.total) }
+                                    td.date.wide { (i.due) }
+                                    td { div.pills {
+                                        // One per entry that tags it, each a link to that booking.
+                                        @for t in &i.settled_by {
+                                            @let class = match t.tag.as_str() {
+                                                settle::SETTLES => "pill pill-ok",
+                                                settle::PAYS => "pill pill-warn",
+                                                _ => "pill",
+                                            };
+                                            a class=(class) href={"/entry/" (t.key)} title=(t.description) { (t.label()) }
+                                        }
+                                        @if i.settled_by.is_empty() {
+                                            span class=(if i.status == settle::Status::Open { "pill pill-info" } else { "pill" }) { (i.status.label()) }
+                                        }
+                                        @if i.overdue { span.pill.pill-error { "overdue" } }
+                                        // On a phone, under the marks rather than a column away.
+                                        div.narrow { (row_actions(i)) }
+                                    } }
+                                    td.wide { (row_actions(i)) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            div.actions { a.btn.btn-primary href="/invoice" { (icon("plus")) " Issue an invoice" } }
+        })
+    })
+}
+
+/// An invoice's PDF, and while it is owed, Pay and Settle.
+fn row_actions(i: &settle::Invoice) -> Markup {
+    html! {
+        div.row-actions {
+            @if i.pdf {
+                a.btn.small href={"/invoice/" (i.number) ".pdf"} download { (icon("doc")) " PDF" }
+            } @else {
+                button.small type="button" disabled title="The PDF is not in the books" { (icon("doc")) " PDF" }
+            }
+            @if !i.status.settled() {
+                a.btn.small href={"/invoices/pay?n=" (i.number)} { "Pay" }
+                a.btn.small href={"/invoices/" (i.number) "/settle"} { "Settle" }
+            }
+        }
+    }
+}
+
+/// A payment received: into an account, off the receivable, tagged for each
+/// invoice it pays. Sent, it is `abo post` with `--tag pays=` or `settles=`.
+async fn pay_form(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
+    or_error(&ctx, "Record a payment", || {
+        let mut f = Fields::new();
+        if let Some(n) = q.get("n") {
+            let i = settle::invoices(&ctx)?.into_iter().find(|i| &i.number == n).with_context(|| format!("no invoice {n}"))?;
+            if i.status.settled() {
+                bail!("invoice {n} is {} already", i.status.label());
+            }
+            // What is still owed when that is known; else blank, and the
+            // commodity of the invoice if it has just one.
+            let (amount, commodity) = i.owed.split_once(' ').or_else(|| i.total.split_once(' ').map(|(_, c)| ("", c))).unwrap_or_default();
+            f.insert("amount".into(), amount.into());
+            if !commodity.contains(',') {
+                f.insert("commodity".into(), commodity.into());
+            }
+            f.insert("description".into(), format!("{} pays {n}", i.customer));
+            f.insert(format!("inv-{n}"), settle::SETTLES.into());
+            f.insert("n".into(), n.clone());
+        }
+        pay_page(&ctx, &f, None)
+    })
+}
+
+/// With `n`, the payment of that invoice: whether it settles it or pays a
+/// part is the one question, and other invoices it also pays are tucked
+/// away. Without, every invoice not settled, each with that question.
+fn pay_page(ctx: &Ctx, f: &Fields, error: Option<&str>) -> Result<Markup> {
+    let get = |k: &str| f.get(k).cloned().unwrap_or_default();
+    let open: Vec<_> = settle::invoices(ctx)?.into_iter().filter(|i| !i.status.settled()).collect();
+    let this = f.get("n").and_then(|n| open.iter().find(|i| &i.number == n));
+    let others: Vec<_> = open.iter().filter(|i| this.is_none_or(|t| t.number != i.number)).collect();
+    let into: Vec<String> = journal::declared_accounts(ctx)?
+        .into_iter()
+        .filter(|a| a.starts_with("Assets") && a != &ctx.cfg.invoice.receivable)
+        .collect();
+    let first = ctx.cfg.payment.first().map(|p| p.account.clone()).unwrap_or_else(|| "Assets:Bank".into());
+    let chosen = f.get("into").cloned().unwrap_or(first);
+    let today = jiff::Zoned::now().date().to_string();
+    let table = html! {
+        table.list {
+            thead { tr { th { "Invoice" } th { "Customer" } th.amt { "Total" } th { "This payment" } } }
+            tbody {
+                @for i in &others {
+                    @let k = format!("inv-{}", i.number);
+                    @let v = get(&k);
+                    tr {
+                        td { code { (i.number) } }
+                        td { (i.customer) }
+                        td.amt { (i.total) }
+                        td {
+                            select name=(k) {
+                                option value="" selected[v.is_empty()] { "nothing" }
+                                option value=(settle::PAYS) selected[v == settle::PAYS] { "pays part of it" }
+                                option value=(settle::SETTLES) selected[v == settle::SETTLES] { "settles it" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+    Ok(html! {
+        @if let Some(i) = this {
+            h1 { "Payment of invoice " (i.number) }
+            p.muted { (i.customer) " · " (i.total) @if !i.due.is_empty() { " · due " (i.due) }
+                @for t in &i.settled_by { " · " a href={"/entry/" (t.key)} { (t.label()) } }
+                @if !i.owed.is_empty() && !i.settled_by.is_empty() { " · " (i.owed) " still owed" } }
+        } @else {
+            h1 { "Record a payment" }
+        }
+        @if let Some(e) = error { div.flash.flash-error { (icon("error")) div { "Rejected: " (e) } } }
+        form method="post" action="/invoices/pay" {
+            (token())
+            @if let Some(i) = this { input type="hidden" name="n" value=(i.number); }
+            div.box {
+                div.box-body {
+                    @if let Some(i) = this {
+                        @let k = format!("inv-{}", i.number);
+                        @let v = get(&k);
+                        fieldset.field {
+                            legend { "This payment" }
+                            label.choice { input type="radio" name=(k) value=(settle::SETTLES) checked[v != settle::PAYS]; " settles " (i.number) }
+                            label.choice { input type="radio" name=(k) value=(settle::PAYS) checked[v == settle::PAYS]; " pays part of " (i.number) ", more to come" }
+                        }
+                    }
+                    label.field { "Date" input type="date" name="date" required value=(f.get("date").cloned().unwrap_or(today)); }
+                    label.field { "Amount"
+                        span.hint { "What arrived, taken off " code { (ctx.cfg.invoice.receivable) } "." }
+                        input type="text" name="amount" required value=(get("amount"));
+                    }
+                    label.field { "Commodity"
+                        span.hint { "Blank for " (ctx.cfg.company.currency) "." }
+                        input type="text" name="commodity" value=(get("commodity"));
+                    }
+                    label.field { "Received into"
+                        select name="into" { @for a in &into { option value=(a) selected[a == &chosen] { (a) } } }
+                    }
+                    label.field { "Description" input type="text" name="description" required value=(get("description")); }
+                }
+            }
+            @if this.is_some() {
+                @if !others.is_empty() {
+                    // Open once anything in it is chosen, say after a refusal.
+                    details.box open[others.iter().any(|i| !get(&format!("inv-{}", i.number)).is_empty())] {
+                        summary.box-header { (icon("outbox")) "Also pays other invoices" }
+                        (table)
+                    }
+                }
+            } @else {
+                div.box {
+                    div.box-header { (icon("outbox")) "What it pays" }
+                    @if others.is_empty() { div.box-body { p.muted { "Nothing is owed: every invoice is settled." } } }
+                    @else { (table) }
+                }
+            }
+            div.actions {
+                button.btn-primary type="submit" { (icon("check")) " Book it" }
+                span.nav { a.btn href=(back_to("/invoices?open=1")) { (icon("left")) " Back" } }
+            }
+        }
+    })
+}
+
+async fn pay_submit(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
+    let token = f.get("token").cloned().unwrap_or_default();
+    let r = once(&token, || {
+        let get = |k: &str| f.get(k).map(|v| v.trim().to_string()).unwrap_or_default();
+        let commodity = match get("commodity") { c if c.is_empty() => ctx.cfg.company.currency.clone(), c => c };
+        let amount = rust_decimal::Decimal::from_str_exact(&get("amount")).with_context(|| format!("the amount {:?} is not a number", get("amount")))?;
+        if !amount.is_sign_positive() || amount.is_zero() {
+            bail!("the amount is what arrived, above nought; money going back to the customer is an entry of its own");
+        }
+        if get("into") == ctx.cfg.invoice.receivable {
+            bail!("the money arrives somewhere other than {}", ctx.cfg.invoice.receivable);
+        }
+        let tags: Vec<(String, String)> = f
+            .iter()
+            .filter_map(|(k, v)| Some((v.clone(), k.strip_prefix("inv-")?.to_string())))
+            .filter(|(v, _)| v == settle::PAYS || v == settle::SETTLES)
+            .collect();
+        if tags.is_empty() {
+            bail!("say which invoice it pays");
+        }
+        let p = |account: String, amount| Posting { account, amount: Some(amount), commodity: commodity.clone(), assertion: None };
+        journal::post(&ctx, &Entry {
+            date: get("date"),
+            description: get("description"),
+            tags,
+            postings: vec![p(get("into"), amount), p(ctx.cfg.invoice.receivable.clone(), -amount)],
+        })?;
+        Ok(done(&ctx, "/invoices?open=1"))
+    });
+    match r {
+        Ok(to) => Redirect::to(&to).into_response(),
+        Err(e) => or_error(&ctx, "Record a payment", || pay_page(&ctx, &f, Some(&e.to_string()))),
+    }
+}
+
+/// Settle an invoice without booking a payment: name the booked payment
+/// that forgot to say what it paid, or say it was settled where the books
+/// do not show.
+async fn settle_form(Books(ctx): Books, Path(number): Path<String>) -> Response {
+    or_error(&ctx, "Settle an invoice", || {
+        let i = settle::invoices(&ctx)?.into_iter().find(|i| i.number == number).with_context(|| format!("no invoice {number}"))?;
+        if i.status.settled() {
+            bail!("invoice {number} is {} already", i.status.label());
+        }
+        // Payments: entries that take something off the receivable and are
+        // not themselves invoices or credit notes. Newest first.
+        let all: Vec<serde_json::Value> = serde_json::from_str(&journal::hledger(&ctx, &["print", "-O", "json"])?)?;
+        let receivable = ctx.cfg.invoice.receivable.as_str();
+        let txns: Vec<_> = all
+            .iter()
+            .filter(|t| !t["ttags"].as_array().into_iter().flatten().any(|g| g[0] == "invoice"))
+            .filter(|t| {
+                t["tpostings"].as_array().into_iter().flatten().any(|p| {
+                    p["paccount"] == receivable
+                        && p["pamount"].as_array().into_iter().flatten().any(|a| journal::decimal(&a["aquantity"]).is_ok_and(|d| d.is_sign_negative()))
+                })
+            })
+            .collect();
+        let today = jiff::Zoned::now().date().to_string();
+        Ok(html! {
+            h1 { "Settle invoice " (number) }
+            p.muted { (i.customer) " · " (i.total) " · " (i.status.label())
+                @for t in &i.settled_by { br; a href={"/entry/" (t.key)} { (t.label()) } ": " (t.description) } }
+            form method="post" {
+                (token())
+                div.box {
+                    div.box-header { (icon("check")) "By a payment in the books" }
+                    div.box-body {
+                        label.field { "The payment"
+                            span.hint { "It is tagged as the payment that settles " (number) "." }
+                            select name="by" required {
+                                @for t in txns.iter().rev() {
+                                    @if let Ok(k) = reconcile::key_of(t) {
+                                        option value=(k) { (t["tdate"].as_str().unwrap_or_default()) "  " (t["tdescription"].as_str().unwrap_or_default()) }
+                                    }
+                                }
+                            }
+                        }
+                        div.actions { button.btn-primary type="submit" { (icon("check")) " Settle it by this payment" } }
+                    }
+                }
+            }
+            form method="post" {
+                (token())
+                div.box {
+                    div.box-header { (icon("info")) "Without a payment in the books" }
+                    div.box-body {
+                        p.muted.small { "Books an entry that moves nothing and says only that " (number) " is settled." }
+                        label.field { "Date" input type="date" name="date" required value=(today); }
+                        div.actions { button.btn-danger type="submit" { (icon("check")) " Settle it without a payment" } }
+                    }
+                }
+            }
+            p { a.btn href=(back_to("/invoices?open=1")) { (icon("left")) " Back" } }
+        })
+    })
+}
+
+async fn settle_submit(Books(ctx): Books, Path(number): Path<String>, Form(f): Form<Fields>) -> Response {
+    let token = f.get("token").cloned().unwrap_or_default();
+    let today = jiff::Zoned::now().date().to_string();
+    let date = f.get("date").cloned().unwrap_or(today);
+    let r = once(&token, || {
+        settle::settle(&ctx, &number, f.get("by").map(String::as_str), &date)?;
+        Ok(done(&ctx, "/invoices?open=1"))
+    });
+    match r {
+        Ok(to) => Redirect::to(&to).into_response(),
+        Err(e) => or_error(&ctx, "Settle an invoice", || Err(e)),
+    }
+}
+
+/// `?file=<path>`: a document filed already, to book.
+async fn bill_form(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
+    or_error(&ctx, "Book a bill", || {
+        let mut f = Fields::new();
+        if let Some(rel) = q.get("file") {
+            if !unbooked(&ctx)?.contains(rel) {
+                bail!("{rel} is not a document filed and waiting to be booked");
+            }
+            f.insert("file".into(), rel.clone());
+        }
+        bill_page(&ctx, &f, None)
+    })
+}
+
+/// Documents under bills/ that no booking names yet: filed with `abo file`,
+/// or left by a booking undone.
+fn unbooked(ctx: &Ctx) -> Result<Vec<String>> {
+    let booked = journal::hledger(ctx, &["tags", "bill", "--values"])?;
+    let booked: Vec<&str> = booked.lines().map(str::trim).collect();
+    let mut out = vec![];
+    let mut dirs = vec![ctx.root.join("bills")];
+    while let Some(d) = dirs.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else if let Ok(rel) = p.strip_prefix(&ctx.root) {
+                let rel = rel.to_string_lossy().to_string();
+                if !booked.contains(&rel.as_str()) {
+                    out.push(rel);
+                }
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
 /// A bill: its document, what it says, and the entry. Sent, it is two
@@ -1622,6 +2218,8 @@ async fn bill_form(Books(ctx): Books) -> Response {
 fn bill_page(ctx: &Ctx, f: &Fields, notice: Option<Markup>) -> Result<Markup> {
     let accounts = journal::declared_accounts(ctx)?;
     let get = |k: &str| f.get(k).cloned().unwrap_or_default();
+    let filed = get("file");
+    let waiting = unbooked(ctx)?;
     Ok(html! {
         h1 { "Book a bill" }
         @if let Some(n) = notice { (n) }
@@ -1629,19 +2227,25 @@ fn bill_page(ctx: &Ctx, f: &Fields, notice: Option<Markup>) -> Result<Markup> {
             (token())
             div.box {
                 div.box-body {
-                    label.field { "The bill"
-                        span.hint { "A PDF, or a photograph. On a phone this opens the camera." }
-                        // capture= is why this works as a phone app without
-                        // one line of JavaScript.
-                        input type="file" name="document" accept="image/*,application/pdf"
-                              capture="environment" required;
-                    }
-                    label.field { "Date on the bill"
-                        input type="date" name="date" required value=(get("date"));
-                    }
-                    label.field { "Issuer"
-                        span.hint { "Who sent it. The document is filed under this name and the date." }
-                        input type="text" name="issuer" required value=(get("issuer"));
+                    @if !filed.is_empty() {
+                        // Filed already: booked dated as its name says.
+                        input type="hidden" name="file" value=(filed);
+                        div.field { strong { "The bill" } br; a href={"/" (filed)} { (icon("doc")) " " (filed) }
+                            span.hint { "Filed already; the booking is dated as it is." } }
+                    } @else {
+                        label.field { "The bill"
+                            span.hint { "A PDF, or a photograph. On a phone: the camera, the photo library or a file." }
+                            // No capture=: that would take a phone straight to
+                            // the camera, and a PDF could not be chosen.
+                            input type="file" name="document" accept="image/*,application/pdf" required;
+                        }
+                        label.field { "Date on the bill"
+                            input type="date" name="date" required value=(get("date"));
+                        }
+                        label.field { "Issuer"
+                            span.hint { "Who sent it. The document is filed under this name and the date." }
+                            input type="text" name="issuer" required value=(get("issuer"));
+                        }
                     }
                     label.field { "Description"
                         input type="text" name="description" required value=(get("description"));
@@ -1649,10 +2253,23 @@ fn bill_page(ctx: &Ctx, f: &Fields, notice: Option<Markup>) -> Result<Markup> {
                     label.field { "Postings"
                         span.hint { "One per line, " code { "account=amount" } ". Leave one amount off and hledger infers it." }
                         textarea name="postings" rows="5" required
-                                 placeholder="Expenses:Hosting=100.00\nliabilities:payable=-100.00" { (get("postings")) }
+                                 placeholder="Expenses:Hosting=100.00\nLiabilities:Payable=-100.00" { (get("postings")) }
                     }
-                    div.actions { button.btn-primary type="submit" { (icon("check")) " File and book it" } }
+                    div.actions { button.btn-primary type="submit" { (icon("check")) @if filed.is_empty() { " File and book it" } @else { " Book it" } } }
                 }
+            }
+        }
+        @if filed.is_empty() && !waiting.is_empty() {
+            div.box {
+                div.box-header { (icon("inbox")) "Filed, not booked yet" }
+                table.list { tbody {
+                    @for w in &waiting {
+                        tr {
+                            td { a href={"/" (w)} { code { (w) } } }
+                            td.amt { a.btn.small href={"/bill?file=" (w)} { "Book it" } }
+                        }
+                    }
+                } }
             }
         }
         div.box {
@@ -1681,7 +2298,17 @@ async fn bill_submit(Books(ctx): Books, mut mp: Multipart) -> Response {
     }
     let get = |k: &str| f.get(k).map_or("", |v| v.trim());
     let booked = once(get("token"), || {
-        let (src, bytes) = doc.as_ref().context("no document in the upload")?;
+        // One filed already: booked as it is, not filed again.
+        if !get("file").is_empty() {
+            let rel = get("file");
+            if !unbooked(&ctx)?.iter().any(|u| u == rel) {
+                bail!("{rel} is not a document filed and waiting to be booked");
+            }
+            let r = bill::bill(&ctx, rel, get("description"), vec![], postings(&ctx, get("postings"))?)?;
+            info!(commit = %r.commit, file = %rel, "bill booked");
+            return Ok(done(&ctx, "/"));
+        }
+        let (src, bytes) = doc.as_ref().filter(|(_, b)| !b.is_empty()).context("no document in the upload")?;
         let postings = postings(&ctx, get("postings"))?;
         let entry = Entry { date: get("date").to_string(), description: get("description").to_string(), tags: vec![], postings };
         // Refused before filing, so a bill that cannot be booked is not filed.
@@ -1724,7 +2351,7 @@ fn form(ctx: &Ctx, date: &str, description: &str, postings: &str, error: Option<
                     label.field { "Postings"
                         span.hint { "One per line, " code { "account=amount" } ". Leave one amount off and hledger infers it." }
                         textarea name="postings" rows="5" required
-                                 placeholder="Expenses:Hosting=100.00\nliabilities:payable=-100.00" { (postings) }
+                                 placeholder="Expenses:Hosting=100.00\nLiabilities:Payable=-100.00" { (postings) }
                     }
                     div.actions { button.btn-primary type="submit" { (icon("check")) " Book it" } }
                 }
@@ -1826,7 +2453,7 @@ fn page(ctx: &Ctx, title: &str, body: Markup) -> Html<String> {
     let nav = [
         ("/", "book", "Books", "/"),
         ("/bill", "inbox", "Bills", "/bill"),
-        ("/invoice", "outbox", "Invoices", "/invoice"),
+        ("/invoices", "outbox", "Invoices", "/invoice"),
         ("/reconcile", "checks", "Reconcile", "/reconcile"),
         ("/report/pl", "chart", "Statements", "/report"),
         ("/post", "plus", "Entry", "/post"),
@@ -1854,6 +2481,10 @@ fn page(ctx: &Ctx, title: &str, body: Markup) -> Html<String> {
                                 a href=(href) class=[current(section).then_some("current")] {
                                     (icon(ic)) span { (label) }
                                 }
+                            }
+                            // Served from a data directory: the way back to the others.
+                            @if PREFIX.try_with(Clone::clone).ok().flatten().is_some() {
+                                a href="/c/" { (icon("left")) span { "All companies" } }
                             }
                         }
                     }
@@ -1984,6 +2615,12 @@ pre { overflow-x: auto; margin: 0; padding: 12px 16px; background: var(--inset);
 .btn:hover, button:hover { border-color: var(--muted); text-decoration: none; }
 .btn-primary { color: #fff; background: var(--accent); border-color: var(--accent); font-weight: 600; }
 .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+/* Colour on a button means it changes the books: the accent to do, this to
+   take back. The same in both themes, like the notices. */
+.btn-danger { color: #fff; background: #B42318; border-color: #B42318; font-weight: 600; }
+.btn-danger:hover { background: #912018; border-color: #912018; }
+button.btn-primary[disabled]:hover { border-color: var(--accent); }
+button.btn-danger[disabled]:hover { border-color: #B42318; }
 button[disabled] { opacity: .5; cursor: not-allowed; }
 button[disabled]:hover { border-color: var(--btn-border); }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -1996,6 +2633,17 @@ pre .missing { font: inherit; color: var(--error); background: none; border: 0; 
 /* forms */
 label.field { display: block; margin: 0 0 16px; font-weight: 600; }
 label.field .hint { display: block; font-weight: 400; color: var(--muted); font-size: 12px; margin-top: 2px; }
+fieldset.field { border: 0; padding: 0; margin: 0 0 16px; min-width: 0; }
+fieldset.field legend { padding: 0; margin-bottom: 4px; font-weight: 600; }
+fieldset.field .hint { display: block; color: var(--muted); font-size: 12px; margin: -2px 0 2px; }
+label.choice { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; }
+label.choice input { margin: 0; accent-color: var(--accent); }
+details.box > summary { cursor: pointer; padding-bottom: 14px; }
+details.box[open] > summary { padding-bottom: 6px; }
+details.box > summary::-webkit-details-marker { display: none; }
+details.box > summary { list-style: none; }
+details.box > summary::after { content: "\25B8"; margin-left: auto; color: var(--muted); }
+details.box[open] > summary::after { content: "\25BE"; }
 input[type=text], input[type=date], input[type=file], textarea, select {
   display: block; width: 100%; margin-top: 6px; padding: 8px 12px;
   font: inherit; font-weight: 400; color: var(--fg); background: var(--card);
@@ -2027,6 +2675,23 @@ input:focus, textarea:focus { outline: none; border-color: var(--link); box-shad
 .flash-change > .icon, .flash-change strong { color: var(--change); }
 .flash-ok { background: var(--ok-bg); border-color: var(--ok-border); }
 .flash-ok > .icon, .flash-ok strong { color: var(--ok); }
+.pill { display: inline-block; padding: 0 8px; border: 1px solid var(--btn-border); border-radius: 999px;
+        font-size: 12px; white-space: nowrap; color: var(--muted); }
+.pill-error { color: var(--error); background: var(--error-bg); border-color: var(--error-border); }
+.pill-warn { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-border); }
+.pill-info { color: var(--info); background: var(--info-bg); border-color: var(--info-border); }
+.pill-ok { color: var(--ok); background: var(--ok-bg); border-color: var(--ok-border); }
+a.pill:hover { text-decoration: none; border-color: currentColor; }
+.pills { display: flex; flex-wrap: wrap; gap: 4px; }
+.row-actions { display: flex; gap: 6px; align-items: center; }
+.narrow .row-actions { flex-wrap: wrap; }
+tr.row-link { position: relative; cursor: pointer; }
+tr.row-link a.stretch { color: inherit; }
+tr.row-link a.stretch::after { content: ""; position: absolute; inset: 0; }
+tr.row-link .pills > *, tr.row-link .row-actions > * { position: relative; z-index: 1; }
+.nowrap { white-space: nowrap; }
+.narrow { display: none; }
+.box.scroll { overflow-x: auto; }
 
 /* figures */
 table { width: 100%; border-collapse: collapse; }
@@ -2067,7 +2732,7 @@ table.log pre { max-height: 360px; }
   to { opacity: 0; visibility: hidden; max-height: 0; margin: 0; padding-block: 0; border-width: 0; }
 }
 .toast > div { flex: 1; }
-form.undo button, button.small { min-height: 32px; padding: 0 10px; font-size: 13px; }
+form.undo button, button.small, .btn.small { min-height: 32px; padding: 0 10px; font-size: 13px; }
 ol.said { margin: 0; padding-left: 20px; }
 code.reverted { text-decoration: line-through; }
 
@@ -2084,6 +2749,9 @@ ul.accounts li { padding: 2px 0; }
 
 /* a phone: the sidebar becomes a bar across the top */
 @media (max-width: 760px) {
+  .wide { display: none; }
+  .narrow { display: block; flex-basis: 100%; margin-top: 4px; }
+  .pill { white-space: normal; }
   body { flex-direction: column; }
   .side { width: auto; flex-direction: row; align-items: center; padding: 8px 12px; gap: 8px; border-right: 0; border-bottom: 1px solid var(--side-border); }
   .brand { padding: 0; }
@@ -2107,7 +2775,18 @@ ul.accounts li { padding: 2px 0; }
 
 #[cfg(test)]
 mod tests {
-    use super::same_origin;
+    #[test]
+    fn back_goes_where_it_came_from() {
+        let b = |r: Option<&str>| back_from(r.map(str::to_string), "/invoices/pay", "/invoices");
+        assert_eq!(b(Some("/entry/2026.journal:2:2026-01-01")), "/entry/2026.journal:2:2026-01-01");
+        assert_eq!(b(Some("/invoices?open=1&done=4")), "/invoices?open=1");
+        assert_eq!(b(Some("/?done=4")), "/");
+        // none, or this page itself shown again after a refusal
+        assert_eq!(b(None), "/invoices");
+        assert_eq!(b(Some("/invoices/pay?n=2026-0003")), "/invoices");
+    }
+
+    use super::{back_from, same_origin};
     use axum::http::HeaderMap;
 
     fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
