@@ -320,3 +320,93 @@ fn company_page() {
     drop(s);
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn bills_page() {
+    let base = std::env::temp_dir().join(format!("abo-bills-page-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let abo = |dir: &Path, args: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_abo")).args(args).current_dir(dir).env("HOME", &base).env("XDG_CONFIG_HOME", &base).output().unwrap();
+        assert!(o.status.success(), "{args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    };
+    abo(&base, &["init", "Test Ltd", "--currency", "EUR", "--vat", "none", "--git-name", "Ann", "--git-email", "ann@example.invalid"]);
+    let books = base.join("test-ltd");
+    let scan = base.join("scan.pdf");
+    std::fs::write(&scan, b"%PDF-1.4\n% a bill\n").unwrap();
+    abo(&books, &["file", "--date", "2026-03-01", "--issuer", "Acme", &scan.to_string_lossy()]);
+    let file = std::fs::read_dir(books.join("bills/2026")).unwrap().next().unwrap().unwrap().file_name().to_string_lossy().to_string();
+    let file = format!("bills/2026/{file}");
+    let s = serve(&books, &base);
+
+    // Filed, not booked: Book it, no Pay; the document is always there.
+    let (_, _, page) = http(&s, "GET", "/bills", &[]);
+    assert!(page.contains("not booked") && page.contains(&format!("href=\"/{file}\" download")) && !page.contains("/bill/pay"), "{page}");
+
+    // Not booked, so it can be deleted: the undo of its filing, then Bills.
+    let del = page.split("action=\"/undo/").nth(1).and_then(|r| r.split('"').next()).expect("a Delete").to_string();
+    let (status, to, _) = http(&s, "POST", &format!("/undo/{del}"), &[("token", "d1"), ("to", "/bills")]);
+    assert_eq!((status, to.starts_with("/bills?done=")), (303, true));
+    assert!(!books.join(&file).exists());
+    let (status, _, _) = http(&s, "POST", &format!("/undo/{}", del.parse::<usize>().unwrap() + 1), &[("token", "d2")]);
+    assert_eq!(status, 303);
+    assert!(books.join(&file).exists());
+
+    abo(&books, &["bill", "--desc", "Hosting", &file, "Expenses:General=110.00", "Liabilities:Payable=-110.00"]);
+    let (_, _, page) = http(&s, "GET", "/bills", &[]);
+    assert!(!page.contains("action=\"/undo/"), "a booked bill is not deleted: {page}");
+    assert!(page.contains("unpaid") && page.contains("110.00 EUR") && page.contains("/bill/pay?file="), "{page}");
+
+    // A part, then the rest: Open follows, as an invoice's owed does.
+    let part = [("token", "b1"), ("file", file.as_str()), ("as", "pays"), ("date", "2026-03-05"), ("amount", "40.00"), ("from", "Assets:Bank"), ("description", "Pay part")];
+    let (status, _, _) = http(&s, "POST", "/bill/pay", &part);
+    assert_eq!(status, 303);
+    let (_, _, page) = http(&s, "GET", "/bills", &[]);
+    assert!(page.contains("part paid 2026-03-05") && page.contains("70.00 EUR") && page.contains("/bill/pay?file="), "{page}");
+    let rest = [("token", "b2"), ("file", file.as_str()), ("as", "settles"), ("date", "2026-03-06"), ("amount", "70.00"), ("from", "Assets:Bank"), ("description", "Pay the rest")];
+    let (status, _, _) = http(&s, "POST", "/bill/pay", &rest);
+    assert_eq!(status, 303);
+    let (_, _, page) = http(&s, "GET", &format!("/bill/view?file={}", enc(&file)), &[]);
+    assert!(page.contains("settled 2026-03-06") && !page.contains("open 0.00 EUR") && page.contains(">Hosting<") && !page.contains("/bill/pay"), "{page}");
+
+    // Settled once, not twice.
+    let (_, _, page) = http(&s, "POST", "/bill/pay", &[("token", "b3"), rest[1], rest[2], rest[3], rest[4], rest[5], rest[6]]);
+    assert!(page.contains("is not owed"), "{page}");
+
+    // Paid, it is not cancelled; a bill not paid is, by reverting its booking.
+    // The bill's own booking: the last entry linked before its "booking" mark.
+    let key = |page: &str| {
+        let before = &page[..page.find(">booking<").unwrap()];
+        before.rsplit("href=\"/entry/").next().unwrap().split('"').next().unwrap().to_string()
+    };
+    let (_, _, page) = http(&s, "GET", &format!("/bill/view?file={}", enc(&file)), &[]);
+    let (_, _, refused) = http(&s, "POST", &format!("/entry/{}/revert", key(&page)), &[("token", "r1")]);
+    assert!(refused.contains("revert that first"), "{refused}");
+    let scan2 = base.join("scan2.pdf");
+    std::fs::write(&scan2, b"%PDF-1.4\n% another bill\n").unwrap();
+    abo(&books, &["file", "--date", "2026-04-01", "--issuer", "Mistake", &scan2.to_string_lossy()]);
+    let wrong = std::fs::read_dir(books.join("bills/2026")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).find(|n| n.contains("mistake")).unwrap();
+    let wrong = format!("bills/2026/{wrong}");
+    abo(&books, &["bill", "--desc", "Not ours", &wrong, "Expenses:General=30.00", "Liabilities:Payable=-30.00"]);
+    let (_, _, page) = http(&s, "GET", "/bills", &[]);
+    // Open first, and summed.
+    assert!(page.find("Not ours").unwrap() < page.find(">Hosting<").unwrap() && page.contains("Open in all") && page.contains("<strong><div>30.00 EUR</div></strong>"), "{page}");
+    let (_, _, page) = http(&s, "GET", "/bills?open=1", &[]);
+    assert!(page.contains("Not ours") && !page.contains(">Hosting<") && page.contains("<strong><div>30.00 EUR</div></strong>"), "only what is open: {page}");
+    let (_, _, page) = http(&s, "GET", &format!("/bill/view?file={}", enc(&wrong)), &[]);
+    let (status, _, _) = http(&s, "POST", &format!("/entry/{}/revert", key(&page)), &[("token", "r2")]);
+    assert_eq!(status, 303);
+    let (_, _, page) = http(&s, "GET", "/bills", &[]);
+    assert!(page.contains("cancelled 20") && !page.contains("Open in all") && page.matches("/bill/pay?file=").count() == 0, "{page}");
+
+    // Named by its booking but gone from the books: a row still, to upload it to.
+    let git = |args: &[&str]| assert!(Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"]).args(args).current_dir(&books).status().unwrap().success());
+    git(&["rm", "-q", &file]);
+    git(&["commit", "-q", "-m", "lose it"]);
+    let (_, _, page) = http(&s, "GET", "/bills", &[]);
+    assert!(page.contains("Upload PDF") && page.contains("/file\"") && page.contains("value=\"/bills\"") && page.contains("110.00 EUR"), "{page}");
+    assert!(!page.contains(&format!("href=\"/{file}\" download")), "{page}");
+
+    drop(s);
+    std::fs::remove_dir_all(&base).unwrap();
+}

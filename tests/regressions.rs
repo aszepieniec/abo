@@ -650,3 +650,172 @@ fn an_invoice_without_its_data_is_credited_from_the_journal() {
     assert_eq!((data["items"][0]["amount"].as_str(), data["vat"].as_str(), data["total"].as_str()),
                (Some("-100.00"), Some("-10.00"), Some("-110.00")));
 }
+
+// ---- bills, found by the verification run of the Bills page ----
+
+/// A bill filed and booked for `amount` EUR, owed to Liabilities:Payable: its path.
+fn bill(dir: &Path, issuer: &str, date: &str, amount: &str) -> String {
+    let path = file(dir, issuer, date);
+    ok(dir, &["bill", "--desc", issuer, &path, &format!("Expenses:General={amount}"), &format!("Liabilities:Payable=-{amount}")]);
+    path
+}
+
+/// A document filed, not booked: its path.
+fn file(dir: &Path, issuer: &str, date: &str) -> String {
+    let scan = dir.parent().unwrap().join(format!("{issuer}-{date}.pdf"));
+    std::fs::write(&scan, format!("%PDF-1.4\n% {issuer} {date}\n")).unwrap();
+    let out: serde_json::Value = serde_json::from_str(&ok(dir, &["--json", "file", "--date", date, "--issuer", issuer, &scan.to_string_lossy()])).unwrap();
+    out["file"].as_str().unwrap().to_string()
+}
+
+fn pay(dir: &Path, tag: &str, path: &str, date: &str, amount: &str) -> Output {
+    abo(dir, &["post", "--date", date, "--desc", &format!("Pay {date}"), "--tag", &format!("{tag}={path}"),
+               &format!("Liabilities:Payable={amount}"), "Assets:Bank"])
+}
+
+#[test]
+fn a_reverted_bill_payment_no_longer_counts() {
+    let dir = books("bill-payment-reverted", &[]);
+    let b = bill(&dir, "Acme", "2026-03-01", "110.00");
+    assert!(pay(&dir, "settles", &b, "2026-03-10", "110.00").status.success());
+    ok(&dir, &["revert", "--date", "2026-03-11", &key(&dir, "desc:Pay 2026-03-10")]);
+    // Owed again: paid again, and then its payment reverted, cancelled.
+    let again = pay(&dir, "settles", &b, "2026-03-12", "110.00");
+    assert!(again.status.success(), "{}", err(&again));
+    ok(&dir, &["revert", "--date", "2026-03-13", &key(&dir, "desc:Pay 2026-03-12")]);
+    ok(&dir, &["revert", "--date", "2026-03-14", &key(&dir, "desc:^Acme$")]);
+    clean(&dir);
+}
+
+#[test]
+fn a_reverted_invoice_payment_no_longer_counts() {
+    let dir = books("invoice-payment-reverted", &[]);
+    invoice(&dir, "2026-0001", "2026-03-01", "110.00");
+    ok(&dir, &["post", "--date", "2026-03-10", "--desc", "Pays", "--tag", "settles=2026-0001", "Assets:Bank=110.00", "Assets:Receivable"]);
+    ok(&dir, &["revert", "--date", "2026-03-11", &key(&dir, "desc:^Pays$")]);
+    let v: serde_json::Value = serde_json::from_str(&ok(&dir, &["invoices", "--json"])).unwrap();
+    assert_eq!((v[0]["status"].as_str(), v[0]["owed"].as_str()), (Some("open"), Some("110.00 EUR")), "{v}");
+}
+
+#[test]
+fn a_reverted_cancelling_leaves_the_bill_owed() {
+    let dir = books("cancel-reverted", &[]);
+    let b = bill(&dir, "Acme", "2026-03-01", "50.00");
+    ok(&dir, &["revert", "--date", "2026-03-02", &key(&dir, "desc:^Acme$")]);
+    refused(&dir, &["post", "--date", "2026-03-03", "--desc", "Pay", "--tag", &format!("settles={b}"), "Liabilities:Payable=50.00", "Assets:Bank"], "cancelled");
+    ok(&dir, &["revert", "--date", "2026-03-04", &key(&dir, "desc:^Reversal of 2026-03-01")]);
+    assert!(pay(&dir, "settles", &b, "2026-03-05", "50.00").status.success());
+}
+
+#[test]
+fn a_bill_a_payment_names_is_not_undone() {
+    let dir = books("undo-named-bill", &[]);
+    let b = bill(&dir, "Acme", "2026-03-01", "110.00");
+    let booked = log_len(&dir);
+    assert!(pay(&dir, "pays", &b, "2026-03-10", "10.00").status.success());
+    refused(&dir, &["undo", &booked.to_string()], "undo or revert that first");
+}
+
+#[test]
+fn a_reversed_entry_is_not_undone() {
+    let dir = books("undo-reversed", &[]);
+    bill(&dir, "Acme", "2026-03-01", "12.50");
+    let booked = log_len(&dir);
+    ok(&dir, &["revert", "--date", "2026-03-02", &key(&dir, "desc:^Acme$")]);
+    refused(&dir, &["undo", &booked.to_string()], "it is reversed");
+}
+
+/// A booking naming a document the books lack, `path`, for 9.00 EUR.
+fn lost(dir: &Path) -> (String, String) {
+    let path = "bills/2026/2026-03-01-lost-bbbbbbbb.pdf".to_string();
+    ok(dir, &["post", "--date", "2026-03-01", "--desc", "Lost", "--tag", &format!("bill={path}"), "Expenses:General=9.00", "Liabilities:Payable=-9.00"]);
+    let found = dir.parent().unwrap().join("found.pdf");
+    std::fs::write(&found, b"%PDF-1.4\n% found\n").unwrap();
+    (path, found.to_string_lossy().to_string())
+}
+
+#[test]
+fn a_document_filed_for_a_booking_takes_its_payments_along() {
+    let dir = books("refile-payments", &[]);
+    let (old, found) = lost(&dir);
+    assert!(pay(&dir, "pays", &old, "2026-03-05", "4.00").status.success());
+    let out: serde_json::Value = serde_json::from_str(&ok(&dir, &["--json", "file", "--for", &key(&dir, "desc:^Lost$"), &found])).unwrap();
+    let new = out["file"].as_str().unwrap();
+    let journal = read(&dir, "journal/2026.journal");
+    assert!(journal.contains(&format!("pays: {new}")) && !journal.contains(&old), "{journal}");
+    // 5.00 is open, not 9.00.
+    refused(&dir, &["post", "--date", "2026-03-06", "--desc", "Pay", "--tag", &format!("settles={new}"), "Liabilities:Payable=9.00", "Assets:Bank"], "only 5.00 EUR");
+    clean(&dir);
+}
+
+#[test]
+fn a_document_filed_for_a_booking_is_not_booked_again() {
+    let dir = books("refile-hash", &[]);
+    let (_, found) = lost(&dir);
+    let out: serde_json::Value = serde_json::from_str(&ok(&dir, &["--json", "file", "--for", &key(&dir, "desc:^Lost$"), &found])).unwrap();
+    let new = out["file"].as_str().unwrap();
+    refused(&dir, &["bill", "--desc", "Twice", new, "Expenses:General=9.00", "Liabilities:Payable=-9.00"], "already booked");
+}
+
+#[test]
+fn a_bill_payment_pays_off_what_is_open() {
+    let dir = books("bill-pays-off", &[]);
+    let b = bill(&dir, "Acme", "2026-03-01", "40.00");
+    // The liability's amount left to hledger: here it would add to the debt.
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "P", "--tag", &format!("pays={b}"), "Liabilities:Payable", "Assets:Bank=10.00"], "pays nothing off");
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "P", "--tag", &format!("pays={b}"), "Liabilities:Payable=30.00", "Liabilities:Payable=-30.00"], "pays nothing off");
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "P", "--tag", &format!("pays={b}"), "Liabilities:Payable=70.00", "Assets:Bank"], "only 40.00 EUR");
+    // An invoice's payment that would add to the receivable, likewise.
+    invoice(&dir, "2026-0001", "2026-03-01", "110.00");
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "P", "--tag", "pays=2026-0001", "Assets:Receivable", "Assets:Bank=-10.00"], "takes nothing off");
+}
+
+#[test]
+fn a_bill_is_paid_from_money() {
+    let dir = books("bill-paid-from", &[]);
+    let b = bill(&dir, "Acme", "2026-03-01", "40.00");
+    let s = serve(&dir);
+    let (_, _, page) = http(&s, "GET", &format!("/bill/pay?file={}", enc(&b)), &[]);
+    assert!(page.contains("<option value=\"Assets:Bank\"") && !page.contains("<option value=\"Assets:Receivable\"") && !page.contains("<option value=\"Assets:VAT:Input\""), "{page}");
+    let (_, _, page) = http(&s, "POST", "/bill/pay", &[("token", "p1"), ("file", &b), ("as", "settles"), ("date", "2026-03-02"), ("amount", "40.00"), ("from", "Expenses:General"), ("description", "P")]);
+    assert!(page.contains("not an account money is paid from"), "{page}");
+}
+
+#[test]
+fn a_cancelling_moves_the_opposite_of_the_booking() {
+    let dir = books("fake-cancel", &[]);
+    let b = bill(&dir, "Acme", "2026-03-01", "5.00");
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "Not a reversal", "--tag", &format!("cancels={b}"), "Assets:Bank=1.00", "Assets:Cash=-1.00"], "opposite");
+}
+
+#[test]
+fn a_deleted_document_filed_again_is_not_put_back() {
+    let dir = books("delete-refiled", &[]);
+    file(&dir, "Frank", "2026-03-07");
+    let filed = log_len(&dir);
+    ok(&dir, &["undo", &filed.to_string()]);
+    let deleted = log_len(&dir);
+    let scan = dir.parent().unwrap().join("Frank-2026-03-07.pdf");
+    ok(&dir, &["file", "--date", "2026-03-08", "--issuer", "Frankie", &scan.to_string_lossy()]);
+    refused(&dir, &["undo", &deleted.to_string()], "filed again");
+}
+
+#[test]
+fn bill_amounts_are_stated_to_their_places() {
+    let dir = books("bill-places", &[]);
+    let b = file(&dir, "Acme", "2026-03-01");
+    ok(&dir, &["bill", "--desc", "Acme", &b, "Expenses:General=110", "Liabilities:Payable=-110"]);
+    let s = serve(&dir);
+    let (_, _, page) = http(&s, "GET", "/bills", &[]);
+    assert!(page.contains("110.00 EUR") && !page.contains("110 EUR"), "{page}");
+}
+
+#[test]
+fn a_stray_file_under_bills_is_not_filed() {
+    let dir = books("stray", &[]);
+    std::fs::create_dir_all(dir.join("bills/2026")).unwrap();
+    std::fs::write(dir.join("bills/2026/stray.pdf"), b"%PDF-1.4\n").unwrap();
+    let s = serve(&dir);
+    let (_, _, page) = http(&s, "GET", "/bill", &[]);
+    assert!(!page.contains("stray.pdf"), "{page}");
+}

@@ -73,6 +73,9 @@ fn company_app(root: PathBuf) -> Router {
         .route("/invoices/pay", get(pay_form).post(pay_submit))
         .route("/invoices/{number}/settle", get(settle_form).post(settle_submit))
         .route("/bill", get(bill_form).post(bill_submit))
+        .route("/bills", get(bills_list))
+        .route("/bill/view", get(bill_view))
+        .route("/bill/pay", get(bill_pay_form).post(bill_pay_submit))
         .route("/entry/{key}", get(booking))
         .route("/account", get(register))
         .route("/company", get(company_view).post(company_submit))
@@ -1114,12 +1117,16 @@ fn recent_entries(ctx: &Ctx, n: usize) -> Result<Vec<Recent>> {
 struct Once {
     #[serde(default)]
     token: String,
+    /// Where to go after, when the page it was sent from is gone with the undo.
+    #[serde(default)]
+    to: String,
 }
 
 /// Undo line `n` of the log, from its success notice or the Log, and go back
 /// to where that was, which then says so.
 async fn undo_line(Books(ctx): Books, Path(n): Path<usize>, Form(f): Form<Once>) -> Response {
     let back = BACK.try_with(Clone::clone).ok().flatten().unwrap_or_else(|| "/".into());
+    let back = if f.to.starts_with('/') && !f.to.starts_with("//") { f.to.clone() } else { back };
     match once(&f.token, || undo::undo(&ctx, n).map(|_| done(&ctx, &back))) {
         Ok(to) => Redirect::to(&to).into_response(),
         Err(e) => or_error(&ctx, "Undo", || Err(e)),
@@ -1182,6 +1189,12 @@ async fn booking(Books(ctx): Books, Path(key): Path<String>) -> Response {
                 div.box-body { pre { (linked_postings(&b.text, |k, v| {
                     // What a payment or credit note names: the invoice's booking.
                     match k {
+                        journal::TAKES_BACK => match v.split_once(' ').map(|(_, w)| w) {
+                            Some(w) if w.starts_with("bills/") => Some((format!("/bill/view?file={}", enc(w)), true)),
+                            Some(w) => all.iter().find(|i| i.number == w).map(|i| (format!("/entry/{}", i.key), true)),
+                            None => None,
+                        },
+                        settle::PAYS | settle::SETTLES | bill::CANCELS if v.starts_with("bills/") => Some((format!("/bill/view?file={}", enc(v)), ctx.root.join(v).is_file())),
                         settle::PAYS | settle::SETTLES | "credits" => {
                             all.iter().find(|i| i.number == v).map(|i| (format!("/entry/{}", i.key), true))
                         }
@@ -1221,28 +1234,39 @@ async fn booking(Books(ctx): Books, Path(key): Path<String>) -> Response {
                     }
                     span.muted.small {
                         @if b.reversed_by.is_some() { "Already reversed." }
-                        @else { "Books the opposite amounts as a new entry, dated today. This one stays." }
+                        @else { "Books the opposite amounts as a new entry, dated today. This one stays."
+                            @if tag("bill").is_some() { " The bill is then cancelled." } }
                     }
                 }
                 span.nav { a.btn href=(back_to("/")) { (icon("left")) " Back" } }
             }
-            div #upload .modal popover {
-                h2 { "The document is missing" }
-                p.muted.small { "The booking names a document the books do not have. Upload it and it is filed where the booking says." }
-                form method="post" action={"/entry/" (key) "/file"} enctype="multipart/form-data" {
-                    (token())
-                    label.field { "The document"
-                        span.hint { "A PDF, or a photograph. On a phone: the camera, the photo library or a file." }
-                        input type="file" name="document" accept="image/*,application/pdf" required;
-                    }
-                    div.actions {
-                        button.btn-primary type="submit" { (icon("check")) " File it" }
-                        span.nav { button type="button" popovertarget="upload" popovertargetaction="hide" { "Cancel" } }
-                    }
-                }
-            }
+            (upload("upload", &key, ""))
         })
     })
+}
+
+/// The dialog that files the document booking `key` names but the books
+/// lack, opened by a button with `popovertarget` set to `id`. Filed, it goes
+/// to `to`, or else to the booking.
+fn upload(id: &str, key: &str, to: &str) -> Markup {
+    html! {
+        div.modal popover id=(id) {
+            h2 { "The document is missing" }
+            p.muted.small { "The booking names a document the books do not have. Upload it and it is filed where the booking says." }
+            form method="post" action={"/entry/" (key) "/file"} enctype="multipart/form-data" {
+                (token())
+                @if !to.is_empty() { input type="hidden" name="to" value=(to); }
+                label.field { "The document"
+                    span.hint { "A PDF, or a photograph. On a phone: the camera, the photo library or a file." }
+                    input type="file" name="document" accept="image/*,application/pdf" required;
+                }
+                div.actions {
+                    button.btn-primary type="submit" { (icon("check")) " File it" }
+                    span.nav { button type="button" popovertarget=(id) popovertargetaction="hide" { "Cancel" } }
+                }
+            }
+        }
+    }
 }
 
 /// A document a booking's tag names: where it is served, and whether the
@@ -1257,7 +1281,7 @@ fn doc(ctx: &Ctx, tag: &str, value: &str) -> Option<(String, bool)> {
 }
 
 async fn entry_file(Books(ctx): Books, Path(key): Path<String>, mut mp: Multipart) -> Response {
-    let (mut token, mut upload) = (String::new(), None);
+    let (mut token, mut upload, mut to) = (String::new(), None, format!("/entry/{key}"));
     while let Ok(Some(field)) = mp.next_field().await {
         match field.name().unwrap_or_default() {
             "document" => {
@@ -1265,12 +1289,18 @@ async fn entry_file(Books(ctx): Books, Path(key): Path<String>, mut mp: Multipar
                 upload = field.bytes().await.ok().map(|b| (src, b.to_vec()));
             }
             "token" => token = field.text().await.unwrap_or_default(),
+            "to" => {
+                let t = field.text().await.unwrap_or_default();
+                if t.starts_with('/') && !t.starts_with("//") {
+                    to = t;
+                }
+            }
             _ => {}
         }
     }
     let filed = once(&token, || {
         let (src, bytes) = upload.as_ref().context("no document in the upload")?;
-        bill::refile(&ctx, &key, src, bytes).map(|_| done(&ctx, &format!("/entry/{key}")))
+        bill::refile(&ctx, &key, src, bytes).map(|_| done(&ctx, &to))
     });
     match filed {
         Ok(to) => Redirect::to(&to).into_response(),
@@ -1931,7 +1961,7 @@ fn row_actions(i: &settle::Invoice) -> Markup {
                 button.small type="button" disabled title="The PDF is not in the books" { (icon("doc")) " PDF" }
             }
             @if !i.status.settled() {
-                a.btn.small href={"/invoices/pay?n=" (i.number)} { "Pay" }
+                a.btn.small href={"/invoices/pay?n=" (i.number)} { (icon("coins")) " Pay" }
                 a.btn.small href={"/invoices/" (i.number) "/settle"} { "Settle" }
             }
         }
@@ -2175,6 +2205,274 @@ async fn settle_submit(Books(ctx): Books, Path(number): Path<String>, Form(f): F
     }
 }
 
+/// Every filed bill, newest first, each opening its page.
+/// With `?open=1`, only those: not booked, or still owed.
+async fn bills_list(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
+    let only_open = q.contains_key("open");
+    or_error(&ctx, "Bills", || {
+        // What still wants something done first, not booked or owed; each
+        // part newest first, as they come.
+        let mut all = bill::bills(&ctx)?;
+        all.retain(|b| !only_open || !b.booked() || b.unpaid());
+        all.sort_by_key(|b| b.booked() && !b.unpaid());
+        // What is open, summed in each commodity; what the books cannot say, counted.
+        let mut totals: std::collections::BTreeMap<&str, rust_decimal::Decimal> = Default::default();
+        for b in &all {
+            if let Some(bill::Figure::Is(q, c)) = open(b) {
+                *totals.entry(c.as_str()).or_default() += q;
+            }
+        }
+        let unknown = all.iter().filter(|b| b.open == bill::Figure::Conflict).count();
+        let total = html! {
+            @for (c, q) in &totals { div { (q) " " (c) } }
+            @if unknown > 0 { div.muted { "and " (unknown) " not known (?)" } }
+        };
+        Ok(html! {
+            h1 { "Bills" }
+            nav.tabs {
+                a href="/bills?open=1" class=(if only_open { "current" } else { "" }) { (icon("clock")) " Open" }
+                a href="/bills" class=(if only_open { "" } else { "current" }) { (icon("inbox")) " All" }
+            }
+            div.box.scroll {
+                @if all.is_empty() {
+                    div.box-body { p.muted { @if only_open { "Every bill is booked and paid." } @else { "No bills yet." } } }
+                } @else {
+                    table.list {
+                        thead { tr { th { "Bill" } th.wide { "Date" } th.amt.wide { "Amount" } th.amt.wide { "Open" } th { "Status" } th.wide {} } }
+                        tbody {
+                            @for b in &all {
+                                tr.row-link {
+                                    td { a.stretch href={"/bill/view?file=" (enc(&b.file))} { (b.name()) }
+                                        div.narrow.small.muted { (b.date) @if b.amount != bill::Figure::Unknown { " · " (b.amount) }
+                                            @if let Some(o) = open(b) { " · open " (o) } } }
+                                    td.date.wide { (b.date) }
+                                    td.amt.wide { (b.amount) }
+                                    td.amt.wide { @if let Some(o) = open(b) { (o) } }
+                                    td { div.pills {
+                                        (bill_pills(b))
+                                        div.narrow { (bill_actions(b, deletes(&ctx, b))) }
+                                    } }
+                                    td.wide { (bill_actions(b, deletes(&ctx, b))) }
+                                }
+                            }
+                        }
+                        @if !totals.is_empty() || unknown > 0 {
+                            tfoot { tr {
+                                td { strong { "Open in all" } div.narrow.small { (total) } }
+                                td.wide {} td.wide {}
+                                td.amt.wide { strong { (total) } }
+                                td {} td.wide {}
+                            } }
+                        }
+                    }
+                }
+            }
+            @for b in all.iter().filter(|b| !b.filed) {
+                @if let Some(key) = b.booking() { (upload(&upload_id(b), key, "/bills")) }
+            }
+            div.actions { a.btn.btn-primary href="/bill" { (icon("camera")) " Book a bill" } }
+        })
+    })
+}
+
+/// What is open of a bill, where there is something to show: not nought.
+fn open(b: &bill::Bill) -> Option<&bill::Figure> {
+    match &b.open {
+        bill::Figure::Unknown => None,
+        bill::Figure::Is(q, _) if q.is_zero() => None,
+        o => Some(o),
+    }
+}
+
+/// The id of a bill's upload dialog, from its path.
+fn upload_id(b: &bill::Bill) -> String {
+    format!("up-{}", b.file.replace(|c: char| !c.is_ascii_alphanumeric(), "-"))
+}
+
+/// One per payment, each a link to it, as an invoice's; or with none, where it stands.
+fn bill_pills(b: &bill::Bill) -> Markup {
+    html! {
+        @for t in b.payments() {
+            a class=(match t.tag.as_str() { settle::SETTLES => "pill pill-ok", settle::PAYS => "pill pill-warn", _ => "pill" }) href={"/entry/" (t.key)} title=(t.description) { (t.label()) }
+        }
+        @if b.payments().next().is_none() {
+            span class=(match b.status() { "not booked" => "pill pill-warn", "unpaid" => "pill pill-info", _ => "pill pill-ok" }) { (b.status()) }
+        }
+    }
+}
+
+/// The log line whose undo deletes a bill not booked: the `abo file` that
+/// filed it, while undoing it would go through.
+fn deletes(ctx: &Ctx, b: &bill::Bill) -> Option<usize> {
+    if b.booked() {
+        return None;
+    }
+    let all = undo::lines(ctx);
+    let i = all.iter().rposition(|l| undo::op(l) == "file" && l["argv"][1] != "--for" && l["ok"]["file"] == b.file.as_str())?;
+    undo::how(ctx, &all[i], &undo::reverted(ctx)).ok().map(|_| i + 1)
+}
+
+/// A bill's document, always there: the row exists because the file does.
+/// While it is not booked, Book it and Delete; while it is owed, Pay.
+fn bill_actions(b: &bill::Bill, delete: Option<usize>) -> Markup {
+    let ext = b.file.rsplit('.').next().unwrap_or_default().to_uppercase();
+    html! {
+        div.row-actions {
+            @if b.filed {
+                a.btn.small href={"/" (b.file)} download { (icon("doc")) " " (ext) }
+            } @else {
+                button.small type="button" popovertarget=(upload_id(b)) title="The books name it but do not have it" { (icon("upload")) " Upload " (ext) }
+            }
+            @if !b.booked() { a.btn.small href={"/bill?file=" (enc(&b.file))} { (icon("book")) " Book it" } }
+            @if let Some(n) = delete {
+                form method="post" action={"/undo/" (n)} {
+                    (token())
+                    input type="hidden" name="to" value="/bills";
+                    button.btn-danger.small type="submit" { (icon("trash")) " Delete" }
+                }
+            }
+            @if b.unpaid() { a.btn.small href={"/bill/pay?file=" (enc(&b.file))} { (icon("coins")) " Pay" } }
+        }
+    }
+}
+
+fn find_bill(ctx: &Ctx, file: &str) -> Result<bill::Bill> {
+    bill::bills(ctx)?.into_iter().find(|b| b.file == file).with_context(|| format!("no bill {file}"))
+}
+
+/// A bill: every booking that names it.
+async fn bill_view(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
+    or_error(&ctx, "Bill", || {
+        let b = find_bill(&ctx, q.get("file").map_or("", String::as_str))?;
+        Ok(html! {
+            h1 { (b.name()) }
+            p.muted.small { (b.date) " · " (b.issuer)
+                @if b.amount != bill::Figure::Unknown { " · " (b.amount) }
+                @if let Some(o) = open(&b) { " · open " (o) }
+                " · " code {
+                    @if b.filed { a href={"/" (b.file)} { (b.file) } }
+                    @else { button.missing type="button" popovertarget=(upload_id(&b)) title="Not in the books: upload it" { (b.file) } }
+                } }
+            div.box {
+                div.box-header { (icon("book")) "Bookings" span.spacer { div.pills { (bill_pills(&b)) } } }
+                @if b.refs.is_empty() {
+                    div.box-body { p.muted { "Not booked yet." } }
+                } @else {
+                    table.list { tbody {
+                        @for t in &b.refs {
+                            tr {
+                                td.date { (t.date) }
+                                td { a href={"/entry/" (t.key)} { (t.description) } }
+                                td { span class=(match t.tag.as_str() { settle::SETTLES => "pill pill-ok", settle::PAYS => "pill pill-warn", _ => "pill" }) {
+                                    (match t.tag.as_str() { settle::SETTLES => "settles it", settle::PAYS => "pays part", bill::CANCELS => "cancels it",
+                                        x if x.ends_with(bill::CANCELS) => "reverts the cancelling", x if x.starts_with(journal::TAKES_BACK) => "reverts a payment", _ => "booking" }) } }
+                            }
+                        }
+                    } }
+                }
+            }
+            div.actions {
+                (bill_actions(&b, deletes(&ctx, &b)))
+                span.nav { a.btn href=(back_to("/bills")) { (icon("left")) " Back" } }
+            }
+            @if let Some(key) = b.booking().filter(|_| !b.filed) { (upload(&upload_id(&b), key, "/bills")) }
+        })
+    })
+}
+
+/// A bill's payment: out of an account, off the liability its booking
+/// credits, tagged with the bill as an invoice's payment is with the
+/// invoice. Sent, it is `abo post --tag settles=<bill>` or `pays=`.
+async fn bill_pay_form(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
+    or_error(&ctx, "Pay a bill", || {
+        let b = find_bill(&ctx, q.get("file").map_or("", String::as_str))?;
+        let mut f = Fields::new();
+        if let bill::Figure::Is(open, _) = &b.open {
+            f.insert("amount".into(), open.to_string());
+        }
+        f.insert("description".into(), format!("Pay {}", b.name()));
+        bill_pay_page(&ctx, &b, &f, None)
+    })
+}
+
+fn bill_pay_page(ctx: &Ctx, b: &bill::Bill, f: &Fields, error: Option<&str>) -> Result<Markup> {
+    let Some((payable, _, commodity)) = b.owed.as_ref().filter(|_| b.unpaid()) else { bail!("{} is not owed", b.file) };
+    let part = f.get("as").is_some_and(|v| v == settle::PAYS);
+    let get = |k: &str| f.get(k).cloned().unwrap_or_default();
+    let from = money_accounts(ctx)?;
+    let first = ctx.cfg.payment.first().map(|p| p.account.clone()).unwrap_or_else(|| "Assets:Bank".into());
+    let chosen = f.get("from").cloned().unwrap_or(first);
+    let today = jiff::Zoned::now().date().to_string();
+    Ok(html! {
+        h1 { "Pay " (b.name()) }
+        p.muted { (b.date) " · " (b.amount)
+            @for t in b.payments() { " · " a href={"/entry/" (t.key)} { (t.label()) } }
+            @if let Some(o) = open(b).filter(|_| b.payments().next().is_some()) { " · " (o) " still open" }
+            " · " a href={"/" (b.file)} { (b.file) } }
+        @if let Some(e) = error { div.flash.flash-error { (icon("error")) div { "Rejected: " (e) } } }
+        form method="post" action="/bill/pay" {
+            (token())
+            input type="hidden" name="file" value=(b.file);
+            div.box { div.box-body {
+                fieldset.field {
+                    legend { "This payment" }
+                    label.choice { input type="radio" name="as" value=(settle::SETTLES) checked[!part]; " settles the bill" }
+                    label.choice { input type="radio" name="as" value=(settle::PAYS) checked[part]; " pays part of it, more to come" }
+                }
+                label.field { "Date" input type="date" name="date" required value=(f.get("date").cloned().unwrap_or(today)); }
+                label.field { "Amount"
+                    span.hint { "In " (commodity) ", taken off " code { (payable) } "." }
+                    input type="text" name="amount" required value=(get("amount"));
+                }
+                label.field { "Paid from"
+                    select name="from" { @for a in &from { option value=(a) selected[a == &chosen] { (a) } } }
+                }
+                label.field { "Description" input type="text" name="description" required value=(get("description")); }
+            } }
+            div.actions {
+                button.btn-primary type="submit" { (icon("check")) " Book it" }
+                span.nav { a.btn href=(back_to("/bills?open=1")) { (icon("left")) " Back" } }
+            }
+        }
+    })
+}
+
+/// Where money is paid from: the asset accounts but the receivable and VAT.
+fn money_accounts(ctx: &Ctx) -> Result<Vec<String>> {
+    Ok(journal::declared_accounts(ctx)?
+        .into_iter()
+        .filter(|a| a.starts_with("Assets") && a != &ctx.cfg.invoice.receivable && !journal::is_vat_account(a))
+        .collect())
+}
+
+async fn bill_pay_submit(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
+    let token = f.get("token").cloned().unwrap_or_default();
+    let get = |k: &str| f.get(k).map(|v| v.trim().to_string()).unwrap_or_default();
+    let r = once(&token, || {
+        let b = find_bill(&ctx, &get("file"))?;
+        let (payable, _, commodity) = b.owed.clone().with_context(|| format!("{} owes nothing", b.file))?;
+        let amount = rust_decimal::Decimal::from_str_exact(&get("amount")).with_context(|| format!("the amount {:?} is not a number", get("amount")))?;
+        if !amount.is_sign_positive() || amount.is_zero() {
+            bail!("the amount is what was paid, above nought");
+        }
+        if !money_accounts(&ctx)?.contains(&get("from")) {
+            bail!("{} is not an account money is paid from", get("from"));
+        }
+        let p = |account: String, amount| Posting { account, amount: Some(amount), commodity: commodity.clone(), assertion: None };
+        journal::post(&ctx, &Entry {
+            date: get("date"),
+            description: get("description"),
+            tags: vec![(if get("as") == settle::PAYS { settle::PAYS } else { settle::SETTLES }.into(), b.file.clone())],
+            postings: vec![p(payable, amount), p(get("from"), -amount)],
+        })?;
+        Ok(done(&ctx, "/bills?open=1"))
+    });
+    match r {
+        Ok(to) => Redirect::to(&to).into_response(),
+        Err(e) => or_error(&ctx, "Pay a bill", || bill_pay_page(&ctx, &find_bill(&ctx, &get("file"))?, &f, Some(&e.to_string()))),
+    }
+}
+
 /// `?file=<path>`: a document filed already, to book.
 async fn bill_form(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
     or_error(&ctx, "Book a bill", || {
@@ -2194,21 +2492,8 @@ async fn bill_form(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
 fn unbooked(ctx: &Ctx) -> Result<Vec<String>> {
     let booked = journal::hledger(ctx, &["tags", "bill", "--values"])?;
     let booked: Vec<&str> = booked.lines().map(str::trim).collect();
-    let mut out = vec![];
-    let mut dirs = vec![ctx.root.join("bills")];
-    while let Some(d) = dirs.pop() {
-        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                dirs.push(p);
-            } else if let Ok(rel) = p.strip_prefix(&ctx.root) {
-                let rel = rel.to_string_lossy().to_string();
-                if !booked.contains(&rel.as_str()) {
-                    out.push(rel);
-                }
-            }
-        }
-    }
+    // Filed is committed: a stray file under bills/ is not.
+    let mut out: Vec<String> = ctx.git(&["ls-files", "--", "bills"])?.lines().filter(|l| !booked.contains(l)).map(str::to_string).collect();
     out.sort();
     Ok(out)
 }
@@ -2230,8 +2515,9 @@ fn bill_page(ctx: &Ctx, f: &Fields, notice: Option<Markup>) -> Result<Markup> {
                     @if !filed.is_empty() {
                         // Filed already: booked dated as its name says.
                         input type="hidden" name="file" value=(filed);
-                        div.field { strong { "The bill" } br; a href={"/" (filed)} { (icon("doc")) " " (filed) }
-                            span.hint { "Filed already; the booking is dated as it is." } }
+                        div.field { "The bill"
+                            span.hint { "Filed already; the booking is dated as it is." }
+                            a href={"/" (filed)} { (icon("doc")) " " (filed) } }
                     } @else {
                         label.field { "The bill"
                             span.hint { "A PDF, or a photograph. On a phone: the camera, the photo library or a file." }
@@ -2266,7 +2552,7 @@ fn bill_page(ctx: &Ctx, f: &Fields, notice: Option<Markup>) -> Result<Markup> {
                     @for w in &waiting {
                         tr {
                             td { a href={"/" (w)} { code { (w) } } }
-                            td.amt { a.btn.small href={"/bill?file=" (w)} { "Book it" } }
+                            td.amt { a.btn.small href={"/bill?file=" (w)} { (icon("book")) " Book it" } }
                         }
                     }
                 } }
@@ -2306,7 +2592,7 @@ async fn bill_submit(Books(ctx): Books, mut mp: Multipart) -> Response {
             }
             let r = bill::bill(&ctx, rel, get("description"), vec![], postings(&ctx, get("postings"))?)?;
             info!(commit = %r.commit, file = %rel, "bill booked");
-            return Ok(done(&ctx, "/"));
+            return Ok(done(&ctx, "/bills"));
         }
         let (src, bytes) = doc.as_ref().filter(|(_, b)| !b.is_empty()).context("no document in the upload")?;
         let postings = postings(&ctx, get("postings"))?;
@@ -2316,7 +2602,7 @@ async fn bill_submit(Books(ctx): Books, mut mp: Multipart) -> Response {
         let filed = bill::file(&ctx, src, bytes, &entry.date, get("issuer"))?;
         let r = bill::bill(&ctx, &filed.file, &entry.description, vec![], entry.postings)?;
         info!(commit = %r.commit, file = %filed.file, "bill booked");
-        Ok(done(&ctx, "/"))
+        Ok(done(&ctx, "/bills"))
     });
     match booked {
         Ok(to) => Redirect::to(&to).into_response(),
@@ -2404,6 +2690,7 @@ fn icon(name: &str) -> Markup {
         "undo" => &["M5.5 3.5 3 6l2.5 2.5", "M3 6h6.5a3.5 3.5 0 0 1 0 7H6"],
         "trash" => &["M3 4.5h10", "M6.5 4.5v-2h3v2", "M4.5 4.5l.5 9h6l.5-9"],
         "download" => &["M8 2.5v8", "M4.5 7.5 8 11 11.5 7.5", "M2.5 13.5h11"],
+        "upload" => &["M8 11V2.5", "M4.5 6 8 2.5 11.5 6", "M2.5 13.5h11"],
         "camera" => &["M2.5 5.5h2l1-1.5h5l1 1.5h2a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-.5.5h-11a.5.5 0 0 1-.5-.5v-7a.5.5 0 0 1 .5-.5z",
                       "M8 11.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"],
         "pencil" => &["M11 2.5 13.5 5 5.5 13H3v-2.5z", "M9.5 4 12 6.5"],
@@ -2452,7 +2739,7 @@ fn page(ctx: &Ctx, title: &str, body: Markup) -> Html<String> {
     // (link, icon, label, the paths that count as being there)
     let nav = [
         ("/", "book", "Books", "/"),
-        ("/bill", "inbox", "Bills", "/bill"),
+        ("/bills", "inbox", "Bills", "/bill"),
         ("/invoices", "outbox", "Invoices", "/invoice"),
         ("/reconcile", "checks", "Reconcile", "/reconcile"),
         ("/report/pl", "chart", "Statements", "/report"),
@@ -2624,15 +2911,16 @@ button.btn-danger[disabled]:hover { border-color: #B42318; }
 button[disabled] { opacity: .5; cursor: not-allowed; }
 button[disabled]:hover { border-color: var(--btn-border); }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-pre .missing { font: inherit; color: var(--error); background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; }
+pre .missing, code .missing { font: inherit; color: var(--error); background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; }
 .modal { max-width: 440px; padding: 20px; border: 1px solid var(--card-border); border-radius: 12px; background: var(--card); color: var(--fg); }
 .modal::backdrop { background: rgb(0 0 0 / .4); }
 .modal h2 { margin-top: 0; }
 .actions .nav { margin-left: auto; display: flex; gap: 8px; }
 
 /* forms */
-label.field { display: block; margin: 0 0 16px; font-weight: 600; }
-label.field .hint { display: block; font-weight: 400; color: var(--muted); font-size: 12px; margin-top: 2px; }
+label.field, div.field { display: block; margin: 0 0 16px; font-weight: 600; }
+div.field a { font-weight: 400; }
+label.field .hint, div.field .hint { display: block; font-weight: 400; color: var(--muted); font-size: 12px; margin-top: 2px; }
 fieldset.field { border: 0; padding: 0; margin: 0 0 16px; min-width: 0; }
 fieldset.field legend { padding: 0; margin-bottom: 4px; font-weight: 600; }
 fieldset.field .hint { display: block; color: var(--muted); font-size: 12px; margin: -2px 0 2px; }
@@ -2691,7 +2979,12 @@ tr.row-link a.stretch::after { content: ""; position: absolute; inset: 0; }
 tr.row-link .pills > *, tr.row-link .row-actions > * { position: relative; z-index: 1; }
 .nowrap { white-space: nowrap; }
 .narrow { display: none; }
-.box.scroll { overflow-x: auto; }
+.box.scroll { overflow-x: auto; container-type: inline-size; }
+/* a table too wide for its box, whatever the window: its narrow layout */
+@container (max-width: 880px) {
+  .wide { display: none; }
+  .narrow { display: block; flex-basis: 100%; margin-top: 4px; }
+}
 
 /* figures */
 table { width: 100%; border-collapse: collapse; }
@@ -2726,7 +3019,7 @@ table.log pre { max-height: 360px; }
 
 /* a success notice: shown, then gone — no script. Hovering or tabbing into it
    holds it, so its Undo can be reached; the Log keeps Undo after that. */
-.toast { animation: vanish .4s ease 2s forwards; }
+.toast { animation: vanish .4s ease 10s forwards; }
 .toast:hover, .toast:focus-within { animation-play-state: paused; }
 @keyframes vanish {
   to { opacity: 0; visibility: hidden; max-height: 0; margin: 0; padding-block: 0; border-width: 0; }
@@ -2749,8 +3042,6 @@ ul.accounts li { padding: 2px 0; }
 
 /* a phone: the sidebar becomes a bar across the top */
 @media (max-width: 760px) {
-  .wide { display: none; }
-  .narrow { display: block; flex-basis: 100%; margin-top: 4px; }
   .pill { white-space: normal; }
   body { flex-direction: column; }
   .side { width: auto; flex-direction: row; align-items: center; padding: 8px 12px; gap: 8px; border-right: 0; border-bottom: 1px solid var(--side-border); }

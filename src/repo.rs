@@ -736,51 +736,91 @@ sum   = ["2", "-3"]
     let acc = ctx.accounts_journal();
     // A second commodity, to show that the books are not single-currency, and
     // its price on the day it was received, which the tax return values it by.
-    let decls = format!("commodity 0.00000001 BTC\nP 2026-05-10 BTC 60000.00 EUR\n\n{decls}");
+    let decls = format!("commodity 0.00000001 BTC\ncommodity 1000.00 USD\nP 2026-05-10 BTC 60000.00 EUR\n\n{decls}");
     std::fs::write(&acc, std::fs::read_to_string(&acc)? + &decls)?;
     ctx.commit(&[&acc, &dir.join("abo.toml")], "Declare the demo's accounts, BTC price and tax return")?;
 
     let cur = "EUR";
     let p = |a: &str, n: &str| Posting::parse(&format!("{a}={n}"), cur).unwrap();
     let no_tags: Vec<(String, String)> = vec![];
+    let tag = |k: &str, v: &str| vec![(k.to_string(), v.to_string())];
+    // A bill's issuer, when the entry is booked against a bill the demo
+    // renders; a payment's tag names the issuer's last bill until it is filed.
     let entries = [
-        ("2026-01-01", "Opening balance", no_tags.clone(),
+        ("2026-01-01", "Opening balance", no_tags.clone(), None,
             vec![p("Assets:Bank", "25000.00"), p("Equity:Opening", "-25000.00")]),
-        ("2026-02-14", "Acme Hosting AG", no_tags.clone(),
+        ("2026-02-14", "Acme Hosting AG, hosting February", no_tags.clone(), Some("Acme Hosting AG"),
             vec![p("Expenses:Hosting", "100.00"), p("Assets:VAT:Input", "10.00"), p("Liabilities:Payable", "-110.00")]),
-        ("2026-02-28", "Pay Acme Hosting AG", no_tags.clone(),
+        ("2026-02-28", "Pay Acme Hosting AG", tag("settles", "Acme Hosting AG"), None,
             vec![p("Liabilities:Payable", "110.00"), p("Assets:Bank", "-110.00")]),
         // tagged, so `abo invoice` numbers the next one after the last
-        ("2026-03-31", "Customer One | Invoice 2026-0001",
-            vec![("invoice".to_string(), "2026-0001".to_string())],
+        ("2026-03-31", "Customer One | Invoice 2026-0001", tag("invoice", "2026-0001"), None,
             vec![p("Assets:Receivable", "5500.00"), p("Income:Sales", "-5000.00"), p("Liabilities:VAT:Output", "-500.00")]),
-        ("2026-04-15", "Customer One pays 2026-0001",
-            vec![("settles".to_string(), "2026-0001".to_string())],
+        ("2026-04-15", "Customer One pays 2026-0001", tag("settles", "2026-0001"), None,
             vec![p("Assets:Bank", "5500.00"), p("Assets:Receivable", "-5500.00")]),
-        ("2026-04-30", "Salary April", no_tags.clone(),
+        ("2026-04-30", "Salary April", no_tags.clone(), None,
             vec![p("Expenses:Salary", "6000.00"), p("Assets:Bank", "-6000.00")]),
-        ("2026-05-05", "Petty cash", no_tags.clone(),
+        ("2026-05-05", "Petty cash", no_tags.clone(), None,
             vec![p("Assets:Cash", "500.00"), p("Assets:Bank", "-500.00")]),
-        ("2026-05-08", "Stationery, paid in cash", no_tags.clone(),
+        // Paid on the spot: it owes nothing.
+        ("2026-05-08", "Paper & Pens, stationery paid in cash", no_tags.clone(), Some("Paper & Pens"),
             vec![p("Expenses:General", "42.50"), p("Assets:Cash", "-42.50")]),
+        // Its document never made it into the books: the row offers to upload it.
+        ("2026-06-15", "Cloud Storage Inc, storage June", tag("bill", "bills/2026/2026-06-15-cloud-storage-inc-00000000.pdf"), None,
+            vec![p("Expenses:Hosting", "20.00"), p("Assets:VAT:Input", "2.00"), p("Assets:Bank", "-22.00")]),
         // priced and settled in a second commodity; hledger balances each
         // commodity on its own, so nothing here is special-cased
-        ("2026-05-10", "Customer Two | Invoice 2026-0002",
-            vec![("invoice".to_string(), "2026-0002".to_string())],
+        ("2026-05-10", "Customer Two | Invoice 2026-0002", tag("invoice", "2026-0002"), None,
             vec![p("Assets:Wallet:BTC", "0.05 BTC"), p("Income:Sales", "-0.05 BTC")]),
+        // Paid in part so far.
+        ("2026-07-01", "Lex & Partners, legal advice", no_tags.clone(), Some("Lex & Partners"),
+            vec![p("Expenses:General", "1200.00"), p("Assets:VAT:Input", "120.00"), p("Liabilities:Payable", "-1320.00")]),
+        ("2026-07-31", "Pay part of Lex & Partners", tag("pays", "Lex & Partners"), None,
+            vec![p("Liabilities:Payable", "500.00"), p("Assets:Bank", "-500.00")]),
         // Two still owed: one paid in two parts so far, one not at all.
-        ("2026-08-14", "Customer One | Invoice 2026-0003",
-            vec![("invoice".to_string(), "2026-0003".to_string())],
+        ("2026-08-14", "Customer One | Invoice 2026-0003", tag("invoice", "2026-0003"), None,
             vec![p("Assets:Receivable", "2200.00"), p("Income:Sales", "-2000.00"), p("Liabilities:VAT:Output", "-200.00")]),
-        ("2026-09-05", "Customer One pays part of 2026-0003",
-            vec![("pays".to_string(), "2026-0003".to_string())],
+        // Owed still.
+        // Owed in another currency: the open total has a line of its own for it.
+        ("2026-08-20", "Devtools Inc, annual licence", no_tags.clone(), Some("Devtools Inc"),
+            vec![p("Expenses:General", "250.00 USD"), p("Liabilities:Payable", "-250.00 USD")]),
+        ("2026-09-01", "Acme Hosting AG, hosting September", no_tags.clone(), Some("Acme Hosting AG"),
+            vec![p("Expenses:Hosting", "100.00"), p("Assets:VAT:Input", "10.00"), p("Liabilities:Payable", "-110.00")]),
+        ("2026-09-05", "Customer One pays part of 2026-0003", tag("pays", "2026-0003"), None,
             vec![p("Assets:Bank", "1000.00"), p("Assets:Receivable", "-1000.00")]),
-        ("2026-09-20", "Customer One pays part of 2026-0003",
-            vec![("pays".to_string(), "2026-0003".to_string())],
+        ("2026-09-20", "Customer One pays part of 2026-0003", tag("pays", "2026-0003"), None,
             vec![p("Assets:Bank", "500.00"), p("Assets:Receivable", "-500.00")]),
     ];
-    for (date, description, tags, postings) in entries {
-        post(&ctx, &Entry { date: date.into(), description: description.into(), tags, postings })?;
+    let mut filed: Vec<(&str, String)> = vec![];
+    for (date, description, mut tags, issuer, postings) in entries {
+        for (k, v) in tags.iter_mut().filter(|(k, v)| (k == "settles" || k == "pays") && crate::invoice::pdf_path(v).is_none()) {
+            // Without typst the bill was booked untagged, and so is this.
+            match filed.iter().rev().find(|(i, _)| i == v) {
+                Some((_, rel)) => *v = rel.clone(),
+                None => k.clear(),
+            }
+        }
+        tags.retain(|(k, _)| !k.is_empty());
+        let billed = issuer.map(|i| -> Result<String> {
+            let rel = demo_bill(&ctx, date, i, description, &postings)?.file;
+            crate::bill::bill(&ctx, &rel, description, vec![], postings.clone())?;
+            Ok(rel)
+        });
+        match billed {
+            Some(Ok(rel)) => filed.push((issuer.unwrap(), rel)),
+            Some(Err(e)) => {
+                tracing::warn!(%e, "the demo's bill of {date} has no document");
+                post(&ctx, &Entry { date: date.into(), description: description.into(), tags, postings })?;
+            }
+            None => {
+                post(&ctx, &Entry { date: date.into(), description: description.into(), tags, postings })?;
+            }
+        }
+    }
+    // Filed, not booked yet.
+    let lines = [p("Expenses:General", "59.00")];
+    if let Err(e) = demo_bill(&ctx, "2026-09-25", "Telecom GmbH", "Telecom GmbH, phone September", &lines) {
+        tracing::warn!(%e, "the demo has no bill waiting to be booked");
     }
     // One issued the ordinary way, so it has its PDF, a due date and
     // Correct. Without typst it is booked as the others are, PDF missing.
@@ -808,6 +848,32 @@ sum   = ["2", "-3"]
         })?;
     }
     Ok(ctx)
+}
+
+/// A bogus bill for the demo, rendered with typst and filed: the issuer, a
+/// line per posting it debits, and the total.
+fn demo_bill(ctx: &Ctx, date: &str, issuer: &str, description: &str, postings: &[crate::journal::Posting]) -> Result<crate::bill::FileReport> {
+    let debits: Vec<_> = postings.iter().filter(|p| p.amount.is_some_and(|a| a.is_sign_positive())).collect();
+    // "Acme Hosting AG, hosting September": the line is what follows the issuer.
+    let what = description.split_once(", ").map_or(description, |(_, w)| w);
+    let rows: String = debits
+        .iter()
+        .map(|p| format!("[{}], [{} {}],\n", if p.account.contains("VAT") { "VAT" } else { what }, p.amount.unwrap(), p.commodity))
+        .collect();
+    let total: Decimal = debits.iter().filter_map(|p| p.amount).sum();
+    let currency = debits.first().map_or("EUR", |p| p.commodity.as_str());
+    let src = format!(
+        "#set page(paper: \"a5\")\n#set text(size: 9pt)\n= {issuer}\n\n\
+         Bill to Example Ltd, 1 Example Street, 10000 Example City\n\nDate: {date}\n\n\
+         #table(columns: (1fr, auto), align: (left, right),\n{rows}[*Total*], [*{total} {currency}*])\n"
+    );
+    let tmp = ctx.root.join(".abo");
+    std::fs::create_dir_all(&tmp)?;
+    let (typ, pdf) = (tmp.join("demo-bill.typ"), tmp.join("demo-bill.pdf"));
+    std::fs::write(&typ, src.replace('&', "\\&"))?;
+    crate::statement::typst(ctx, &typ, &pdf)?;
+    let bytes = std::fs::read(&pdf)?;
+    crate::bill::file(ctx, "demo-bill.pdf", &bytes, date, issuer)
 }
 
 #[cfg(test)]

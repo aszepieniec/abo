@@ -65,7 +65,7 @@ pub struct Invoice {
     pub settled_by: Vec<Tagged>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct Tagged {
     /// `pays`, `settles` or `credits`.
     pub tag: String,
@@ -81,6 +81,7 @@ impl Tagged {
         let what = match self.tag.as_str() {
             PAYS => "part paid",
             SETTLES => "settled",
+            t if t.starts_with(crate::journal::TAKES_BACK) => "reverted",
             _ => "cancelled",
         };
         format!("{what} {}", self.date)
@@ -134,15 +135,17 @@ pub fn invoices(ctx: &Ctx) -> Result<Vec<Invoice>> {
                 key: crate::reconcile::key_of(t)?,
             });
         }
+        // Each entry that tags it, less those a reversal took back.
         for s in &txns {
             let named = |tag: &str| tags(s).any(|(k, v)| k == tag && v == number);
+            let back = tags(s).find_map(|(k, v)| (k == crate::journal::TAKES_BACK).then(|| v.split_once(' ')).flatten().filter(|(_, w)| *w == number).map(|(t, _)| t));
+            if let Some(t) = back {
+                if let Some(i) = settled_by.iter().rposition(|s: &Tagged| s.tag == t) {
+                    settled_by.remove(i);
+                }
+                continue;
+            }
             let Some(tag) = ["credits", SETTLES, PAYS].into_iter().find(|t| named(t)) else { continue };
-            status = match (tag, status) {
-                ("credits", _) | (_, Status::Cancelled) => Status::Cancelled,
-                (SETTLES, _) => Status::Settled,
-                (_, Status::Open) => Status::PartPaid,
-                (_, s) => s,
-            };
             settled_by.push(Tagged {
                 tag: tag.to_string(),
                 date: s["tdate"].as_str().unwrap_or_default().to_string(),
@@ -150,12 +153,23 @@ pub fn invoices(ctx: &Ctx) -> Result<Vec<Invoice>> {
                 key: crate::reconcile::key_of(s)?,
             });
         }
+        for t in &settled_by {
+            status = match (t.tag.as_str(), status) {
+                ("credits", _) | (_, Status::Cancelled) => Status::Cancelled,
+                (SETTLES, _) => Status::Settled,
+                (PAYS, Status::Open) => Status::PartPaid,
+                (_, s) => s,
+            };
+        }
         let total = shown.iter().map(|(q, c)| format!("{q} {c}")).collect::<Vec<_>>().join(", ");
         let owed = match &amounts[..] {
             [(q, c)] if !status.settled() => {
                 let mut left = Some(*q);
-                for s in txns.iter().filter(|s| tags(s).any(|(k, v)| (k == PAYS || k == SETTLES) && v == number)) {
-                    let alone = tags(s).filter(|(k, _)| *k == PAYS || *k == SETTLES).count() == 1;
+                // Payments of it, and reversals of those: what each moves on the receivable.
+                let pays = |k: &str, v: &str| (k == PAYS || k == SETTLES) && v == number
+                    || k == crate::journal::TAKES_BACK && v.split_once(' ').is_some_and(|(t, w)| t != "credits" && w == number);
+                for s in txns.iter().filter(|s| tags(s).any(|(k, v)| pays(k, v))) {
+                    let alone = tags(s).filter(|(k, _)| *k == PAYS || *k == SETTLES || *k == crate::journal::TAKES_BACK).count() == 1;
                     let paid = on_receivable(s)?;
                     left = match left {
                         Some(l) if alone && paid.iter().all(|(_, pc)| pc == c) => Some(l + paid.iter().map(|(p, _)| *p).sum::<Decimal>()),

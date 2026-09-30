@@ -167,9 +167,28 @@ document, and booking it files nothing again.
 Filing a document already filed is refused, naming where it is; booking a
 document already booked is refused, naming the entry that holds it.
 
-### B4. Record a payment or a receipt — Supported (as B1)
+### B4. Record a payment or a receipt — Supported (as B1; bills in the browser)
 Paying a bill, moving cash: an ordinary entry (B1) between the bank or cash
-account and payables or receivables.
+account and payables or receivables. A payment names the bill it pays by
+its path, as a payment of an invoice names the invoice: `pays:` for a part,
+`settles:` for the payment that settles it.
+Browser: **Bills** lists every filed document, and every one a booking names
+that the books lack, newest first. Each shows its amount, what its booking
+credits (`?` where bookings disagree), and what is open: what it credits to
+a liability less what payments naming it alone took off, nought once
+settled or when it credited no liability. Bills not booked or still owed
+come first, and what is open is summed in each commodity. Pay books a
+payment of it, Upload files a document the books lack, Delete undoes the
+filing of one not booked. The bill's page lists every entry that names it.
+Reverting a bill's booking cancels the bill: the reversal is tagged
+`cancels:` it, and a bill some payment names is not cancelled until that
+payment is reverted. Reverting a payment or a cancelling takes it back: the
+reversal is tagged `takes-back: settles <what>` (or `pays`, `cancels`), for
+bills and invoices alike, and reverting that puts it back. A bill payment
+pays off the bill's liability, no more than is open; a cancelling moves the
+opposite of the booking. Undo refuses an entry reversed since, and a bill or
+invoice that other entries still name. Filing a missing document for a
+booking moves every tag naming it and records its hash, in one commit.
 **Done when** the payable or receivable it settles goes to zero, and shows
 as `0.00` on the front page.
 

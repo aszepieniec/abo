@@ -127,7 +127,40 @@ fn plain(ctx: &Ctx, line: &Value, reverted: &[String]) -> Result<String> {
             bail!("the document is booked; undo its booking first");
         }
     }
+    // An entry reversed since: undoing it would leave a reversal of nothing.
+    let reversed = crate::journal::hledger(ctx, &["print", &format!("tag:reverses=^{}", &h[..7.min(h.len())])])?;
+    if let Some(first) = reversed.lines().next() {
+        bail!("it is reversed, by {}; undo that first", first.trim());
+    }
+    // A bill or an invoice that other entries name stays while they do. A
+    // document filed for a booking moves every tag naming it along with it.
+    let added = if op(line) == "file" { String::new() } else { ctx.git(&["show", "--format=", "-U0", h, "--", "journal/"])? };
+    for l in added.lines().filter_map(|l| l.strip_prefix('+')) {
+        let Some((k, v)) = l.trim().strip_prefix(';').and_then(|t| t.split_once(':')) else { continue };
+        let (k, v) = (k.trim(), v.trim());
+        if k == "bill" || k == "invoice" {
+            let named = crate::journal::hledger(ctx, &["print", &format!("tag:^(pays|settles|cancels|credits|takes-back)$=(^| ){}$", regex_quote(v))])?;
+            if let Some(first) = named.lines().next() {
+                bail!("{v} is named by {}; undo or revert that first", first.trim());
+            }
+        }
+    }
+    // Putting back a document deleted: not while it is filed again.
+    if op(line) == "undo" {
+        let all = lines(ctx);
+        let target = line["argv"][1].as_str().and_then(|n| n.parse::<usize>().ok()).and_then(|n| all.get(n.checked_sub(1)?));
+        if let Some(sha) = target.filter(|t| op(t) == "file" && t["argv"][1] != "--for").and_then(|t| t["ok"]["sha256"].as_str()) {
+            if let Some(there) = crate::bill::filed(ctx, sha)? {
+                bail!("the document it deleted is filed again, as {there}");
+            }
+        }
+    }
     Ok(h.to_string())
+}
+
+/// A value as a literal in an hledger query's regular expression.
+fn regex_quote(v: &str) -> String {
+    v.chars().map(|c| if c.is_ascii_alphanumeric() || c == '/' || c == '-' || c == '_' { c.to_string() } else { format!("\\{c}") }).collect()
 }
 
 #[derive(Serialize)]

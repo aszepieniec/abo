@@ -78,6 +78,23 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// What the entry moves on `account` in `commodity`, the elided amount
+    /// inferred as hledger infers it: what balances the rest, when they are
+    /// all in that commodity.
+    pub fn net(&self, account: &str, commodity: &str) -> Decimal {
+        let rest: Decimal = self.postings.iter().filter_map(|p| p.amount).sum();
+        let one = self.postings.iter().filter(|p| p.amount.is_some()).all(|p| p.commodity == commodity);
+        self.postings
+            .iter()
+            .filter(|p| p.account == account)
+            .filter_map(|p| match p.amount {
+                Some(a) if p.commodity == commodity => Some(a),
+                None if one => Some(-rest),
+                _ => None,
+            })
+            .sum()
+    }
+
     pub fn render(&self) -> String {
         let mut s = format!("{} {}\n", self.date, self.description);
         for (k, v) in &self.tags {
@@ -270,16 +287,46 @@ pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
     // alone that settles an invoice where the books do not show the payment.
     let paying: Vec<&(String, String)> =
         e.tags.iter().filter(|(k, _)| k == crate::settle::PAYS || k == crate::settle::SETTLES).collect();
+    // A bill is named by its path; it pays off the liability the bill owes,
+    // no more than is open when it pays that bill alone.
     for (i, (k, v)) in paying.iter().enumerate() {
+        let what = if v.starts_with("bills/") { "bill" } else { "invoice" };
         if paying[..i].iter().any(|(_, w)| w == v) {
-            bail!("invoice {v} is named twice; a payment {} it or {} it, once", crate::settle::PAYS, crate::settle::SETTLES);
+            bail!("{what} {v} is named twice; a payment {} it or {} it, once", crate::settle::PAYS, crate::settle::SETTLES);
         }
-        crate::settle::check(ctx, k, v)?;
+        if what == "bill" {
+            let (liability, commodity, open) = crate::bill::check(ctx, k, v)?;
+            let off = e.net(&liability, &commodity);
+            if !e.postings.is_empty() && off <= Decimal::ZERO {
+                bail!("it names the bill {v}, but pays nothing off {liability} in {commodity}");
+            }
+            if let Some(open) = open.filter(|o| paying.len() == 1 && off > *o) {
+                bail!("it pays {off} {commodity} off the bill {v}, but only {open} {commodity} is open");
+            }
+        } else {
+            crate::settle::check(ctx, k, v)?;
+        }
     }
     let receivable = &ctx.cfg.invoice.receivable;
-    let takes_off = e.postings.iter().any(|p| &p.account == receivable && p.amount.is_none_or(|a| a.is_sign_negative() && !a.is_zero()));
-    if !paying.is_empty() && !e.postings.is_empty() && !takes_off {
+    let currency = e.postings.iter().find(|p| &p.account == receivable).map(|p| p.commodity.clone()).unwrap_or_default();
+    let taken_off = e.net(receivable, &currency);
+    if paying.iter().any(|(_, v)| !v.starts_with("bills/")) && !e.postings.is_empty() && taken_off >= Decimal::ZERO {
         bail!("it names invoices it pays, but takes nothing off {receivable}");
+    }
+    for (_, v) in e.tags.iter().filter(|(k, _)| k == crate::bill::CANCELS) {
+        crate::bill::check_cancel(ctx, v, e)?;
+    }
+    // What a reversal takes back must stand: `takes-back: settles <what>`.
+    for (_, v) in e.tags.iter().filter(|(k, _)| k == TAKES_BACK) {
+        let (tag, what) = v.split_once(' ').with_context(|| format!("{TAKES_BACK}: {v:?} is not a tag and what it names"))?;
+        let stands = if what.starts_with("bills/") {
+            crate::bill::bills(ctx)?.into_iter().find(|b| b.file == what).is_some_and(|b| b.standing.iter().any(|t| t.tag == tag))
+        } else {
+            crate::settle::invoices(ctx)?.into_iter().find(|i| i.number == what).is_some_and(|i| i.settled_by.iter().any(|t| t.tag == tag))
+        };
+        if !stands {
+            bail!("{TAKES_BACK}: no {tag}: {what} stands to be taken back");
+        }
     }
 
     // 5. date inside an open period
@@ -300,6 +347,10 @@ pub struct AddReport {
     pub commit: String,
     pub entry: Entry,
 }
+
+/// The tag a reversal takes back a payment or a cancelling by:
+/// `takes-back: settles bills/...`, `takes-back: pays 2026-0003`.
+pub const TAKES_BACK: &str = "takes-back";
 
 /// An entry typed by a person, from the CLI or the form: `abo post`, logged.
 /// Workflows that book through `add` log themselves, once.
@@ -563,13 +614,28 @@ pub fn reverse(ctx: &Ctx, key: &str, date: &str) -> Result<AddReport> {
         }
         let commit = b.commit.context("no commit booked it, so a reversal would have nothing to name")?;
         let description: String = format!("Reversal of {} {}", b.date, b.description).chars().take(200).collect();
+        // The reversal of a bill's booking cancels the bill; of a payment
+        // or a cancelling, takes that back; of a taking back, puts it back.
+        let mut tags = vec![("reverses".to_string(), commit)];
+        if let Some(file) = tag("bill") {
+            tags.push((crate::bill::CANCELS.into(), file));
+        }
+        for (k, v) in &b.tags {
+            if [crate::settle::PAYS, crate::settle::SETTLES, crate::bill::CANCELS].contains(&k.as_str()) {
+                tags.push((TAKES_BACK.into(), format!("{k} {v}")));
+            } else if k == TAKES_BACK {
+                if let Some((k, v)) = v.split_once(' ') {
+                    tags.push((k.into(), v.into()));
+                }
+            }
+        }
         let postings = b.postings.into_iter().map(|p| Posting { amount: p.amount.map(|a| -a), ..p }).collect();
         add(
             ctx,
             &Entry {
                 date: date.to_string(),
                 description,
-                tags: vec![("reverses".into(), commit)],
+                tags,
                 postings,
             },
         )
