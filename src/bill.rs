@@ -435,13 +435,20 @@ pub fn unbooked(ctx: &Ctx, file: &str) -> Result<()> {
 /// takes entries out without the checks that put them in.
 pub fn consistent(ctx: &Ctx) -> Result<()> {
     for b in bills(ctx)? {
+        // Settled or cancelled once; cancelled, paid by nothing that stands.
         let ends: Vec<_> = b.standing.iter().filter(|r| r.tag == SETTLES || r.tag == CANCELS).collect();
         if let [a, z, ..] = &ends[..] {
-            bail!("{} would be {} and {}", b.file, a.label(), z.label());
+            bail!("{} {} and {}", b.file, a.label(), z.label());
+        }
+        if let (true, Some(p)) = (b.cancelled(), b.standing.iter().find(|r| r.tag != CANCELS)) {
+            bail!("{} {} and cancelled", b.file, p.label());
+        }
+        if let (false, Some(p)) = (b.booked(), b.standing.first()) {
+            bail!("{} {} and not booked", b.file, p.label());
         }
         if let Figure::Is(q, c) = &b.open {
             if q.is_sign_negative() {
-                bail!("{} would be paid {} {c} more than it owes", b.file, -q);
+                bail!("{} paid {} {c} more than it owes", b.file, -q);
             }
         }
     }
@@ -473,17 +480,17 @@ pub fn check_cancel(ctx: &Ctx, file: &str, e: &journal::Entry) -> Result<()> {
 /// A `pays:` or `settles:` tag naming a bill may name only one that is
 /// booked, owes something, and is neither settled nor cancelled. The
 /// liability it owes to, in what commodity, and what is open when known.
-pub fn check(ctx: &Ctx, tag: &str, file: &str) -> Result<(String, String, Option<Decimal>)> {
+pub fn check(ctx: &Ctx, tag: &str, file: &str) -> Result<(String, String, Option<Decimal>, Decimal)> {
     let all = bills(ctx)?;
     let b = all.iter().find(|b| b.file == file).with_context(|| format!("{tag}: the books have no bill {file}"))?;
     match (&b.owed, b.standing.iter().find(|r| r.tag == SETTLES || r.tag == CANCELS)) {
         _ if !b.booked() => bail!("{tag}: {file} is not booked; book it first"),
         (_, Some(r)) => bail!("{tag}: {file} is {} already ({})", r.label(), r.description),
         (None, _) => bail!("{tag}: {file} owes nothing: its booking credits no liability"),
-        (Some((acct, _, c)), None) => Ok((acct.clone(), c.clone(), match &b.open {
+        (Some((acct, q, c)), None) => Ok((acct.clone(), c.clone(), match &b.open {
             Figure::Is(q, _) => Some(*q),
             _ => None,
-        })),
+        }, *q)),
     }
 }
 

@@ -247,6 +247,9 @@ fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
                 bail!("line {n}, {raw:?}: {} {verb}", bad.join(" and "));
             }
         };
+        if d.is_empty() {
+            bail!("line {n}, {raw:?}, says nothing of what it is for");
+        }
         let amount = round(quantity * unit, dp);
         if amount.is_zero() {
             bail!("line {n}, {raw:?}, comes to nothing at {dp} places of {currency}");
@@ -262,7 +265,7 @@ fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
     if items.is_empty() {
         bail!("an invoice needs at least one line");
     }
-    if !net.is_sign_positive() {
+    if net <= Decimal::ZERO {
         bail!("an invoice comes to more than nought, not {net} {currency}; to take one back, issue a credit note");
     }
 
@@ -609,7 +612,7 @@ fn price(ctx: &Ctx, commodity: &str, currency: &str, date: &str) -> Result<Optio
 /// `-s`, keeping its places; nought stays unsigned.
 fn negated(s: &str) -> Result<String> {
     let d = Decimal::from_str_exact(s).with_context(|| format!("{s:?} is not a number"))?;
-    Ok(if d.is_zero() { s.to_string() } else { (-d).to_string() })
+    Ok(if d.is_zero() { s.trim_start_matches('-').to_string() } else { (-d).to_string() })
 }
 
 /// `max(invoice:) + 1` read from the journal. No counter file, no state to
@@ -708,6 +711,13 @@ mod tests {
         let vat = round(net * rate / Decimal::ONE_HUNDRED, 2);
         assert_eq!(vat.to_string(), "100.00");
         assert_eq!((net + vat).to_string(), "1334.55");
+    }
+
+    #[test]
+    fn nought_negated_is_unsigned() {
+        assert_eq!(negated("-0").unwrap(), "0");
+        assert_eq!(negated("0.00000000").unwrap(), "0.00000000");
+        assert_eq!(negated("12.50").unwrap(), "-12.50");
     }
 }
 

@@ -608,7 +608,7 @@ fn init_refuses_a_flag_no_question_asks_for() {
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
     refused(&base, &["init", "A", "--currency", "EUR", "--vat", "none", "--sales-rate", "5"], "--sales-rate does not apply");
-    refused(&base, &["init", "B", "--currency", "EUR", "--payment", "{ kind = \"cash\", iban = \"x\" }"], "a cash option has no iban");
+    refused(&base, &["init", "B", "--currency", "EUR", "--payment", "{ kind = \"cash\", details = \"Till\", iban = \"x\" }"], "a cash option has no iban");
     assert!(std::fs::read_dir(&base).unwrap().next().is_none());
 }
 
@@ -961,7 +961,7 @@ fn only_an_asset_in_an_open_period_is_cleared() {
     let later = key(&dir, "desc:Later");
     let (_, _, page) = http(&s, "POST", "/reconcile", &[("token", "c1"), ("account", "Assets:Cash"), ("commodity", "EUR"), ("date", "2026-09-30"),
                                                        ("action", "clear"), ("key", &format!("{later}:Assets:Bank"))]);
-    assert!(page.contains("is not a posting to Assets:Cash"), "{page}");
+    assert!(page.contains("is not outstanding in Assets:Cash"), "{page}");
     clean(&dir);
 }
 
@@ -1111,4 +1111,254 @@ fn an_amount_is_written_to_its_places() {
     let dir = books("places-written", &[]);
     ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=10", "Assets:Bank"]);
     assert!(read(&dir, "journal/2026.journal").contains("10.00 EUR"), "{}", read(&dir, "journal/2026.journal"));
+}
+
+// ---- found by the verification run of 2026-10-01, the second ----
+
+#[test]
+fn an_undo_does_not_leave_a_bill_part_paid_and_cancelled() {
+    let dir = books("undo-part-cancelled", &[]);
+    let b = bill(&dir, "Acme", "2026-03-01", "110.00");
+    assert!(pay(&dir, "pays", &b, "2026-03-10", "10.00").status.success());
+    ok(&dir, &["revert", "--date", "2026-03-11", &key(&dir, "desc:Pay 2026-03-10")]);
+    let taken_back = log_len(&dir);
+    ok(&dir, &["revert", "--date", "2026-03-12", &key(&dir, "desc:^Acme$")]);
+    refused(&dir, &["undo", &taken_back.to_string()], "part paid 2026-03-10 and cancelled");
+    clean(&dir);
+}
+
+#[test]
+fn a_bill_whose_open_is_unknown_is_paid_no_more_than_it_owed() {
+    let dir = books("open-unknown", &[]);
+    let a = bill(&dir, "Acme", "2026-03-01", "40.00");
+    let b = bill(&dir, "Beta", "2026-03-01", "30.00");
+    ok(&dir, &["post", "--date", "2026-03-05", "--desc", "Both", "--tag", &format!("pays={a}"), "--tag", &format!("pays={b}"), "Liabilities:Payable=20.00", "Assets:Bank"]);
+    let o = pay(&dir, "settles", &a, "2026-03-06", "1000.00");
+    assert!(!o.status.success() && err(&o).contains("owed 40.00 EUR in all"), "{}", err(&o));
+}
+
+#[test]
+fn a_part_that_pays_all_that_is_open_is_a_settling() {
+    let dir = books("pays-all", &[]);
+    let b = bill(&dir, "Acme", "2026-03-01", "40.00");
+    let o = pay(&dir, "pays", &b, "2026-03-06", "40.00");
+    assert!(!o.status.success() && err(&o).contains("tag it settles: instead"), "{}", err(&o));
+}
+
+#[test]
+fn an_undone_upload_is_put_back() {
+    let dir = books("undo-undo-upload", &[]);
+    let (old, found) = lost(&dir);
+    assert!(pay(&dir, "pays", &old, "2026-03-05", "4.00").status.success());
+    ok(&dir, &["file", "--for", &key(&dir, "desc:^Lost$"), &found]);
+    let upload = log_len(&dir);
+    ok(&dir, &["undo", &upload.to_string()]);
+    ok(&dir, &["undo", &(upload + 1).to_string()]);
+    assert!(!read(&dir, "journal/2026.journal").contains(&old));
+    clean(&dir);
+}
+
+#[test]
+fn an_invoice_is_not_paid_before_its_date() {
+    let dir = books("invoice-early", &[]);
+    invoice(&dir, "2026-0001", "2026-03-10", "110.00");
+    refused(&dir, &["settle", "2026-0001", "--date", "2026-03-01"], "before it was dated");
+}
+
+#[test]
+fn a_statement_is_recorded_again_only_asserted() {
+    let dir = books("record-unasserted", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "In", "Assets:Bank=5.00", "Income:Sales"]);
+    ok(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Assets:Bank=4.00", "Income:Sales"]);
+    ok(&dir, &["post", "--date", "2026-03-03", "--desc", "Most", "Assets:Bank=2.00", "Income:Sales"]);
+    ok(&dir, &["clear", &format!("{}:Assets:Bank", key(&dir, "desc:^In$"))]);
+    ok(&dir, &["reconcile", "--account", "Assets:Bank", "--date", "2026-03-31", "--balance", "5", "--record"]);
+    ok(&dir, &["clear", &format!("{}:Assets:Bank", key(&dir, "desc:^More$"))]);
+    // Most still outstanding: a second note is refused.
+    refused(&dir, &["reconcile", "--account", "Assets:Bank", "--date", "2026-03-31", "--balance", "9", "--record"], "recorded already, at 5.00 EUR");
+}
+
+#[test]
+fn the_browser_clears_only_what_the_page_offered() {
+    let dir = books("clear-offered", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "In", "Assets:Bank=5.00", "Income:Sales"]);
+    let k = format!("{}:Assets:Bank", key(&dir, "desc:^In$"));
+    let s = serve(&dir);
+    for (commodity, balance, action, says) in [("GBP", "", "clear", "not declared"), ("EUR", "abc", "clear", "is not a number"),
+                                               ("EUR", "", "zap", "neither clear nor record")] {
+        let (_, _, page) = http(&s, "POST", "/reconcile", &[("token", &format!("t-{commodity}-{action}-{balance}")), ("account", "Assets:Bank"),
+            ("commodity", commodity), ("date", "2026-03-31"), ("balance", balance), ("action", action), ("key", &k)]);
+        assert!(page.contains(says), "{commodity} {balance} {action}: {page}");
+    }
+    assert!(!read(&dir, "journal/2026.journal").contains("* Assets:Bank"));
+}
+
+#[test]
+fn options_and_the_company_take_no_control_character() {
+    let dir = books("ctrl-cli", &[]);
+    refused(&dir, &["company", "--name", "A\u{1}B"], "control character");
+    refused(&dir, &["payment-options", "add", "x", "--iban", "CH9300762011623852957", "--label", "a\u{1}b"], "control character");
+    refused(&dir, &["payment-options", "add", "y", "--kind", "cash", "--detail", "a\tb"], "control character");
+}
+
+#[test]
+fn money_paid_by_an_option_arrives_in_an_asset() {
+    let dir = books("option-account", &[]);
+    refused(&dir, &["payment-options", "add", "x", "--iban", "CH9300762011623852957", "--account", "Expenses:General"], "not an account money arrives in");
+}
+
+#[test]
+fn a_cash_option_says_where_and_when() {
+    let dir = books("cash-lines", &[]);
+    refused(&dir, &["payment-options", "add", "till", "--kind", "cash"], "lines saying where and when");
+}
+
+#[test]
+fn an_invoice_line_says_what_it_is_for() {
+    invoice_refused("line-blank", &["--item", "1|100|"], "says nothing of what it is for");
+}
+
+#[test]
+fn an_invoice_of_nought_is_refused_as_such() {
+    invoice_refused("net-nought", &["--item", "1|100|x", "--item=-1|100|y"], "comes to more than nought");
+}
+
+#[test]
+fn a_credit_note_of_an_invoice_paid_on_the_spot_is_negative() {
+    let dir = books("spot-credit", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Customer | Invoice 2026-0001", "--tag", "invoice=2026-0001", "Assets:Bank=110.00", "Income:Sales=-110.00"]);
+    ok(&dir, &["post", "--date", "2026-03-02", "--desc", "Customer | Credit note 2026-0002", "--tag", "invoice=2026-0002", "--tag", "credits=2026-0001",
+               "Assets:Bank=-110.00", "Income:Sales=110.00"]);
+    let v: serde_json::Value = serde_json::from_str(&ok(&dir, &["invoices", "--json"])).unwrap();
+    let note = v.as_array().unwrap().iter().find(|i| i["number"] == "2026-0002").unwrap();
+    assert_eq!(note["total"].as_str(), Some("-110.00 EUR"), "{v}");
+}
+
+#[test]
+fn vat_accounts_are_of_their_kind() {
+    let base = std::env::temp_dir().join(format!("abo-reg-vatacct-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    refused(&base, &["init", "A", "--currency", "EUR", "--vat", "effective", "--vat-input", "Liabilities:X", "--git-name", "t", "--git-email", "t@x.invalid"], "not an Assets account");
+    refused(&base, &["init", "B", "--currency", "EUR", "--vat", "flat", "--flat-rate", "5", "--flat-account", "Assets:Bank", "--git-name", "t", "--git-email", "t@x.invalid"], "not a Liabilities account");
+}
+
+// ---- the fixes of 2026-10-01 that went without a test at first ----
+
+#[test]
+fn the_browser_clears_nothing_in_another_commodity() {
+    let dir = books("clear-other-commodity", &[]);
+    std::fs::write(dir.join("journal/accounts.journal"), read(&dir, "journal/accounts.journal") + "commodity 1000.00 USD\n").unwrap();
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "In", "Assets:Bank=5.00", "Income:Sales"]);
+    let k = format!("{}:Assets:Bank", key(&dir, "desc:^In$"));
+    let s = serve(&dir);
+    let (_, _, page) = http(&s, "POST", "/reconcile", &[("token", "usd"), ("account", "Assets:Bank"), ("commodity", "USD"),
+        ("date", "2026-03-31"), ("balance", ""), ("action", "clear"), ("key", &k)]);
+    assert!(page.contains("is not outstanding in Assets:Bank in USD"), "{page}");
+    assert!(!read(&dir, "journal/2026.journal").contains("* Assets:Bank"));
+}
+
+#[test]
+fn an_undo_does_not_leave_a_bill_paid_and_not_booked() {
+    let dir = books("undo-paid-unbooked", &[]);
+    let b = bill(&dir, "Acme", "2026-03-01", "110.00");
+    let booked = log_len(&dir);
+    // In another year's file, so that the lines of the two never meet.
+    assert!(pay(&dir, "pays", &b, "2027-01-10", "10.00").status.success());
+    let paid = log_len(&dir);
+    ok(&dir, &["undo", &paid.to_string()]);
+    ok(&dir, &["undo", &booked.to_string()]);
+    // Putting the payment back would pay a bill no booking stands for.
+    refused(&dir, &["undo", &(paid + 1).to_string()], "and not booked");
+    clean(&dir);
+}
+
+#[test]
+fn the_browser_takes_no_payment_before_the_invoice() {
+    let dir = books("pay-page-early", &[]);
+    invoice(&dir, "2026-0001", "2026-03-10", "110.00");
+    let s = serve(&dir);
+    let (_, _, page) = http(&s, "POST", "/invoices/pay", &[("token", "early"), ("n", "2026-0001"), ("inv-2026-0001", "settles"), ("date", "2026-03-01"),
+        ("amount", "110.00"), ("commodity", "EUR"), ("into", "Assets:Bank"), ("description", "Customer pays")]);
+    assert!(page.contains("before it was dated"), "{page}");
+    assert!(!read(&dir, "journal/2026.journal").contains("settles:"));
+}
+
+#[test]
+fn the_log_shows_every_line_when_asked() {
+    let dir = books("log-all", &[]);
+    // Lines that made no commit: enough of them, and quick to write.
+    let line = r#"{"at":"2026-03-01T00:00:00+00:00","who":"t","argv":["post"],"what":"x","ok":{}}"#;
+    let extra: String = (0..60).map(|_| format!("{line}\n")).collect();
+    std::fs::write(dir.join(".abo/log.jsonl"), read(&dir, ".abo/log.jsonl") + &extra).unwrap();
+    let s = serve(&dir);
+    let (_, _, page) = http(&s, "GET", "/log", &[]);
+    assert!(page.contains("href=\"/log?all\"") && !page.contains("action=\"/undo/1\""), "{page}");
+    let (_, _, page) = http(&s, "GET", "/log?all", &[]);
+    assert!(page.contains("action=\"/undo/1\""), "{page}");
+}
+
+#[test]
+fn the_demo_books_take_commits_from_a_terminal() {
+    let base = std::env::temp_dir().join(format!("abo-reg-demo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let home = base.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    // No git identity anywhere but what the demo sets itself.
+    let child = Command::new(env!("CARGO_BIN_EXE_abo")).args(["demo", "--port", &port.to_string()])
+        .env("TMPDIR", &base).env("HOME", &home).env("XDG_CONFIG_HOME", &home)
+        .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let _s = Server { child, port };
+    let start = Instant::now();
+    while TcpStream::connect(("127.0.0.1", port)).is_err() {
+        assert!(start.elapsed() < Duration::from_secs(60), "abo demo did not start");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let o = Command::new(env!("CARGO_BIN_EXE_abo")).args(["post", "--date", "2026-09-30", "--desc", "T", "Expenses:General=1.00", "Assets:Bank"])
+        .current_dir(base.join("abo-demo")).env("HOME", &home).env("XDG_CONFIG_HOME", &home).env("GIT_CONFIG_NOSYSTEM", "1")
+        .stdin(Stdio::null()).output().unwrap();
+    assert!(o.status.success(), "{}", err(&o));
+}
+
+#[test]
+fn serve_takes_no_plain_file() {
+    let dir = books("serve-file", &[]);
+    refused(dir.parent().unwrap(), &["serve", "--dir", "test-ltd/abo.toml"], "is not a directory");
+}
+
+#[test]
+fn an_invoice_without_vat_registration_logs_no_rate() {
+    if Command::new("typst").arg("--version").output().is_err() {
+        return;
+    }
+    let dir = books("no-vat-log", &["--vat", "none"]);
+    ok(&dir, &["invoice", "--to", "C", "--item", "1|10|x", "--date", "2026-03-01"]);
+    let last = read(&dir, ".abo/log.jsonl").lines().last().unwrap_or_default().to_string();
+    assert!(last.contains("\"invoice\"") && !last.contains("--vat-rate"), "{last}");
+}
+
+/// Commit what a person changed by hand in the books.
+fn by_hand(dir: &Path, msg: &str) {
+    let o = Command::new("git").args(["commit", "-q", "-am", msg, "--author", "t <t@example.invalid>"]).current_dir(dir)
+        .env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@example.invalid").output().unwrap();
+    assert!(o.status.success(), "{}", err(&o));
+}
+
+#[test]
+fn an_undo_checks_an_entry_it_puts_back_in_another_year() {
+    let dir = books("undo-other-year", &[]);
+    let accounts = read(&dir, "journal/accounts.journal");
+    std::fs::write(dir.join("journal/accounts.journal"), accounts.clone() + "account Expenses:Travel\n").unwrap();
+    by_hand(&dir, "Declare Expenses:Travel");
+    ok(&dir, &["post", "--date", "2027-01-10", "--desc", "Train", "Expenses:Travel=30.00", "Assets:Bank"]);
+    let posted = log_len(&dir);
+    // Its year's file goes with it, and its `include`.
+    ok(&dir, &["undo", &posted.to_string()]);
+    std::fs::write(dir.join("journal/accounts.journal"), accounts).unwrap();
+    by_hand(&dir, "Undeclare Expenses:Travel");
+    // Put back, it would post to an account no longer declared.
+    refused(&dir, &["undo", &(posted + 1).to_string()], "Expenses:Travel");
+    assert!(!dir.join("journal/2027.journal").exists());
+    clean(&dir);
 }

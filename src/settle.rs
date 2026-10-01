@@ -117,10 +117,13 @@ pub fn invoices(ctx: &Ctx) -> Result<Vec<Invoice>> {
         let on_receivable = |t: &Value| postings(t, &|p| p["paccount"] == receivable.as_str());
         let amounts = on_receivable(t)?;
         // An invoice paid on the spot books nothing to the receivable: its
-        // total is what it debits, the money received.
+        // total is what it debits, the money received; a credit note of
+        // one, what it credits, the money paid back.
         let shown = match amounts.is_empty() {
             true => postings(t, &|p| {
-                p["pamount"].as_array().into_iter().flatten().all(|a| journal::decimal(&a["aquantity"]).is_ok_and(|q| q.is_sign_positive()))
+                p["pamount"].as_array().into_iter().flatten().all(|a| {
+                    journal::decimal(&a["aquantity"]).is_ok_and(|q| !q.is_zero() && q.is_sign_positive() != credit_note)
+                })
             })?,
             false => amounts.clone(),
         };

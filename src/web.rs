@@ -603,7 +603,8 @@ async fn option_remove(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
 fn option_page(ctx: &Ctx, f: &Fields, problems: &Problems, refused: Option<&anyhow::Error>) -> Markup {
     let mut css = vec![];
     let fields = render(questions::OPTION, "", f, problems, &["skip"], &mut css);
-    let accounts = journal::declared_accounts(ctx).unwrap_or_default();
+    // Where money paid this way can arrive.
+    let accounts: Vec<String> = journal::declared_accounts(ctx).unwrap_or_default().into_iter().filter(|a| a.to_lowercase().starts_with("assets:")).collect();
     let was = f.get("was").cloned().unwrap_or_default();
     html! {
         h1 { @if was.is_empty() { "Add a payment option" } @else { "Payment option " code { (was) } } }
@@ -1644,13 +1645,21 @@ async fn reconcile_act(
                 let a = reconcile::record(&ctx, &r, balance)?;
                 info!(commit = %a.commit, %account, %date, "reconciled");
             }
-            _ => {
-                if let Some(k) = keys.iter().find(|k| !k.ends_with(&format!(":{account}"))) {
-                    bail!("{k} is not a posting to {account}");
+            Some("clear") => {
+                // As the page offered them: the account, commodity and date
+                // checked as Show checks them, and only what is outstanding there.
+                let balance = match f.get("balance").map_or("", |s| s.trim()) {
+                    "" => None,
+                    b => Some(rust_decimal::Decimal::from_str_exact(b).with_context(|| format!("the balance {b:?} is not a number"))?),
+                };
+                let r = reconcile::status(&ctx, &account, &commodity, &date, balance)?;
+                if let Some(k) = keys.iter().find(|k| !r.outstanding.iter().any(|i| &i.key == *k)) {
+                    bail!("{k} is not outstanding in {account} in {commodity} by {date}");
                 }
                 let c = reconcile::clear(&ctx, &keys)?;
                 info!(commit = %c.commit, marked = c.marked.len(), "cleared");
             }
+            _ => bail!("nothing to do: neither clear nor record"),
         }
         let balance = f.get("balance").map_or("", |s| s.trim());
         Ok(done(&ctx, &format!(

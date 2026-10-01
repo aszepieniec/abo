@@ -278,10 +278,10 @@ pub static INIT: &[Q] = &[
                 label: "VAT method",
                 noun: "a VAT method",
                 options: &[
-                    ("effective", &[account("input", "Input VAT account", "Assets:VAT:Input"), account("output", "Output VAT account", "Liabilities:VAT:Output")]),
+                    ("effective", &[account("input", "Input VAT account", "Assets:VAT:Input", asset), account("output", "Output VAT account", "Liabilities:VAT:Output", liability)]),
                     // A flat percentage of gross turnover with no input
                     // deduction. Sold under different names in different places.
-                    ("flat", &[percent("flat_rate", "Flat rate remitted on gross turnover, percent", Offer::None), account("flat_account", "VAT account", "Liabilities:VAT")]),
+                    ("flat", &[percent("flat_rate", "Flat rate remitted on gross turnover, percent", Offer::None), account("flat_account", "VAT account", "Liabilities:VAT", liability)]),
                     ("none", &[]),
                 ],
                 offer: "none",
@@ -395,8 +395,17 @@ pub static OPTION: &[Q] = &[
     },
 ];
 
-const fn account(key: &'static str, label: &'static str, offer: &'static str) -> Q {
-    Q::Text { key, label, hint: "", offer: Offer::Value(offer), check: Check::By(account_check) }
+const fn account(key: &'static str, label: &'static str, offer: &'static str, check: fn(&str, &Env) -> Result<String, String>) -> Q {
+    Q::Text { key, label, hint: "", offer: Offer::Value(offer), check: Check::By(check) }
+}
+
+/// VAT paid on purchases is owed back: an asset. VAT charged is owed on.
+fn asset(s: &str, env: &Env) -> Result<String, String> {
+    account_check(s, env).and_then(|a| if a.to_lowercase().starts_with("assets:") { Ok(a) } else { Err(format!("{a} is not an Assets account, as VAT to reclaim is.")) })
+}
+
+fn liability(s: &str, env: &Env) -> Result<String, String> {
+    account_check(s, env).and_then(|a| if a.to_lowercase().starts_with("liabilities:") { Ok(a) } else { Err(format!("{a} is not a Liabilities account, as VAT owed is.")) })
 }
 
 const fn percent(key: &'static str, label: &'static str, offer: Offer) -> Q {

@@ -353,8 +353,8 @@ enum Cmd {
         /// The closing balance printed on the statement.
         #[arg(long)]
         balance: Option<Decimal>,
-        /// Book the reconciled balance as an assertion. Refuses unless the
-        /// difference is zero.
+        /// Record the statement: as a balance assertion when nothing is
+        /// outstanding, else as a note. Refuses unless the difference is zero.
         #[arg(long)]
         record: bool,
     },
@@ -617,7 +617,7 @@ async fn run(cli: Cli) -> Result<()> {
             let ctx = Ctx::open(&here)?;
             let entry = Entry { date, description, tags: tag_pairs(&tags)?, postings: parse_postings(&ctx, &postings)? };
             let r = journal::post(&ctx, &entry)?;
-            emit(cli.json, &r, || format!("{}\nCommitted {} to {}.", entry.render(), r.commit, r.file))
+            emit(cli.json, &r, || format!("{}\nCommitted {} to {}.", r.entry.render(), r.commit, r.file))
         }
         Cmd::File { date, issuer, entry, src } => {
             let ctx = Ctx::open(&here)?;
@@ -724,6 +724,7 @@ async fn run(cli: Cli) -> Result<()> {
                     } else {
                         "as a note without an assertion, since items are still outstanding"
                     };
+                    let b = r.statement.as_deref().unwrap_or_default();
                     format!("Recorded {b} {commodity} in {account} at {date} {how}.\nCommitted {}.", a.commit)
                 });
             }

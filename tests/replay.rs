@@ -77,7 +77,7 @@ fn replaying_the_log_makes_the_same_books() {
         run(&["invoice", "--to", "Customer Ltd\n2 Other Street", "--item", "10|150.00|Consulting", "--date", "2026-03-31"]);
     }
 
-    run(&["payment-options", "add", "cash", "--kind", "cash", "--label", "Cash"]);
+    run(&["payment-options", "add", "cash", "--kind", "cash", "--label", "Cash", "--detail", "At the till"]);
     run(&["payment-options", "edit", "cash", "--detail", "At our office"]);
     run(&["payment-options", "remove", "bank"]);
 

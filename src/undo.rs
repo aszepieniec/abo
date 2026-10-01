@@ -140,7 +140,9 @@ fn plain(ctx: &Ctx, line: &Value, reverted: &[String]) -> Result<String> {
     }
     // A bill or an invoice that other entries name stays while they do. A
     // document filed for a booking moves every tag naming it along with it.
-    let added = if op(line) == "file" { String::new() } else { ctx.git(&["show", "--format=", "-U0", h, "--", "journal/"])? };
+    // Nor an undo: what it took out comes back together, payments with
+    // what they pay, and `bill::consistent` checks the result.
+    let added = if op(line) == "file" || op(line) == "undo" { String::new() } else { ctx.git(&["show", "--format=", "-U0", h, "--", "journal/"])? };
     for l in added.lines().filter_map(|l| l.strip_prefix('+')) {
         let Some((k, v)) = l.trim().strip_prefix(';').and_then(|t| t.split_once(':')) else { continue };
         let (k, v) = (k.trim(), v.trim());
@@ -333,7 +335,9 @@ fn revert_commit(ctx: &Ctx, hash: &str) -> Result<String> {
         tracing::warn!(%e, commit = %full, "undo does not apply");
         bail!("{}", since(ctx, full, &path, &attr));
     }
-    let checked = crate::journal::hledger(ctx, &["check", "accounts", "balanced", "ordereddates"]).and_then(|_| {
+    // The year files and their `include`s first: what the checks read is
+    // the books as they will be committed.
+    let checked = years(ctx).and_then(|_| crate::journal::hledger(ctx, &["check", "accounts", "balanced", "ordereddates"])).and_then(|_| {
         if closed(ctx)? != before {
             bail!("undoing it would change a closed period");
         }
@@ -343,7 +347,7 @@ fn revert_commit(ctx: &Ctx, hash: &str) -> Result<String> {
     // the reversal or `years` staged, as HEAD has it. Not the patch applied
     // forwards again: with no context it goes back at the line numbers it
     // had when made, which entries booked since have moved.
-    let committed = checked.and_then(|_| years(ctx)).and_then(|_| {
+    let committed = checked.and_then(|_| {
         ctx.git(&["commit", "-q", "-m", &format!("Revert \"{}\"\n\nThis reverts commit {full}.", subject.trim())])
     });
     if let Err(e) = committed {

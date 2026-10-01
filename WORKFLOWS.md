@@ -117,7 +117,7 @@ IBANs, further lines such as account and routing numbers. A **crypto** option
 has a network and a wallet address, both needed. A **cash** option has lines
 saying where and when. Each also has an id for commands (`postfinance`:
 lower-case letters, digits, dashes), a name for invoices, further lines, and
-the declared account the money arrives in (by kind `Assets:Bank`,
+the declared account the money arrives in, an asset (by kind `Assets:Bank`,
 `Assets:Cash` or `Assets:Crypto`).
 `abo payment-options` (or `... list`) shows them in the order invoices print
 them. `... add` puts up a list: bank, cash, crypto or skip, chosen as the VAT
@@ -129,8 +129,9 @@ takes the parts as given. `... edit <id>` asks again, each answer on the line
 as it stands, or changes just the parts given as flags (and `--id`); another
 kind drops the old kind's fields. `... remove <id>` removes one. Wherever an
 id is asked for, its start will do when it names one option. A taken id, a
-bad IBAN or BIC, a field of another kind, too little to pay by, an undeclared
-account and an edit that changes nothing are refused; asked on the terminal,
+bad IBAN or BIC, a field of another kind, too little to pay by (a cash
+option without its lines among it), a control character, an undeclared
+account or one that is no asset, and an edit that changes nothing are refused; asked on the terminal,
 the question comes again. Each change is a commit to `abo.toml`, comments
 kept, logged and undoable like any other. The company page lists them, each
 with Edit and Remove, and a button to add one: the same questions as a form,
@@ -179,7 +180,8 @@ Browser: **Bills** lists every filed document, and every one a booking names
 that the books lack, newest first. Each shows its amount, what its booking
 credits (`?` where bookings disagree), and what is open: what it credits to
 a liability less what payments naming it alone took off, blank once
-settled or when it credited no liability. Bills not booked or still owed
+settled or when it credited no liability; `?` where a payment names it
+with other bills, which abo does not split. Bills not booked or still owed
 come first, and what is open is summed in each commodity. Pay books a
 payment of it, Upload files a document the books lack, Delete undoes the
 filing of one not booked. The bill's page lists every entry that names it.
@@ -188,8 +190,10 @@ Reverting a bill's booking cancels the bill: the reversal is tagged
 payment is reverted. Reverting a payment or a cancelling takes it back: the
 reversal is tagged `takes-back: settles <what>` (or `pays`, `cancels`), for
 bills and invoices alike, and reverting that puts it back. A bill payment
-pays off the bill's liability, no more than is open, and the one that
-settles it all that is open; it is dated no earlier than the bill. A bill is
+pays off the bill's liability, no more than is open (where that is `?`, no
+more than the bill credited), and the one that settles it all that is open
+— a part that would leave nothing open is refused, as it should be tagged
+`settles:`; it is dated no earlier than the bill. A bill is
 booked once: a second booking naming it is refused, naming the first. A
 cancelling moves the opposite of the booking. Undo refuses an entry reversed since, and a bill or
 invoice that other entries still name. Filing a missing document for a
@@ -287,8 +291,10 @@ settled on its own date, needing no tag.
 
 ### C3. Invoice in another commodity — Supported
 The commodity field (`--currency`); its places are those it is declared with,
-`--decimals` to say otherwise.
-**Done when** the entry and the PDF are in that commodity with its places.
+`--decimals` to say fewer: the invoice is rounded and printed to those, and
+the entry written, as every entry is, to the places declared.
+**Done when** the entry and the PDF are in that commodity, the PDF to the
+places asked for.
 
 ---
 
@@ -447,37 +453,32 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 ## Last verified: 2026-10-01
 
-Four fresh agents, each with its own copy of the demo books and its own
-server, typst installed, working from this file and not the source: setting
-up (A, F6); booking, reconciling and reports (B1–B3, D, E); invoicing and
-corrections (C1, C3, F5, F7, G1); bills, settling, the Log and undo (B4–B6,
-C2, F1–F4). What they found was fixed the same day, with a test for each in
-`tests/regressions.rs`, and not yet verified again.
+Run twice that day, by four fresh agents each time, each with its own copy of
+the demo books and its own server, typst installed, working from this file
+and not the source: setting up (A, F6); booking, reconciling and reports
+(B1–B3, D, E); invoicing and corrections (C1, C3, F5, F7, G1); bills,
+settling, the Log and undo (B4–B6, C2, F1–F4). Every fault of the first run
+held fixed in the second. What the second found was fixed the same day, with
+a test for each in `tests/regressions.rs`, and not yet verified again.
 
-| Workflow | Result |
+| Workflow | Second run |
 |---|---|
-| A2, A3b, B1, B2, C2, D2, E1–E4, F7 | Verified |
-| A1 | Failed, fixed: with no git identity the first commit failed and left a half-made company behind; piped input that ran out was taken as blank answers to the rest; `--vat-input` was named `--input` in a refusal; 100 was refused as a rate; control characters were taken in answers |
-| A3 | Failed, fixed: in a data directory every page with a value in its path — an entry, an invoice, a statement, Undo — answered 500; `--dir` naming a file served it |
-| A4 | Failed, fixed: an edit whose input ran out cleared fields and committed; comments in `[[payment]]` tables were dropped; another kind kept the old kind's account and name |
-| B3 | Failed, fixed: in the browser, a document booked already was refused without naming the entry that booked it |
-| B4 | Failed, fixed: undoing a payment's reversal after the bill was cancelled left it settled and cancelled; a `settles:` payment of less than was open was taken; a bill could be booked twice; a payment could be dated before the bill; a booking's page promised to cancel a bill a payment still names |
-| B5 | Failed, fixed: a direct POST took a payment into an income or liability account |
-| B6 | Failed, fixed: an entry that only settles an invoice could not be reverted |
-| C1, C3 | Failed, fixed: 0% was taken from a company not VAT registered; `--decimals` above the commodity's places was taken; a tag that is no number was taken as the last invoice for dating |
-| D1, F3 | Failed, fixed: a posting to a non-asset account, to another account than the form's, or in a closed period could be cleared, the last then not undone |
-| F1 | Failed, fixed: invoice PDFs showed as text in the Log; only the last 50 lines could be seen |
-| F2 | Failed, fixed: a refusal named a line undone since rather than the one in the way |
-| F4 | Failed, fixed: the filing of a cancelled bill's document advised undoing its booking, which was refused |
-| F5 | Failed, fixed: a credit note could be dated before its invoice |
-| F6 | Failed, fixed: an undo refused for a closed period left the journal changed and staged, out of date order, and every later booking refused |
-| G1 | Failed, fixed: content cut off at phone width, the Log's Undo among it; boxes now scroll sideways within themselves |
-| (in passing) | Fixed: an empty description and an entry of noughts were booked; amounts were written as typed, `10 EUR`, not `10.00 EUR`; a bad period showed hledger's raw error; a VAT box configured twice was printed twice; the demo books had no git identity for the CLI |
+| A1, A2, A3, B1–B3, B5, C1, C2, C3, E1–E4, F1, F3, F5, F6, F7, G1 | Verified |
+| A3b, A4 | Failed, fixed: `abo company` and `payment-options add` with flags took control characters; a cash option without lines was taken; money could arrive in an expense or income account. Also: init took VAT accounts of the wrong kind |
+| B4, F2 | Failed, fixed: an undo could leave a bill part paid and cancelled, or paid and not booked; a payment of a bill whose open amount is `?` could be any amount; a `pays:` of all that was open left a bill that could never be settled |
+| B6 | Failed, fixed: an invoice could be settled or paid before its own date |
+| D1, D2 | Failed, fixed: a statement recorded could be recorded again, unasserted, at another balance; the browser's clear took an undeclared or other commodity, a balance that is no number, and any action |
+| F4 | Failed, fixed: the undo of an undone Upload was refused, for the payment the upload had moved |
+| (found writing a test) | Fixed: an undo checked the books before putting back a year file's `include`, so an entry it put back in another year went unchecked — a payment of a bill no longer booked among them |
+| (in passing) | Fixed: an invoice line without a description; a nought total refused in the wrong words; a credit note of an invoice paid on the spot shown positive, its VAT as `-0`; `abo post` and recorded statements echoing amounts as typed; `reconcile --help` saying `--record` always asserts |
 
-Known, not fixed: error pages answer 200; at 0% a BTC invoice prints a VAT
-line where EUR does not; unit prices print as typed; the same IBAN may be
-added twice; and the Log offers Undo on a line that the bill check would then
-refuse.
+Known, not fixed: error pages answer 200, and a direct POST missing a field
+gets a bare 422; at 0% a BTC invoice prints a VAT line where EUR does not;
+unit prices print as typed, finer than the commodity if typed so; the same
+IBAN may be added twice; the Log offers Undo on a line that the bill check
+would then refuse; hledger reads `2026-13` as 2026, and abo with it; a
+typst error reaches the terminal with its box-drawing characters; a
+reversal, and the opening balance, can be reverted.
 
 Not yet done: users and logins (the rest of M5), and a web app manifest
 (M6, G1).

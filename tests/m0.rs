@@ -685,7 +685,7 @@ fn init_asks_again() {
     // A flag no question asks for is refused, not dropped.
     let o = abo(&base, &["init", "Flagged", "--currency", "EUR", "--vat", "none", "--sales-rate", "5"], "");
     assert!(!o.status.success() && err(&o).contains("--sales-rate does not apply"), "{}", err(&o));
-    let o = abo(&base, &["init", "Flagged", "--currency", "EUR", "--payment", "{ kind = \"cash\", iban = \"x\" }"], "");
+    let o = abo(&base, &["init", "Flagged", "--currency", "EUR", "--payment", "{ kind = \"cash\", details = \"Till\", iban = \"x\" }"], "");
     assert!(!o.status.success() && err(&o).contains("a cash option has no iban"), "{}", err(&o));
 
     let o = abo(&base, &["init", "Other"], "\n\n\nskip\n");
@@ -745,9 +745,9 @@ fn payment_options() {
 
     // An id's start will do; another kind drops the old kind's fields, and
     // its account, the old kind's own, becomes the new kind's.
-    let o = po(&["edit", "post", "--kind", "cash", "--id", "counter"]);
+    let o = po(&["edit", "post", "--kind", "cash", "--id", "counter", "--detail", "At the counter"]);
     assert!(o.status.success(), "edit failed: {}", err(&o));
-    assert!(list().starts_with("counter (cash): PostFinance -> Assets:Cash\ncash"), "{}", list());
+    assert!(list().starts_with("counter (cash): PostFinance -> Assets:Cash\n    At the counter\ncash"), "{}", list());
     let o = po(&["remove", "coun"]);
     assert!(o.status.success(), "remove failed: {}", err(&o));
     assert_eq!(list(), "cash (cash): Cash -> Assets:Cash\n    At our office\n");

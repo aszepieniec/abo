@@ -58,6 +58,12 @@ pub fn edit(ctx: &Ctx, c: Change) -> Result<CompanyReport> {
         if new.name.is_empty() {
             bail!("a name is needed");
         }
+        // As init refuses them: a line break only between address lines.
+        for (what, v) in [("name", &new.name), ("country", &new.country), ("tax number", &new.tax_id), ("address", &new.address)] {
+            if v.chars().any(|c| c.is_control() && !(c == '\n' && what == "address")) {
+                bail!("the {what} {v:?} holds a control character");
+            }
+        }
         if argv.len() == 1 {
             bail!("the company is like that already");
         }

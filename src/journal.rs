@@ -306,7 +306,7 @@ pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
             bail!("{what} {v} is named twice; a payment {} it or {} it, once", crate::settle::PAYS, crate::settle::SETTLES);
         }
         if what == "bill" {
-            let (liability, commodity, open) = crate::bill::check(ctx, k, v)?;
+            let (liability, commodity, open, owed) = crate::bill::check(ctx, k, v)?;
             let dated = v.rsplit('/').next().and_then(|n| n.get(..10)).unwrap_or_default();
             if e.date.as_str() < dated {
                 bail!("it pays the bill {v}, dated {dated}, before it was dated: {}", e.date);
@@ -318,12 +318,24 @@ pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
             if let Some(open) = open.filter(|o| paying.len() == 1 && off > *o) {
                 bail!("it pays {off} {commodity} off the bill {v}, but only {open} {commodity} is open");
             }
+            // What is open unknown, a payment of it alone is still no more
+            // than the bill owed.
+            if open.is_none() && paying.len() == 1 && off > owed {
+                bail!("it pays {off} {commodity} off the bill {v}, which owed {owed} {commodity} in all");
+            }
+            // A part that leaves nothing open settles it.
+            if open.is_some_and(|o| k == crate::settle::PAYS && paying.len() == 1 && off == o) {
+                bail!("it pays all that is open of the bill {v}; tag it {}: instead", crate::settle::SETTLES);
+            }
             // The payment that settles a bill leaves nothing of it owed.
             if let Some(open) = open.filter(|o| k == crate::settle::SETTLES && paying.len() == 1 && off < *o) {
                 bail!("it settles the bill {v} with {off} {commodity}, but {open} {commodity} is open; tag it {}: for a part", crate::settle::PAYS);
             }
         } else {
             crate::settle::check(ctx, k, v)?;
+            if let Some(i) = crate::settle::invoices(ctx)?.into_iter().find(|i| &i.number == v && e.date < i.date) {
+                bail!("it pays invoice {v}, dated {}, before it was dated: {}", i.date, e.date);
+            }
         }
     }
     let receivable = &ctx.cfg.invoice.receivable;

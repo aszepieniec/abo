@@ -302,26 +302,20 @@ fn assert_balance(ctx: &Ctx, r: &Reconciliation, balance: Decimal) -> Result<Add
     let assertion = asserts(r).then_some(balance);
     // A statement is recorded once — or once more, asserted, when what was
     // outstanding at the first recording has cleared since.
-    let statement = format!("{balance} {}", r.commodity);
+    let statement = format!("{} {}", r.statement.as_deref().unwrap_or_default(), r.commodity);
     let tagged = journal::hledger(ctx, &["print", &format!("acct:^{}$", r.account), &format!("tag:reconciled=^{}$", r.date), "-O", "json"])?;
     let recorded: Vec<serde_json::Value> = serde_json::from_str(&tagged)?;
-    // By value: 0 and 0.00 are one balance.
-    let same = |t: &&serde_json::Value| {
-        t["ttags"].as_array().into_iter().flatten().any(|g| {
-            let v = g[1].as_str().unwrap_or_default().split_once(' ');
-            g[0] == "statement" && v.is_some_and(|(q, c)| c == r.commodity && Decimal::from_str_exact(q).is_ok_and(|q| q == balance))
-        })
-    };
-    let asserted = |t: &&serde_json::Value| !t["tpostings"][0]["pbalanceassertion"].is_null();
-    if recorded.iter().filter(same).any(|t| asserted(&t) || assertion.is_none()) {
-        bail!("the statement of {} for {} is recorded already, at {statement}", r.date, r.account);
+    let asserted = |t: &serde_json::Value| !t["tpostings"][0]["pbalanceassertion"].is_null();
+    if let Some(t) = recorded.iter().find(|t| asserted(t) || assertion.is_none()) {
+        let at = t["ttags"].as_array().into_iter().flatten().find(|g| g[0] == "statement").and_then(|g| g[1].as_str()).unwrap_or_default();
+        bail!("the statement of {} for {} is recorded already, at {at}", r.date, r.account);
     }
     let entry = Entry {
         date: r.date.clone(),
         description: format!("Reconciled {} to statement", r.account),
         tags: vec![
             ("reconciled".to_string(), r.date.clone()),
-            ("statement".to_string(), format!("{balance} {}", r.commodity)),
+            ("statement".to_string(), statement),
         ],
         postings: vec![Posting {
             account: r.account.clone(),

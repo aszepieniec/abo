@@ -112,14 +112,21 @@ impl PaymentOption {
         if let Some((field, _)) = foreign.iter().find(|(_, v)| !v.is_empty()) {
             return Some(format!("a {kind} option has no {field}"));
         }
+        // Lines may break the bank's address and the further lines alone.
+        let ctrl = |v: &String, lines: bool| v.chars().any(|c| c.is_control() && !(lines && c == '\n'));
+        let one_line = [&self.id, &self.label, h, i, b, n, a, &self.account];
+        if let Some(v) = one_line.into_iter().find(|v| ctrl(v, false)).or_else(|| [k, &self.details].into_iter().find(|v| ctrl(v, true))) {
+            return Some(format!("{v:?} holds a control character"));
+        }
+        if !self.account.is_empty() && !self.account.to_lowercase().starts_with("assets:") {
+            return Some(format!("{} is not an account money arrives in; give an Assets account", self.account));
+        }
         match self.kind {
             Kind::Bank if i.is_empty() && self.details.is_empty() => {
                 Some("a bank option needs an IBAN, or details such as an account number".into())
             }
             Kind::Crypto if n.is_empty() || a.is_empty() => Some("a crypto option needs a network and an address".into()),
-            Kind::Cash if self.label.is_empty() && self.details.is_empty() => {
-                Some("a cash option needs a name or details for invoices to print".into())
-            }
+            Kind::Cash if self.details.is_empty() => Some("a cash option needs lines saying where and when".into()),
             _ => None,
         }
     }
