@@ -47,7 +47,7 @@ pub fn file(ctx: &Ctx, src: &str, bytes: &[u8], date: &str, issuer: &str) -> Res
 }
 
 fn file_it(ctx: &Ctx, bytes: &[u8], date: &str, issuer: &str) -> Result<FileReport> {
-    if issuer.chars().any(char::is_control) {
+    if issuer.chars().any(crate::repo::hidden) {
         bail!("the issuer {issuer:?} holds a control character, such as a line break");
     }
     // A bill dated in a closed period could never be booked: refused before
@@ -95,6 +95,12 @@ pub fn refile(ctx: &Ctx, key: &str, src: &str, bytes: &[u8]) -> Result<FileRepor
 
 fn refile_it(ctx: &Ctx, key: &str, bytes: &[u8]) -> Result<FileReport> {
     let b = journal::booking(ctx, key)?;
+    // It rewrites the booking's tags, and those of every entry naming it.
+    if let Some(closed) = &ctx.cfg.company.closed_through {
+        if b.date.as_str() <= closed.as_str() {
+            bail!("{} falls in a closed period (closed through {closed}); its tags stay as they are", b.date);
+        }
+    }
     let tag = |k: &str| b.tags.iter().find(|(t, _)| t == k).map(|(_, v)| v.clone());
     let old = match tag("invoice") {
         Some(n) => crate::invoice::pdf_path(&n).with_context(|| format!("{n:?} is not an invoice number"))?,
@@ -430,29 +436,30 @@ pub fn unbooked(ctx: &Ctx, file: &str) -> Result<()> {
     Ok(())
 }
 
-/// What the books say of every bill holds together: none is settled or
-/// cancelled twice over, nor paid more than it owes. For an undo, which
-/// takes entries out without the checks that put them in.
-pub fn consistent(ctx: &Ctx) -> Result<()> {
+/// Where what the books say of a bill does not hold together: one settled
+/// or cancelled twice over, cancelled yet paid, paid yet not booked, or
+/// paid more than it owes. For an undo, which takes entries out without the
+/// checks that put them in.
+pub fn problems(ctx: &Ctx) -> Result<Vec<String>> {
+    let mut out = vec![];
     for b in bills(ctx)? {
-        // Settled or cancelled once; cancelled, paid by nothing that stands.
         let ends: Vec<_> = b.standing.iter().filter(|r| r.tag == SETTLES || r.tag == CANCELS).collect();
         if let [a, z, ..] = &ends[..] {
-            bail!("{} {} and {}", b.file, a.label(), z.label());
+            out.push(format!("{} {} and {}", b.file, a.label(), z.label()));
         }
         if let (true, Some(p)) = (b.cancelled(), b.standing.iter().find(|r| r.tag != CANCELS)) {
-            bail!("{} {} and cancelled", b.file, p.label());
+            out.push(format!("{} {} and cancelled", b.file, p.label()));
         }
         if let (false, Some(p)) = (b.booked(), b.standing.first()) {
-            bail!("{} {} and not booked", b.file, p.label());
+            out.push(format!("{} {} and not booked", b.file, p.label()));
         }
         if let Figure::Is(q, c) = &b.open {
             if q.is_sign_negative() {
-                bail!("{} paid {} {c} more than it owes", b.file, -q);
+                out.push(format!("{} paid {} {c} more than it owes", b.file, -q));
             }
         }
     }
-    Ok(())
+    Ok(out)
 }
 
 /// A `cancels:` tag may name only a bill that is booked, not cancelled, and

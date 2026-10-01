@@ -49,8 +49,10 @@ pub fn reverted(ctx: &Ctx) -> Vec<String> {
         .split('\0')
         .filter_map(|c| {
             let c = c.trim();
-            let (h, body) = c.split_once('\n')?;
-            let target = body.split("This reverts commit ").nth(1)?.get(..40)?;
+            // A line of the body, below the subject, as git writes it: an
+            // entry's description is a subject, and never reaches a body.
+            let (h, message) = c.split_once('\n')?;
+            let target = message.lines().skip(1).find_map(|l| l.strip_prefix("This reverts commit "))?.get(..40)?;
             Some((h.to_string(), target.to_string()))
         })
         .collect();
@@ -141,11 +143,21 @@ fn plain(ctx: &Ctx, line: &Value, reverted: &[String]) -> Result<String> {
     // A bill or an invoice that other entries name stays while they do. A
     // document filed for a booking moves every tag naming it along with it.
     // Nor an undo: what it took out comes back together, payments with
-    // what they pay, and `bill::consistent` checks the result.
+    // what they pay, and `bill::problems` checks the result.
     let added = if op(line) == "file" || op(line) == "undo" { String::new() } else { ctx.git(&["show", "--format=", "-U0", h, "--", "journal/"])? };
     for l in added.lines().filter_map(|l| l.strip_prefix('+')) {
         let Some((k, v)) = l.trim().strip_prefix(';').and_then(|t| t.split_once(':')) else { continue };
         let (k, v) = (k.trim(), v.trim());
+        // Numbers run without a gap: only the last numbered may go.
+        if k == "invoice" {
+            if let Some((year, _)) = v.split_once('-') {
+                let next = crate::invoice::next_number(ctx, year)?;
+                let last = format!("{year}-{:04}", next[year.len() + 1..].parse::<u32>().unwrap_or(1).saturating_sub(1));
+                if last != v {
+                    bail!("invoice {v} is not the last numbered, {last} is: undone, it would leave a gap in the numbers. Correct it with a credit note");
+                }
+            }
+        }
         if k == "bill" || k == "invoice" {
             let named = crate::journal::hledger(ctx, &["print", &format!("tag:^(pays|settles|cancels|credits|takes-back)$=(^| ){}$", regex_quote(v))])?;
             if let Some(first) = named.lines().next() {
@@ -317,6 +329,11 @@ fn since(ctx: &Ctx, full: &str, patch: &str, attr: &str) -> String {
 /// need theirs. The message is git's own revert message, which is how the
 /// Log recognises an undone commit.
 fn revert_commit(ctx: &Ctx, hash: &str) -> Result<String> {
+    // What it stages is committed whole, or put back from HEAD whole: no
+    // place for a change of someone else's.
+    if ctx.git(&["diff", "--cached", "--quiet"]).is_err() {
+        bail!("something is staged in the books that no abo command made; commit or unstage it first");
+    }
     let full = ctx.git(&["rev-parse", "--verify", &format!("{hash}^{{commit}}")])?;
     let full = full.trim();
     let subject = ctx.git(&["log", "-1", "--format=%s", full])?;
@@ -328,6 +345,9 @@ fn revert_commit(ctx: &Ctx, hash: &str) -> Result<String> {
         Ok(Some(crate::journal::hledger(ctx, &["print", "-e", &end.to_string()])?))
     };
     let before = closed(ctx)?;
+    // What already did not hold together before it, a hand edit's say, is
+    // not this undo's to answer for.
+    let was = crate::bill::problems(ctx)?;
 
     let (file, attr) = reversal(ctx, full, "undo")?;
     let path = file.to_string_lossy();
@@ -341,7 +361,10 @@ fn revert_commit(ctx: &Ctx, hash: &str) -> Result<String> {
         if closed(ctx)? != before {
             bail!("undoing it would change a closed period");
         }
-        crate::bill::consistent(ctx).map_err(|e| anyhow::anyhow!("undoing it would leave {e}"))
+        match crate::bill::problems(ctx)?.into_iter().find(|p| !was.contains(p)) {
+            Some(p) => bail!("undoing it would leave {p}"),
+            None => Ok(()),
+        }
     });
     // Put back exactly if it is refused, or cannot be committed: every path
     // the reversal or `years` staged, as HEAD has it. Not the patch applied

@@ -135,7 +135,38 @@ pub fn key_of(t: &Value) -> Result<String> {
         .context("no file name")?
         .to_string_lossy();
     let date = t["tdate"].as_str().context("no date")?;
-    Ok(format!("{name}:{line}:{date}"))
+    Ok(format!("{name}:{line}:{date}~{}", fingerprint(t)))
+}
+
+/// What tells an entry from another of its day at the same place: its
+/// description, tags, accounts and amounts, not whether they are cleared.
+/// A key made before its entry's tags changed — settled by it, its
+/// document filed — is stale, and refused: safer than reaching a twin. A key
+/// carries it after its date, `2026.journal:12:2026-03-05~1a2b3c4d`, so that
+/// one made before an entry was booked above it reaches no other entry.
+pub fn fingerprint(t: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(t["tdescription"].as_str().unwrap_or_default());
+    for g in t["ttags"].as_array().into_iter().flatten() {
+        h.update(format!("\n; {}: {}", g[0].as_str().unwrap_or_default(), g[1].as_str().unwrap_or_default()));
+    }
+    for p in t["tpostings"].as_array().into_iter().flatten() {
+        h.update(format!("\n{}", p["paccount"].as_str().unwrap_or_default()));
+        for a in p["pamount"].as_array().into_iter().flatten() {
+            let q = journal::decimal(&a["aquantity"]).map(|q| q.normalize().to_string()).unwrap_or_default();
+            h.update(format!(" {q} {}", a["acommodity"].as_str().unwrap_or_default()));
+        }
+    }
+    h.finalize()[..4].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A key's date and, when it carries one, its fingerprint.
+pub fn date_and_print(d: &str) -> (&str, Option<&str>) {
+    match d.split_once('~') {
+        Some((d, f)) => (d, Some(f)),
+        None => (d, None),
+    }
 }
 
 #[derive(Serialize)]
@@ -158,6 +189,8 @@ fn mark(ctx: &Ctx, keys: &[String]) -> Result<ClearReport> {
     }
     let mut files: std::collections::BTreeMap<std::path::PathBuf, Vec<String>> = Default::default();
     let mut marked = Vec::new();
+    // Read once, and only for keys that carry a fingerprint.
+    let mut txns: Option<Vec<Value>> = None;
 
     for key in keys {
         // The account is last because it has colons of its own.
@@ -190,6 +223,20 @@ fn mark(ctx: &Ctx, keys: &[String]) -> Result<ClearReport> {
             });
         let head = line.checked_sub(1).filter(|&i| i < text.len()).with_context(|| format!("{key}: no such line"))?;
         let date = text[head].split(' ').next().unwrap_or_default();
+        let (expected, print) = date_and_print(expected);
+        if let Some(print) = print {
+            if txns.is_none() {
+                txns = Some(serde_json::from_str(&journal::hledger(ctx, &["print", "-O", "json"])?)?);
+            }
+            let here = txns.iter().flatten().find(|t| {
+                let pos = &t["tsourcepos"][0];
+                pos["sourceLine"].as_u64() == Some(line as u64)
+                    && std::path::Path::new(pos["sourceName"].as_str().unwrap_or_default()).file_name().is_some_and(|f| f == name)
+            });
+            if here.is_none_or(|t| fingerprint(t) != print) {
+                bail!("{key} is stale: the entry at line {line} is another one now. Run reconcile again for fresh keys.");
+            }
+        }
         if date != expected {
             bail!(
                 "{key} is stale: line {line} is now {date:?}, not {expected:?}. \

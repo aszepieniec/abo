@@ -176,6 +176,9 @@ fn check_syntax(field: &str, value: &str, forbidden: &str) -> Result<()> {
     if let Some(c) = value.chars().find(|c| c.is_control() || forbidden.contains(*c)) {
         bail!("{field} contains {c:?}, which is journal syntax: {value:?}");
     }
+    if let Some(c) = value.chars().find(|c| crate::repo::hidden(*c)) {
+        bail!("{field} contains {c:?}, a character that hides or turns text: {value:?}");
+    }
     if value.chars().count() > 200 {
         bail!("{field} is longer than 200 characters");
     }
@@ -398,6 +401,11 @@ pub fn post(ctx: &Ctx, e: &Entry) -> Result<AddReport> {
 
 /// Validate, prove it against hledger, append, commit.
 pub fn add(ctx: &Ctx, e: &Entry) -> Result<AddReport> {
+    add_with(ctx, e, &[])
+}
+
+/// `add`, committing `also` with the entry: an invoice's PDF, what it printed.
+pub fn add_with(ctx: &Ctx, e: &Entry, also: &[&Path]) -> Result<AddReport> {
     validate(ctx, e)?;
     // Written to its commodity's places: 10 EUR as 10.00 EUR.
     let mut e = e.clone();
@@ -435,7 +443,7 @@ pub fn add(ctx: &Ctx, e: &Entry) -> Result<AddReport> {
     let main = ctx.main_journal();
     let before = [(&target, std::fs::read_to_string(&target).ok()), (&main, std::fs::read_to_string(&main).ok())];
     let committed = stage(&ctx.journal_dir(), &name, &e.date, &e.render())
-        .and_then(|()| ctx.commit(&[&target, &main], &format!("{} {}", e.date, e.description)));
+        .and_then(|()| ctx.commit(&[&[target.as_path(), main.as_path()][..], also].concat(), &format!("{} {}", e.date, e.description)));
     let commit = match committed {
         Ok(c) => c,
         Err(err) => {
@@ -566,6 +574,7 @@ pub fn booking(ctx: &Ctx, key: &str) -> Result<Booking> {
         bail!("bad journal file in {key:?}");
     }
     let line: usize = line.parse().with_context(|| format!("bad line in {key:?}"))?;
+    let (date, print) = crate::reconcile::date_and_print(date);
 
     let txns: Vec<serde_json::Value> = serde_json::from_str(&hledger(ctx, &["print", "-O", "json"])?)?;
     let t = txns
@@ -575,6 +584,7 @@ pub fn booking(ctx: &Ctx, key: &str) -> Result<Booking> {
             pos["sourceLine"].as_u64() == Some(line as u64)
                 && Path::new(pos["sourceName"].as_str().unwrap_or_default()).file_name().is_some_and(|f| f == name)
                 && t["tdate"] == date
+                && print.is_none_or(|p| crate::reconcile::fingerprint(t) == p)
         })
         .with_context(|| format!("no booking at {key}; the books have changed since that link was made"))?;
 

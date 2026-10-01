@@ -77,7 +77,9 @@ A commodity is declared with its places: `commodity 1000.00 EUR`, two.
 one is refused with a message saying where to declare it (a commodity that
 differs from a declared one only in case, `eur`, asks whether EUR was meant),
 and so is an amount with more places than its commodity has. A declaration
-counts once it is saved; committing it is for the record.
+counts once it is saved; committing it is for the record. A change left
+uncommitted, staged or not, is never swept into a commit abo makes; an undo
+waits until nothing is staged.
 
 ### A3. Start the web interface — Supported
 `abo serve [--dir x]` serves one company when `x` (default: the working
@@ -258,7 +260,8 @@ the gross booked to income under a flat scheme. Sending the form twice issues
 one invoice. A failure — typst missing, say — leaves no commit, no files and
 the number unused. Refused: an invoice at 0% VAT, from a company that is VAT
 registered, that does not say why; one dated before the invoice numbered
-ahead of it (numbers follow dates); and one in another commodity charging VAT
+ahead of it (numbers follow dates), or after today (dated ahead by mistake,
+it would hold every later one back); and one in another commodity charging VAT
 when the books have no price for it in the company currency on or before its
 date — the VAT is printed in the company currency too, with the price used.
 Refused as well: an undeclared commodity; a VAT rate outside 0 to 100, or any
@@ -381,7 +384,8 @@ nothing changed, when something since has changed
 the same lines — the refusal names that line of the log, to undo first, never
 one undone since — when it would change a closed period, or when it would
 leave a bill both settled and cancelled, or paid more than it owes. Undoing an
-invoice frees its number for the next one; undo only one not yet sent.
+invoice frees its number for the next one, so only the last numbered may be
+undone — no gap is left — and only one not yet sent.
 
 ### F3. Un-tick a transaction cleared by mistake — Supported (as F2)
 Undo the clearing.
@@ -470,6 +474,7 @@ a test for each in `tests/regressions.rs`, and not yet verified again.
 | D1, D2 | Failed, fixed: a statement recorded could be recorded again, unasserted, at another balance; the browser's clear took an undeclared or other commodity, a balance that is no number, and any action |
 | F4 | Failed, fixed: the undo of an undone Upload was refused, for the payment the upload had moved |
 | (found writing a test) | Fixed: an undo checked the books before putting back a year file's `include`, so an entry it put back in another year went unchecked — a payment of a bill no longer booked among them |
+| (thought of, then tested) | Fixed: a link or key made before another entry of the same day was booked above it reached that other entry — keys now carry a fingerprint of their entry; a commit swept up whatever else was staged; an invoice could be dated ahead, holding every later one back; an invoice below the last numbered could be undone, leaving a gap; zero-width and right-to-left characters were taken in text; one company's form token was taken as sent in another's; `abo settle --by` took a reversed payment, or one dated before the invoice; a document could be filed for a booking in a closed period, rewriting its tags; an asset declared in lower case was not offered to pay from; a description could make the Log take a commit for undone; a key could reach a twin entry that differed only in its tags; one inconsistency made by hand refused every later undo |
 | (in passing) | Fixed: an invoice line without a description; a nought total refused in the wrong words; a credit note of an invoice paid on the spot shown positive, its VAT as `-0`; `abo post` and recorded statements echoing amounts as typed; `reconcile --help` saying `--record` always asserts |
 
 Known, not fixed: error pages answer 200, and a direct POST missing a field

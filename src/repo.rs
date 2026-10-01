@@ -113,7 +113,7 @@ impl PaymentOption {
             return Some(format!("a {kind} option has no {field}"));
         }
         // Lines may break the bank's address and the further lines alone.
-        let ctrl = |v: &String, lines: bool| v.chars().any(|c| c.is_control() && !(lines && c == '\n'));
+        let ctrl = |v: &String, lines: bool| v.chars().any(|c| hidden(c) && !(lines && c == '\n'));
         let one_line = [&self.id, &self.label, h, i, b, n, a, &self.account];
         if let Some(v) = one_line.into_iter().find(|v| ctrl(v, false)).or_else(|| [k, &self.details].into_iter().find(|v| ctrl(v, true))) {
             return Some(format!("{v:?} holds a control character"));
@@ -338,13 +338,21 @@ impl Ctx {
         })
     }
 
-    /// Stage and commit. Returns the short hash.
+    /// Stage and commit `paths`, and only them: whatever else is staged —
+    /// a person's change, what a crash left — is not this operation's to
+    /// sign. No paths commits all that is staged, for the first commit.
+    /// Returns the short hash.
     pub fn commit(&self, paths: &[&Path], msg: &str) -> Result<String> {
-        for p in paths {
-            let rel = p.strip_prefix(&self.root).unwrap_or(p);
-            self.git(&["add", "--", &rel.to_string_lossy()])?;
+        let rels: Vec<String> = paths.iter().map(|p| p.strip_prefix(&self.root).unwrap_or(p).to_string_lossy().to_string()).collect();
+        for rel in &rels {
+            self.git(&["add", "--", rel])?;
         }
-        self.git(&["commit", "-q", "-m", msg])?;
+        let mut args = vec!["commit", "-q", "-m", msg];
+        if !rels.is_empty() {
+            args.push("--");
+            args.extend(rels.iter().map(String::as_str));
+        }
+        self.git(&args)?;
         Ok(self.git(&["rev-parse", "--short", "HEAD"])?.trim().to_string())
     }
 }
@@ -525,6 +533,14 @@ pub mod answer {
         }
         Ok(r)
     }
+}
+
+/// A character no text abo keeps may hold: a control character, or one
+/// that is invisible or turns the text around it — a zero-width space, a
+/// right-to-left override — so that what is printed is not what was read.
+pub fn hidden(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{00AD}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
 }
 
 /// Push `--name value`, or `--name=value` when the value starts with a dash

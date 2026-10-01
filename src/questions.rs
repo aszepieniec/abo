@@ -123,7 +123,7 @@ pub trait Source {
 
 impl Check {
     fn run(&self, s: &str, env: &Env) -> Result<String, String> {
-        if s.chars().any(char::is_control) {
+        if s.chars().any(crate::repo::hidden) {
             return Err(format!("{s:?} holds a control character, such as a line break; type it on one line."));
         }
         match self {
@@ -166,7 +166,7 @@ pub fn walk(qs: &[Q], prefix: &str, out: &mut Answers, context: &Context, src: &
             Q::Lines { key, label, hint } => {
                 let k = format!("{prefix}{key}");
                 let v = src.lines(&k, label, hint)?;
-                if v.chars().any(|c| c.is_control() && c != '\n') {
+                if v.chars().any(|c| crate::repo::hidden(c) && c != '\n') {
                     bail!("{label}: {v:?} holds a control character");
                 }
                 out.insert(k, v);

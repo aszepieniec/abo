@@ -112,8 +112,22 @@ impl Drop for Server {
     }
 }
 
+/// A port no other server of this run was given. One the system hands out
+/// and takes back could go to two tests at once, whose servers then race
+/// for it; these are counted out instead, from a start of this run's own.
+fn free_port() -> u16 {
+    static NEXT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+    let base = 20000 + (std::process::id() % 2000) as u16 * 10;
+    loop {
+        let port = base + NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+}
+
 fn serve(dir: &Path) -> Server {
-    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let port = free_port();
     let child = Command::new(env!("CARGO_BIN_EXE_abo"))
         .args(["serve", "--port", &port.to_string()])
         .current_dir(dir)
@@ -851,7 +865,7 @@ fn an_undo_refused_for_a_closed_period_leaves_the_journal_as_it_was() {
 fn a_company_of_a_data_directory_serves_its_pages_with_values_in_the_path() {
     let dir = books("data-dir-paths", &[]);
     ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank"]);
-    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let port = free_port();
     let child = Command::new(env!("CARGO_BIN_EXE_abo"))
         .args(["serve", "--port", &port.to_string(), "--dir"]).arg(dir.parent().unwrap())
         .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
@@ -1304,7 +1318,7 @@ fn the_demo_books_take_commits_from_a_terminal() {
     let _ = std::fs::remove_dir_all(&base);
     let home = base.join("home");
     std::fs::create_dir_all(&home).unwrap();
-    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let port = free_port();
     // No git identity anywhere but what the demo sets itself.
     let child = Command::new(env!("CARGO_BIN_EXE_abo")).args(["demo", "--port", &port.to_string()])
         .env("TMPDIR", &base).env("HOME", &home).env("XDG_CONFIG_HOME", &home)
@@ -1361,4 +1375,214 @@ fn an_undo_checks_an_entry_it_puts_back_in_another_year() {
     refused(&dir, &["undo", &(posted + 1).to_string()], "Expenses:Travel");
     assert!(!dir.join("journal/2027.journal").exists());
     clean(&dir);
+}
+
+// ---- found by brainstorming from the patterns of the faults above ----
+
+#[test]
+fn a_key_to_an_entry_that_moved_reaches_no_other_entry_of_its_day() {
+    let dir = books("same-day-key", &[]);
+    ok(&dir, &["post", "--date", "2026-03-05", "--desc", "First", "Expenses:General=1.00", "Assets:Bank"]);
+    ok(&dir, &["post", "--date", "2026-03-05", "--desc", "Second", "Expenses:General=2.00", "Assets:Bank"]);
+    // As a page shows it, before anything else is booked.
+    let second = output_key(&dir, "Second");
+    // Booked above both, so First moves down to where Second was.
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Earlier", "Expenses:General=3.00", "Assets:Bank"]);
+    let o = abo(&dir, &["revert", "--date", "2026-03-06", &second]);
+    assert!(!read(&dir, "journal/2026.journal").contains("Reversal of 2026-03-05 First"), "{}", err(&o));
+    let o = abo(&dir, &["clear", &format!("{second}:Assets:Bank")]);
+    assert!(!o.status.success(), "a stale key cleared something");
+}
+
+/// The key abo itself gives an entry, as its pages and `--json` carry it.
+fn output_key(dir: &Path, desc: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(&ok(dir, &["--json", "reconcile", "--account", "Assets:Bank", "--date", "2026-12-31"])).unwrap();
+    let item = v["outstanding"].as_array().unwrap().iter().find(|i| i["description"] == desc).unwrap_or_else(|| panic!("no {desc} in {v}"));
+    item["key"].as_str().unwrap().strip_suffix(":Assets:Bank").unwrap().to_string()
+}
+
+#[test]
+fn bookings_sent_at_once_are_each_booked() {
+    let dir = books("at-once", &[]);
+    let s = std::sync::Arc::new(serve(&dir));
+    let threads: Vec<_> = (0..4).map(|t| {
+        let s = s.clone();
+        std::thread::spawn(move || {
+            for i in 0..5 {
+                let desc = format!("Entry {t}-{i}");
+                http(&s, "POST", "/post", &[("token", &desc), ("date", "2026-03-01"), ("description", &desc), ("postings", "Expenses:General=1.00\nAssets:Bank")]);
+            }
+        })
+    }).collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+    let journal = read(&dir, "journal/2026.journal");
+    for t in 0..4 {
+        for i in 0..5 {
+            assert!(journal.contains(&format!("Entry {t}-{i}")), "Entry {t}-{i} lost:\n{journal}");
+        }
+    }
+    clean(&dir);
+}
+
+#[test]
+fn an_invoice_is_not_dated_after_today() {
+    let dir = books("future-invoice", &[]);
+    refused(&dir, &["invoice", "--to", "C", "--item", "1|10|x", "--date", "2099-01-01"], "after today");
+}
+
+#[test]
+fn a_commit_takes_only_what_its_operation_wrote() {
+    let dir = books("sweep", &[]);
+    // Saved and staged, not committed: someone else's change.
+    std::fs::write(dir.join("journal/accounts.journal"), read(&dir, "journal/accounts.journal") + "account Expenses:Travel\n").unwrap();
+    Command::new("git").args(["add", "journal/accounts.journal"]).current_dir(&dir).status().unwrap();
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Train", "Expenses:Travel=30.00", "Assets:Bank"]);
+    let o = Command::new("git").args(["show", "--stat", "--format=", "HEAD"]).current_dir(&dir).output().unwrap();
+    assert!(!String::from_utf8_lossy(&o.stdout).contains("accounts.journal"), "{}", String::from_utf8_lossy(&o.stdout));
+    // And an undo, which would put back what it touched, leaves it be.
+    refused(&dir, &["undo", &log_len(&dir).to_string()], "staged");
+    assert!(read(&dir, "journal/accounts.journal").contains("Expenses:Travel"));
+}
+
+#[test]
+fn an_invoice_numbered_below_another_is_not_undone() {
+    let dir = books("undo-middle-invoice", &[]);
+    invoice(&dir, "2026-0001", "2026-03-01", "110.00");
+    let first = log_len(&dir);
+    // Another year's, so that its lines are nowhere near.
+    ok(&dir, &["post", "--date", "2026-03-02", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank"]);
+    invoice(&dir, "2026-0002", "2026-09-01", "220.00");
+    refused(&dir, &["undo", &first.to_string()], "not the last numbered");
+}
+
+#[test]
+fn no_text_hides_or_turns_its_letters() {
+    let dir = books("bidi", &[]);
+    refused(&dir, &["company", "--name", "Acme \u{202E}dtL"], "control character");
+    refused(&dir, &["post", "--date", "2026-03-01", "--desc", "Fee\u{200B}s", "Expenses:General=5.00", "Assets:Bank"], "\\u{200b}");
+    let scan = dir.parent().unwrap().join("scan.pdf");
+    std::fs::write(&scan, b"%PDF-1.4\n").unwrap();
+    refused(&dir, &["file", "--date", "2026-03-01", "--issuer", "Ac\u{202E}me", &scan.to_string_lossy()], "control character");
+    refused(&dir, &["invoice", "--to", "C", "--item", "1|10|Con\u{202E}sulting", "--date", "2026-03-01"], "control character");
+}
+
+#[test]
+fn a_token_is_one_companys_alone() {
+    let dir = books("token-company", &[]);
+    let base = dir.parent().unwrap();
+    ok(base, &["init", "Other Ltd", "--currency", "EUR", "--vat", "none", "--git-name", "t", "--git-email", "t@example.invalid"]);
+    let port = free_port();
+    let child = Command::new(env!("CARGO_BIN_EXE_abo")).args(["serve", "--port", &port.to_string(), "--dir"]).arg(base)
+        .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let s = Server { child, port };
+    while TcpStream::connect(("127.0.0.1", port)).is_err() {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    for company in ["test-ltd", "other-ltd"] {
+        http(&s, "POST", &format!("/c/{company}/post"), &[("token", "same"), ("date", "2026-03-01"), ("description", "Fees"),
+            ("postings", "Expenses:General=5.00\nAssets:Bank")]);
+    }
+    assert!(read(&base.join("other-ltd"), "journal/2026.journal").contains("Fees"), "the second company's booking was taken for the first's");
+}
+
+#[test]
+fn an_invoice_is_not_settled_by_a_reversed_payment() {
+    let dir = books("settle-by-reversed", &[]);
+    invoice(&dir, "2026-0001", "2026-03-01", "110.00");
+    ok(&dir, &["post", "--date", "2026-03-10", "--desc", "Pays", "--tag", "pays=2026-0001", "Assets:Bank=50.00", "Assets:Receivable"]);
+    let paid = key(&dir, "desc:^Pays$");
+    ok(&dir, &["revert", "--date", "2026-03-11", &paid]);
+    refused(&dir, &["settle", "2026-0001", "--by", &key(&dir, "desc:^Pays$")], "reversed");
+}
+
+#[test]
+fn an_invoice_is_not_settled_by_a_payment_before_it() {
+    let dir = books("settle-by-early", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Early", "Assets:Bank=110.00", "Assets:Receivable"]);
+    invoice(&dir, "2026-0001", "2026-03-10", "110.00");
+    refused(&dir, &["settle", "2026-0001", "--by", &key(&dir, "desc:^Early$")], "before");
+}
+
+#[test]
+fn no_document_is_filed_for_a_booking_in_a_closed_period() {
+    let dir = books("refile-closed", &[]);
+    let (_, found) = lost(&dir);
+    close(&dir, "2026-06-30");
+    let before = read(&dir, "journal/2026.journal");
+    refused(&dir, &["file", "--for", &key(&dir, "desc:^Lost$"), &found], "closed period");
+    assert_eq!(read(&dir, "journal/2026.journal"), before);
+    clean(&dir);
+}
+
+// ---- known from reading the code, then tested ----
+
+#[test]
+fn an_asset_declared_in_lower_case_is_paid_from() {
+    let dir = books("lower-asset", &[]);
+    std::fs::write(dir.join("journal/accounts.journal"), read(&dir, "journal/accounts.journal") + "account assets:wallet\n").unwrap();
+    by_hand(&dir, "Declare assets:wallet");
+    let b = bill(&dir, "Acme", "2026-03-01", "40.00");
+    invoice(&dir, "2026-0001", "2026-03-01", "110.00");
+    let s = serve(&dir);
+    let (_, _, page) = http(&s, "GET", &format!("/bill/pay?file={}", enc(&b)), &[]);
+    assert!(page.contains("<option value=\"assets:wallet\""), "bill: {page}");
+    let (_, _, page) = http(&s, "GET", "/invoices/pay?n=2026-0001", &[]);
+    assert!(page.contains("<option value=\"assets:wallet\""), "invoice: {page}");
+}
+
+#[test]
+fn a_date_that_is_no_date_is_refused_before_it_is_compared() {
+    let dir = books("bad-date", &[]);
+    let b = bill(&dir, "Acme", "2026-03-10", "40.00");
+    let before = read(&dir, "journal/2026.journal");
+    let o = pay(&dir, "settles", &b, "2026-3-01", "40.00");
+    assert!(!o.status.success(), "a payment dated 2026-3-01 was booked");
+    assert_eq!(read(&dir, "journal/2026.journal"), before);
+}
+
+#[test]
+fn a_description_does_not_make_a_commit_undone() {
+    let dir = books("desc-reverts", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank"]);
+    let n = log_len(&dir);
+    let o = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&dir).output().unwrap();
+    let full = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    ok(&dir, &["post", "--date", "2026-03-02", "--desc", &format!("This reverts commit {full}."), "Expenses:General=1.00", "Assets:Bank"]);
+    assert!(undoable(&dir, n), "the Log takes line {n} for undone");
+}
+
+#[test]
+fn a_key_reaches_no_twin_that_differs_in_its_tags() {
+    let dir = books("twin-key", &[]);
+    invoice(&dir, "2026-0001", "2026-03-01", "110.00");
+    invoice(&dir, "2026-0002", "2026-03-01", "110.00");
+    for n in ["2026-0001", "2026-0002"] {
+        ok(&dir, &["post", "--date", "2026-03-05", "--desc", "Customer pays", "--tag", &format!("pays={n}"), "Assets:Bank=110.00", "Assets:Receivable"]);
+    }
+    let v: serde_json::Value = serde_json::from_str(&ok(&dir, &["--json", "reconcile", "--account", "Assets:Bank", "--date", "2026-12-31"])).unwrap();
+    let second = v["outstanding"][1]["key"].as_str().unwrap().strip_suffix(":Assets:Bank").unwrap().to_string();
+    // The same shape, booked above both: the first payment moves to where the second was.
+    ok(&dir, &["post", "--date", "2026-03-02", "--desc", "Earlier", "--tag", "memo=x", "Expenses:General=1.00", "Assets:Bank"]);
+    let line: usize = second.split(':').nth(1).unwrap().parse().unwrap();
+    let journal = read(&dir, "journal/2026.journal");
+    assert!(journal.lines().nth(line - 1).unwrap().ends_with("Customer pays") && journal.lines().nth(line).unwrap().contains("2026-0001"),
+            "the test meant the first payment to sit at line {line}:\n{journal}");
+    let _ = abo(&dir, &["revert", "--date", "2026-03-06", &second]);
+    assert!(!read(&dir, "journal/2026.journal").contains("takes-back: pays 2026-0001"), "the first payment was reverted");
+}
+
+#[test]
+fn a_hand_made_inconsistency_does_not_block_every_undo() {
+    let dir = books("hand-inconsistent", &[]);
+    let b = bill(&dir, "Acme", "2026-03-01", "40.00");
+    ok(&dir, &["revert", "--date", "2026-03-02", &key(&dir, "desc:^Acme$")]);
+    // A payment of the cancelled bill, typed into the journal by hand.
+    let journal = read(&dir, "journal/2026.journal")
+        + &format!("\n2026-03-03 By hand\n    ; pays: {b}\n    Liabilities:Payable  10.00 EUR\n    Assets:Bank\n");
+    std::fs::write(dir.join("journal/2026.journal"), journal).unwrap();
+    by_hand(&dir, "Pay by hand");
+    ok(&dir, &["post", "--date", "2026-09-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank"]);
+    ok(&dir, &["undo", &log_len(&dir).to_string()]);
 }

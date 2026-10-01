@@ -197,7 +197,7 @@ fn invoices() {
     let o = abo(
         &dir,
         &["invoice", "--to", "Customer Ltd\n2 Other Street", "--item", "10|150.00|Consulting",
-          "--item", "1|100.00|Hosting", "--date", "2026-09-30", "--json"],
+          "--item", "1|100.00|Hosting", "--date", "2026-09-20", "--json"],
         "",
     );
     assert!(o.status.success(), "invoice failed: {}", err(&o));
@@ -238,13 +238,13 @@ fn invoices() {
 
     // numbering continues from the journal, with no counter file anywhere
     let o = abo(&dir, &["invoice", "--to", "Customer Ltd", "--item", "1|10.00|Thing",
-                        "--date", "2026-10-01", "--json"], "");
+                        "--date", "2026-09-21", "--json"], "");
     assert!(o.status.success(), "second invoice failed: {}", err(&o));
     assert!(String::from_utf8_lossy(&o.stdout).contains("2026-0002"));
 
     // an export at zero rate says why, still balances and books no output tax
     let export = ["invoice", "--to", "Foreign Customer", "--item", "1|500.00|Consulting",
-                  "--date", "2026-10-02", "--vat-rate", "0", "--customer-tax-id", "US-12-3456789", "--json"];
+                  "--date", "2026-09-22", "--vat-rate", "0", "--customer-tax-id", "US-12-3456789", "--json"];
     let o = abo(&dir, &export, "");
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(!o.status.success() && out.contains("--vat-reason"), "{out}");
@@ -254,7 +254,7 @@ fn invoices() {
         serde_json::from_str(&std::fs::read_to_string(dir.join("invoices/2026/2026-0003.json")).unwrap()).unwrap();
     assert_eq!((data["vat_reason"].as_str(), data["customer_tax_id"].as_str()), (Some("Export of services"), Some("US-12-3456789")));
     // numbers follow dates: nothing dated before the last one
-    let o = abo(&dir, &["invoice", "--to", "Late", "--item", "1|1|x", "--date", "2026-10-01"], "");
+    let o = abo(&dir, &["invoice", "--to", "Late", "--item", "1|1|x", "--date", "2026-09-21"], "");
     assert!(!o.status.success() && err(&o).contains("may not be dated before"), "{}", err(&o));
     let o = abo(&dir, &["bal", "Liabilities:VAT:Output"], "");
     // 1760 - 1600 = 160, plus 1.00 from the second invoice
@@ -263,13 +263,13 @@ fn invoices() {
 
     // A correction: a credit note cancelling 2026-0001, numbered next, its
     // lines and entry the invoice's negated, all in one commit.
-    let o = abo(&dir, &["credit", "--date", "2026-10-03", "2026-0001", "--json"], "");
+    let o = abo(&dir, &["credit", "--date", "2026-09-23", "2026-0001", "--json"], "");
     assert!(o.status.success(), "credit failed: {}", err(&o));
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(out.contains("2026-0004") && out.contains("-1760.00 EUR"), "{out}");
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("invoices/2026/2026-0004.json")).unwrap()).unwrap();
-    assert_eq!((data["credits"].as_str(), data["credits_date"].as_str()), (Some("2026-0001"), Some("2026-09-30")));
+    assert_eq!((data["credits"].as_str(), data["credits_date"].as_str()), (Some("2026-0001"), Some("2026-09-20")));
     assert_eq!(data["items"][0]["amount"], "-1500.00");
     let files = Command::new("git").args(["show", "--name-only", "--format=", "HEAD"]).current_dir(&dir).output().unwrap();
     let files = String::from_utf8_lossy(&files.stdout);
@@ -287,15 +287,15 @@ fn invoices() {
     }
     // The corrected invoice is an ordinary one, numbered after the credit note.
     let o = abo(&dir, &["invoice", "--to", "Customer Ltd", "--item", "10|140.00|Consulting",
-                        "--date", "2026-10-03", "--json"], "");
+                        "--date", "2026-09-23", "--json"], "");
     assert!(String::from_utf8_lossy(&o.stdout).contains("2026-0005"));
 
     // One booked before abo kept what invoices print is cancelled all the
     // same: one line for the whole of it, stated to the currency's places.
-    let o = abo(&dir, &["post", "--date", "2026-10-04", "--desc", "Old Customer | Invoice 2026-0006",
+    let o = abo(&dir, &["post", "--date", "2026-09-24", "--desc", "Old Customer | Invoice 2026-0006",
                         "--tag", "invoice=2026-0006", "Assets:Receivable=110", "Income:Sales=-100", "Liabilities:VAT:Output=-10"], "");
     assert!(o.status.success(), "{}", err(&o));
-    let o = abo(&dir, &["credit", "--date", "2026-10-04", "2026-0006"], "");
+    let o = abo(&dir, &["credit", "--date", "2026-09-24", "2026-0006"], "");
     assert!(o.status.success(), "{}", err(&o));
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("invoices/2026/2026-0007.json")).unwrap()).unwrap();
@@ -311,10 +311,10 @@ fn invoices() {
                         "--address", "bc1qexample"], "");
     assert!(o.status.success(), "{}", err(&o));
     let btc = ["invoice", "--to", "Customer Ltd", "--item", "1|0.01|Consulting", "--currency", "BTC",
-               "--decimals", "8", "--date", "2026-10-05"];
+               "--decimals", "8", "--date", "2026-09-25"];
     let o = abo(&dir, &btc, "");
     assert!(!o.status.success() && err(&o).contains("no BTC price in EUR"), "{}", err(&o));
-    std::fs::write(&acc, std::fs::read_to_string(&acc).unwrap() + "P 2026-10-01 BTC 60000.00 EUR\n").unwrap();
+    std::fs::write(&acc, std::fs::read_to_string(&acc).unwrap() + "P 2026-09-21 BTC 60000.00 EUR\n").unwrap();
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qam", "BTC price"]).current_dir(&dir).output().unwrap();
     let o = abo(&dir, &btc, "");
     assert!(o.status.success(), "{}", err(&o));
@@ -325,7 +325,7 @@ fn invoices() {
     assert_eq!(data["payment"][0]["details"][0], "Network: Bitcoin");
     // Its places are those BTC is declared with, unasked.
     let o = abo(&dir, &["invoice", "--to", "Customer Ltd", "--item", "1|0.00123456|Tiny", "--currency", "BTC",
-                        "--date", "2026-10-05", "--json"], "");
+                        "--date", "2026-09-25", "--json"], "");
     assert!(String::from_utf8_lossy(&o.stdout).contains("0.00135802 BTC"), "{}{}", err(&o), String::from_utf8_lossy(&o.stdout));
 
     // What no invoice may be.
@@ -336,7 +336,7 @@ fn invoices() {
         (&["--item", "1|10|x", "--currency", "eur"][..], "did you mean EUR"),
         (&["--item", "1|10|x", "--currency", "XYZ"][..], "not declared"),
     ] {
-        let o = abo(&dir, &[&["invoice", "--to", "C", "--date", "2026-10-05"][..], extra].concat(), "");
+        let o = abo(&dir, &[&["invoice", "--to", "C", "--date", "2026-09-25"][..], extra].concat(), "");
         assert!(!o.status.success() && err(&o).contains(says), "{extra:?}: {}", err(&o));
     }
 
@@ -345,7 +345,7 @@ fn invoices() {
     let text = std::fs::read_to_string(&template).unwrap();
     std::fs::write(&template, text.replace("customer_tax_id", "tax_no_longer_here")).unwrap();
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qam", "An older template"]).current_dir(&dir).output().unwrap();
-    let o = abo(&dir, &["invoice", "--to", "C", "--item", "1|10|x", "--date", "2026-10-05", "--customer-tax-id", "DE1"], "");
+    let o = abo(&dir, &["invoice", "--to", "C", "--item", "1|10|x", "--date", "2026-09-25", "--customer-tax-id", "DE1"], "");
     assert!(o.status.success() && err(&o).contains("does not print the customer's tax number"), "{}", err(&o));
     std::fs::write(&template, text).unwrap();
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qam", "The template again"]).current_dir(&dir).output().unwrap();

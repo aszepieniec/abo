@@ -263,6 +263,12 @@ pub fn settle(ctx: &Ctx, number: &str, by: Option<&str>, date: &str) -> Result<S
 fn tag_booking(ctx: &Ctx, number: &str, key: &str) -> Result<SettleReport> {
     let b = journal::booking(ctx, key)?;
     let receivable = &ctx.cfg.invoice.receivable;
+    if let Some(by) = &b.reversed_by {
+        bail!("{} {} is reversed, by {by}; it pays nothing", b.date, b.description);
+    }
+    if let Some(i) = invoices(ctx)?.into_iter().find(|i| i.number == number && b.date < i.date) {
+        bail!("{} {} is dated before invoice {number}, {}; it cannot have paid it", b.date, b.description, i.date);
+    }
     if !b.postings.iter().any(|p| &p.account == receivable && p.amount.is_some_and(|a| a.is_sign_negative())) {
         bail!("{} {} takes nothing off {receivable}, so it pays no invoice", b.date, b.description);
     }

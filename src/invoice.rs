@@ -204,10 +204,20 @@ fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
     if args.customer.trim().is_empty() {
         bail!("an invoice needs a customer");
     }
+    // What the invoice prints is what was typed: lines in the customer's
+    // address and the note, and nothing hidden anywhere.
+    let texts = [("customer", &args.customer, true), ("note", &args.note, true), ("reference", &args.reference, false),
+                 ("customer's tax number", &args.customer_tax_id, false), ("reason for no VAT", &args.vat_reason, false)];
+    for (what, v, lines) in texts.into_iter().chain(args.items.iter().map(|i| ("line", i, false))) {
+        if v.chars().any(|c| crate::repo::hidden(c) && !(lines && c == '\n')) {
+            bail!("the {what} {v:?} holds a control character");
+        }
+    }
     // Every default is taken already, by `resolved`.
     let date = args.date.clone().unwrap_or_default();
     let year = date.get(..4).context("bad date")?.to_string();
     let number = next_number(ctx, &year)?;
+    not_ahead(&date)?;
     in_order(ctx, &year, &date)?;
 
     let currency = args.currency.clone().unwrap_or_default();
@@ -352,7 +362,9 @@ fn publish(ctx: &Ctx, data: &Data, entry: &Entry, template: &str, src: &str, dat
     crate::statement::compile(ctx, template, src, data_rel, data, &ctx.root.join(&pdf))?;
     std::fs::write(ctx.root.join(&json), serde_json::to_vec_pretty(data)?)?;
     let files = [pdf.as_str(), json.as_str(), template];
-    let r = ctx.git(&[&["add", "--"][..], &files].concat()).and_then(|_| journal::add(ctx, entry));
+    let also: Vec<std::path::PathBuf> = files.iter().map(|f| ctx.root.join(f)).collect();
+    let also: Vec<&std::path::Path> = also.iter().map(|p| p.as_path()).collect();
+    let r = ctx.git(&[&["add", "--"][..], &files].concat()).and_then(|_| journal::add_with(ctx, entry, &also));
     match r {
         Ok(AddReport { commit, .. }) => Ok(IssueReport {
             number: data.number.clone(),
@@ -420,6 +432,7 @@ fn credit_it(ctx: &Ctx, number: &str, date: &str, note: &str) -> Result<IssueRep
 
     let year = date.get(..4).context("bad date")?;
     let new = next_number(ctx, year)?;
+    not_ahead(date)?;
     in_order(ctx, year, date)?;
     let c = &ctx.cfg.company;
     let data = Data {
@@ -569,6 +582,17 @@ fn unprinted(ctx: &Ctx, template: &str, data: &Data) -> Vec<String> {
         )
     })
     .collect()
+}
+
+/// An invoice is dated the day it is issued, or before: one dated ahead by
+/// mistake would hold every later one back until that day, numbers following
+/// dates, and its credit note too.
+fn not_ahead(date: &str) -> Result<()> {
+    let today = jiff::Zoned::now().date().to_string();
+    if date > today.as_str() {
+        bail!("{date} is after today, {today}; an invoice is dated the day it is issued");
+    }
+    Ok(())
 }
 
 /// Invoice numbers follow dates: none may be dated before the one numbered

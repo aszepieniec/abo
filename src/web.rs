@@ -975,12 +975,15 @@ fn toast(ctx: &Ctx, n: usize) -> Option<Markup> {
 fn once(token: &str, act: impl FnOnce() -> Result<String>) -> Result<String> {
     static DONE: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
         std::sync::Mutex::new(std::collections::BTreeMap::new());
-    if let Some(to) = DONE.lock().unwrap().get(token) {
+    // Each company's own: one server answers for all of a data directory.
+    let prefix = PREFIX.try_with(Clone::clone).ok().flatten().unwrap_or_default();
+    let key = format!("{prefix}\0{token}");
+    if let Some(to) = DONE.lock().unwrap().get(&key).filter(|_| !token.is_empty()) {
         return Ok(to.clone());
     }
     let to = act()?;
     if !token.is_empty() {
-        DONE.lock().unwrap().insert(token.to_string(), to.clone());
+        DONE.lock().unwrap().insert(key, to.clone());
     }
     Ok(to)
 }
@@ -2032,10 +2035,8 @@ fn pay_page(ctx: &Ctx, f: &Fields, error: Option<&str>) -> Result<Markup> {
     let open: Vec<_> = settle::invoices(ctx)?.into_iter().filter(|i| !i.status.settled()).collect();
     let this = f.get("n").and_then(|n| open.iter().find(|i| &i.number == n));
     let others: Vec<_> = open.iter().filter(|i| this.is_none_or(|t| t.number != i.number)).collect();
-    let into: Vec<String> = journal::declared_accounts(ctx)?
-        .into_iter()
-        .filter(|a| a.starts_with("Assets") && a != &ctx.cfg.invoice.receivable)
-        .collect();
+    // What `pay_submit` takes, and no other.
+    let into = money_accounts(ctx)?;
     let first = ctx.cfg.payment.first().map(|p| p.account.clone()).unwrap_or_else(|| "Assets:Bank".into());
     let chosen = f.get("into").cloned().unwrap_or(first);
     let today = jiff::Zoned::now().date().to_string();
@@ -2475,7 +2476,8 @@ fn bill_pay_page(ctx: &Ctx, b: &bill::Bill, f: &Fields, error: Option<&str>) -> 
 fn money_accounts(ctx: &Ctx) -> Result<Vec<String>> {
     Ok(journal::declared_accounts(ctx)?
         .into_iter()
-        .filter(|a| a.starts_with("Assets") && a != &ctx.cfg.invoice.receivable && !journal::is_vat_account(a))
+        // As hledger reads account types: `assets:bank` is one.
+        .filter(|a| a.to_lowercase().starts_with("assets:") && a != &ctx.cfg.invoice.receivable && !journal::is_vat_account(a))
         .collect())
 }
 
