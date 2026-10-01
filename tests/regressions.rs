@@ -1586,3 +1586,125 @@ fn a_hand_made_inconsistency_does_not_block_every_undo() {
     ok(&dir, &["post", "--date", "2026-09-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank"]);
     ok(&dir, &["undo", &log_len(&dir).to_string()]);
 }
+
+// ---- the rest of what could go wrong, worth a test ----
+
+#[test]
+fn bookings_from_terminals_at_once_are_each_booked() {
+    let dir = books("cli-at-once", &[]);
+    let children: Vec<_> = (0..6).map(|i| {
+        Command::new(env!("CARGO_BIN_EXE_abo"))
+            .args(["post", "--date", "2026-03-01", "--desc", &format!("Entry {i}"), "Expenses:General=1.00", "Assets:Bank"])
+            .current_dir(&dir).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap()
+    }).collect();
+    for c in children {
+        let o = c.wait_with_output().unwrap();
+        assert!(o.status.success(), "{}", err(&o));
+    }
+    let journal = read(&dir, "journal/2026.journal");
+    for i in 0..6 {
+        assert!(journal.contains(&format!("Entry {i}")), "Entry {i} lost:\n{journal}");
+    }
+    clean(&dir);
+}
+
+#[test]
+fn a_clearing_a_recorded_statement_rests_on_is_not_undone() {
+    let dir = books("undo-clear-recorded", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "In", "Assets:Bank=5.00", "Income:Sales"]);
+    ok(&dir, &["clear", &format!("{}:Assets:Bank", key(&dir, "desc:^In$"))]);
+    let cleared = log_len(&dir);
+    ok(&dir, &["reconcile", "--account", "Assets:Bank", "--date", "2026-03-31", "--balance", "5", "--record"]);
+    refused(&dir, &["undo", &cleared.to_string()], "statement");
+}
+
+#[test]
+fn abo_toml_is_checked_when_read() {
+    let dir = books("config-check", &[]);
+    let toml = read(&dir, "abo.toml");
+    let option = "\n[[payment]]\nid = \"x\"\nkind = \"cash\"\nlabel = \"Cash\"\ndetails = \"Till\"\naccount = \"Assets:Cash\"\n";
+    std::fs::write(dir.join("abo.toml"), format!("{toml}{option}{option}")).unwrap();
+    refused(&dir, &["bal"], "payment option \"x\" twice");
+    std::fs::write(dir.join("abo.toml"), toml.replace("[invoice]\n", "[invoice]\nreceivable = \"Income:Sales\"\n")).unwrap();
+    refused(&dir, &["bal"], "receivable");
+    std::fs::write(dir.join("abo.toml"), toml.replace("Liabilities:VAT:Output", "Liabilities:VAT:Owed")).unwrap();
+    refused(&dir, &["bal"], "Liabilities:VAT:Owed is not declared");
+}
+
+#[test]
+fn a_year_file_with_changes_of_someone_elses_is_not_written() {
+    let dir = books("dirty-year", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank"]);
+    let hand = read(&dir, "journal/2026.journal") + "\n2026-03-02 Typed in\n    Expenses:General  1.00 EUR\n    Assets:Bank\n";
+    std::fs::write(dir.join("journal/2026.journal"), &hand).unwrap();
+    refused(&dir, &["post", "--date", "2026-03-03", "--desc", "More", "Expenses:General=2.00", "Assets:Bank"], "journal/2026.journal");
+    assert_eq!(read(&dir, "journal/2026.journal"), hand);
+}
+
+#[test]
+fn a_log_is_replayed_under_the_rules_it_was_written_under() {
+    let base = std::env::temp_dir().join(format!("abo-reg-rules-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let (first, again) = (base.join("first"), base.join("again"));
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&again).unwrap();
+    let old = |cwd: &Path, args: &[&str], rules: &str| {
+        Command::new(env!("CARGO_BIN_EXE_abo")).args(args).current_dir(cwd).env("ABO_RULES", rules).stdin(Stdio::null()).output().unwrap()
+    };
+    let o = old(&first, &["init", "Test Ltd", "--currency", "EUR", "--vat", "none", "--git-name", "t", "--git-email", "t@example.invalid"], "1");
+    assert!(o.status.success(), "{}", err(&o));
+    let dir = first.join("test-ltd");
+    // Taken by the rules of the first version, refused by today's: no
+    // description, and an amount written as typed.
+    let o = old(&dir, &["post", "--date", "2026-03-01", "--desc", "", "Expenses:General=10", "Assets:Bank"], "1");
+    assert!(o.status.success(), "{}", err(&o));
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "", "Expenses:General=10", "Assets:Bank"], "needs a description");
+    // More of the same: a cash option without lines, a statement recorded
+    // as typed, a bill settled for less than is open.
+    for args in [
+        &["payment-options", "add", "till", "--kind", "cash"][..],
+        &["clear", &format!("{}:Assets:Bank", key(&dir, "date:2026-03-01"))],
+        &["reconcile", "--account", "Assets:Bank", "--date", "2026-03-31", "--balance=-10", "--record"],
+    ] {
+        let o = old(&dir, args, "1");
+        assert!(o.status.success(), "{args:?}: {}", err(&o));
+    }
+    let scan = base.join("bill.pdf");
+    std::fs::write(&scan, b"%PDF-1.4\n% a bill\n").unwrap();
+    let filed: serde_json::Value = serde_json::from_slice(&old(&dir, &["--json", "file", "--date", "2026-04-01", "--issuer", "Acme", &scan.to_string_lossy()], "1").stdout).unwrap();
+    let b = filed["file"].as_str().unwrap();
+    for args in [
+        &["bill", "--desc", "Acme", b, "Expenses:General=40.00", "Liabilities:Payable=-40.00"][..],
+        &["post", "--date", "2026-04-02", "--desc", "Pay", "--tag", &format!("settles={b}"), "Liabilities:Payable=10.00", "Assets:Bank"],
+    ] {
+        let o = old(&dir, args, "1");
+        assert!(o.status.success(), "{args:?}: {}", err(&o));
+    }
+    assert!(read(&dir, "journal/2026.journal").contains("statement: -10 EUR"));
+    // Replayed, each line under the rules its log line names.
+    for l in read(&dir, ".abo/log.jsonl").lines() {
+        let l: serde_json::Value = serde_json::from_str(l).unwrap();
+        let argv: Vec<&str> = l["argv"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+        assert_eq!(l["rules"], 1, "{l}");
+        let cwd = if argv[0] == "init" { again.clone() } else { again.join("test-ltd") };
+        let o = Command::new(env!("CARGO_BIN_EXE_abo")).args(&argv).current_dir(&cwd).stdin(Stdio::null())
+            .env("ABO_RULES", l["rules"].to_string())
+            .env("GIT_AUTHOR_NAME", l["who"].as_str().unwrap()).env("GIT_AUTHOR_EMAIL", l["email"].as_str().unwrap())
+            .env("GIT_AUTHOR_DATE", l["git_date"].as_str().unwrap()).output().unwrap();
+        assert!(o.status.success(), "{argv:?}: {}", err(&o));
+    }
+    let head = |d: &Path| String::from_utf8_lossy(&Command::new("git").args(["rev-parse", "HEAD"]).current_dir(d).output().unwrap().stdout).to_string();
+    assert_eq!(head(&again.join("test-ltd")), head(&dir), "the replay made other books");
+}
+
+#[test]
+fn a_customer_name_is_printed_as_typed_not_read_as_markup() {
+    if Command::new("typst").arg("--version").output().is_err() || Command::new("pdftotext").arg("-v").output().is_err() {
+        return;
+    }
+    let dir = books("markup", &[]);
+    ok(&dir, &["invoice", "--to", "#panic(\"no\") $x$ *Bold* Ltd", "--item", "1|10|#strong[x] work", "--date", "2026-03-01"]);
+    let o = Command::new("pdftotext").args(["invoices/2026/2026-0001.pdf", "-"]).current_dir(&dir).output().unwrap();
+    let text = String::from_utf8_lossy(&o.stdout);
+    assert!(text.contains("#panic(\"no\") $x$ *Bold* Ltd") && text.contains("#strong[x] work"), "{text}");
+}

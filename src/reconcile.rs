@@ -64,7 +64,7 @@ pub fn status(
         bail!("{account} is not an asset account; a statement is of money held, such as a bank account, cash or a wallet");
     }
     let (_, places) = journal::commodity(ctx, commodity)?;
-    if let (Some(dp), Some(s)) = (places, statement) {
+    if let (Some(dp), Some(s), true) = (places, statement, crate::repo::since(2)) {
         if s.normalize().scale() > dp {
             bail!("{s} {commodity} has more places than {commodity} has: {dp}");
         }
@@ -187,6 +187,7 @@ fn mark(ctx: &Ctx, keys: &[String]) -> Result<ClearReport> {
     if keys.is_empty() {
         bail!("nothing to mark");
     }
+    ctx.untouched()?;
     let mut files: std::collections::BTreeMap<std::path::PathBuf, Vec<String>> = Default::default();
     let mut marked = Vec::new();
     // Read once, and only for keys that carry a fingerprint.
@@ -205,10 +206,10 @@ fn mark(ctx: &Ctx, keys: &[String]) -> Result<ClearReport> {
             bail!("bad journal file in key {key:?}");
         }
         let line: usize = line.parse().with_context(|| format!("bad line in key {key:?}"))?;
-        if !account.split(':').next().is_some_and(|a| a.eq_ignore_ascii_case("assets")) {
+        if !account.split(':').next().is_some_and(|a| a.eq_ignore_ascii_case("assets")) && crate::repo::since(2) {
             bail!("{account} is not an asset account; only money held is cleared against a statement");
         }
-        if ctx.cfg.company.closed_through.as_deref().is_some_and(|c| expected <= c) {
+        if ctx.cfg.company.closed_through.as_deref().is_some_and(|c| expected <= c) && crate::repo::since(2) {
             bail!("{key} is dated in a closed period (closed through {})", ctx.cfg.company.closed_through.as_deref().unwrap_or_default());
         }
         let path = ctx.journal_dir().join(name);
@@ -349,11 +350,16 @@ fn assert_balance(ctx: &Ctx, r: &Reconciliation, balance: Decimal) -> Result<Add
     let assertion = asserts(r).then_some(balance);
     // A statement is recorded once — or once more, asserted, when what was
     // outstanding at the first recording has cleared since.
-    let statement = format!("{} {}", r.statement.as_deref().unwrap_or_default(), r.commodity);
+    // Under the first rules, as typed, and refused again only at that.
+    let statement = match crate::repo::since(2) {
+        true => format!("{} {}", r.statement.as_deref().unwrap_or_default(), r.commodity),
+        false => format!("{balance} {}", r.commodity),
+    };
     let tagged = journal::hledger(ctx, &["print", &format!("acct:^{}$", r.account), &format!("tag:reconciled=^{}$", r.date), "-O", "json"])?;
     let recorded: Vec<serde_json::Value> = serde_json::from_str(&tagged)?;
     let asserted = |t: &serde_json::Value| !t["tpostings"][0]["pbalanceassertion"].is_null();
-    if let Some(t) = recorded.iter().find(|t| asserted(t) || assertion.is_none()) {
+    let same = |t: &serde_json::Value| t["ttags"].as_array().into_iter().flatten().any(|g| g[0] == "statement" && g[1] == statement.as_str());
+    if let Some(t) = recorded.iter().find(|t| (asserted(t) || assertion.is_none()) && (crate::repo::since(2) || same(t))) {
         let at = t["ttags"].as_array().into_iter().flatten().find(|g| g[0] == "statement").and_then(|g| g[1].as_str()).unwrap_or_default();
         bail!("the statement of {} for {} is recorded already, at {at}", r.date, r.account);
     }

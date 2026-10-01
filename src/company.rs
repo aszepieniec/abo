@@ -59,7 +59,7 @@ pub fn edit(ctx: &Ctx, c: Change) -> Result<CompanyReport> {
             bail!("a name is needed");
         }
         // As init refuses them: a line break only between address lines.
-        for (what, v) in [("name", &new.name), ("country", &new.country), ("tax number", &new.tax_id), ("address", &new.address)] {
+        for (what, v) in [("name", &new.name), ("country", &new.country), ("tax number", &new.tax_id), ("address", &new.address)].into_iter().filter(|_| crate::repo::since(2)) {
             if v.chars().any(|c| crate::repo::hidden(c) && !(c == '\n' && what == "address")) {
                 bail!("the {what} {v:?} holds a control character");
             }

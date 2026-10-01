@@ -140,6 +140,29 @@ fn plain(ctx: &Ctx, line: &Value, reverted: &[String]) -> Result<String> {
     if let Some(first) = reversed.lines().next() {
         bail!("it is reversed, by {}; undo that first", first.trim());
     }
+    // A clearing a statement recorded since rests on: the statement said
+    // the books agreed with it, ticks and all.
+    if op(line) == "clear" && crate::repo::since(2) {
+        let all = lines(ctx);
+        let at = all.iter().position(|l| l["ok"]["commit"] == line["ok"]["commit"]).unwrap_or(all.len());
+        let arg = |l: &Value, flag: &str| {
+            let argv = l["argv"].as_array().cloned().unwrap_or_default();
+            argv.iter().position(|a| a == flag).and_then(|i| argv.get(i + 1)).and_then(|v| v.as_str()).map(str::to_string)
+        };
+        for key in line["argv"].as_array().into_iter().flatten().skip(1).filter_map(|k| k.as_str()) {
+            let mut parts = key.splitn(4, ':');
+            let (Some(date), Some(account)) = (parts.nth(2).map(|d| crate::reconcile::date_and_print(d).0), parts.next()) else { continue };
+            let since = all[at + 1..].iter().find(|l| {
+                op(l) == "reconcile"
+                    && arg(l, "--account").as_deref() == Some(account)
+                    && arg(l, "--date").is_some_and(|d| d.as_str() >= date)
+                    && l["ok"]["commit"].as_str().is_some_and(|c| !reverted.iter().any(|r| r.starts_with(c)))
+            });
+            if let Some(l) = since {
+                bail!("the statement of {} for {account}, recorded since, rests on it; undo that first", arg(l, "--date").unwrap_or_default());
+            }
+        }
+    }
     // A bill or an invoice that other entries name stays while they do. A
     // document filed for a booking moves every tag naming it along with it.
     // Nor an undo: what it took out comes back together, payments with
@@ -149,7 +172,7 @@ fn plain(ctx: &Ctx, line: &Value, reverted: &[String]) -> Result<String> {
         let Some((k, v)) = l.trim().strip_prefix(';').and_then(|t| t.split_once(':')) else { continue };
         let (k, v) = (k.trim(), v.trim());
         // Numbers run without a gap: only the last numbered may go.
-        if k == "invoice" {
+        if k == "invoice" && crate::repo::since(2) {
             if let Some((year, _)) = v.split_once('-') {
                 let next = crate::invoice::next_number(ctx, year)?;
                 let last = format!("{year}-{:04}", next[year.len() + 1..].parse::<u32>().unwrap_or(1).saturating_sub(1));
@@ -331,7 +354,7 @@ fn since(ctx: &Ctx, full: &str, patch: &str, attr: &str) -> String {
 fn revert_commit(ctx: &Ctx, hash: &str) -> Result<String> {
     // What it stages is committed whole, or put back from HEAD whole: no
     // place for a change of someone else's.
-    if ctx.git(&["diff", "--cached", "--quiet"]).is_err() {
+    if ctx.git(&["diff", "--cached", "--quiet"]).is_err() && crate::repo::since(2) {
         bail!("something is staged in the books that no abo command made; commit or unstage it first");
     }
     let full = ctx.git(&["rev-parse", "--verify", &format!("{hash}^{{commit}}")])?;
@@ -361,7 +384,7 @@ fn revert_commit(ctx: &Ctx, hash: &str) -> Result<String> {
         if closed(ctx)? != before {
             bail!("undoing it would change a closed period");
         }
-        match crate::bill::problems(ctx)?.into_iter().find(|p| !was.contains(p)) {
+        match crate::bill::problems(ctx)?.into_iter().find(|p| !was.contains(p) && crate::repo::since(2)) {
             Some(p) => bail!("undoing it would leave {p}"),
             None => Ok(()),
         }

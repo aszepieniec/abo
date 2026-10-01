@@ -119,7 +119,8 @@ pub fn issue(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
     let what = format!("to {}", args.customer.lines().next().unwrap_or("").trim());
     // Not registered, it charges none: a rate asked for is a mistake, not
     // something to drop without a word.
-    if matches!(ctx.cfg.vat, Vat::None) && args.vat_rate.is_some() {
+    let refused = if crate::repo::since(2) { args.vat_rate.is_some() } else { args.vat_rate.is_some_and(|r| !r.is_zero()) };
+    if matches!(ctx.cfg.vat, Vat::None) && refused {
         bail!("the company is not VAT registered (vat.method = \"none\"), so an invoice charges no VAT");
     }
     let args = resolved(ctx, args);
@@ -145,7 +146,8 @@ fn resolved(ctx: &Ctx, args: &IssueArgs) -> IssueArgs {
         // the usual one: an export, a reduced rate, an exempt supply.
         // Not registered, none at all: `issue` refuses one given.
         vat_rate: match (&c.vat, args.vat_rate) {
-            (Vat::None, _) => None,
+            (Vat::None, _) if crate::repo::since(2) => None,
+            (Vat::None, _) => Some(Decimal::ZERO),
             (_, Some(r)) => Some(r),
             (_, None) => Some(c.invoice.vat_rate),
         },
@@ -208,7 +210,7 @@ fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
     // address and the note, and nothing hidden anywhere.
     let texts = [("customer", &args.customer, true), ("note", &args.note, true), ("reference", &args.reference, false),
                  ("customer's tax number", &args.customer_tax_id, false), ("reason for no VAT", &args.vat_reason, false)];
-    for (what, v, lines) in texts.into_iter().chain(args.items.iter().map(|i| ("line", i, false))) {
+    for (what, v, lines) in texts.into_iter().chain(args.items.iter().map(|i| ("line", i, false))).filter(|_| crate::repo::since(2)) {
         if v.chars().any(|c| crate::repo::hidden(c) && !(lines && c == '\n')) {
             bail!("the {what} {v:?} holds a control character");
         }
@@ -217,13 +219,15 @@ fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
     let date = args.date.clone().unwrap_or_default();
     let year = date.get(..4).context("bad date")?.to_string();
     let number = next_number(ctx, &year)?;
-    not_ahead(&date)?;
+    if crate::repo::since(2) {
+        not_ahead(&date)?;
+    }
     in_order(ctx, &year, &date)?;
 
     let currency = args.currency.clone().unwrap_or_default();
     let (_, places) = journal::commodity(ctx, &currency)?;
     let dp = args.decimals.unwrap_or_default();
-    if let Some(places) = places.filter(|p| dp > *p) {
+    if let Some(places) = places.filter(|p| dp > *p && crate::repo::since(2)) {
         bail!("{currency} has {places} places, so an invoice in it is stated to {places} at most, not {dp}");
     }
     let due = jiff::civil::Date::strptime("%Y-%m-%d", &date)
@@ -257,7 +261,7 @@ fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
                 bail!("line {n}, {raw:?}: {} {verb}", bad.join(" and "));
             }
         };
-        if d.is_empty() {
+        if d.is_empty() && crate::repo::since(2) {
             bail!("line {n}, {raw:?}, says nothing of what it is for");
         }
         let amount = round(quantity * unit, dp);
@@ -275,7 +279,7 @@ fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
     if items.is_empty() {
         bail!("an invoice needs at least one line");
     }
-    if net <= Decimal::ZERO {
+    if if crate::repo::since(2) { net <= Decimal::ZERO } else { !net.is_sign_positive() } {
         bail!("an invoice comes to more than nought, not {net} {currency}; to take one back, issue a credit note");
     }
 
@@ -426,13 +430,15 @@ fn credit_it(ctx: &Ctx, number: &str, date: &str, note: &str) -> Result<IssueRep
         bail!("invoice {number} is reversed already, by {by}");
     }
     let old = printed(ctx, number)?;
-    if date < b.date.as_str() {
+    if date < b.date.as_str() && crate::repo::since(2) {
         bail!("a credit note may not be dated before the invoice it cancels, {}", b.date);
     }
 
     let year = date.get(..4).context("bad date")?;
     let new = next_number(ctx, year)?;
-    not_ahead(date)?;
+    if crate::repo::since(2) {
+        not_ahead(date)?;
+    }
     in_order(ctx, year, date)?;
     let c = &ctx.cfg.company;
     let data = Data {
@@ -601,15 +607,17 @@ fn in_order(ctx: &Ctx, year: &str, date: &str) -> Result<()> {
     let found: Vec<serde_json::Value> =
         serde_json::from_str(&journal::hledger(ctx, &["print", &format!("tag:invoice=^{year}-"), "-O", "json"])?)?;
     // By number, as `next_number` reads them: a tag that is no number is
-    // not the last.
-    let last = found
-        .iter()
-        .filter_map(|t| {
-            let n = t["ttags"].as_array()?.iter().find(|g| g[0] == "invoice")?[1].as_str()?.to_string();
-            let k = n.strip_prefix(&format!("{year}-"))?.parse::<u32>().ok()?;
-            Some((k, n, t["tdate"].as_str()?.to_string()))
-        })
-        .max();
+    // not the last. Under the first rules, the greatest as text.
+    let tagged = found.iter().filter_map(|t| {
+        let n = t["ttags"].as_array()?.iter().find(|g| g[0] == "invoice")?[1].as_str()?.to_string();
+        let k = n.strip_prefix(&format!("{year}-")).and_then(|k| k.parse::<u32>().ok());
+        Some((k, n, t["tdate"].as_str()?.to_string()))
+    });
+    let last = if crate::repo::since(2) {
+        tagged.filter(|(k, ..)| k.is_some()).max()
+    } else {
+        tagged.max_by(|(_, n, d), (_, m, e)| (n, d).cmp(&(m, e)))
+    };
     match last {
         Some((_, n, d)) if date < d.as_str() => bail!("{n}, the last invoice numbered, is dated {d}; the next may not be dated before it, {date}"),
         _ => Ok(()),
@@ -636,7 +644,11 @@ fn price(ctx: &Ctx, commodity: &str, currency: &str, date: &str) -> Result<Optio
 /// `-s`, keeping its places; nought stays unsigned.
 fn negated(s: &str) -> Result<String> {
     let d = Decimal::from_str_exact(s).with_context(|| format!("{s:?} is not a number"))?;
-    Ok(if d.is_zero() { s.trim_start_matches('-').to_string() } else { (-d).to_string() })
+    Ok(match () {
+        _ if d.is_zero() && crate::repo::since(2) => s.trim_start_matches('-').to_string(),
+        _ if d.is_zero() => s.to_string(),
+        _ => (-d).to_string(),
+    })
 }
 
 /// `max(invoice:) + 1` read from the journal. No counter file, no state to

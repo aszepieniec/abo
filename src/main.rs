@@ -553,6 +553,14 @@ async fn run(cli: Cli) -> Result<()> {
         std::fs::create_dir_all(d)?;
     }
     let here = cli.dir.clone().unwrap_or(std::env::current_dir()?);
+    // One command at a time in a company's books, whoever runs it; the
+    // server takes the lock per change instead, and init has no books yet.
+    // ponytail: held for the whole command, questions asked on the terminal
+    // included; take it after the questions if that ever holds up the server.
+    let _lock = match &cli.cmd {
+        Cmd::Serve { .. } | Cmd::Demo { .. } | Cmd::Init { .. } => None,
+        _ => repo::books_root(&here).ok().flatten().map(|root| repo::lock(&root, true)).transpose()?,
+    };
 
     match cli.cmd {
         Cmd::Init { name, flags } => {

@@ -123,7 +123,7 @@ pub trait Source {
 
 impl Check {
     fn run(&self, s: &str, env: &Env) -> Result<String, String> {
-        if s.chars().any(crate::repo::hidden) {
+        if s.chars().any(crate::repo::hidden) && crate::repo::since(2) {
             return Err(format!("{s:?} holds a control character, such as a line break; type it on one line."));
         }
         match self {
@@ -166,7 +166,7 @@ pub fn walk(qs: &[Q], prefix: &str, out: &mut Answers, context: &Context, src: &
             Q::Lines { key, label, hint } => {
                 let k = format!("{prefix}{key}");
                 let v = src.lines(&k, label, hint)?;
-                if v.chars().any(|c| crate::repo::hidden(c) && c != '\n') {
+                if v.chars().any(|c| crate::repo::hidden(c) && c != '\n') && crate::repo::since(2) {
                     bail!("{label}: {v:?} holds a control character");
                 }
                 out.insert(k, v);
@@ -401,11 +401,11 @@ const fn account(key: &'static str, label: &'static str, offer: &'static str, ch
 
 /// VAT paid on purchases is owed back: an asset. VAT charged is owed on.
 fn asset(s: &str, env: &Env) -> Result<String, String> {
-    account_check(s, env).and_then(|a| if a.to_lowercase().starts_with("assets:") { Ok(a) } else { Err(format!("{a} is not an Assets account, as VAT to reclaim is.")) })
+    account_check(s, env).and_then(|a| if a.to_lowercase().starts_with("assets:") || !crate::repo::since(2) { Ok(a) } else { Err(format!("{a} is not an Assets account, as VAT to reclaim is.")) })
 }
 
 fn liability(s: &str, env: &Env) -> Result<String, String> {
-    account_check(s, env).and_then(|a| if a.to_lowercase().starts_with("liabilities:") { Ok(a) } else { Err(format!("{a} is not a Liabilities account, as VAT owed is.")) })
+    account_check(s, env).and_then(|a| if a.to_lowercase().starts_with("liabilities:") || !crate::repo::since(2) { Ok(a) } else { Err(format!("{a} is not a Liabilities account, as VAT owed is.")) })
 }
 
 const fn percent(key: &'static str, label: &'static str, offer: Offer) -> Q {

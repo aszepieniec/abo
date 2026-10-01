@@ -263,10 +263,10 @@ pub fn settle(ctx: &Ctx, number: &str, by: Option<&str>, date: &str) -> Result<S
 fn tag_booking(ctx: &Ctx, number: &str, key: &str) -> Result<SettleReport> {
     let b = journal::booking(ctx, key)?;
     let receivable = &ctx.cfg.invoice.receivable;
-    if let Some(by) = &b.reversed_by {
+    if let Some(by) = b.reversed_by.as_ref().filter(|_| crate::repo::since(2)) {
         bail!("{} {} is reversed, by {by}; it pays nothing", b.date, b.description);
     }
-    if let Some(i) = invoices(ctx)?.into_iter().find(|i| i.number == number && b.date < i.date) {
+    if let Some(i) = invoices(ctx)?.into_iter().find(|i| i.number == number && b.date < i.date && crate::repo::since(2)) {
         bail!("{} {} is dated before invoice {number}, {}; it cannot have paid it", b.date, b.description, i.date);
     }
     if !b.postings.iter().any(|p| &p.account == receivable && p.amount.is_some_and(|a| a.is_sign_negative())) {
@@ -277,6 +277,7 @@ fn tag_booking(ctx: &Ctx, number: &str, key: &str) -> Result<SettleReport> {
             bail!("{} falls in a closed period (closed through {c}); settle the invoice without a payment instead", b.date);
         }
     }
+    ctx.untouched()?;
     let file = ctx.journal_dir().join(key.split(':').next().unwrap_or_default());
     let before = std::fs::read_to_string(&file)?;
     let line: usize = key.split(':').nth(1).unwrap_or_default().parse()?;

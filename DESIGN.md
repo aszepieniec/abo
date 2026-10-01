@@ -538,7 +538,15 @@ the operation began. Every commit the operation makes carries the stamp as
 both author and committer date, and an invoice PDF carries it as its creation
 date. Run the lines in order, each with `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`
 and `GIT_AUTHOR_DATE` set from its stamp, and the books come out the same,
-commit hash for commit hash. `tests/replay.rs` does exactly that. An `abo file`
+commit hash for commit hash. `tests/replay.rs` does exactly that.
+
+A line also names the rules it was taken under, `"rules": 2`; one naming none
+was taken under rules 1. Checks tighten as faults are found, and a line taken
+under laxer rules could be refused by today's, or write its entry otherwise
+(`10 EUR`, now `10.00 EUR`). So a replay runs each line with `ABO_RULES` set
+to the rules it names, and every check added after rules 1 is guarded by the
+version that added it (`repo::since(2)`). `repo::RULES` lists what each
+version added; a new tightening is the next number. An `abo file`
 line names the document it was given, so a replay needs the documents at those
 paths; the browser's names only what the upload was called, so a replay has
 to supply that document itself, identified by the hash in the line.

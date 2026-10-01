@@ -115,10 +115,11 @@ impl PaymentOption {
         // Lines may break the bank's address and the further lines alone.
         let ctrl = |v: &String, lines: bool| v.chars().any(|c| hidden(c) && !(lines && c == '\n'));
         let one_line = [&self.id, &self.label, h, i, b, n, a, &self.account];
-        if let Some(v) = one_line.into_iter().find(|v| ctrl(v, false)).or_else(|| [k, &self.details].into_iter().find(|v| ctrl(v, true))) {
+        let ruled = since(2);
+        if let Some(v) = one_line.into_iter().find(|v| ruled && ctrl(v, false)).or_else(|| [k, &self.details].into_iter().find(|v| ruled && ctrl(v, true))) {
             return Some(format!("{v:?} holds a control character"));
         }
-        if !self.account.is_empty() && !self.account.to_lowercase().starts_with("assets:") {
+        if !self.account.is_empty() && !self.account.to_lowercase().starts_with("assets:") && ruled {
             return Some(format!("{} is not an account money arrives in; give an Assets account", self.account));
         }
         match self.kind {
@@ -126,7 +127,10 @@ impl PaymentOption {
                 Some("a bank option needs an IBAN, or details such as an account number".into())
             }
             Kind::Crypto if n.is_empty() || a.is_empty() => Some("a crypto option needs a network and an address".into()),
-            Kind::Cash if self.details.is_empty() => Some("a cash option needs lines saying where and when".into()),
+            Kind::Cash if self.details.is_empty() && ruled => Some("a cash option needs lines saying where and when".into()),
+            Kind::Cash if self.label.is_empty() && self.details.is_empty() => {
+                Some("a cash option needs a name or details for invoices to print".into())
+            }
             _ => None,
         }
     }
@@ -252,10 +256,51 @@ impl Ctx {
                         f.display()
                     );
                 }
-                return Ok(Ctx { root: root.to_path_buf(), cfg, stamp: Default::default() });
+                let ctx = Ctx { root: root.to_path_buf(), cfg, stamp: Default::default() };
+                if since(2) {
+                    ctx.checked().with_context(|| format!("{}", f.display()))?;
+                }
+                return Ok(ctx);
             }
         }
         bail!("no abo.toml in {} or any parent directory", dir.display())
+    }
+
+    /// What abo.toml says, checked as abo would check it given by a
+    /// command, for when it was edited by hand: else each mistake surfaces
+    /// somewhere else, in other words.
+    fn checked(&self) -> Result<()> {
+        let c = &self.cfg;
+        for (i, o) in c.payment.iter().enumerate() {
+            if c.payment[..i].iter().any(|p| p.id == o.id) {
+                bail!("there is a payment option {:?} twice; ids are one each", o.id);
+            }
+        }
+        if !c.invoice.receivable.to_lowercase().starts_with("assets:") {
+            bail!("[invoice] receivable = {:?}: what customers owe is an asset, an Assets account", c.invoice.receivable);
+        }
+        let declared = crate::journal::declared_accounts(self)?;
+        let vat = match &c.vat {
+            Vat::None => vec![],
+            Vat::Flat { account, .. } => vec![account],
+            Vat::Effective { input, output } => vec![input, output],
+        };
+        let named = vat.into_iter().chain(c.payment.iter().map(|p| &p.account)).chain([&c.invoice.receivable, &c.invoice.income]);
+        if let Some(a) = named.into_iter().find(|a| !declared.contains(a)) {
+            bail!("{a} is not declared; add `account {a}` to journal/accounts.journal");
+        }
+        Ok(())
+    }
+
+    /// The journal files abo writes — every one but accounts.journal, which
+    /// is a person's to edit — as their last commit left them: a change of
+    /// someone else's in one would be signed with abo's next commit.
+    pub fn untouched(&self) -> Result<()> {
+        let changed = self.git(&["status", "--porcelain", "--", "journal/", ":!journal/accounts.journal"])?;
+        if let Some(l) = changed.lines().next() {
+            bail!("{} has changes no abo command made; commit them, or take them out, first", l.get(3..).unwrap_or(l));
+        }
+        Ok(())
     }
 
     pub fn journal_dir(&self) -> PathBuf {
@@ -296,6 +341,7 @@ impl Ctx {
             "who": s.name,
             "email": s.email,
             "git_date": s.git_date(),
+            "rules": rules(),
             "argv": argv,
             "what": what,
             "ok": t,
@@ -535,6 +581,24 @@ pub mod answer {
     }
 }
 
+/// The rules abo checks the books by, numbered. Each log line names the
+/// rules it was taken under, and replaying a log takes each line under its
+/// own (`ABO_RULES`), so that books made under laxer ones come out the same.
+/// 1: abo until the verification runs of 2026-10-01; a log line naming none.
+/// 2: what those runs, and the thinking after them, added — each check
+///    `since(2)` guards. A later tightening is 3, and so on.
+pub const RULES: u32 = 2;
+
+/// The rules in force: `ABO_RULES` when a replay sets it, else the latest.
+pub fn rules() -> u32 {
+    std::env::var("ABO_RULES").ok().and_then(|v| v.parse().ok()).filter(|r| (1..=RULES).contains(r)).unwrap_or(RULES)
+}
+
+/// Whether the rules in force include those of version `v`.
+pub fn since(v: u32) -> bool {
+    rules() >= v
+}
+
 /// A character no text abo keeps may hold: a control character, or one
 /// that is invisible or turns the text around it — a zero-width space, a
 /// right-to-left override — so that what is printed is not what was read.
@@ -566,6 +630,21 @@ pub fn slug(name: &str) -> String {
 pub fn books_root(dir: &Path) -> Result<Option<PathBuf>> {
     let dir = dir.canonicalize().with_context(|| format!("{}", dir.display()))?;
     Ok(dir.ancestors().find(|a| a.join("abo.toml").is_file()).map(Path::to_path_buf))
+}
+
+/// Hold the books for one change at a time, across processes: a terminal's
+/// `abo post` and the server's form never write the journal, or git's
+/// index, at once. Waits for its turn, or with `wait` false says the books
+/// are busy. Released when the file it returns is dropped.
+pub fn lock(root: &Path, wait: bool) -> Result<std::fs::File> {
+    std::fs::create_dir_all(root.join(".abo"))?;
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(root.join(".abo/lock"))?;
+    if wait {
+        f.lock()?;
+    } else if f.try_lock().is_err() {
+        bail!("another abo is changing these books just now; try again in a moment");
+    }
+    Ok(f)
 }
 
 /// The global git setting `key`, such as user.name, if there is one.

@@ -47,7 +47,7 @@ pub fn file(ctx: &Ctx, src: &str, bytes: &[u8], date: &str, issuer: &str) -> Res
 }
 
 fn file_it(ctx: &Ctx, bytes: &[u8], date: &str, issuer: &str) -> Result<FileReport> {
-    if issuer.chars().any(crate::repo::hidden) {
+    if issuer.chars().any(crate::repo::hidden) && crate::repo::since(2) {
         bail!("the issuer {issuer:?} holds a control character, such as a line break");
     }
     // A bill dated in a closed period could never be booked: refused before
@@ -96,7 +96,7 @@ pub fn refile(ctx: &Ctx, key: &str, src: &str, bytes: &[u8]) -> Result<FileRepor
 fn refile_it(ctx: &Ctx, key: &str, bytes: &[u8]) -> Result<FileReport> {
     let b = journal::booking(ctx, key)?;
     // It rewrites the booking's tags, and those of every entry naming it.
-    if let Some(closed) = &ctx.cfg.company.closed_through {
+    if let Some(closed) = ctx.cfg.company.closed_through.as_ref().filter(|_| crate::repo::since(2)) {
         if b.date.as_str() <= closed.as_str() {
             bail!("{} falls in a closed period (closed through {closed}); its tags stay as they are", b.date);
         }
@@ -109,6 +109,7 @@ fn refile_it(ctx: &Ctx, key: &str, bytes: &[u8]) -> Result<FileReport> {
     if ctx.root.join(&old).exists() {
         bail!("{old} is in the books already");
     }
+    ctx.untouched()?;
 
     let journal_file = ctx.journal_dir().join(key.split(':').next().unwrap_or_default());
     // Every journal file, as it was, to put back if the commit fails.

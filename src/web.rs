@@ -399,7 +399,8 @@ async fn new_submit(axum::extract::State(root): axum::extract::State<Arc<PathBuf
     }
     let mut problems = Problems::new();
     let token = f.get("token").cloned().unwrap_or_default();
-    let opened = once(&token, || {
+    // A company not yet there: nothing to hold.
+    let opened = once(None, &token, || {
         let context = questions::Context { root: Some(&root), ..Default::default() };
         let mut posted = Posted { f: &f, problems: Problems::new() };
         let mut answers = questions::Answers::new();
@@ -445,7 +446,7 @@ async fn company_view(Books(ctx): Books) -> Response {
 
 async fn company_submit(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
     let mut problems = Problems::new();
-    let changed = once(f.get("token").map_or("", String::as_str), || {
+    let changed = once(Some(&ctx.root), f.get("token").map_or("", String::as_str), || {
         let mut posted = Posted { f: &f, problems: Problems::new() };
         let mut a = questions::Answers::new();
         questions::walk(questions::COMPANY, "", &mut a, &Default::default(), &mut posted)?;
@@ -562,7 +563,7 @@ async fn option_view(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
 async fn option_submit(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
     let mut problems = Problems::new();
     let was = f.get("was").filter(|w| !w.is_empty()).cloned();
-    let saved = once(f.get("token").map_or("", String::as_str), || {
+    let saved = once(Some(&ctx.root), f.get("token").map_or("", String::as_str), || {
         let now = was.as_deref().map(|w| payment::find(&ctx.cfg.payment, w)).transpose()?;
         let ids = ctx.cfg.payment.iter().filter(|p| Some(&p.id) != now.map(|n| &n.id)).map(|p| p.id.clone()).collect();
         let context = questions::Context { root: None, ids, declared: Some(journal::declared_accounts(&ctx)?) };
@@ -594,7 +595,7 @@ async fn option_submit(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
 
 async fn option_remove(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
     let id = f.get("id").cloned().unwrap_or_default();
-    match once(f.get("token").map_or("", String::as_str), || payment::remove(&ctx, &id).map(|_| done(&ctx, "/company"))) {
+    match once(Some(&ctx.root), f.get("token").map_or("", String::as_str), || payment::remove(&ctx, &id).map(|_| done(&ctx, "/company"))) {
         Ok(to) => Redirect::to(&to).into_response(),
         Err(e) => or_error(&ctx, "Payment option", || Err(e)),
     }
@@ -972,7 +973,7 @@ fn toast(ctx: &Ctx, n: usize) -> Option<Markup> {
 /// the first of two sends has finished before the second is looked at.
 /// ponytail: kept in memory and never trimmed; a restart forgets them, after
 /// which a form opened before it would be accepted once more.
-fn once(token: &str, act: impl FnOnce() -> Result<String>) -> Result<String> {
+fn once(root: Option<&std::path::Path>, token: &str, act: impl FnOnce() -> Result<String>) -> Result<String> {
     static DONE: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
         std::sync::Mutex::new(std::collections::BTreeMap::new());
     // Each company's own: one server answers for all of a data directory.
@@ -981,6 +982,8 @@ fn once(token: &str, act: impl FnOnce() -> Result<String>) -> Result<String> {
     if let Some(to) = DONE.lock().unwrap().get(&key).filter(|_| !token.is_empty()) {
         return Ok(to.clone());
     }
+    // The books held while it changes them, as a terminal's abo holds them.
+    let _held = root.map(|r| crate::repo::lock(r, false)).transpose()?;
     let to = act()?;
     if !token.is_empty() {
         DONE.lock().unwrap().insert(key, to.clone());
@@ -1143,7 +1146,7 @@ struct Once {
 async fn undo_line(Books(ctx): Books, Path(n): Path<usize>, Form(f): Form<Once>) -> Response {
     let back = BACK.try_with(Clone::clone).ok().flatten().unwrap_or_else(|| "/".into());
     let back = if f.to.starts_with('/') && !f.to.starts_with("//") { f.to.clone() } else { back };
-    match once(&f.token, || undo::undo(&ctx, n).map(|_| done(&ctx, &back))) {
+    match once(Some(&ctx.root), &f.token, || undo::undo(&ctx, n).map(|_| done(&ctx, &back))) {
         Ok(to) => Redirect::to(&to).into_response(),
         Err(e) => or_error(&ctx, "Undo", || Err(e)),
     }
@@ -1320,7 +1323,7 @@ async fn entry_file(Books(ctx): Books, Path(key): Path<String>, mut mp: Multipar
             _ => {}
         }
     }
-    let filed = once(&token, || {
+    let filed = once(Some(&ctx.root), &token, || {
         let (src, bytes) = upload.as_ref().context("no document in the upload")?;
         bill::refile(&ctx, &key, src, bytes).map(|_| done(&ctx, &to))
     });
@@ -1480,7 +1483,7 @@ async fn register(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
 
 async fn revert(Books(ctx): Books, Path(key): Path<String>, Form(f): Form<Once>) -> Response {
     let today = jiff::Zoned::now().date().to_string();
-    match once(&f.token, || journal::reverse(&ctx, &key, &today).map(|_| done(&ctx, "/"))) {
+    match once(Some(&ctx.root), &f.token, || journal::reverse(&ctx, &key, &today).map(|_| done(&ctx, "/"))) {
         Ok(to) => Redirect::to(&to).into_response(),
         Err(e) => or_error(&ctx, "Booking", || Err(e)),
     }
@@ -1500,7 +1503,7 @@ struct PostForm {
 }
 
 async fn post_submit(Books(ctx): Books, Form(f): Form<PostForm>) -> Response {
-    let booked = once(&f.token, || {
+    let booked = once(Some(&ctx.root), &f.token, || {
         let postings = postings(&ctx, &f.postings)?;
         journal::post(&ctx, &Entry { date: f.date.clone(), description: f.description.clone(), tags: vec![], postings })?;
         Ok(done(&ctx, "/"))
@@ -1638,7 +1641,7 @@ async fn reconcile_act(
     let keys: Vec<String> = pairs.iter().filter(|(k, _)| k == "key").map(|(_, v)| v.clone()).collect();
     let f: Fields = pairs.into_iter().filter(|(k, _)| k != "key").collect();
 
-    let done = once(f.get("token").map_or("", String::as_str), || {
+    let done = once(Some(&ctx.root), f.get("token").map_or("", String::as_str), || {
         let (account, commodity, date) = params(&ctx, &f);
         match f.get("action").map(String::as_str) {
             Some("record") => {
@@ -1801,7 +1804,7 @@ async fn invoice_form(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
 /// in as it was: the correction is the new invoice.
 async fn correct(Books(ctx): Books, Path(number): Path<String>, Form(f): Form<Fields>) -> Response {
     let token = f.get("token").cloned().unwrap_or_default();
-    let r = once(&token, || {
+    let r = once(Some(&ctx.root), &token, || {
         invoice::credit(&ctx, &invoice::CreditArgs { number: number.clone(), date: None, note: String::new() })?;
         Ok(done(&ctx, &format!("/invoice?from={number}")))
     });
@@ -1815,7 +1818,7 @@ async fn invoice_submit(
     Books(ctx): Books,
     Form(f): Form<InvoiceForm>,
 ) -> Response {
-    let issued = once(&f.token, || {
+    let issued = once(Some(&ctx.root), &f.token, || {
         let args = invoice::IssueArgs {
             customer: f.to.replace("\r\n", "\n"),
             items: f.items.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect(),
@@ -2127,7 +2130,7 @@ fn pay_page(ctx: &Ctx, f: &Fields, error: Option<&str>) -> Result<Markup> {
 
 async fn pay_submit(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
     let token = f.get("token").cloned().unwrap_or_default();
-    let r = once(&token, || {
+    let r = once(Some(&ctx.root), &token, || {
         let get = |k: &str| f.get(k).map(|v| v.trim().to_string()).unwrap_or_default();
         let commodity = match get("commodity") { c if c.is_empty() => ctx.cfg.company.currency.clone(), c => c };
         let amount = rust_decimal::Decimal::from_str_exact(&get("amount")).with_context(|| format!("the amount {:?} is not a number", get("amount")))?;
@@ -2230,7 +2233,7 @@ async fn settle_submit(Books(ctx): Books, Path(number): Path<String>, Form(f): F
     let token = f.get("token").cloned().unwrap_or_default();
     let today = jiff::Zoned::now().date().to_string();
     let date = f.get("date").cloned().unwrap_or(today);
-    let r = once(&token, || {
+    let r = once(Some(&ctx.root), &token, || {
         settle::settle(&ctx, &number, f.get("by").map(String::as_str), &date)?;
         Ok(done(&ctx, "/invoices?open=1"))
     });
@@ -2484,7 +2487,7 @@ fn money_accounts(ctx: &Ctx) -> Result<Vec<String>> {
 async fn bill_pay_submit(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
     let token = f.get("token").cloned().unwrap_or_default();
     let get = |k: &str| f.get(k).map(|v| v.trim().to_string()).unwrap_or_default();
-    let r = once(&token, || {
+    let r = once(Some(&ctx.root), &token, || {
         let b = find_bill(&ctx, &get("file"))?;
         let (payable, _, commodity) = b.owed.clone().with_context(|| format!("{} owes nothing", b.file))?;
         let amount = rust_decimal::Decimal::from_str_exact(&get("amount")).with_context(|| format!("the amount {:?} is not a number", get("amount")))?;
@@ -2627,7 +2630,7 @@ async fn bill_submit(Books(ctx): Books, mut mp: Multipart) -> Response {
         }
     }
     let get = |k: &str| f.get(k).map_or("", |v| v.trim());
-    let booked = once(get("token"), || {
+    let booked = once(Some(&ctx.root), get("token"), || {
         // One filed already: booked as it is, not filed again.
         if !get("file").is_empty() {
             let rel = get("file");

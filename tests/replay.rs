@@ -111,10 +111,14 @@ fn replaying_the_log_makes_the_same_books() {
     for l in &lines {
         let argv: Vec<&str> = l["argv"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
         let cwd = if argv[0] == "init" { again.clone() } else { again.join("test-ltd") };
+        // Each line under the rules it was taken under; one naming none,
+        // under the first.
+        let rules = l["rules"].as_u64().unwrap_or(1).to_string();
         let env = [
             ("GIT_AUTHOR_NAME", l["who"].as_str().unwrap()),
             ("GIT_AUTHOR_EMAIL", l["email"].as_str().unwrap()),
             ("GIT_AUTHOR_DATE", l["git_date"].as_str().unwrap()),
+            ("ABO_RULES", rules.as_str()),
         ];
         let o = abo(&cwd, &argv, "", &env);
         assert!(o.status.success(), "{argv:?}: {}", String::from_utf8_lossy(&o.stderr));

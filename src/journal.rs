@@ -176,7 +176,7 @@ fn check_syntax(field: &str, value: &str, forbidden: &str) -> Result<()> {
     if let Some(c) = value.chars().find(|c| c.is_control() || forbidden.contains(*c)) {
         bail!("{field} contains {c:?}, which is journal syntax: {value:?}");
     }
-    if let Some(c) = value.chars().find(|c| crate::repo::hidden(*c)) {
+    if let Some(c) = value.chars().find(|c| crate::repo::hidden(*c)).filter(|_| crate::repo::since(2)) {
         bail!("{field} contains {c:?}, a character that hides or turns text: {value:?}");
     }
     if value.chars().count() > 200 {
@@ -190,7 +190,7 @@ fn check_syntax(field: &str, value: &str, forbidden: &str) -> Result<()> {
 pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
     // 0. no field may carry journal syntax
     check_syntax("description", &e.description, ";")?;
-    if e.description.trim().is_empty() {
+    if e.description.trim().is_empty() && crate::repo::since(2) {
         bail!("an entry needs a description");
     }
     for (k, v) in &e.tags {
@@ -221,7 +221,7 @@ pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
     if e.postings.len() < 2 && !moves_nothing {
         bail!("an entry needs at least two postings");
     }
-    if e.postings.len() > 1 && e.postings.iter().all(|p| p.amount.is_none_or(|a| a.is_zero())) {
+    if e.postings.len() > 1 && e.postings.iter().all(|p| p.amount.is_none_or(|a| a.is_zero())) && crate::repo::since(2) {
         bail!("every amount is nought: the entry moves nothing");
     }
     if elided == 0 {
@@ -286,7 +286,7 @@ pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
     }
 
     // 4. the document is not already booked
-    if let Some(file) = e.tag("bill") {
+    if let Some(file) = e.tag("bill").filter(|_| crate::repo::since(2)) {
         crate::bill::unbooked(ctx, file)?;
     }
     if let Some(hash) = e.tag("sha256") {
@@ -311,7 +311,7 @@ pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
         if what == "bill" {
             let (liability, commodity, open, owed) = crate::bill::check(ctx, k, v)?;
             let dated = v.rsplit('/').next().and_then(|n| n.get(..10)).unwrap_or_default();
-            if e.date.as_str() < dated {
+            if e.date.as_str() < dated && crate::repo::since(2) {
                 bail!("it pays the bill {v}, dated {dated}, before it was dated: {}", e.date);
             }
             let off = e.net(&liability, &commodity);
@@ -323,20 +323,20 @@ pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
             }
             // What is open unknown, a payment of it alone is still no more
             // than the bill owed.
-            if open.is_none() && paying.len() == 1 && off > owed {
+            if open.is_none() && paying.len() == 1 && off > owed && crate::repo::since(2) {
                 bail!("it pays {off} {commodity} off the bill {v}, which owed {owed} {commodity} in all");
             }
             // A part that leaves nothing open settles it.
-            if open.is_some_and(|o| k == crate::settle::PAYS && paying.len() == 1 && off == o) {
+            if open.is_some_and(|o| k == crate::settle::PAYS && paying.len() == 1 && off == o) && crate::repo::since(2) {
                 bail!("it pays all that is open of the bill {v}; tag it {}: instead", crate::settle::SETTLES);
             }
             // The payment that settles a bill leaves nothing of it owed.
-            if let Some(open) = open.filter(|o| k == crate::settle::SETTLES && paying.len() == 1 && off < *o) {
+            if let Some(open) = open.filter(|o| k == crate::settle::SETTLES && paying.len() == 1 && off < *o && crate::repo::since(2)) {
                 bail!("it settles the bill {v} with {off} {commodity}, but {open} {commodity} is open; tag it {}: for a part", crate::settle::PAYS);
             }
         } else {
             crate::settle::check(ctx, k, v)?;
-            if let Some(i) = crate::settle::invoices(ctx)?.into_iter().find(|i| &i.number == v && e.date < i.date) {
+            if let Some(i) = crate::settle::invoices(ctx)?.into_iter().find(|i| &i.number == v && e.date < i.date).filter(|_| crate::repo::since(2)) {
                 bail!("it pays invoice {v}, dated {}, before it was dated: {}", i.date, e.date);
             }
         }
@@ -407,9 +407,10 @@ pub fn add(ctx: &Ctx, e: &Entry) -> Result<AddReport> {
 /// `add`, committing `also` with the entry: an invoice's PDF, what it printed.
 pub fn add_with(ctx: &Ctx, e: &Entry, also: &[&Path]) -> Result<AddReport> {
     validate(ctx, e)?;
+    ctx.untouched()?;
     // Written to its commodity's places: 10 EUR as 10.00 EUR.
     let mut e = e.clone();
-    for p in &mut e.postings {
+    for p in e.postings.iter_mut().filter(|_| crate::repo::since(2)) {
         if let (Some(a), (_, Some(dp))) = (p.amount.as_mut(), commodity(ctx, &p.commodity)?) {
             if a.scale() < dp {
                 a.rescale(dp);
