@@ -555,6 +555,9 @@ async fn run(cli: Cli) -> Result<()> {
     let here = cli.dir.clone().unwrap_or(std::env::current_dir()?);
     // Older rules are for replaying a log; left set by mistake they would
     // quietly let through what today's refuse.
+    if let Some(v) = std::env::var_os("ABO_RULES").filter(|v| v.to_str().and_then(|v| v.parse::<u32>().ok()) != Some(repo::rules())) {
+        eprintln!("abo: ABO_RULES={} names no rules abo has, 1 to {}; checking by rules {}", v.to_string_lossy(), repo::RULES, repo::rules());
+    }
     if repo::rules() < repo::RULES {
         eprintln!(
             "abo: checking by rules {} of {}, as ABO_RULES says; unset it unless replaying a log",
@@ -1281,12 +1284,17 @@ impl questions::Source for Flags {
         Ok(())
     }
 
+    // Since rules 4 trimmed, as the terminal and the form take them: the
+    // same answers open the same books, however given.
     fn text(&mut self, key: &str, label: &str, _: &str, _: &str, check: &dyn Fn(&str) -> Result<String, String>) -> Result<String> {
-        check(self.0.get(key).map_or("", String::as_str)).map_err(|e| anyhow::anyhow!("{label}: {e}"))
+        let v = self.0.get(key).map_or("", String::as_str);
+        let v = if repo::since(4) { v.trim() } else { v };
+        check(v).map_err(|e| anyhow::anyhow!("{label}: {e}"))
     }
 
     fn lines(&mut self, key: &str, _: &str, _: &str) -> Result<String> {
-        Ok(self.0.get(key).cloned().unwrap_or_default())
+        let v = self.0.get(key).cloned().unwrap_or_default();
+        Ok(if repo::since(4) { v.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n") } else { v })
     }
 
     fn choice(&mut self, key: &str, label: &str, noun: &str, options: &[&'static str], offer: &str) -> Result<String> {

@@ -276,6 +276,37 @@ impl Ctx {
                 bail!("there is a payment option {:?} twice; ids are one each", o.id);
             }
         }
+        if since(4) {
+            let co = &c.company;
+            if co.name.trim().is_empty() {
+                bail!("[company] has no name");
+            }
+            for (what, v) in [("name", &co.name), ("address", &co.address), ("country", &co.country), ("tax_id", &co.tax_id)] {
+                if v.chars().any(|ch| hidden(ch) && !(ch == '\n' && what == "address")) {
+                    bail!("[company] {what} {v:?} holds a control character, or one that hides text");
+                }
+            }
+            for o in &c.payment {
+                let named = |e: String| anyhow::anyhow!("payment option {:?}: {e}", o.id);
+                answer::option_id(&o.id).map_err(named)?;
+                if !o.iban.is_empty() {
+                    answer::iban(&o.iban).map_err(named)?;
+                }
+                if !o.bic.is_empty() {
+                    answer::bic(&o.bic).map_err(named)?;
+                }
+                if let Some(p) = o.problem() {
+                    return Err(named(p));
+                }
+            }
+            let kind = |a: &str, top: &str| a.to_lowercase().starts_with(&format!("{top}:"));
+            match &c.vat {
+                Vat::Effective { input, .. } if !kind(input, "assets") => bail!("[vat] input = {input:?}: VAT to reclaim is an asset, an Assets account"),
+                Vat::Effective { output, .. } if !kind(output, "liabilities") => bail!("[vat] output = {output:?}: VAT owed is a liability, a Liabilities account"),
+                Vat::Flat { account, .. } if !kind(account, "liabilities") => bail!("[vat] account = {account:?}: VAT owed is a liability, a Liabilities account"),
+                _ => {}
+            }
+        }
         if let Some(o) = c.payment.iter().find(|o| !o.account.to_lowercase().starts_with("assets:") && since(3)) {
             bail!("payment option {:?}: {} is not an account money arrives in; give an Assets account", o.id, o.account);
         }
@@ -592,8 +623,12 @@ pub mod answer {
 ///    `since(2)` guards.
 /// 3: what the third run found: dates read as dates first, amounts to their
 ///    places, payments in their own commodity, takes-back for reversals
-///    alone, and the rest `since(3)` guards. A later tightening is 4.
-pub const RULES: u32 = 3;
+///    alone, and the rest `since(3)` guards.
+/// 4: what the fourth run found: abo's own tags reserved to the commands
+///    that write them, one bill or invoice to a payment, invisible
+///    characters refused by their Unicode category, and the rest `since(4)`
+///    guards. A later tightening is 5.
+pub const RULES: u32 = 4;
 
 /// The rules in force: `ABO_RULES` when a replay sets it, else the latest.
 pub fn rules() -> u32 {
@@ -614,6 +649,16 @@ pub fn hidden(c: char) -> bool {
             | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
         // Fillers that print as nothing, and the tag characters: since rules 3.
         || matches!(c, '\u{034F}' | '\u{115F}' | '\u{1160}' | '\u{3164}' | '\u{FFA0}' | '\u{E0000}'..='\u{E007F}') && since(3)
+        // Since rules 4, by what Unicode says a character is, not by a list:
+        // every control, format, private-use and unassigned one, and the
+        // line and paragraph separators; and the marks that change how a
+        // character beside them looks, variation selectors and the like,
+        // with the blank of the braille block.
+        || since(4) && {
+            use unicode_general_category::{get_general_category, GeneralCategory as G};
+            matches!(get_general_category(c), G::Control | G::Format | G::PrivateUse | G::Unassigned | G::Surrogate | G::LineSeparator | G::ParagraphSeparator)
+                || matches!(c, '\u{17B4}' | '\u{17B5}' | '\u{180B}'..='\u{180F}' | '\u{2800}' | '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}')
+        }
 }
 
 /// Push `--name value`, or `--name=value` when the value starts with a dash
@@ -779,6 +824,21 @@ fn init_in(dir: &Path, b: &crate::questions::NewBooks) -> Result<InitReport> {
 /// A throwaway books repository with toy data, rebuilt from scratch every time.
 /// Same code path as a real one: `init`, then the ordinary validated `post`.
 pub fn demo(dir: &Path) -> Result<Ctx> {
+    // Its books hold what abo no longer lets a person type — invoices
+    // issued before abo, tagged by hand, a booking whose document never
+    // came — as books carried over from before would. So they are made
+    // under rules 3, logged so, and served under today's.
+    let was = std::env::var_os("ABO_RULES");
+    std::env::set_var("ABO_RULES", "3");
+    let r = demo_books(dir);
+    match was {
+        Some(v) => std::env::set_var("ABO_RULES", v),
+        None => std::env::remove_var("ABO_RULES"),
+    }
+    r
+}
+
+fn demo_books(dir: &Path) -> Result<Ctx> {
     use crate::journal::{post, Entry, Posting};
 
     if dir.exists() {

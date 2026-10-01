@@ -153,7 +153,9 @@ holds it, and the front page says **Booked** with that commit. An entry that
 does not balance, names an undeclared account, posts to a VAT account the
 method forbids, or falls in a closed period is refused with the reason, and the
 form comes back filled in; so is one in an undeclared commodity or with more
-places than its commodity has (A2). Sending the same form twice — a double
+places than its commodity has (A2), and one carrying a tag abo writes itself
+— `reverses`, `takes-back`, `cancels`, `invoice`, `credits`, `bill`, `sha256`
+— which only the command that keeps it true writes. Sending the same form twice — a double
 click, a reload — books it once.
 
 ### B2. Book a supplier bill from a document — Supported (browser, CLI)
@@ -184,7 +186,8 @@ that the books lack, newest first. Each shows its amount, what its booking
 credits (`?` where bookings disagree), and what is open: what it credits to
 a liability less what payments naming it alone took off, blank once
 settled or when it credited no liability; `?` where a payment names it
-with other bills, which abo does not split. Bills not booked or still owed
+with other bills, which abo does not split — in books from before rules 4,
+which take one bill or invoice to a payment. Bills not booked or still owed
 come first, and what is open is summed in each commodity. Pay books a
 payment of it, Upload files a document the books lack, Delete undoes the
 filing of one not booked. The bill's page lists every entry that names it.
@@ -206,8 +209,11 @@ as `0.00` on the front page.
 
 ### B5. Record a customer's payment of invoices — Supported (browser, CLI)
 A payment names the invoices it pays by tag: `pays:` for part of one,
-`settles:` for the payment that settles it. One payment may tag several
-invoices, each either way, and an invoice may be paid in any number of parts.
+`settles:` for the payment that settles it. A payment pays one invoice (since
+rules 4; books from before may hold one that pays several), and an invoice
+may be paid in any number of parts — no more than it owes, in its own
+commodity, the part that pays all it owes tagged `settles:`. Settling for
+less than is owed stays: that is how what will never come is written off.
 Browser: **Invoices**, **Pay** on an invoice: a page for the payment of that
 invoice, naming it and what has been paid on it, asks whether this payment
 settles it (the default) or pays part of it, then the date, what arrived and
@@ -352,7 +358,11 @@ return is refused, naming the box and the directive to add, rather than
 leaving the amount out.
 
 ### E4. Ask hledger anything — Supported (CLI)
-`abo bal …` and `abo reg …` pass their arguments to hledger.
+`abo bal …` and `abo reg …` pass their arguments to hledger: a query, and the
+options that choose what is reported and how — periods, depth, value,
+cleared or not, the output format. Any other option is refused, so that they
+read the books and no other file, write none, and take no `hledger.conf`;
+neither does any report abo makes.
 
 ---
 
@@ -458,7 +468,7 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 ## Last verified: 2026-10-01
 
-Run three times that day, by four fresh agents each time, each with its own copy of
+Run four times that day, by four fresh agents each time, each with its own copy of
 the demo books and its own server, typst installed, working from this file
 and not the source: setting up (A, F6); booking, reconciling and reports
 (B1–B3, D, E); invoicing and corrections (C1, C3, F5, F7, G1); bills,
@@ -467,6 +477,22 @@ held fixed in the second, and of the 40-odd fixed after the second all but
 three held in the third, those three having been fixed too narrowly. What the
 third found was fixed the same day, with a test for each in
 `tests/regressions.rs`, under rules 3, and not yet verified again.
+
+The fourth run found that fixing each fault where it showed had stopped
+converging: tags typed by hand got past every check made for one tag alone,
+undo was checked for bills but not invoices, invisible characters slipped a
+list kept by hand. Under rules 4, abo's own tags are reserved to the commands
+that write them, a payment pays one bill or invoice, an undo may leave no new
+problem anywhere in the books, characters are refused by their Unicode
+category, and hledger reads no config and takes only listed options.
+
+| Workflow | Fourth run |
+|---|---|
+| A2, B1–B3, C3, E1–E3, F1, F3, F6, F7 | Verified |
+| B4, B5, B6, C2, F2, F4 | Failed, fixed: a hand-typed `reverses:`, `credits:` or `invoice:` was taken — reversing twice, cancelling any invoice, duplicating a number; a `?` bill could be settled for 0.01, and an invoice overpaid or paid in another commodity; an undo could settle an invoice twice, bring back a credit note without its invoice, or leave a reversal taking back what is not there; an undo of an undo, an entry booked above it since, failed with hledger's error |
+| A1, A3, A3b, A4 | Failed, fixed: flags to init, and a label, were not trimmed; saving an option unchanged in the browser added the company as holder; more invisible characters slipped through; a data directory served `-lead` and listed `Odd_Name`; `abo.toml` could hold an IBAN, id, name or VAT account no command would take; a value of `ABO_RULES` naming no rules said nothing, and pages never said older rules applied |
+| D1, D2, E4 | Failed, fixed: a recorded balance was still written as typed; showing figures took dates recording refused; `abo bal` read other files, by `@args`, `--conf` or a `hledger.conf` above the books, and wrote them with `-o` |
+| C1, G1 | Failed, fixed: a huge due period crashed abo; numbering stopped at 9999; the Log could not be read at phone width, and a bill page with a long path scrolled sideways |
 
 | Workflow | Third run |
 |---|---|

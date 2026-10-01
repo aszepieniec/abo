@@ -22,6 +22,27 @@ fn abo(dir: &Path, args: &[&str], stdin: &str) -> Output {
     c.wait_with_output().unwrap()
 }
 
+/// `abo` under rules 3: for books holding what a person could type before
+/// rules 4 reserved abo's own tags, as books carried over from then do.
+fn abo3(dir: &Path, args: &[&str], stdin: &str) -> Output {
+    use std::io::Write as _;
+    let mut c = Command::new(env!("CARGO_BIN_EXE_abo"))
+        .args(args)
+        .current_dir(dir)
+        .env("ABO_RULES", "3")
+        .env("GIT_AUTHOR_NAME", "abo test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+        .env("GIT_COMMITTER_NAME", "abo test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    c.stdin.as_mut().unwrap().write_all(stdin.as_bytes()).unwrap();
+    c.wait_with_output().unwrap()
+}
+
 fn err(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
@@ -55,8 +76,8 @@ fn m0() {
         assert!(!o.status.success() && err(&o).contains(says), "{args:?}: {}", err(&o));
     }
 
-    // balanced: commits
-    let o = abo(
+    // balanced: commits (a hash typed by hand, as before rules 4)
+    let o = abo3(
         &dir,
         &["post", "--date", "2026-09-21", "--desc", "Acme Hosting",
           "--tag", "sha256=9f2a", "Expenses:General=100.00", "Liabilities:Payable=-100.00"],
@@ -66,7 +87,7 @@ fn m0() {
     assert_eq!(commits(&dir), 2);
 
     // the same document again: duplicate
-    let o = abo(
+    let o = abo3(
         &dir,
         &["post", "--date", "2026-09-22", "--desc", "Acme Hosting again",
           "--tag", "sha256=9f2a", "Expenses:General=100.00", "Liabilities:Payable=-100.00"],
@@ -292,7 +313,7 @@ fn invoices() {
 
     // One booked before abo kept what invoices print is cancelled all the
     // same: one line for the whole of it, stated to the currency's places.
-    let o = abo(&dir, &["post", "--date", "2026-09-24", "--desc", "Old Customer | Invoice 2026-0006",
+    let o = abo3(&dir, &["post", "--date", "2026-09-24", "--desc", "Old Customer | Invoice 2026-0006",
                         "--tag", "invoice=2026-0006", "Assets:Receivable=110", "Income:Sales=-100", "Liabilities:VAT:Output=-10"], "");
     assert!(o.status.success(), "{}", err(&o));
     let o = abo(&dir, &["credit", "--date", "2026-09-24", "2026-0006"], "");
@@ -880,6 +901,9 @@ fn company_details() {
 /// and one settled where the books do not show.
 #[test]
 fn settling_invoices() {
+    // Invoices tagged by hand and payments of several at once: books from
+    // before rules 4, which stay readable and settle as they did.
+    let abo = abo3;
     let base = std::env::temp_dir().join(format!("abo-settle-{}", std::process::id()));
     let dir = base.join("test-ltd");
     let _ = std::fs::remove_dir_all(&base);

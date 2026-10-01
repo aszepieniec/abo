@@ -156,6 +156,9 @@ pub fn profit_and_loss(ctx: &Ctx, period: &str) -> Result<Statement> {
 }
 
 pub fn balance_sheet(ctx: &Ctx, date: &str) -> Result<Statement> {
+    if crate::repo::since(4) {
+        journal::date(date)?;
+    }
     // -H gives the running balance, and -e is exclusive, so ask for the day after.
     let end = jiff::civil::Date::strptime("%Y-%m-%d", date)
         .context("bad date")?

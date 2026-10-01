@@ -52,6 +52,9 @@ pub fn status(
     date: &str,
     statement: Option<Decimal>,
 ) -> Result<Reconciliation> {
+    if crate::repo::since(4) {
+        journal::date(date)?;
+    }
     // The account reaches hledger as a query argument, from a browser form.
     if account.starts_with('-') {
         bail!("bad account {account:?}");
@@ -70,8 +73,10 @@ pub fn status(
         }
     }
     // Stated to the commodity's places: 0 EUR is 0.00 EUR.
+    // And since rules 4 past them too, 457.5000 as 457.50: only noughts,
+    // the places having been checked.
     let fix = |mut q: Decimal| {
-        if let Some(dp) = places.filter(|dp| q.scale() < *dp) {
+        if let Some(dp) = places.filter(|dp| q.scale() < *dp || q.scale() > *dp && crate::repo::since(4)) {
             q.rescale(dp);
         }
         q.to_string()

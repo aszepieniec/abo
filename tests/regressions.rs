@@ -54,6 +54,22 @@ fn ok(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
+/// `ok` under rules 3: for what only books from before rules 4 hold, a tag
+/// abo now writes itself typed by hand, a payment of several at once.
+fn ok3(dir: &Path, args: &[&str]) -> String {
+    sweep();
+    let o = Command::new(env!("CARGO_BIN_EXE_abo")).args(args).current_dir(dir).env("ABO_RULES", "3").stdin(Stdio::null()).output().unwrap();
+    assert!(o.status.success(), "{args:?}: {}", err(&o));
+    String::from_utf8_lossy(&o.stdout).into_owned()
+}
+
+/// `refused` under rules 3: a check that stands for books from before rules
+/// 4, where the tag it checks could still be typed.
+fn refused3(dir: &Path, args: &[&str], says: &str) {
+    let o = Command::new(env!("CARGO_BIN_EXE_abo")).args(args).current_dir(dir).env("ABO_RULES", "3").stdin(Stdio::null()).output().unwrap();
+    assert!(!o.status.success() && err(&o).contains(says), "{args:?} should be refused under rules 3 with {says:?}: {}", err(&o));
+}
+
 fn refused(dir: &Path, args: &[&str], says: &str) {
     let o = abo(dir, args);
     assert!(!o.status.success() && err(&o).contains(says), "{args:?} should be refused with {says:?}: {}", err(&o));
@@ -88,8 +104,10 @@ fn key(dir: &Path, query: &str) -> String {
 }
 
 /// An invoice as `abo invoice` books it, without its PDF.
+/// Tagged by hand, so under rules 3: as an invoice issued before abo kept
+/// what it printed stands in books carried over from then.
 fn invoice(dir: &Path, n: &str, date: &str, total: &str) {
-    ok(dir, &["post", "--date", date, "--desc", &format!("Customer | Invoice {n}"), "--tag", &format!("invoice={n}"),
+    ok3(dir, &["post", "--date", date, "--desc", &format!("Customer | Invoice {n}"), "--tag", &format!("invoice={n}"),
               &format!("Assets:Receivable={total}"), &format!("Income:Sales=-{total}")]);
 }
 
@@ -298,7 +316,7 @@ fn an_invoice_is_not_reverted() {
 fn a_credit_note_is_not_reverted() {
     let dir = books("revert-credit", &[]);
     invoice(&dir, "2026-0001", "2026-03-01", "110.00");
-    ok(&dir, &["post", "--date", "2026-03-02", "--desc", "Customer | Credit note 2026-0002 for invoice 2026-0001",
+    ok3(&dir, &["post", "--date", "2026-03-02", "--desc", "Customer | Credit note 2026-0002 for invoice 2026-0001",
                "--tag", "invoice=2026-0002", "--tag", "credits=2026-0001", "Assets:Receivable=-110.00", "Income:Sales=110.00"]);
     refused(&dir, &["revert", &key(&dir, "tag:credits=2026-0001")], "is a credit note");
 }
@@ -585,14 +603,16 @@ fn a_payment_tag_is_on_a_payment() {
 fn an_invoice_is_named_once_by_a_payment() {
     let dir = books("named-twice", &[]);
     invoice(&dir, "2026-0001", "2026-03-01", "110.00");
-    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "Pays", "--tag", "pays=2026-0001", "--tag", "settles=2026-0001",
+    refused3(&dir, &["post", "--date", "2026-03-02", "--desc", "Pays", "--tag", "pays=2026-0001", "--tag", "settles=2026-0001",
                     "Assets:Bank=110.00", "Assets:Receivable"], "named twice");
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "Pays", "--tag", "pays=2026-0001", "--tag", "settles=2026-0001",
+                    "Assets:Bank=110.00", "Assets:Receivable"], "one bill or invoice");
 }
 
 #[test]
 fn an_invoice_paid_on_the_spot_is_settled() {
     let dir = books("on-the-spot", &[]);
-    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "C | Invoice 2026-0001", "--tag", "invoice=2026-0001",
+    ok3(&dir, &["post", "--date", "2026-03-01", "--desc", "C | Invoice 2026-0001", "--tag", "invoice=2026-0001",
                "Assets:Bank=40.00", "Income:Sales"]);
     let v: serde_json::Value = serde_json::from_str(&ok(&dir, &["invoices", "--json"])).unwrap();
     assert_eq!((v[0]["status"].as_str(), v[0]["total"].as_str(), v[0]["owed"].as_str()), (Some("settled"), Some("40.00 EUR"), Some("")));
@@ -680,7 +700,7 @@ fn an_invoice_without_its_data_is_credited_from_the_journal() {
         return;
     }
     let dir = books("credit-journal", &[]);
-    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Old | Invoice 2026-0001", "--tag", "invoice=2026-0001",
+    ok3(&dir, &["post", "--date", "2026-03-01", "--desc", "Old | Invoice 2026-0001", "--tag", "invoice=2026-0001",
                "Assets:Receivable=110", "Income:Sales=-100", "Liabilities:VAT:Output=-10"]);
     ok(&dir, &["credit", "--date", "2026-03-02", "2026-0001"]);
     let data: serde_json::Value = serde_json::from_str(&read(&dir, "invoices/2026/2026-0002.json")).unwrap();
@@ -765,7 +785,7 @@ fn a_reversed_entry_is_not_undone() {
 /// A booking naming a document the books lack, `path`, for 9.00 EUR.
 fn lost(dir: &Path) -> (String, String) {
     let path = "bills/2026/2026-03-01-lost-bbbbbbbb.pdf".to_string();
-    ok(dir, &["post", "--date", "2026-03-01", "--desc", "Lost", "--tag", &format!("bill={path}"), "Expenses:General=9.00", "Liabilities:Payable=-9.00"]);
+    ok3(dir, &["post", "--date", "2026-03-01", "--desc", "Lost", "--tag", &format!("bill={path}"), "Expenses:General=9.00", "Liabilities:Payable=-9.00"]);
     let found = dir.parent().unwrap().join("found.pdf");
     std::fs::write(&found, b"%PDF-1.4\n% found\n").unwrap();
     (path, found.to_string_lossy().to_string())
@@ -822,7 +842,8 @@ fn a_bill_is_paid_from_money() {
 fn a_cancelling_moves_the_opposite_of_the_booking() {
     let dir = books("fake-cancel", &[]);
     let b = bill(&dir, "Acme", "2026-03-01", "5.00");
-    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "Not a reversal", "--tag", &format!("cancels={b}"), "Assets:Bank=1.00", "Assets:Cash=-1.00"], "opposite");
+    refused3(&dir, &["post", "--date", "2026-03-02", "--desc", "Not a reversal", "--tag", &format!("cancels={b}"), "Assets:Bank=1.00", "Assets:Cash=-1.00"], "opposite");
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "Not a reversal", "--tag", &format!("cancels={b}"), "Assets:Bank=1.00", "Assets:Cash=-1.00"], "abo writes itself");
 }
 
 #[test]
@@ -956,8 +977,9 @@ fn a_bill_is_settled_by_what_is_open() {
 fn a_bill_is_booked_once() {
     let dir = books("bill-booked-once", &[]);
     let b = bill(&dir, "Acme", "2026-03-01", "40.00");
-    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "Again", "--tag", &format!("bill={b}"), "Expenses:General=60.00", "Liabilities:Payable=-60.00"],
-            "already booked, by 2026-03-01 Acme");
+    let again = ["post", "--date", "2026-03-02", "--desc", "Again", "--tag", &format!("bill={b}"), "Expenses:General=60.00", "Liabilities:Payable=-60.00"];
+    refused3(&dir, &again, "already booked, by 2026-03-01 Acme");
+    refused(&dir, &again, "abo writes itself");
     let s = serve(&dir);
     let (_, _, page) = http(&s, "GET", &format!("/bill?file={}", enc(&b)), &[]);
     assert!(page.contains("already booked, by 2026-03-01 Acme"), "{page}");
@@ -1122,7 +1144,7 @@ fn a_vat_box_is_configured_once() {
 fn a_credit_note_is_not_settled() {
     let dir = books("settle-credit", &[]);
     invoice(&dir, "2026-0001", "2026-03-01", "110.00");
-    ok(&dir, &["post", "--date", "2026-03-02", "--desc", "Customer | Credit note 2026-0002", "--tag", "invoice=2026-0002", "--tag", "credits=2026-0001",
+    ok3(&dir, &["post", "--date", "2026-03-02", "--desc", "Customer | Credit note 2026-0002", "--tag", "invoice=2026-0002", "--tag", "credits=2026-0001",
                "Assets:Receivable=-110.00", "Income:Sales=110.00"]);
     refused(&dir, &["settle", "--date", "2026-03-06", "2026-0002"], "2026-0002 is a credit note; nothing is owed");
 }
@@ -1161,7 +1183,7 @@ fn a_bill_whose_open_is_unknown_is_paid_no_more_than_it_owed() {
     let dir = books("open-unknown", &[]);
     let a = bill(&dir, "Acme", "2026-03-01", "40.00");
     let b = bill(&dir, "Beta", "2026-03-01", "30.00");
-    ok(&dir, &["post", "--date", "2026-03-05", "--desc", "Both", "--tag", &format!("pays={a}"), "--tag", &format!("pays={b}"), "Liabilities:Payable=20.00", "Assets:Bank"]);
+    ok3(&dir, &["post", "--date", "2026-03-05", "--desc", "Both", "--tag", &format!("pays={a}"), "--tag", &format!("pays={b}"), "Liabilities:Payable=20.00", "Assets:Bank"]);
     let o = pay(&dir, "settles", &a, "2026-03-06", "1000.00");
     assert!(!o.status.success() && err(&o).contains("owed 40.00 EUR in all"), "{}", err(&o));
 }
@@ -1255,8 +1277,8 @@ fn an_invoice_of_nought_is_refused_as_such() {
 #[test]
 fn a_credit_note_of_an_invoice_paid_on_the_spot_is_negative() {
     let dir = books("spot-credit", &[]);
-    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Customer | Invoice 2026-0001", "--tag", "invoice=2026-0001", "Assets:Bank=110.00", "Income:Sales=-110.00"]);
-    ok(&dir, &["post", "--date", "2026-03-02", "--desc", "Customer | Credit note 2026-0002", "--tag", "invoice=2026-0002", "--tag", "credits=2026-0001",
+    ok3(&dir, &["post", "--date", "2026-03-01", "--desc", "Customer | Invoice 2026-0001", "--tag", "invoice=2026-0001", "Assets:Bank=110.00", "Income:Sales=-110.00"]);
+    ok3(&dir, &["post", "--date", "2026-03-02", "--desc", "Customer | Credit note 2026-0002", "--tag", "invoice=2026-0002", "--tag", "credits=2026-0001",
                "Assets:Bank=-110.00", "Income:Sales=110.00"]);
     let v: serde_json::Value = serde_json::from_str(&ok(&dir, &["invoices", "--json"])).unwrap();
     let note = v.as_array().unwrap().iter().find(|i| i["number"] == "2026-0002").unwrap();
@@ -1561,7 +1583,7 @@ fn a_key_reaches_no_twin_that_differs_in_its_tags() {
     invoice(&dir, "2026-0001", "2026-03-01", "110.00");
     invoice(&dir, "2026-0002", "2026-03-01", "110.00");
     for n in ["2026-0001", "2026-0002"] {
-        ok(&dir, &["post", "--date", "2026-03-05", "--desc", "Customer pays", "--tag", &format!("pays={n}"), "Assets:Bank=110.00", "Assets:Receivable"]);
+        ok(&dir, &["post", "--date", "2026-03-05", "--desc", "Customer pays", "--tag", &format!("settles={n}"), "Assets:Bank=110.00", "Assets:Receivable"]);
     }
     let v: serde_json::Value = serde_json::from_str(&ok(&dir, &["--json", "reconcile", "--account", "Assets:Bank", "--date", "2026-12-31"])).unwrap();
     let second = v["outstanding"][1]["key"].as_str().unwrap().strip_suffix(":Assets:Bank").unwrap().to_string();
@@ -1572,7 +1594,7 @@ fn a_key_reaches_no_twin_that_differs_in_its_tags() {
     assert!(journal.lines().nth(line - 1).unwrap().ends_with("Customer pays") && journal.lines().nth(line).unwrap().contains("2026-0001"),
             "the test meant the first payment to sit at line {line}:\n{journal}");
     let _ = abo(&dir, &["revert", "--date", "2026-03-06", &second]);
-    assert!(!read(&dir, "journal/2026.journal").contains("takes-back: pays 2026-0001"), "the first payment was reverted");
+    assert!(!read(&dir, "journal/2026.journal").contains("takes-back: settles 2026-0001"), "the first payment was reverted");
 }
 
 #[test]
@@ -1837,7 +1859,8 @@ fn takes_back_is_a_reversals_alone() {
     let dir = books("hand-takes-back", &[]);
     let b = bill(&dir, "Acme", "2026-03-01", "60.00");
     assert!(pay(&dir, "pays", &b, "2026-03-10", "20.00").status.success());
-    refused(&dir, &["post", "--date", "2026-03-11", "--desc", "tb", "--tag", &format!("takes-back=pays {b}"), "Liabilities:Payable=-1.00", "Assets:Bank"], "reversal");
+    refused3(&dir, &["post", "--date", "2026-03-11", "--desc", "tb", "--tag", &format!("takes-back=pays {b}"), "Liabilities:Payable=-1.00", "Assets:Bank"], "reversal");
+    refused(&dir, &["post", "--date", "2026-03-11", "--desc", "tb", "--tag", &format!("takes-back=pays {b}"), "Liabilities:Payable=-1.00", "Assets:Bank"], "abo writes itself");
 }
 
 #[test]
@@ -1978,7 +2001,7 @@ fn a_part_of_a_bill_whose_open_is_unknown_is_less_than_it_owed() {
     let dir = books("unknown-pays-all", &[]);
     let a = bill(&dir, "Acme", "2026-03-01", "40.00");
     let b = bill(&dir, "Beta", "2026-03-01", "30.00");
-    ok(&dir, &["post", "--date", "2026-03-05", "--desc", "Both", "--tag", &format!("pays={a}"), "--tag", &format!("pays={b}"), "Liabilities:Payable=20.00", "Assets:Bank"]);
+    ok3(&dir, &["post", "--date", "2026-03-05", "--desc", "Both", "--tag", &format!("pays={a}"), "--tag", &format!("pays={b}"), "Liabilities:Payable=20.00", "Assets:Bank"]);
     let o = pay(&dir, "pays", &a, "2026-03-06", "40.00");
     assert!(!o.status.success() && err(&o).contains("settles"), "{}", err(&o));
 }
@@ -2018,4 +2041,226 @@ fn no_filler_that_prints_as_nothing_is_taken() {
     }
     invoice(&dir, "2026-0001", "2026-03-01", "110.00");
     refused(&dir, &["credit", "2026-0001", "--date", "2026-03-02", "--note", "bad\u{200B}note"], "control character");
+}
+
+// ---- found by the fourth verification run, 2026-10-01: rules 4 ----
+
+#[test]
+fn abo_writes_its_own_tags_and_no_one_types_them() {
+    let dir = books("reserved", &[]);
+    let b = bill(&dir, "Acme", "2026-03-01", "40.00");
+    for tag in ["reverses=abc1234", &format!("takes-back=pays {b}"), &format!("cancels={b}"), "invoice=2026-0001",
+                "credits=2026-0001", &format!("bill={b}"), "sha256=00"] {
+        refused(&dir, &["post", "--date", "2026-03-02", "--desc", "Typed", "--tag", tag, "Expenses:General=1.00", "Assets:Bank"], "abo writes itself");
+    }
+}
+
+#[test]
+fn a_payment_pays_one_bill_or_invoice() {
+    let dir = books("one-a-payment", &[]);
+    let a = bill(&dir, "Acme", "2026-03-01", "40.00");
+    let b = bill(&dir, "Beta", "2026-03-01", "30.00");
+    refused(&dir, &["post", "--date", "2026-03-05", "--desc", "Both", "--tag", &format!("pays={a}"), "--tag", &format!("pays={b}"), "Liabilities:Payable=20.00", "Assets:Bank"], "one bill or invoice");
+}
+
+#[test]
+fn an_invoice_is_paid_no_more_than_it_owes_in_its_commodity() {
+    let dir = books("invoice-overpaid", &[]);
+    std::fs::write(dir.join("journal/accounts.journal"), read(&dir, "journal/accounts.journal") + "commodity 0.00000001 BTC\n").unwrap();
+    by_hand(&dir, "Declare BTC");
+    invoice(&dir, "2026-0001", "2026-03-01", "110.00");
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "P", "--tag", "settles=2026-0001", "Assets:Bank=200.00", "Assets:Receivable"], "only 110.00 EUR is owed");
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "P", "--tag", "pays=2026-0001", "Assets:Bank=110.00", "Assets:Receivable"], "tag it settles");
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "P", "--tag", "pays=2026-0001", "Assets:Bank=0.001 BTC", "Assets:Receivable=-0.001 BTC"], "is in EUR, not BTC");
+    // Settling for less stays: a write-off.
+    ok(&dir, &["post", "--date", "2026-03-02", "--desc", "P", "--tag", "settles=2026-0001", "Assets:Bank=100.00", "Assets:Receivable"]);
+}
+
+#[test]
+fn an_undo_brings_back_no_credit_note_without_its_invoice() {
+    if Command::new("typst").arg("--version").output().is_err() {
+        return;
+    }
+    let dir = books("undo-credit-alone", &[]);
+    ok(&dir, &["invoice", "--to", "C", "--item", "1|100|x", "--date", "2026-03-01"]);
+    let issued = log_len(&dir);
+    // Entries between, so that each undo's lines are its own.
+    ok(&dir, &["post", "--date", "2026-04-01", "--desc", "Between", "Expenses:General=3.00", "Assets:Cash"]);
+    ok(&dir, &["credit", "2026-0001", "--date", "2026-06-01"]);
+    let credited = log_len(&dir);
+    ok(&dir, &["undo", &credited.to_string()]);
+    ok(&dir, &["undo", &issued.to_string()]);
+    refused(&dir, &["undo", &(credited + 1).to_string()], "which the books do not hold");
+    clean(&dir);
+}
+
+#[test]
+fn an_undo_leaves_no_reversal_taking_back_what_is_not_there() {
+    let dir = books("undo-settle-reverted", &[]);
+    invoice(&dir, "2026-0001", "2026-03-01", "110.00");
+    ok(&dir, &["post", "--date", "2026-03-05", "--desc", "Part", "--tag", "pays=2026-0001", "Assets:Bank=50.00", "Assets:Receivable"]);
+    ok(&dir, &["settle", "2026-0001", "--by", &key(&dir, "desc:^Part$")]);
+    let settled = log_len(&dir);
+    ok(&dir, &["revert", "--date", "2026-03-06", &key(&dir, "desc:^Part$")]);
+    refused(&dir, &["undo", &settled.to_string()], "does not carry");
+    clean(&dir);
+}
+
+#[test]
+fn an_undo_settles_no_invoice_twice() {
+    let dir = books("undo-settled-twice", &[]);
+    invoice(&dir, "2026-0001", "2026-03-01", "110.00");
+    ok(&dir, &["post", "--date", "2026-03-05", "--desc", "Pays", "--tag", "settles=2026-0001", "Assets:Bank=110.00", "Assets:Receivable"]);
+    ok(&dir, &["revert", "--date", "2026-03-06", &key(&dir, "desc:^Pays$")]);
+    let reverted = log_len(&dir);
+    ok(&dir, &["settle", "2026-0001", "--date", "2026-03-07"]);
+    refused(&dir, &["undo", &reverted.to_string()], "settled twice");
+    clean(&dir);
+}
+
+#[test]
+fn an_undone_upload_leaves_no_reversal_naming_its_document() {
+    let dir = books("undo-upload-reverted", &[]);
+    let (old, found) = lost(&dir);
+    assert!(pay(&dir, "pays", &old, "2026-03-05", "4.00").status.success());
+    ok(&dir, &["file", "--for", &key(&dir, "desc:^Lost$"), &found]);
+    let upload = log_len(&dir);
+    ok(&dir, &["revert", "--date", "2026-03-06", &key(&dir, "desc:Pay 2026-03-05")]);
+    refused(&dir, &["undo", &upload.to_string()], "");
+    clean(&dir);
+}
+
+#[test]
+fn every_invisible_character_is_refused_by_what_it_is() {
+    let dir = books("categories", &[]);
+    for c in ['\u{206F}', '\u{FE0F}', '\u{1D173}', '\u{2800}', '\u{17B4}', '\u{E0100}', '\u{F8FF}', '\u{180B}'] {
+        refused(&dir, &["company", "--name", &format!("A{c}B")], "control character");
+    }
+    refused(&dir, &["post", "--date", "2026-03-01", "--desc", "Fee\u{206A}s", "Expenses:General=5.00", "Assets:Bank"], "hides or turns text");
+}
+
+#[test]
+fn hledger_reads_no_config_and_takes_only_options_that_choose_what_is_reported() {
+    let dir = books("no-conf", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank"]);
+    // A hledger.conf above the books, read by hledger unless told not to.
+    std::fs::write(dir.parent().unwrap().join("hledger.conf"), "--alias Expenses:General=Income:Sales\n").unwrap();
+    let pl = ok(&dir, &["pl", "--period", "2026"]);
+    assert!(pl.contains("Expenses:General"), "{pl}");
+    std::fs::write(dir.join("args.txt"), "-f\n/etc/passwd\n").unwrap();
+    for args in [&["bal", "@args.txt"][..], &["bal", "--conf", "x.conf"], &["bal", "-o", "journal/2027.journal"], &["reg", "--output-file=x"]] {
+        refused(&dir, args, "reads these books alone");
+    }
+    ok(&dir, &["bal", "-p", "2026", "--depth", "1", "Expenses"]);
+}
+
+#[test]
+fn an_undone_undo_lands_where_the_entry_was_after_entries_booked_above_it() {
+    let dir = books("undo-undo-moved", &[]);
+    // Not the year's only entry: its file stays when it goes.
+    ok(&dir, &["post", "--date", "2026-01-05", "--desc", "First", "Expenses:General=3.00", "Assets:Cash"]);
+    ok(&dir, &["post", "--date", "2026-09-30", "--desc", "X entry", "Expenses:General=1.00", "Assets:Cash"]);
+    ok(&dir, &["undo", &log_len(&dir).to_string()]);
+    let undone = log_len(&dir);
+    ok(&dir, &["post", "--date", "2026-09-12", "--desc", "Y entry", "Expenses:General=2.00", "Assets:Cash"]);
+    ok(&dir, &["undo", &undone.to_string()]);
+    let journal = read(&dir, "journal/2026.journal");
+    assert!(journal.find("Y entry").unwrap() < journal.find("X entry").unwrap(), "{journal}");
+    clean(&dir);
+}
+
+#[test]
+fn a_statement_is_recorded_to_its_places() {
+    let dir = books("statement-places", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "In", "Assets:Bank=457.50", "Income:Sales"]);
+    ok(&dir, &["clear", &format!("{}:Assets:Bank", key(&dir, "desc:^In$"))]);
+    ok(&dir, &["reconcile", "--account", "Assets:Bank", "--date", "2026-03-31", "--balance", "457.5000", "--record"]);
+    assert!(read(&dir, "journal/2026.journal").contains("statement: 457.50 EUR"), "{}", read(&dir, "journal/2026.journal"));
+}
+
+#[test]
+fn figures_are_shown_for_dates_alone() {
+    let dir = books("show-dates", &[]);
+    refused(&dir, &["reconcile", "--account", "Assets:Bank", "--date", "26-6-1"], "not a date");
+    refused(&dir, &["bs", "--date", "26-09-30"], "not a date");
+}
+
+#[test]
+fn flags_are_trimmed_as_typed_answers_are() {
+    let base = std::env::temp_dir().join(format!("abo-reg-trim-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    ok(&base, &["init", "Trim", "--currency", " chf ", "--country", " CH ", "--address", " Line A ", "--address", "", "--vat", "none",
+                "--git-name", "t", "--git-email", "t@example.invalid"]);
+    let toml = read(&base.join("trim"), "abo.toml");
+    assert!(toml.contains("country   = \"CH\"") && toml.contains("currency  = \"CHF\"") && toml.contains("address   = \"Line A\""), "{toml}");
+    let dir = books("label-spaces", &[]);
+    ok(&dir, &["payment-options", "add", "till", "--kind", "cash", "--detail", "Till", "--label", "  "]);
+    assert!(read(&dir, "abo.toml").contains("label = \"Cash\""), "{}", read(&dir, "abo.toml"));
+}
+
+#[test]
+fn an_option_saved_as_it_stands_in_the_browser_changes_nothing() {
+    let dir = books("web-edit-unchanged", &[]);
+    ok(&dir, &["payment-options", "add", "bank", "--iban", "CH9300762011623852957"]);
+    let s = serve(&dir);
+    let (_, _, page) = http(&s, "POST", "/company/payment", &[("token", "e1"), ("was", "bank"), ("kind", "bank"), ("id", "bank"), ("label", "Bank transfer"),
+        ("holder", ""), ("iban", "CH93 0076 2011 6238 5295 7"), ("bic", ""), ("bank", ""), ("details", ""), ("account", "Assets:Bank")]);
+    assert!(page.contains("like that already"), "{page}");
+    assert!(!read(&dir, "abo.toml").contains("holder"));
+}
+
+#[test]
+fn a_due_period_too_long_for_a_date_is_refused() {
+    invoice_refused("due-huge", &["--item", "1|10|x", "--due-days", "99999999999"], "no date abo can write");
+}
+
+#[test]
+fn abo_toml_holds_what_a_command_would_take() {
+    let dir = books("config-more", &["--payment", "{ kind = \"bank\", iban = \"CH9300762011623852957\" }"]);
+    let toml = read(&dir, "abo.toml");
+    for (from, to, says) in [("iban = \"CH93 0076 2011 6238 5295 7\"", "iban = \"CH00 1234\"", "is not an IBAN"),
+                             ("id = \"bank\"", "id = \"Bad Id\"", "Bad Id"),
+                             ("name      = \"Test Ltd\"", "name      = \"\"", "no name"),
+                             ("input  = \"Assets:VAT:Input\"", "input  = \"Income:Sales\"", "VAT to reclaim is an asset")] {
+        std::fs::write(dir.join("abo.toml"), toml.replace(from, to)).unwrap();
+        refused(&dir, &["bal"], says);
+    }
+}
+
+#[test]
+fn a_data_directory_serves_and_lists_what_init_makes_alone() {
+    let dir = books("odd-dirs", &[]);
+    let base = dir.parent().unwrap();
+    for odd in ["-lead", "Odd_Name"] {
+        Command::new("cp").args(["-r"]).arg(&dir).arg(base.join(odd)).status().unwrap();
+    }
+    let s = serve_data(base);
+    let (_, _, page) = http(&s, "GET", "/", &[]);
+    assert!(page.contains("/c/test-ltd/") && !page.contains("Odd_Name") && !page.contains("/c/-lead"), "{page}");
+    let (status, _, _) = http(&s, "GET", "/c/-lead/", &[]);
+    assert_eq!(status, 404);
+}
+
+#[test]
+fn rules_that_are_none_are_said_and_older_ones_shown_on_every_page() {
+    let dir = books("rules-shown", &[]);
+    let o = Command::new(env!("CARGO_BIN_EXE_abo")).args(["bal"]).current_dir(&dir).env("ABO_RULES", "9").stdin(Stdio::null()).output().unwrap();
+    assert!(err(&o).contains("names no rules"), "{}", err(&o));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_abo"));
+    cmd.arg("serve").current_dir(&dir).env("ABO_RULES", "1");
+    let s = start(cmd);
+    let (_, _, page) = http(&s, "GET", "/", &[]);
+    assert!(page.contains("checked by rules 1"), "{page}");
+}
+
+#[test]
+fn invoices_are_numbered_on_past_the_ten_thousandth() {
+    if Command::new("typst").arg("--version").output().is_err() {
+        return;
+    }
+    let dir = books("ten-thousand", &[]);
+    invoice(&dir, "2026-9999", "2026-03-01", "110.00");
+    let out = ok(&dir, &["invoice", "--to", "C", "--item", "1|10|x", "--date", "2026-03-02"]);
+    assert!(out.contains("2026-10000"), "{out}");
 }

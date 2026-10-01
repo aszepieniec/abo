@@ -153,10 +153,22 @@ fn data_page(title: &str, body: Markup) -> Html<String> {
     )
 }
 
+/// A directory name as init makes them, `smith-sons-llc`: its own slug, and
+/// so nothing that could reach outside the data directory either.
+fn company_dir(name: &str) -> bool {
+    !name.is_empty() && crate::repo::slug(name) == name
+}
+
 async fn landing(axum::extract::State(root): axum::extract::State<Arc<PathBuf>>, Query(q): Query<Fields>) -> Response {
     // (directory, company name, or why its abo.toml could not be read)
     let mut companies: Vec<(String, Result<String, String>)> = std::fs::read_dir(&*root)
-        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.join("abo.toml").is_file()).collect::<Vec<_>>())
+        // Only what init makes, as the company's pages serve only that.
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.join("abo.toml").is_file() && p.file_name().is_some_and(|n| company_dir(&n.to_string_lossy())))
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default()
         .into_iter()
         .map(|p| {
@@ -250,6 +262,12 @@ impl Posted<'_> {
 impl questions::Source for Posted<'_> {
     fn note(&mut self, _: &str, _: &str) -> Result<()> {
         Ok(())
+    }
+
+    /// Editing an option (`was` names it), a field sent blank stays blank,
+    /// as on the terminal: the form showed what it holds, blank included.
+    fn offer(&self, _key: &str, offered: String) -> String {
+        if self.f.get("was").is_some_and(|w| !w.is_empty()) { String::new() } else { offered }
     }
 
     fn text(&mut self, key: &str, _: &str, _: &str, _: &str, check: &dyn Fn(&str) -> Result<String, String>) -> Result<String> {
@@ -728,7 +746,7 @@ async fn company(
     // A directory name as init makes them, and nothing that could reach
     // outside the data directory.
     let dir = root.join(&slug);
-    if slug.is_empty() || !slug.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') || !dir.join("abo.toml").is_file() {
+    if !company_dir(&slug) || !dir.join("abo.toml").is_file() {
         return (StatusCode::NOT_FOUND, format!("no company {slug:?} here")).into_response();
     }
     let prefix = format!("/c/{slug}");
@@ -2151,7 +2169,8 @@ fn pay_page(ctx: &Ctx, f: &Fields, error: Option<&str>) -> Result<Markup> {
                 }
             }
             @if this.is_some() {
-                @if !others.is_empty() {
+                // One invoice to a payment since rules 4: no others to add.
+                @if !others.is_empty() && !crate::repo::since(4) {
                     // Open once anything in it is chosen, say after a refusal.
                     details.box open[others.iter().any(|i| !get(&format!("inv-{}", i.number)).is_empty())] {
                         summary.box-header { (icon("outbox")) "Also pays other invoices" }
@@ -2894,6 +2913,14 @@ fn page(ctx: &Ctx, title: &str, body: Markup) -> Html<String> {
                         }
                     }
                     main.content {
+                        // Said on every page, not once to a terminal no one reads.
+                        @if crate::repo::rules() < crate::repo::RULES {
+                            div.flash.flash-error { (icon("error")) div {
+                                strong { "Older rules" }
+                                " These books are checked by rules " (crate::repo::rules()) " of " (crate::repo::RULES)
+                                ", as ABO_RULES says, which lets through what today's refuse. Unset it unless replaying a log."
+                            } }
+                        }
                         @if let Some(t) = QUERY.try_with(|q| {
                             q.split('&').find_map(|kv| kv.strip_prefix("done=")?.parse::<usize>().ok())
                         }).ok().flatten().and_then(|n| toast(ctx, n)) { (t) }
@@ -3029,6 +3056,7 @@ button.btn-danger[disabled]:hover { border-color: #B42318; }
 button[disabled] { opacity: .5; cursor: not-allowed; }
 button[disabled]:hover { border-color: var(--btn-border); }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.missing { overflow-wrap: anywhere; white-space: normal; text-align: left; }
 pre .missing, code .missing { font: inherit; color: var(--error); background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; }
 .modal { max-width: 440px; padding: 20px; border: 1px solid var(--card-border); border-radius: 12px; background: var(--card); color: var(--fg); }
 .modal::backdrop { background: rgb(0 0 0 / .4); }
@@ -3128,12 +3156,21 @@ label.row .date, label.row .amt { font-family: "IBM Plex Mono", ui-monospace, mo
 label.row .amt { text-align: right; color: var(--fg); }
 
 table.log td { vertical-align: top; white-space: nowrap; }
-@media (max-width: 600px) { table.log .who { display: none; } }
+}
 table.log td.what { width: 100%; max-width: 0; }
 table.log summary { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 table.log details[open] summary { white-space: normal; }
 table.log h2 { font-size: 12px; margin: 12px 0 4px; color: var(--sub); }
 table.log pre { max-height: 360px; }
+/* at phone width each line of the Log is a block: when, command, commit and
+   Undo on one line, what it did beneath, the width of the screen */
+@media (max-width: 600px) {
+  table.list.log thead, table.list.log .who { display: none; }
+  table.list.log, table.list.log tbody { display: block; }
+  table.list.log tr { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 8px 12px; }
+  table.list.log td, table.list.log td.date { display: block; padding: 0; width: auto; }
+  table.list.log td.what { order: 9; flex-basis: 100%; width: auto; max-width: 100%; min-width: 0; }
+  table.log pre { max-width: calc(100vw - 72px); }
 .failed { color: var(--error); font-weight: 600; }
 
 /* a success notice: shown, then gone — no script. Hovering or tabbing into it

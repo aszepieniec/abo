@@ -236,9 +236,14 @@ fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
     if let Some(places) = places.filter(|p| dp > *p && crate::repo::since(2)) {
         bail!("{currency} has {places} places, so an invoice in it is stated to {places} at most, not {dp}");
     }
-    let due = jiff::civil::Date::strptime("%Y-%m-%d", &date)
-        .context("bad date")?
-        .checked_add(jiff::Span::new().days(args.due_days.unwrap_or_default()))?
+    let days = args.due_days.unwrap_or_default();
+    let issued = jiff::civil::Date::strptime("%Y-%m-%d", &date).context("bad date")?;
+    // A number of days too great for a date is refused, not a panic.
+    let due = jiff::Span::new()
+        .try_days(days)
+        .ok()
+        .and_then(|span| issued.checked_add(span).ok())
+        .with_context(|| format!("{days} days from {date} is no date abo can write"))?
         .to_string();
     let rate = args.vat_rate.unwrap_or_default();
     if rate.is_sign_negative() || rate > Decimal::ONE_HUNDRED {
@@ -542,7 +547,7 @@ fn booked(ctx: &Ctx, number: &str) -> Result<Data> {
     let (total, vat, net) = (places(total), places(vat), places(net));
     let due = jiff::civil::Date::strptime("%Y-%m-%d", &date)
         .context("bad date")?
-        .checked_add(jiff::Span::new().days(ctx.cfg.invoice.terms_days))?
+        .checked_add(jiff::Span::new().try_days(ctx.cfg.invoice.terms_days)?)?
         .to_string();
     let c = &ctx.cfg.company;
     Ok(Data {
@@ -773,6 +778,9 @@ mod tests {
 /// `2026-0017` is `invoices/2026/2026-0017.pdf`.
 pub fn pdf_path(number: &str) -> Option<String> {
     let (y, n) = number.split_once('-')?;
-    let digits = y.len() == 4 && n.len() == 4 && y.chars().chain(n.chars()).all(|c| c.is_ascii_digit());
+    // Four digits, or since rules 4 more past the ten thousandth: numbered
+    // on, not refused as "bad number".
+    let wide = n.len() > 4 && !n.starts_with('0') && crate::repo::since(4);
+    let digits = y.len() == 4 && (n.len() == 4 || wide) && y.chars().chain(n.chars()).all(|c| c.is_ascii_digit());
     digits.then(|| format!("invoices/{y}/{number}.pdf"))
 }

@@ -36,7 +36,13 @@ directory serves each of its companies under `/c/<dir>/`; users are next.
 
 ### Crates
 
-`clap serde toml serde_json axum tokio maud rust_decimal jiff sha2 anyhow`
+`clap serde toml serde_json axum tokio maud rust_decimal jiff sha2 anyhow
+unicode-general-category`
+
+The last answers what kind of character a character is, from the Unicode
+tables: text holding one that prints as nothing or turns the text around it
+is refused by its category, not from a list kept by hand, which the
+verification runs kept finding short.
 
 One tokio runtime; everything async. No ORM, no template engine, no JS toolchain.
 
@@ -547,7 +553,18 @@ under laxer rules could be refused by today's, or write its entry otherwise
 to the rules it names, and every check added after rules 1 is guarded by the
 version that added it (`repo::since(2)`). `repo::RULES` lists what each
 version added; a new tightening is the next number. Rules 3 holds what the
-third verification run of 2026-10-01 found. Older rules are for
+third verification run of 2026-10-01 found, rules 4 what the fourth did.
+The demo's books are made under rules 3, as books carried over from before
+would be: they hold invoices tagged by hand, which rules 4 no longer takes.
+
+Since rules 4, the tags abo writes itself — `reverses`, `takes-back`,
+`cancels`, `invoice`, `credits`, `bill`, `sha256` — are refused in `abo post`
+and its form: each is written only by the command that keeps it true. Every
+check on one of them had been on that tag alone, and each verification run
+found a way past it by typing two together. `pays:` and `settles:` stay a
+person's to write, one bill or invoice to a payment. An undo, which takes
+entries out without the checks that put them in, may leave the books no
+less whole than it found them (`journal::problems`). Older rules are for
 replaying: abo says so on stderr whenever `ABO_RULES` names any. An `abo file`
 line names the document it was given, so a replay needs the documents at those
 paths; the browser's names only what the upload was called, so a replay has

@@ -77,7 +77,9 @@ pub fn how(ctx: &Ctx, line: &Value, reverted: &[String]) -> Result<String> {
     }
     let (patch, attr) = reversal(ctx, full, "check")?;
     let path = patch.to_string_lossy();
-    if ctx.git(&["-c", &attr, "apply", "--check", "--unidiff-zero", "--index", "-R", &path]).is_err() {
+    let (wide, _) = reversal_with(ctx, full, "check-wide", 3)?;
+    let wide_applies = crate::repo::since(4) && ctx.git(&["-c", &attr, "apply", "--check", "--index", "-R", &wide.to_string_lossy()]).is_ok();
+    if !wide_applies && ctx.git(&["-c", &attr, "apply", "--check", "--unidiff-zero", "--index", "-R", &path]).is_err() {
         bail!("something done since has changed the same lines");
     }
     Ok(h)
@@ -166,7 +168,7 @@ fn plain(ctx: &Ctx, line: &Value, reverted: &[String]) -> Result<String> {
     // A bill or an invoice that other entries name stays while they do. A
     // document filed for a booking moves every tag naming it along with it.
     // Nor an undo: what it took out comes back together, payments with
-    // what they pay, and `bill::problems` checks the result.
+    // what they pay, and `journal::problems` checks the result.
     let added = if op(line) == "file" || op(line) == "undo" { String::new() } else { ctx.git(&["show", "--format=", "-U0", h, "--", "journal/"])? };
     for l in added.lines().filter_map(|l| l.strip_prefix('+')) {
         let Some((k, v)) = l.trim().strip_prefix(';').and_then(|t| t.split_once(':')) else { continue };
@@ -177,6 +179,10 @@ fn plain(ctx: &Ctx, line: &Value, reverted: &[String]) -> Result<String> {
                 let next = crate::invoice::next_number(ctx, year)?;
                 let last = format!("{year}-{:04}", next[year.len() + 1..].parse::<u32>().unwrap_or(1).saturating_sub(1));
                 if last != v {
+                    // A credit note stands, and is not corrected by another.
+                    if added.lines().any(|l| l.trim_start_matches('+').trim().starts_with("; credits:")) {
+                        bail!("credit note {v} is not the last numbered, {last} is: undone, it would leave a gap in the numbers");
+                    }
                     bail!("invoice {v} is not the last numbered, {last} is: undone, it would leave a gap in the numbers. Correct it with a credit note");
                 }
             }
@@ -241,8 +247,13 @@ pub fn binary(ctx: &Ctx) -> Result<String> {
 /// The patch that takes a commit's change back out, written to
 /// `.abo/<name>.patch`, and the git setting it is to be read with.
 fn reversal(ctx: &Ctx, full: &str, name: &str) -> Result<(std::path::PathBuf, String)> {
+    reversal_with(ctx, full, name, 0)
+}
+
+/// `reversal`, with `context` lines around each change.
+fn reversal_with(ctx: &Ctx, full: &str, name: &str, context: u32) -> Result<(std::path::PathBuf, String)> {
     let attr = binary(ctx)?;
-    let patch = ctx.git(&["-c", &attr, "diff", "--binary", "-U0", &format!("{full}^"), full, "--", ".", ":!journal/main.journal"])?;
+    let patch = ctx.git(&["-c", &attr, "diff", "--binary", &format!("-U{context}"), &format!("{full}^"), full, "--", ".", ":!journal/main.journal"])?;
     // A commit that started a year's journal file shows as creating it, and
     // reversing a creation deletes the file — which git refuses once later
     // entries share it. Said as lines added to an empty file instead, the
@@ -300,6 +311,36 @@ fn years(ctx: &Ctx) -> Result<()> {
         ctx.git(&["add", "--", "journal/main.journal"])?;
     }
     Ok(())
+}
+
+/// A year file's entries in date order, those of a day as they stood: an
+/// entry is its date line and every line up to the next date line, blank
+/// ones included.
+fn by_date(text: &str) -> String {
+    let mut head = String::new();
+    let mut entries: Vec<String> = vec![];
+    for line in text.split_inclusive('\n') {
+        if line.starts_with(|c: char| c.is_ascii_digit()) {
+            entries.push(line.to_string());
+        } else if let Some(e) = entries.last_mut() {
+            e.push_str(line);
+        } else {
+            head.push_str(line);
+        }
+    }
+    // Each entry ends with the blank line between it and the next; the
+    // last may not have one, and goes last no more.
+    for e in &mut entries {
+        if !e.ends_with("\n\n") {
+            e.push('\n');
+        }
+    }
+    entries.sort_by(|a, b| a.get(..10).cmp(&b.get(..10)));
+    let mut out = head + &entries.concat();
+    while out.ends_with("\n\n") {
+        out.pop();
+    }
+    out
 }
 
 /// Why a commit's change cannot be taken back out: the first later change
@@ -372,21 +413,48 @@ fn revert_commit(ctx: &Ctx, hash: &str) -> Result<String> {
     let before = closed(ctx)?;
     // What already did not hold together before it, a hand edit's say, is
     // not this undo's to answer for.
-    let was = crate::bill::problems(ctx)?;
+    let was = crate::journal::problems(ctx)?;
 
     let (file, attr) = reversal(ctx, full, "undo")?;
     let path = file.to_string_lossy();
-    if let Err(e) = ctx.git(&["-c", &attr, "apply", "--unidiff-zero", "--index", "-R", &path]) {
+    // With the lines around each change first, which find where the change
+    // is now, however far entries booked since have moved it; with none
+    // after, which a change booked right beside it leaves room for, but
+    // which puts lines taken out back where they were, moved or not.
+    let (wide, _) = reversal_with(ctx, full, "undo-wide", 3)?;
+    let wide_applied = crate::repo::since(4) && ctx.git(&["-c", &attr, "apply", "--index", "-R", &wide.to_string_lossy()]).is_ok();
+    if let Err(e) = if wide_applied { Ok(String::new()) } else { ctx.git(&["-c", &attr, "apply", "--unidiff-zero", "--index", "-R", &path]) } {
         tracing::warn!(%e, commit = %full, "undo does not apply");
         bail!("{}", since(ctx, full, &path, &attr));
     }
     // The year files and their `include`s first: what the checks read is
-    // the books as they will be committed.
-    let checked = years(ctx).and_then(|_| crate::journal::hledger(ctx, &["check", "accounts", "balanced", "ordereddates"])).and_then(|_| {
+    // the books as they will be committed. And since rules 4 each year file
+    // it touched in date order: an entry it puts back goes where it was, and
+    // one booked since may belong before it.
+    let ordered = || -> Result<()> {
+        if !crate::repo::since(4) {
+            return Ok(());
+        }
+        for rel in ctx.git(&["diff", "--cached", "--name-only", "--", "journal/"])?.lines() {
+            let name = rel.strip_prefix("journal/").unwrap_or_default();
+            let year = name.strip_suffix(".journal").is_some_and(|y| y.len() == 4 && y.chars().all(|c| c.is_ascii_digit()));
+            let path = ctx.root.join(rel);
+            if year && path.is_file() {
+                let text = std::fs::read_to_string(&path)?;
+                let sorted = by_date(&text);
+                if sorted != text {
+                    std::fs::write(&path, sorted)?;
+                    ctx.git(&["add", "--", rel])?;
+                }
+            }
+        }
+        Ok(())
+    };
+    let checked = ordered().and_then(|_| years(ctx)).and_then(|_| crate::journal::hledger(ctx, &["check", "accounts", "balanced", "ordereddates"])).and_then(|_| {
         if closed(ctx)? != before {
             bail!("undoing it would change a closed period");
         }
-        match crate::bill::problems(ctx)?.into_iter().find(|p| !was.contains(p) && crate::repo::since(2)) {
+        match crate::journal::problems(ctx)?.into_iter().find(|p| !was.contains(p) && crate::repo::since(2)) {
             Some(p) => bail!("undoing it would leave {p}"),
             None => Ok(()),
         }
@@ -409,4 +477,15 @@ fn revert_commit(ctx: &Ctx, hash: &str) -> Result<String> {
         return Err(e);
     }
     Ok(ctx.git(&["rev-parse", "--short", "HEAD"])?.trim().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn by_date_keeps_a_day_as_it_stood_and_the_file_as_written() {
+        let text = "\n2026-01-05 First\n    a  1\n    b\n\n2026-09-30 X\n    a  1\n    b\n\n2026-09-12 Y\n    a  2\n    b\n\n2026-09-12 Z\n    a  3\n    b\n";
+        let want = "\n2026-01-05 First\n    a  1\n    b\n\n2026-09-12 Y\n    a  2\n    b\n\n2026-09-12 Z\n    a  3\n    b\n\n2026-09-30 X\n    a  1\n    b\n";
+        assert_eq!(super::by_date(text), want);
+        assert_eq!(super::by_date(want), want);
+    }
 }

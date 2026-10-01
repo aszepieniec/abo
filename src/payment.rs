@@ -43,6 +43,10 @@ pub fn check(ctx: &Ctx, mut o: PaymentOption, others: &[&PaymentOption]) -> Resu
             *v = v.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
         }
     }
+    // A name of spaces is no name: the kind's, as one not given at all.
+    if o.label.is_empty() && crate::repo::since(4) {
+        o.label = o.kind.label(&o.network);
+    }
     answer::option_id(&o.id).map_err(msg)?;
     if others.iter().any(|p| p.id == o.id) {
         bail!("{:?} is already the id of a payment option", o.id);

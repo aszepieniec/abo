@@ -316,6 +316,11 @@ pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
         e.tags.iter().filter(|(k, _)| k == crate::settle::PAYS || k == crate::settle::SETTLES).collect();
     // A bill is named by its path; it pays off the liability the bill owes,
     // no more than is open when it pays that bill alone.
+    // One to a payment: abo does not split one between bills, and what is
+    // open of each would be anyone's guess.
+    if paying.len() > 1 && crate::repo::since(4) {
+        bail!("a payment pays one bill or invoice; book one payment for each, here {}", paying.iter().map(|(_, v)| v.as_str()).collect::<Vec<_>>().join(", "));
+    }
     for (i, (k, v)) in paying.iter().enumerate() {
         let what = if v.starts_with("bills/") { "bill" } else { "invoice" };
         if paying[..i].iter().any(|(_, w)| w == v) {
@@ -354,6 +359,28 @@ pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
             crate::settle::check(ctx, k, v)?;
             if let Some(i) = crate::settle::invoices(ctx)?.into_iter().find(|i| &i.number == v && e.date < i.date).filter(|_| crate::repo::since(2)) {
                 bail!("it pays invoice {v}, dated {}, before it was dated: {}", i.date, e.date);
+            }
+            // As a bill is paid: in its commodity, no more than is owed, and
+            // what pays it all settles it. Settling for less stays: that is
+            // how what will never come is written off.
+            if crate::repo::since(4) && !e.postings.is_empty() {
+                let receivable = &ctx.cfg.invoice.receivable;
+                let invoice = crate::settle::invoices(ctx)?.into_iter().find(|i| &i.number == v);
+                if let Some(i) = invoice {
+                    let cur = i.total.rsplit(' ').next().unwrap_or_default().to_string();
+                    if let Some(p) = e.postings.iter().find(|p| &p.account == receivable && p.commodity != cur) {
+                        bail!("invoice {v} is in {cur}, not {}", p.commodity);
+                    }
+                    let off = -e.net(receivable, &cur);
+                    if let Some(owed) = i.owed.split(' ').next().and_then(|o| Decimal::from_str_exact(o).ok()) {
+                        if off > owed {
+                            bail!("it pays {off} {cur} off invoice {v}, but only {owed} {cur} is owed");
+                        }
+                        if k == crate::settle::PAYS && off == owed {
+                            bail!("it pays all invoice {v} owes; tag it {}: instead", crate::settle::SETTLES);
+                        }
+                    }
+                }
             }
         }
     }
@@ -422,6 +449,80 @@ pub struct AddReport {
 /// `takes-back: settles bills/...`, `takes-back: pays 2026-0003`.
 pub const TAKES_BACK: &str = "takes-back";
 
+/// Where the books do not hold together, whatever the entries say one by
+/// one: the bills' (`bill::problems`), and since rules 4 the invoices' and
+/// the reversals'. For an undo, which takes entries out, or puts them back,
+/// without the checks that put them in: it may leave none that were not
+/// there before.
+pub fn problems(ctx: &Ctx) -> Result<Vec<String>> {
+    let mut out = crate::bill::problems(ctx)?;
+    if !crate::repo::since(4) {
+        return Ok(out);
+    }
+    let txns: Vec<serde_json::Value> = serde_json::from_str(&hledger(ctx, &["print", "-O", "json"])?)?;
+    let tags = |t: &serde_json::Value| -> Vec<(String, String)> {
+        t["ttags"].as_array().into_iter().flatten().map(|g| (g[0].as_str().unwrap_or_default().into(), g[1].as_str().unwrap_or_default().into())).collect()
+    };
+    let what = |t: &serde_json::Value| format!("{} {}", t["tdate"].as_str().unwrap_or_default(), t["tdescription"].as_str().unwrap_or_default());
+    let invoices = crate::settle::invoices(ctx)?;
+    let bills: Vec<String> = crate::bill::bills(ctx)?.into_iter().map(|b| b.file).collect();
+    let receivable = &ctx.cfg.invoice.receivable;
+    for (n, i) in invoices.iter().enumerate() {
+        if invoices[..n].iter().any(|j| j.number == i.number) {
+            out.push(format!("invoice {} twice", i.number));
+        }
+        for tag in [crate::settle::SETTLES, "credits"] {
+            if i.settled_by.iter().filter(|t| t.tag == tag).count() > 1 {
+                out.push(format!("invoice {} {} twice", i.number, if tag == "credits" { "cancelled" } else { "settled" }));
+            }
+        }
+        // What its payments took off the receivable, against its total.
+        let (total, cur) = i.total.split_once(' ').unwrap_or_default();
+        if let (Ok(total), false) = (Decimal::from_str_exact(total), i.status == crate::settle::Status::CreditNote) {
+            let mut paid = Decimal::ZERO;
+            for t in i.settled_by.iter().filter(|t| t.tag != "credits") {
+                if let Ok(b) = booking(ctx, &t.key) {
+                    paid -= b.postings.iter().filter(|p| &p.account == receivable && p.commodity == cur).filter_map(|p| p.amount).sum::<Decimal>();
+                }
+            }
+            if paid > total {
+                out.push(format!("invoice {} paid {} {cur} more than it owes", i.number, paid - total));
+            }
+        }
+    }
+    for t in &txns {
+        for (k, v) in tags(t) {
+            let named = match k.as_str() {
+                "credits" => invoices.iter().any(|i| i.number == v && i.status != crate::settle::Status::CreditNote),
+                crate::settle::PAYS | crate::settle::SETTLES => bills.contains(&v) || invoices.iter().any(|i| i.number == v),
+                _ => true,
+            };
+            if !named {
+                out.push(format!("{} names {k}: {v}, which the books do not hold", what(t)));
+            }
+            // A reversal takes back what the entry it reverses carries.
+            if k == TAKES_BACK {
+                let Some((tag, of)) = v.split_once(' ') else { continue };
+                let reverses = tags(t).into_iter().find(|(k, _)| k == "reverses").map(|(_, h)| h);
+                let carried = txns.iter().filter(|o| tags(o).iter().any(|(k, w)| k == tag && w == of)).any(|o| {
+                    crate::reconcile::key_of(o).ok().and_then(|key| booking(ctx, &key).ok()).is_some_and(|b| b.commit.is_some() && b.commit == reverses)
+                });
+                if !carried {
+                    out.push(format!("{} takes back {tag}: {of}, which the entry it reverses does not carry", what(t)));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The tags abo writes itself, each by the one command that keeps it true:
+/// `abo revert` (reverses, takes-back, cancels), `abo invoice` and `abo
+/// credit` (invoice, credits), `abo bill` and `abo file` (bill, sha256). A
+/// person typing one could make it say what is not so; `pays:` and
+/// `settles:` are a person's to write, and checked as they are.
+pub const RESERVED: [&str; 7] = ["reverses", TAKES_BACK, "cancels", "invoice", "credits", "bill", "sha256"];
+
 /// An entry typed by a person, from the CLI or the form: `abo post`, logged.
 /// Workflows that book through `add` log themselves, once.
 pub fn post(ctx: &Ctx, e: &Entry) -> Result<AddReport> {
@@ -432,7 +533,11 @@ pub fn post(ctx: &Ctx, e: &Entry) -> Result<AddReport> {
         crate::repo::flag(&mut argv, "--tag", &format!("{k}={v}"));
     }
     argv.extend(e.postings.iter().map(Posting::arg));
-    ctx.logged(argv, &format!("{} {}", e.date, e.description), add(ctx, e))
+    let r = match e.tags.iter().find(|(k, _)| RESERVED.contains(&k.as_str())).filter(|_| crate::repo::since(4)) {
+        Some((k, _)) => Err(anyhow::anyhow!("{k}: is a tag abo writes itself, through the command that keeps it true; it is not typed")),
+        None => add(ctx, e),
+    };
+    ctx.logged(argv, &format!("{} {}", e.date, e.description), r)
 }
 
 /// Validate, prove it against hledger, append, commit.
@@ -476,7 +581,7 @@ pub fn add_with(ctx: &Ctx, e: &Entry, also: &[&Path]) -> Result<AddReport> {
     copy_dir(&ctx.journal_dir(), &tmp)?;
     stage(&tmp, &name, &e.date, &e.render())?;
     let check = Command::new("hledger")
-        .args(["-f", &tmp.join("main.journal").to_string_lossy(), "check", "accounts", "balanced", "ordereddates"])
+        .args(["--no-conf", "-f", &tmp.join("main.journal").to_string_lossy(), "check", "accounts", "balanced", "ordereddates"])
         .output()
         .context("running hledger check")?;
     let _ = std::fs::remove_dir_all(&tmp);
@@ -578,9 +683,12 @@ pub fn decimal(q: &serde_json::Value) -> Result<Decimal> {
     Ok(Decimal::new(mantissa, places))
 }
 
-/// hledger over the books, output captured.
+/// hledger over the books, output captured. No hledger.conf, wherever it is
+/// started: one in a directory above would add its options to every
+/// report — an alias, another file — and abo's figures with them.
 pub fn hledger(ctx: &Ctx, args: &[&str]) -> Result<String> {
     let out = Command::new("hledger")
+        .arg("--no-conf")
         .arg("-f")
         .arg(ctx.main_journal())
         .args(args)
