@@ -1708,3 +1708,98 @@ fn a_customer_name_is_printed_as_typed_not_read_as_markup() {
     let text = String::from_utf8_lossy(&o.stdout);
     assert!(text.contains("#panic(\"no\") $x$ *Bold* Ltd") && text.contains("#strong[x] work"), "{text}");
 }
+
+// ---- what the changes above could themselves get wrong ----
+
+#[test]
+fn older_rules_are_said_aloud() {
+    let dir = books("rules-said", &[]);
+    let o = Command::new(env!("CARGO_BIN_EXE_abo")).args(["bal"]).current_dir(&dir).env("ABO_RULES", "1").stdin(Stdio::null()).output().unwrap();
+    assert!(o.status.success() && err(&o).contains("rules 1"), "{}", err(&o));
+    let o = abo(&dir, &["bal"]);
+    assert!(!err(&o).contains("rules"), "{}", err(&o));
+}
+
+#[test]
+fn the_first_rules_are_the_first_rules() {
+    let dir = books("rules-one", &[]);
+    let one = |args: &[&str]| Command::new(env!("CARGO_BIN_EXE_abo")).args(args).current_dir(&dir).env("ABO_RULES", "1").stdin(Stdio::null()).output().unwrap();
+    invoice(&dir, "2026-0001", "2026-03-01", "110.00");
+    let first = log_len(&dir);
+    invoice(&dir, "2026-9999x", "2026-10-01", "110.00");
+    // The last numbered, as text: the odd tag.
+    let o = one(&["invoice", "--to", "C", "--item", "1|10|x", "--date", "2026-03-04"]);
+    assert!(!o.status.success() && err(&o).contains("2026-9999x, the last invoice numbered"), "{}", err(&o));
+    // An invoice below another, undone.
+    ok(&dir, &["post", "--date", "2026-03-02", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank"]);
+    let o = one(&["undo", &first.to_string()]);
+    assert!(o.status.success(), "{}", err(&o));
+    // Without VAT registration, its rate of nought written out.
+    if Command::new("typst").arg("--version").output().is_ok() {
+        let none = books("rules-one-none", &["--vat", "none"]);
+        let o = Command::new(env!("CARGO_BIN_EXE_abo")).args(["invoice", "--to", "C", "--item", "1|10|x", "--date", "2026-03-01", "--vat-rate", "0"])
+            .current_dir(&none).env("ABO_RULES", "1").stdin(Stdio::null()).output().unwrap();
+        assert!(o.status.success(), "{}", err(&o));
+        assert!(read(&none, ".abo/log.jsonl").lines().last().unwrap().contains("\"--vat-rate\",\"0\""));
+    }
+}
+
+#[test]
+fn a_bad_abo_toml_is_named_in_the_browser() {
+    let dir = books("config-browser", &[]);
+    let s = serve(&dir);
+    let toml = read(&dir, "abo.toml");
+    let option = "\n[[payment]]\nid = \"x\"\nkind = \"cash\"\nlabel = \"Cash\"\ndetails = \"Till\"\naccount = \"Assets:Cash\"\n";
+    std::fs::write(dir.join("abo.toml"), format!("{toml}{option}{option}")).unwrap();
+    let (_, _, page) = http(&s, "GET", "/", &[]);
+    assert!(page.contains("payment option \"x\" twice"), "{page}");
+}
+
+#[test]
+fn a_page_waits_for_a_change_in_progress() {
+    let dir = books("read-waits", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank"]);
+    let s = serve(&dir);
+    // As a terminal's abo holds the books mid-change, a journal half written.
+    let good = read(&dir, "journal/2026.journal");
+    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(".abo/lock")).unwrap();
+    lock.lock().unwrap();
+    std::fs::write(dir.join("journal/2026.journal"), "2026-03-01 Fees\n    Expenses:General  5.00 EUR\n    Assets:Bank  -3").unwrap();
+    let journal = dir.join("journal/2026.journal");
+    let done = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(500));
+        std::fs::write(&journal, good).unwrap();
+        drop(lock);
+    });
+    let (status, _, page) = http(&s, "GET", "/", &[]);
+    done.join().unwrap();
+    // The bank as booked, not as the half-written entry would have it.
+    assert!(status == 200 && page.contains("-5.00 EUR") && !page.contains(">-3<"), "{page}");
+}
+
+#[test]
+fn a_stale_link_says_what_to_do() {
+    let dir = books("stale-link", &[]);
+    ok(&dir, &["post", "--date", "2026-03-05", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank"]);
+    let s = serve(&dir);
+    let (_, _, page) = http(&s, "GET", "/entry/2026.journal:1:2026-03-05~00000000", &[]);
+    assert!(page.contains("open it again from the page that listed it") && page.contains("href=\"/\""), "{page}");
+}
+
+#[test]
+fn no_text_breaks_its_line_unseen() {
+    let dir = books("separators", &[]);
+    refused(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees\u{2028}more", "Expenses:General=5.00", "Assets:Bank"], "hides or turns text");
+    refused(&dir, &["company", "--name", "Acme\u{2029}Ltd"], "control character");
+    refused(&dir, &["company", "--name", "Acme\u{061C}Ltd"], "control character");
+}
+
+#[test]
+fn a_bill_document_is_served_from_under_bills_alone() {
+    let dir = books("bill-paths", &[]);
+    let s = serve(&dir);
+    for path in ["/bills/..%2Fabo.toml", "/bills/%2e%2e/abo.toml", "/bills/2026/..%2F..%2Fabo.toml", "/bills//etc/passwd", "/bills/.git/config"] {
+        let (status, _, page) = http(&s, "GET", path, &[]);
+        assert!(status == 404 && !page.contains("[company]") && !page.contains("[core]"), "{path}: {page}");
+    }
+}

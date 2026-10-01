@@ -39,6 +39,17 @@ impl axum::extract::FromRequestParts<Arc<PathBuf>> for Books {
         _: &mut axum::http::request::Parts,
         root: &Arc<PathBuf>,
     ) -> Result<Self, Response> {
+        // A change in progress, from a terminal, finished first: read
+        // mid-way, a journal can show what was never booked. Not held while
+        // the page is made, for a change the request makes takes it.
+        // ponytail: two seconds, then the books as they are.
+        for _ in 0..40 {
+            let lock = std::fs::File::open(root.join(".abo/lock"));
+            if lock.as_ref().map_or(true, |f| f.try_lock_shared().is_ok()) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
         Ctx::open(root)
             .map(Books)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response())

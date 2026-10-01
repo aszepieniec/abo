@@ -587,7 +587,7 @@ pub fn booking(ctx: &Ctx, key: &str) -> Result<Booking> {
                 && t["tdate"] == date
                 && print.is_none_or(|p| crate::reconcile::fingerprint(t) == p)
         })
-        .with_context(|| format!("no booking at {key}; the books have changed since that link was made"))?;
+        .with_context(|| format!("no booking at {key}; the books have changed since that link was made: open it again from the page that listed it"))?;
 
     let lines: Vec<String> = std::fs::read_to_string(ctx.journal_dir().join(name))?.lines().map(str::to_owned).collect();
     let text = lines[line - 1..]

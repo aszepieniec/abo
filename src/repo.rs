@@ -604,7 +604,8 @@ pub fn since(v: u32) -> bool {
 /// right-to-left override — so that what is printed is not what was read.
 pub fn hidden(c: char) -> bool {
     c.is_control()
-        || matches!(c, '\u{00AD}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
+        || matches!(c, '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
 }
 
 /// Push `--name value`, or `--name=value` when the value starts with a dash

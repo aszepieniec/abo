@@ -553,6 +553,15 @@ async fn run(cli: Cli) -> Result<()> {
         std::fs::create_dir_all(d)?;
     }
     let here = cli.dir.clone().unwrap_or(std::env::current_dir()?);
+    // Older rules are for replaying a log; left set by mistake they would
+    // quietly let through what today's refuse.
+    if repo::rules() < repo::RULES {
+        eprintln!(
+            "abo: checking by rules {} of {}, as ABO_RULES says; unset it unless replaying a log",
+            repo::rules(),
+            repo::RULES
+        );
+    }
     // One command at a time in a company's books, whoever runs it; the
     // server takes the lock per change instead, and init has no books yet.
     // ponytail: held for the whole command, questions asked on the terminal

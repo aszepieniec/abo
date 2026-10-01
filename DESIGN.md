@@ -546,7 +546,8 @@ under laxer rules could be refused by today's, or write its entry otherwise
 (`10 EUR`, now `10.00 EUR`). So a replay runs each line with `ABO_RULES` set
 to the rules it names, and every check added after rules 1 is guarded by the
 version that added it (`repo::since(2)`). `repo::RULES` lists what each
-version added; a new tightening is the next number. An `abo file`
+version added; a new tightening is the next number. Older rules are for
+replaying: abo says so on stderr whenever `ABO_RULES` names any. An `abo file`
 line names the document it was given, so a replay needs the documents at those
 paths; the browser's names only what the upload was called, so a replay has
 to supply that document itself, identified by the hash in the line.
