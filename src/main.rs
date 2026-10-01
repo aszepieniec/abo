@@ -170,15 +170,17 @@ impl OptionParts {
     }
 
     /// `now` with the parts given put over it. Another kind starts with
-    /// only what every kind has: id, name, further lines, account.
+    /// only what every kind has: id, name, further lines, account; a name
+    /// or an account that was the old kind's default becomes the new one's.
     fn over(self, now: repo::PaymentOption) -> repo::PaymentOption {
+        let network = self.network.clone().unwrap_or_default();
         let mut o = match self.kind {
             Some(kind) if kind != now.kind => repo::PaymentOption {
                 kind,
                 id: now.id,
-                label: now.label,
+                label: if now.label == now.kind.label(&now.network) { kind.label(&network) } else { now.label },
                 details: now.details,
-                account: now.account,
+                account: if now.account == now.kind.account() { kind.account().to_string() } else { now.account },
                 ..Default::default()
             },
             _ => now,
@@ -288,10 +290,11 @@ enum Cmd {
         #[arg(long)]
         vat_rate: Option<Decimal>,
         /// Commodity to invoice in. Defaults to the company currency; any
-        /// commodity the books use will do.
+        /// commodity declared in journal/accounts.journal will do.
         #[arg(long)]
         currency: Option<String>,
-        /// Decimal places for that commodity. Defaults to [invoice] decimals.
+        /// Decimal places for that commodity, no more than it is declared
+        /// with. Defaults to its declared places, else [invoice] decimals.
         #[arg(long)]
         decimals: Option<u32>,
         /// The customer's own order reference.
@@ -585,7 +588,15 @@ async fn run(cli: Cli) -> Result<()> {
                                 let kind = answers.get(&format!("{p}.kind")).cloned().unwrap_or_default();
                                 bail!("--payment number {}: a {kind} option has no {field}", n + 1);
                             }
-                            None => bail!("--{} does not apply with the other answers given", k.replace('_', "-")),
+                            None => {
+                                // As typed: the keys of the VAT method's own questions are not their flags.
+                                let flag = match k.as_str() {
+                                    "method" => "vat".to_string(),
+                                    "input" | "output" => format!("vat-{k}"),
+                                    _ => k.replace('_', "-"),
+                                };
+                                bail!("--{flag} does not apply with the other answers given")
+                            }
                         }
                     }
                 }
@@ -858,6 +869,9 @@ async fn run(cli: Cli) -> Result<()> {
         Cmd::Bal { args } => passthrough(&here, "balance", &args, cli.json),
         Cmd::Reg { args } => passthrough(&here, "register", &args, cli.json),
         Cmd::Serve { port } => {
+            if !here.is_dir() {
+                bail!("{} is not a directory", here.display());
+            }
             logging(&missing);
             // Inside a company's books, that company alone; anywhere else, a
             // data directory holding any number of them.
@@ -910,13 +924,13 @@ fn statement(
             }
             for l in &section.lines {
                 let code = l.code.as_deref().unwrap_or("");
-                out += &format!("  {code:<5}{:<44}{:>16}\n", l.label, money(&l.amounts));
+                out += &format!("  {code:<5}{:<44} {:>16}\n", l.label, money(&l.amounts));
             }
             if !section.total.is_empty() {
-                out += &format!("  {:<49}{:>16}\n", "", money(&section.total));
+                out += &format!("  {:<49} {:>16}\n", "", money(&section.total));
             }
         }
-        out += &format!("\n  {:<49}{:>16}", s.bottom.label, money(&s.bottom.amounts));
+        out += &format!("\n  {:<49} {:>16}", s.bottom.label, money(&s.bottom.amounts));
         if let Some(p) = &pdf {
             out += &format!("\n\nWrote {}.", p.display());
         }
@@ -951,20 +965,23 @@ fn emit<T: serde::Serialize>(json: bool, value: &T, human: impl FnOnce() -> Stri
     Ok(())
 }
 
-/// Set once the input has run out, so that nothing is asked again after it.
-static ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-fn ended() -> Result<Option<String>> {
-    ENDED.store(true, std::sync::atomic::Ordering::Relaxed);
+/// Ctrl-D on a terminal: a blank answer, `None`, which a question that needs
+/// one refuses rather than asks again. Piped input that has run out stops
+/// at the question it ran out at: nothing after it is taken as blank.
+fn ran_out(question: &str) -> Result<Option<String>> {
+    use std::io::IsTerminal as _;
+    if !std::io::stdin().is_terminal() {
+        bail!("the input ran out at {question}");
+    }
     Ok(None)
 }
 
-/// The answer, or the default for a blank one; `None` when the input has run out.
+/// The answer, or the default for a blank one; `None` for Ctrl-D.
 fn read(question: &str, default: &str) -> Result<Option<String>> {
-    let question = if default.is_empty() { format!("{question}: ") } else { format!("{question} [{default}]: ") };
+    let prompt = if default.is_empty() { format!("{question}: ") } else { format!("{question} [{default}]: ") };
     // A line editor, so the arrow keys move along what has been typed.
-    let s = match rustyline::DefaultEditor::new()?.readline(&question) {
-        Err(rustyline::error::ReadlineError::Eof) => return ended(),
+    let s = match rustyline::DefaultEditor::new()?.readline(&prompt) {
+        Err(rustyline::error::ReadlineError::Eof) => return ran_out(question),
         r => r?,
     };
     let s = s.trim();
@@ -972,12 +989,12 @@ fn read(question: &str, default: &str) -> Result<Option<String>> {
 }
 
 /// The answer to a question put with `now` already on the line, to change
-/// or keep; `None` when the input has run out. Without a terminal nothing
-/// can be put on the line, so there a blank answer keeps `now`.
+/// or keep; `None` for Ctrl-D. Without a terminal nothing can be put on the
+/// line, so there a blank answer keeps `now`.
 fn read_over(question: &str, now: &str) -> Result<Option<String>> {
     use std::io::IsTerminal as _;
     let s = match rustyline::DefaultEditor::new()?.readline_with_initial(&format!("{question}: "), (now, "")) {
-        Err(rustyline::error::ReadlineError::Eof) => return ended(),
+        Err(rustyline::error::ReadlineError::Eof) => return ran_out(question),
         r => r?,
     };
     let s = s.trim();
@@ -1004,18 +1021,18 @@ fn ask_until<T>(
         let answer = read()?;
         match check(answer.as_deref().unwrap_or(default)) {
             Ok(v) => return Ok(v),
-            // With the input run out there is no asking again.
+            // Ctrl-D is no answer to ask again for.
             Err(e) if answer.is_none() => bail!("{question}: {e}"),
             Err(e) => eprintln!("  {e}"),
         }
     }
 }
 
-/// Lines until an empty one, under `intro`, the first ones starting as
-/// `now`'s, to change or keep.
-fn prompt_lines_over(intro: &str, now: &[&str]) -> Result<Vec<String>> {
+/// Lines until an empty one or Ctrl-D, under the question, the first ones
+/// starting as `now`'s, to change or keep.
+fn prompt_lines_over(question: &str, now: &[&str]) -> Result<Vec<String>> {
     use std::io::IsTerminal as _;
-    println!("{intro}");
+    println!("{question}, a line at a time; an empty line ends it:");
     let mut editor = rustyline::DefaultEditor::new()?;
     let mut lines = vec![];
     loop {
@@ -1024,7 +1041,7 @@ fn prompt_lines_over(intro: &str, now: &[&str]) -> Result<Vec<String>> {
         let now = if std::io::stdin().is_terminal() { now } else { "" };
         match editor.readline_with_initial("  ", (now, "")) {
             Err(rustyline::error::ReadlineError::Eof) => {
-                ended()?;
+                ran_out(question)?;
                 break;
             }
             r if r.as_ref().is_ok_and(|l| l.trim().is_empty()) => break,
@@ -1201,8 +1218,7 @@ impl questions::Source for Terminal {
 
     fn lines(&mut self, key: &str, label: &str, hint: &str) -> Result<String> {
         let now: Vec<&str> = self.start.get(key).map(|s| s.lines().collect()).unwrap_or_default();
-        let intro = format!("{}, a line at a time; an empty line ends it:", question(label, hint));
-        Ok(prompt_lines_over(&intro, &now)?.join("\n"))
+        Ok(prompt_lines_over(&question(label, hint), &now)?.join("\n"))
     }
 
     fn choice(&mut self, key: &str, label: &str, noun: &str, options: &[&'static str], offer: &str) -> Result<String> {
@@ -1221,10 +1237,6 @@ impl questions::Source for Terminal {
     }
 
     fn item_problem(&mut self, prefix: &str, _first: &str, problem: String, answers: &questions::Answers) -> Result<bool> {
-        // With the input run out there is no asking again.
-        if ENDED.load(std::sync::atomic::Ordering::Relaxed) {
-            bail!("{problem}");
-        }
         eprintln!("  {problem} Asking again.");
         self.start.extend(answers.iter().filter(|(k, _)| k.starts_with(prefix)).map(|(k, v)| (k.clone(), v.clone())));
         Ok(true)

@@ -187,6 +187,9 @@ fn check_syntax(field: &str, value: &str, forbidden: &str) -> Result<()> {
 pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
     // 0. no field may carry journal syntax
     check_syntax("description", &e.description, ";")?;
+    if e.description.trim().is_empty() {
+        bail!("an entry needs a description");
+    }
     for (k, v) in &e.tags {
         if k.is_empty() || !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
             bail!("tag name {k:?} is not alphanumeric");
@@ -207,11 +210,16 @@ pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
     // One exception to needing two postings: an entry that moves nothing and
     // exists to record a balance, with or without an assertion on it.
     // And an entry of tags alone, settling an invoice where the books do not
-    // show the payment.
+    // show the payment, or its reversal, taking that back.
+    let settles_alone = e.tag(crate::settle::SETTLES).is_some()
+        || e.tags.iter().any(|(k, v)| k == TAKES_BACK && v.starts_with(&format!("{} ", crate::settle::SETTLES)));
     let moves_nothing = e.postings.len() == 1 && e.postings[0].amount.is_some_and(|a| a.is_zero())
-        || e.postings.is_empty() && e.tag(crate::settle::SETTLES).is_some();
+        || e.postings.is_empty() && settles_alone;
     if e.postings.len() < 2 && !moves_nothing {
         bail!("an entry needs at least two postings");
+    }
+    if e.postings.len() > 1 && e.postings.iter().all(|p| p.amount.is_none_or(|a| a.is_zero())) {
+        bail!("every amount is nought: the entry moves nothing");
     }
     if elided == 0 {
         let mut sums: BTreeMap<&str, Decimal> = BTreeMap::new();
@@ -275,6 +283,9 @@ pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
     }
 
     // 4. the document is not already booked
+    if let Some(file) = e.tag("bill") {
+        crate::bill::unbooked(ctx, file)?;
+    }
     if let Some(hash) = e.tag("sha256") {
         let found = hledger(ctx, &["print", &format!("tag:sha256={hash}")])?;
         if !found.trim().is_empty() {
@@ -296,12 +307,20 @@ pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
         }
         if what == "bill" {
             let (liability, commodity, open) = crate::bill::check(ctx, k, v)?;
+            let dated = v.rsplit('/').next().and_then(|n| n.get(..10)).unwrap_or_default();
+            if e.date.as_str() < dated {
+                bail!("it pays the bill {v}, dated {dated}, before it was dated: {}", e.date);
+            }
             let off = e.net(&liability, &commodity);
             if !e.postings.is_empty() && off <= Decimal::ZERO {
                 bail!("it names the bill {v}, but pays nothing off {liability} in {commodity}");
             }
             if let Some(open) = open.filter(|o| paying.len() == 1 && off > *o) {
                 bail!("it pays {off} {commodity} off the bill {v}, but only {open} {commodity} is open");
+            }
+            // The payment that settles a bill leaves nothing of it owed.
+            if let Some(open) = open.filter(|o| k == crate::settle::SETTLES && paying.len() == 1 && off < *o) {
+                bail!("it settles the bill {v} with {off} {commodity}, but {open} {commodity} is open; tag it {}: for a part", crate::settle::PAYS);
             }
         } else {
             crate::settle::check(ctx, k, v)?;
@@ -368,6 +387,16 @@ pub fn post(ctx: &Ctx, e: &Entry) -> Result<AddReport> {
 /// Validate, prove it against hledger, append, commit.
 pub fn add(ctx: &Ctx, e: &Entry) -> Result<AddReport> {
     validate(ctx, e)?;
+    // Written to its commodity's places: 10 EUR as 10.00 EUR.
+    let mut e = e.clone();
+    for p in &mut e.postings {
+        if let (Some(a), (_, Some(dp))) = (p.amount.as_mut(), commodity(ctx, &p.commodity)?) {
+            if a.scale() < dp {
+                a.rescale(dp);
+            }
+        }
+    }
+    let e = &e;
 
     let year = &e.date[..4];
     let name = format!("{year}.journal");

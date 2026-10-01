@@ -128,7 +128,16 @@ fn period_flags(period: &str) -> Vec<&str> {
     if period.is_empty() { vec![] } else { vec!["-p", period] }
 }
 
+/// A period hledger reads, refused in words of its own when it does not.
+fn checked_period(ctx: &Ctx, period: &str) -> Result<()> {
+    if !period.is_empty() && journal::hledger(ctx, &["accounts", "-p", period]).is_err() {
+        bail!("{period:?} is not a period; give one such as 2026, 2026q1, 2026-08 or last month");
+    }
+    Ok(())
+}
+
 pub fn profit_and_loss(ctx: &Ctx, period: &str) -> Result<Statement> {
+    checked_period(ctx, period)?;
     let extra = period_flags(period);
     let (income, income_total) = section(ctx, "Income", "income", &extra, true)?;
     let (expenses, expense_total) = section(ctx, "Expenses", "expenses", &extra, false)?;
@@ -226,6 +235,10 @@ pub fn vat_return(ctx: &Ctx, period: &str) -> Result<Statement> {
              hledger query, or `of` and `rate`, or a `sum` of other codes."
         );
     }
+    if let Some(l) = spec.iter().enumerate().find_map(|(i, l)| spec[..i].iter().any(|m| m.code == l.code).then_some(l)) {
+        bail!("box {} is in [[report.vat]] twice; each box on the form is one line", l.code);
+    }
+    checked_period(ctx, period)?;
     let currency = ctx.cfg.company.currency.clone();
     // A return is filed in one currency. Anything else is valued in it at the
     // price on the day of each posting, from the books' own `P` directives.
@@ -247,7 +260,7 @@ pub fn vat_return(ctx: &Ctx, period: &str) -> Result<Statement> {
                         // No price to value it with. Dropping it would file a
                         // plausible wrong number.
                         bail!(
-                            "line {} includes {x} {c} in {account}, and the books have no {c} price \
+                            "box {} includes {x} {c} in {account}, and the books have no {c} price \
                              in {currency} to value it with. Add one to journal/accounts.journal, \
                              `P <date> {c} <price> {currency}`, dated on or before each posting.",
                             l.code
@@ -259,7 +272,7 @@ pub fn vat_return(ctx: &Ctx, period: &str) -> Result<Statement> {
         } else if !l.of.is_empty() {
             let base = *values
                 .get(&l.of)
-                .with_context(|| format!("line {} refers to {}, which is not above it", l.code, l.of))?;
+                .with_context(|| format!("box {} refers to {}, which is not above it", l.code, l.of))?;
             (base * l.rate / hundred).round_dp_with_strategy(
                 ctx.cfg.invoice.decimals,
                 rust_decimal::RoundingStrategy::MidpointAwayFromZero,
@@ -273,12 +286,12 @@ pub fn vat_return(ctx: &Ctx, period: &str) -> Result<Statement> {
                 };
                 let x = values
                     .get(code)
-                    .with_context(|| format!("line {} refers to {code}, which is not above it", l.code))?;
+                    .with_context(|| format!("box {} refers to {code}, which is not above it", l.code))?;
                 v += x * sign;
             }
             v
         } else {
-            bail!("line {} has no query, no `of`, and no `sum`", l.code);
+            bail!("box {} has no query, no `of`, and no `sum`", l.code);
         };
         // every box to the currency's places, and never "-0"
         let mut value = if value.is_zero() { Decimal::ZERO } else { value }

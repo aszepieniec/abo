@@ -47,6 +47,9 @@ pub fn file(ctx: &Ctx, src: &str, bytes: &[u8], date: &str, issuer: &str) -> Res
 }
 
 fn file_it(ctx: &Ctx, bytes: &[u8], date: &str, issuer: &str) -> Result<FileReport> {
+    if issuer.chars().any(char::is_control) {
+        bail!("the issuer {issuer:?} holds a control character, such as a line break");
+    }
     // A bill dated in a closed period could never be booked: refused before
     // it is filed, as the browser refuses it.
     if let Some(closed) = &ctx.cfg.company.closed_through {
@@ -416,6 +419,33 @@ pub fn bills(ctx: &Ctx) -> Result<Vec<Bill>> {
     }
     out.sort_by(|a, b| b.file.rsplit('/').next().cmp(&a.file.rsplit('/').next()));
     Ok(out)
+}
+
+/// A booking may name only a bill no booking names yet.
+pub fn unbooked(ctx: &Ctx, file: &str) -> Result<()> {
+    let booked = bills(ctx)?.into_iter().find(|b| b.file == file).and_then(|b| b.refs.into_iter().find(|r| r.tag == "bill"));
+    if let Some(r) = booked {
+        bail!("{file} is already booked, by {} {}", r.date, r.description);
+    }
+    Ok(())
+}
+
+/// What the books say of every bill holds together: none is settled or
+/// cancelled twice over, nor paid more than it owes. For an undo, which
+/// takes entries out without the checks that put them in.
+pub fn consistent(ctx: &Ctx) -> Result<()> {
+    for b in bills(ctx)? {
+        let ends: Vec<_> = b.standing.iter().filter(|r| r.tag == SETTLES || r.tag == CANCELS).collect();
+        if let [a, z, ..] = &ends[..] {
+            bail!("{} would be {} and {}", b.file, a.label(), z.label());
+        }
+        if let Figure::Is(q, c) = &b.open {
+            if q.is_sign_negative() {
+                bail!("{} would be paid {} {c} more than it owes", b.file, -q);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A `cancels:` tag may name only a bill that is booked, not cancelled, and

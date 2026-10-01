@@ -508,11 +508,12 @@ pub mod answer {
         Ok(s.to_string())
     }
 
-    /// A percentage from 0 up to, not including, 100; a trailing % is allowed.
+    /// A percentage from 0 up to 100, as an invoice's rate is; a trailing %
+    /// is allowed.
     pub fn percent(s: &str) -> Result<Decimal, String> {
         let r = Decimal::from_str(s.strip_suffix('%').unwrap_or(s).trim())
             .map_err(|_| format!("{s:?} is not a number, such as 21 or 5.5."))?;
-        if r < Decimal::ZERO || r >= Decimal::ONE_HUNDRED {
+        if r < Decimal::ZERO || r > Decimal::ONE_HUNDRED {
             return Err(format!("{s} is not a percentage from 0 up to 100."));
         }
         Ok(r)
@@ -553,12 +554,28 @@ pub fn git_global(key: &str) -> Option<String> {
 /// Create a books repository, its first commit, and the first line of its
 /// log: `abo init` with everything it was told.
 pub fn init(dir: &Path, b: &crate::questions::NewBooks) -> Result<InitReport> {
+    // Nothing is left behind if it fails: a directory made here goes again.
+    let made = !dir.exists();
+    let r = init_in(dir, b);
+    if r.is_err() && made {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    r
+}
+
+fn init_in(dir: &Path, b: &crate::questions::NewBooks) -> Result<InitReport> {
     let (c, vat, sales_rate, payment) = (&b.company, &b.vat, b.sales_rate, &b.payment[..]);
     if dir.join("abo.toml").exists() {
         bail!("{} is already a books repository", dir.display());
     }
     if c.name.trim().is_empty() || c.currency.trim().is_empty() {
         bail!("a company needs a name and a currency");
+    }
+    // Every commit needs an author: from init's answers, or else git's own.
+    let named = b.author.as_ref().is_some_and(|(n, e)| !n.is_empty() && !e.is_empty());
+    let parent = dir.ancestors().skip(1).find(|d| d.is_dir()).unwrap_or(Path::new("."));
+    if !named && git_in(parent, &["var", "GIT_AUTHOR_IDENT"]).is_err() {
+        bail!("git has no name and email to put on commits: answer git user.name and user.email, or set them with `git config --global`");
     }
     std::fs::create_dir_all(dir.join("journal"))?;
 
@@ -658,12 +675,6 @@ pub fn demo(dir: &Path) -> Result<Ctx> {
     }
     std::fs::create_dir_all(dir)?;
 
-    // The demo must work on a machine with no git identity configured.
-    std::env::set_var("GIT_AUTHOR_NAME", "abo demo");
-    std::env::set_var("GIT_AUTHOR_EMAIL", "demo@example.invalid");
-    std::env::set_var("GIT_COMMITTER_NAME", "abo demo");
-    std::env::set_var("GIT_COMMITTER_EMAIL", "demo@example.invalid");
-
     let vat = Vat::Effective {
         input: "Assets:VAT:Input".into(),
         output: "Liabilities:VAT:Output".into(),
@@ -696,7 +707,10 @@ pub fn demo(dir: &Path) -> Result<Ctx> {
         vat,
         sales_rate: Decimal::TEN,
         payment: payment.to_vec(),
-        author: None,
+        // Set in the demo's own repository, so that it works, from the
+        // browser and from a terminal in it, on a machine with no git
+        // identity configured.
+        author: Some(("abo demo".into(), "demo@example.invalid".into())),
     };
     init(dir, &books)?;
 
@@ -952,6 +966,6 @@ mod tests {
         assert_eq!(percent("5.3"), Ok(Decimal::new(53, 1)));
         assert_eq!(percent("21%"), Ok(Decimal::from(21)));
         assert_eq!(percent("0"), Ok(Decimal::ZERO));
-        assert!(percent("abc").is_err() && percent("-1").is_err() && percent("100").is_err());
+        assert!(percent("abc").is_err() && percent("-1").is_err() && percent("100.5").is_err() && percent("100").is_ok());
     }
 }

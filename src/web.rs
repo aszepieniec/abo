@@ -727,6 +727,13 @@ async fn company(
     if let Ok(v) = prefix.parse() {
         h.insert(PREFIX_HEADER, v);
     }
+    // A fresh request, without the extensions: they carry this route's
+    // parameters, which the company's own `Path` extractors would read too.
+    let (parts, body) = req.into_parts();
+    let mut req = axum::extract::Request::new(body);
+    *req.method_mut() = parts.method;
+    *req.uri_mut() = parts.uri;
+    *req.headers_mut() = parts.headers;
     let mut res = company_app(dir).oneshot(req).await.unwrap_or_else(|e| match e {});
     if let Some(loc) = res.headers().get(axum::http::header::LOCATION).and_then(|v| v.to_str().ok()) {
         if loc.starts_with('/') && !loc.starts_with("/c/") {
@@ -997,15 +1004,17 @@ fn is_hash(s: &str) -> bool {
 
 /// The last changes from `.abo/log.jsonl`, newest first. Each opens to the
 /// command that made it and the diff it made, which is the thing to check.
-/// ponytail: one `git show` per row with a commit, so 50 rows; page it if more
-/// are ever needed.
-async fn activity(Books(ctx): Books) -> Response {
+/// ponytail: one `git show` per row with a commit, so 50 rows unless `?all`;
+/// page it if all grows slow.
+async fn activity(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
     or_error(&ctx, "Log", || {
         let all = undo::lines(&ctx);
+        let shown = if q.contains_key("all") { all.len() } else { 50 };
         // (line number, line), newest first
         let lines: Vec<(usize, &serde_json::Value)> =
-            all.iter().enumerate().rev().take(50).map(|(i, l)| (i + 1, l)).filter(|(_, l)| !l.is_null()).collect();
+            all.iter().enumerate().rev().take(shown).map(|(i, l)| (i + 1, l)).filter(|(_, l)| !l.is_null()).collect();
         let reverted = undo::reverted(&ctx);
+        let attr = undo::binary(&ctx)?;
         let was_reverted = |h: &str| reverted.iter().any(|full| full.starts_with(h));
         Ok(html! {
             h1 { "Log" }
@@ -1014,13 +1023,13 @@ async fn activity(Books(ctx): Books) -> Response {
             } @else {
                 div.box {
                     table.list.log {
-                        thead { tr { th { "When" } th { "Who" } th { "Command" } th { "What" } th.amt { "Commit" } th {} } }
+                        thead { tr { th { "When" } th.who { "Who" } th { "Command" } th { "What" } th.amt { "Commit" } th {} } }
                         tbody {
                             @for (n, l) in &lines {
                                 @let commit = l["ok"]["commit"].as_str().filter(|h| is_hash(h));
                                 tr {
                                     td.date { (l["at"].as_str().unwrap_or("").get(..16).unwrap_or("").replace('T', " ")) }
-                                    td { (l["who"].as_str().unwrap_or("")) }
+                                    td.who { (l["who"].as_str().unwrap_or("")) }
                                     td { code { (undo::op(l)) } }
                                     td.what {
                                         details {
@@ -1029,13 +1038,13 @@ async fn activity(Books(ctx): Books) -> Response {
                                             pre { (undo::command(l)) }
                                             @if let Some(h) = commit {
                                                 h2 { "Commit " (h) }
-                                                pre { (ctx.git(&["show", "--format=%s%n", "--stat", "--patch", h, "--"]).unwrap_or_else(|e| e.to_string())) }
+                                                pre { (ctx.git(&["-c", &attr, "show", "--format=%s%n", "--stat", "--patch", h, "--"]).unwrap_or_else(|e| e.to_string())) }
                                             }
                                         }
                                     }
                                     td.amt {
                                         @if let Some(h) = commit.filter(|h| was_reverted(h)) {
-                                            code.reverted { (h) } br; span.muted.small { "reverted since" }
+                                            code.reverted { (h) } br; span.muted.small { "undone since" }
                                         }
                                         @else if let Some(h) = commit { code { (h) } }
                                     }
@@ -1050,6 +1059,9 @@ async fn activity(Books(ctx): Books) -> Response {
                             }
                         }
                     }
+                }
+                @if all.len() > shown {
+                    p.muted { "The last " (shown) " of " (all.len()) ". " a href="/log?all" { "Show all" } }
                 }
             }
         })
@@ -1148,6 +1160,11 @@ async fn booking(Books(ctx): Books, Path(key): Path<String>) -> Response {
         let invoice = tag("invoice").filter(|_| tag("credits").is_none());
         let all = settle::invoices(&ctx)?;
         let credit_note = tag("credits").is_some();
+        // A payment of the bill it books, which stands in the way of reverting it.
+        let paid_by = match tag("bill") {
+            Some(f) => bill::bills(&ctx)?.into_iter().find(|x| x.file == f).and_then(|x| x.payments().next().cloned()),
+            None => None,
+        };
         let credited = match &invoice {
             Some(n) => serde_json::from_str::<Vec<serde_json::Value>>(&journal::hledger(&ctx, &["print", &format!("tag:credits=^{n}$"), "-O", "json"])?)?
                 .first()
@@ -1235,7 +1252,8 @@ async fn booking(Books(ctx): Books, Path(key): Path<String>) -> Response {
                     span.muted.small {
                         @if b.reversed_by.is_some() { "Already reversed." }
                         @else { "Books the opposite amounts as a new entry, dated today. This one stays."
-                            @if tag("bill").is_some() { " The bill is then cancelled." } }
+                            @if let Some(p) = &paid_by { " The bill is " (p.label()) " (" (p.description) "): revert that first, and then this cancels the bill." }
+                            @else if tag("bill").is_some() { " The bill is then cancelled." } }
                     }
                 }
                 span.nav { a.btn href=(back_to("/")) { (icon("left")) " Back" } }
@@ -1627,6 +1645,9 @@ async fn reconcile_act(
                 info!(commit = %a.commit, %account, %date, "reconciled");
             }
             _ => {
+                if let Some(k) = keys.iter().find(|k| !k.ends_with(&format!(":{account}"))) {
+                    bail!("{k} is not a posting to {account}");
+                }
                 let c = reconcile::clear(&ctx, &keys)?;
                 info!(commit = %c.commit, marked = c.marked.len(), "cleared");
             }
@@ -1752,7 +1773,8 @@ async fn invoice_form(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
                     vat_reason: d.vat_reason,
                     reference: d.reference,
                     note: d.note,
-                    vat_rate: d.vat_rate,
+                    // Not registered, an invoice is given no rate at all.
+                    vat_rate: if matches!(ctx.cfg.vat, crate::repo::Vat::None) { String::new() } else { d.vat_rate },
                     currency: if d.currency == ctx.cfg.company.currency { String::new() } else { d.currency },
                     ..Default::default()
                 }
@@ -2104,6 +2126,9 @@ async fn pay_submit(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
         }
         if get("into") == ctx.cfg.invoice.receivable {
             bail!("the money arrives somewhere other than {}", ctx.cfg.invoice.receivable);
+        }
+        if !money_accounts(&ctx)?.contains(&get("into")) {
+            bail!("{} is not an account money arrives in", get("into"));
         }
         let tags: Vec<(String, String)> = f
             .iter()
@@ -2473,14 +2498,22 @@ async fn bill_pay_submit(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
     }
 }
 
+/// Whether `rel` is a document filed and waiting to be booked; if booked,
+/// the refusal names the entry that holds it.
+fn waiting(ctx: &Ctx, rel: &str) -> Result<()> {
+    if !unbooked(ctx)?.iter().any(|u| u == rel) {
+        bill::unbooked(ctx, rel)?;
+        bail!("{rel} is not a document filed and waiting to be booked");
+    }
+    Ok(())
+}
+
 /// `?file=<path>`: a document filed already, to book.
 async fn bill_form(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
     or_error(&ctx, "Book a bill", || {
         let mut f = Fields::new();
         if let Some(rel) = q.get("file") {
-            if !unbooked(&ctx)?.contains(rel) {
-                bail!("{rel} is not a document filed and waiting to be booked");
-            }
+            waiting(&ctx, rel)?;
             f.insert("file".into(), rel.clone());
         }
         bill_page(&ctx, &f, None)
@@ -2587,9 +2620,7 @@ async fn bill_submit(Books(ctx): Books, mut mp: Multipart) -> Response {
         // One filed already: booked as it is, not filed again.
         if !get("file").is_empty() {
             let rel = get("file");
-            if !unbooked(&ctx)?.iter().any(|u| u == rel) {
-                bail!("{rel} is not a document filed and waiting to be booked");
-            }
+            waiting(&ctx, rel)?;
             let r = bill::bill(&ctx, rel, get("description"), vec![], postings(&ctx, get("postings"))?)?;
             info!(commit = %r.commit, file = %rel, "bill booked");
             return Ok(done(&ctx, "/bills"));
@@ -2877,7 +2908,7 @@ code { font-size: 13px; }
 /* cards */
 .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
 .box { border: 1px solid var(--card-border); border-radius: 12px; background: var(--card);
-  margin: 0 0 16px; overflow: hidden; }
+  margin: 0 0 16px; overflow-x: auto; }
 .grid2 > .box { margin: 0; }
 .box-header { display: flex; align-items: center; gap: 8px; padding: 14px 20px 6px; font-size: 15px; font-weight: 600; }
 .box-header .spacer { margin-left: auto; font-weight: 400; }
@@ -3010,6 +3041,7 @@ label.row .date, label.row .amt { font-family: "IBM Plex Mono", ui-monospace, mo
 label.row .amt { text-align: right; color: var(--fg); }
 
 table.log td { vertical-align: top; white-space: nowrap; }
+@media (max-width: 600px) { table.log .who { display: none; } }
 table.log td.what { width: 100%; max-width: 0; }
 table.log summary { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 table.log details[open] summary { white-space: normal; }

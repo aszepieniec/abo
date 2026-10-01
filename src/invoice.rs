@@ -119,7 +119,7 @@ pub fn issue(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
     let what = format!("to {}", args.customer.lines().next().unwrap_or("").trim());
     // Not registered, it charges none: a rate asked for is a mistake, not
     // something to drop without a word.
-    if matches!(ctx.cfg.vat, Vat::None) && args.vat_rate.is_some_and(|r| !r.is_zero()) {
+    if matches!(ctx.cfg.vat, Vat::None) && args.vat_rate.is_some() {
         bail!("the company is not VAT registered (vat.method = \"none\"), so an invoice charges no VAT");
     }
     let args = resolved(ctx, args);
@@ -143,11 +143,12 @@ fn resolved(ctx: &Ctx, args: &IssueArgs) -> IssueArgs {
         // Rates are set by statute wherever the company is, so they come from
         // abo.toml, never from abo. --vat-rate covers a line that differs from
         // the usual one: an export, a reduced rate, an exempt supply.
-        vat_rate: Some(match (&c.vat, args.vat_rate) {
-            (Vat::None, _) => Decimal::ZERO,
-            (_, Some(r)) => r,
-            (_, None) => c.invoice.vat_rate,
-        }),
+        // Not registered, none at all: `issue` refuses one given.
+        vat_rate: match (&c.vat, args.vat_rate) {
+            (Vat::None, _) => None,
+            (_, Some(r)) => Some(r),
+            (_, None) => Some(c.invoice.vat_rate),
+        },
         reference: args.reference.clone(),
         pay_to: match &args.pay_to[..] {
             // Bank details are no way to pay an invoice in bitcoin.
@@ -177,7 +178,9 @@ impl IssueArgs {
         let opt = |v: &Option<String>| v.clone().unwrap_or_default();
         flag("--date", &opt(&self.date));
         flag("--due-days", &self.due_days.map(|d| d.to_string()).unwrap_or_default());
-        flag("--vat-rate", &self.vat_rate.map(|d| d.to_string()).unwrap_or_default());
+        if let Some(r) = self.vat_rate {
+            flag("--vat-rate", &r.to_string());
+        }
         flag("--currency", &opt(&self.currency));
         flag("--decimals", &self.decimals.map(|d| d.to_string()).unwrap_or_default());
         for (f, v) in [
@@ -208,8 +211,11 @@ fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
     in_order(ctx, &year, &date)?;
 
     let currency = args.currency.clone().unwrap_or_default();
-    journal::commodity(ctx, &currency)?;
+    let (_, places) = journal::commodity(ctx, &currency)?;
     let dp = args.decimals.unwrap_or_default();
+    if let Some(places) = places.filter(|p| dp > *p) {
+        bail!("{currency} has {places} places, so an invoice in it is stated to {places} at most, not {dp}");
+    }
     let due = jiff::civil::Date::strptime("%Y-%m-%d", &date)
         .context("bad date")?
         .checked_add(jiff::Span::new().days(args.due_days.unwrap_or_default()))?
@@ -405,6 +411,9 @@ fn credit_it(ctx: &Ctx, number: &str, date: &str, note: &str) -> Result<IssueRep
         bail!("invoice {number} is reversed already, by {by}");
     }
     let old = printed(ctx, number)?;
+    if date < b.date.as_str() {
+        bail!("a credit note may not be dated before the invoice it cancels, {}", b.date);
+    }
 
     let year = date.get(..4).context("bad date")?;
     let new = next_number(ctx, year)?;
@@ -564,15 +573,18 @@ fn unprinted(ctx: &Ctx, template: &str, data: &Data) -> Vec<String> {
 fn in_order(ctx: &Ctx, year: &str, date: &str) -> Result<()> {
     let found: Vec<serde_json::Value> =
         serde_json::from_str(&journal::hledger(ctx, &["print", &format!("tag:invoice=^{year}-"), "-O", "json"])?)?;
+    // By number, as `next_number` reads them: a tag that is no number is
+    // not the last.
     let last = found
         .iter()
         .filter_map(|t| {
             let n = t["ttags"].as_array()?.iter().find(|g| g[0] == "invoice")?[1].as_str()?.to_string();
-            Some((n, t["tdate"].as_str()?.to_string()))
+            let k = n.strip_prefix(&format!("{year}-"))?.parse::<u32>().ok()?;
+            Some((k, n, t["tdate"].as_str()?.to_string()))
         })
         .max();
     match last {
-        Some((n, d)) if date < d.as_str() => bail!("{n}, the last invoice numbered, is dated {d}; the next may not be dated before it, {date}"),
+        Some((_, n, d)) if date < d.as_str() => bail!("{n}, the last invoice numbered, is dated {d}; the next may not be dated before it, {date}"),
         _ => Ok(()),
     }
 }

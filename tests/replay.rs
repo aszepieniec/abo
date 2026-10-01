@@ -47,11 +47,12 @@ fn replaying_the_log_makes_the_same_books() {
 
     // Asked, not given: the log holds the command the answers amount to.
     // Address, country, tax id; a bank option with its IBAN, the rest as
-    // offered; currency, method, input, output, rate charged to customers.
+    // offered; currency, method, input, output, rate charged to customers;
+    // git user.name and user.email as offered.
     ok(abo(
         &first,
         &["init", "Test Ltd"],
-        "1 Example Street\n\nExampleland\nTAX-1\nbank\n\nCH9300762011623852957\n\n\n\n\n\n\n\nEUR\neffective\n\n\n10\n",
+        "1 Example Street\n\nExampleland\nTAX-1\nbank\n\nCH9300762011623852957\n\n\n\n\n\n\n\nEUR\neffective\n\n\n10\n\n\n",
         &[],
     ));
     run(&["post", "--date", "2026-01-01", "--desc", "Opening balance", "Assets:Bank=5000.00", "Equity:Opening"]);

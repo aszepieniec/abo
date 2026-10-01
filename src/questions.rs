@@ -9,7 +9,7 @@
 //! and within the n-th payment option `p<n>.iban`.
 
 use crate::repo::{answer, Company, Kind, PaymentOption, Vat};
-use anyhow::Result;
+use anyhow::{bail, Result};
 use rust_decimal::Decimal;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -123,6 +123,9 @@ pub trait Source {
 
 impl Check {
     fn run(&self, s: &str, env: &Env) -> Result<String, String> {
+        if s.chars().any(char::is_control) {
+            return Err(format!("{s:?} holds a control character, such as a line break; type it on one line."));
+        }
         match self {
             Check::Free => Ok(s.to_string()),
             Check::Needed(what) if s.is_empty() => Err(format!("{what} is needed.")),
@@ -163,6 +166,9 @@ pub fn walk(qs: &[Q], prefix: &str, out: &mut Answers, context: &Context, src: &
             Q::Lines { key, label, hint } => {
                 let k = format!("{prefix}{key}");
                 let v = src.lines(&k, label, hint)?;
+                if v.chars().any(|c| c.is_control() && c != '\n') {
+                    bail!("{label}: {v:?} holds a control character");
+                }
                 out.insert(k, v);
             }
             Q::Choice { key, label, noun, options, offer } => {

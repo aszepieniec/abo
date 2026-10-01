@@ -207,10 +207,12 @@ pub fn check(ctx: &Ctx, tag: &str, number: &str) -> Result<()> {
     let i = all.iter().find(|i| i.number == number).with_context(|| format!("{tag}: the books have no invoice {number}"))?;
     match i.status {
         Status::Open | Status::PartPaid => Ok(()),
+        Status::CreditNote => bail!("{tag}: {number} is a credit note; nothing is owed on it"),
+        // Named by what settled or cancelled it, not by its part payments.
         s => bail!(
             "{tag}: invoice {number} is {} already ({})",
             s.label(),
-            i.settled_by.iter().map(|t| format!("{} {}", t.date, t.description)).collect::<Vec<_>>().join("; ")
+            i.settled_by.iter().filter(|t| t.tag != PAYS).map(|t| format!("{} {}", t.date, t.description)).collect::<Vec<_>>().join("; ")
         ),
     }
 }

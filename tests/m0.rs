@@ -40,7 +40,7 @@ fn m0() {
 
     // address, country, tax id, no payment option, currency, method, flat rate,
     // vat account, rate charged to customers
-    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nflat\n5.3\nliabilities:vat\n0\n");
+    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nflat\n5.3\nliabilities:vat\n0\n\n\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
     assert_eq!(commits(&dir), 1);
 
@@ -188,9 +188,9 @@ fn invoices() {
         // option: holder as offered, IBAN, then as offered BIC (none), bank
         // (none), further lines (none), name, id and account; then no other
         // option, as offered; currency, method, input, output, rate charged
-        // to customers
+        // to customers; git user.name and user.email as offered
         "1 Example Street\n\nExampleland\nTAX-1\nbank\n\nCH9300762011623852957\n\n\n\n\n\n\n\n\
-         EUR\neffective\n\n\n10\n",
+         EUR\neffective\n\n\n10\n\n\n",
     );
     assert!(o.status.success(), "init failed: {}", err(&o));
 
@@ -380,7 +380,7 @@ fn reconciliation() {
     let dir = base.join("test-ltd");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n");
+    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n\n\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
 
     let book = |date: &str, desc: &str, amount: &str| {
@@ -407,7 +407,7 @@ fn reconciliation() {
     };
 
     let r = keys(Some("750.00"));
-    assert_eq!(r["cleared"], "0");
+    assert_eq!(r["cleared"], "0.00");
     assert_eq!(r["difference"], "750.00");
     assert_eq!(r["outstanding"].as_array().unwrap().len(), 3);
 
@@ -507,7 +507,7 @@ fn statements() {
     std::fs::create_dir_all(&base).unwrap();
     // address, country, tax id, no payment option, currency, method, input,
     // output, rate charged to customers
-    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\neffective\n\n\n10\n");
+    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\neffective\n\n\n10\n\n\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
 
     let add = |args: &[&str]| {
@@ -599,7 +599,7 @@ fn undo_and_revert() {
     let dir = base.join("test-ltd");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n");
+    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n\n\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
     let journal = || std::fs::read_to_string(dir.join("journal/2026.journal")).unwrap();
     let log = || -> serde_json::Value {
@@ -667,7 +667,7 @@ fn init_asks_again() {
         &base,
         // A name of several words needs no quotes.
         &["init", "Test", "Ltd"],
-        "\n\n\nskip\n\ne u r\neur\nx\nfl\nabc\n150\n5.3%\n\n0\n",
+        "\n\n\nskip\n\ne u r\neur\nx\nfl\nabc\n150\n5.3%\n\n0\n\n\n",
     );
     assert!(o.status.success(), "init failed: {}", err(&o));
     for says in ["A currency is needed", "is not a currency code", "is not a VAT method", "is not a number", "from 0 up to 100"] {
@@ -681,7 +681,7 @@ fn init_asks_again() {
     // The input run out in the middle of a bank option: stopped, not asked
     // again for ever.
     let o = abo(&base, &["init", "Piped"], "\n\n\nbank\n");
-    assert!(!o.status.success() && err(&o).contains("needs an IBAN") && err(&o).len() < 10_000, "{}", err(&o));
+    assert!(!o.status.success() && err(&o).contains("ran out at Account holder") && err(&o).len() < 10_000, "{}", err(&o));
     // A flag no question asks for is refused, not dropped.
     let o = abo(&base, &["init", "Flagged", "--currency", "EUR", "--vat", "none", "--sales-rate", "5"], "");
     assert!(!o.status.success() && err(&o).contains("--sales-rate does not apply"), "{}", err(&o));
@@ -689,7 +689,7 @@ fn init_asks_again() {
     assert!(!o.status.success() && err(&o).contains("a cash option has no iban"), "{}", err(&o));
 
     let o = abo(&base, &["init", "Other"], "\n\n\nskip\n");
-    assert!(!o.status.success() && err(&o).contains("Currency code (such as USD, EUR or BTC): A currency is needed"), "{}", err(&o));
+    assert!(!o.status.success() && err(&o).contains("ran out at Currency code (such as USD, EUR or BTC)"), "{}", err(&o));
     assert!(!base.join("other").exists());
 
     std::fs::remove_dir_all(&base).unwrap();
@@ -704,7 +704,7 @@ fn payment_options() {
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
     // address, country, tax id, no payment option, currency, method
-    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n");
+    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n\n\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
     let toml = dir.join("abo.toml");
     let text = std::fs::read_to_string(&toml).unwrap();
@@ -743,10 +743,11 @@ fn payment_options() {
         assert!(!o.status.success() && err(&o).contains(says), "{args:?}: {}", err(&o));
     }
 
-    // An id's start will do; another kind drops the old kind's fields.
+    // An id's start will do; another kind drops the old kind's fields, and
+    // its account, the old kind's own, becomes the new kind's.
     let o = po(&["edit", "post", "--kind", "cash", "--id", "counter"]);
     assert!(o.status.success(), "edit failed: {}", err(&o));
-    assert!(list().starts_with("counter (cash): PostFinance -> Assets:Bank\ncash"), "{}", list());
+    assert!(list().starts_with("counter (cash): PostFinance -> Assets:Cash\ncash"), "{}", list());
     let o = po(&["remove", "coun"]);
     assert!(o.status.success(), "remove failed: {}", err(&o));
     assert_eq!(list(), "cash (cash): Cash -> Assets:Cash\n    At our office\n");
@@ -791,7 +792,7 @@ fn refile_missing_document() {
     let dir = base.join("test-ltd");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n");
+    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n\n\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
     let (old_scan, new_scan) = (base.join("old.pdf"), base.join("new.pdf"));
     std::fs::write(&old_scan, b"%PDF-1.4\n% lost\n").unwrap();
@@ -917,12 +918,12 @@ fn settling_invoices() {
         let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
         v.as_array().unwrap().iter().map(|i| i["owed"].as_str().unwrap().to_string()).collect::<Vec<_>>()
     };
-    assert_eq!(owed(), ["", "", "100 EUR", "100 EUR"]);
+    assert_eq!(owed(), ["", "", "100.00 EUR", "100.00 EUR"]);
     // A part paid alone leaves the rest.
     let o = abo(&dir, &["post", "--date", "2026-02-03", "--desc", "Cust pays part", "--tag", "pays=2026-0003",
                         "Assets:Bank=30", "Assets:Receivable=-30"], "");
     assert!(o.status.success(), "{}", err(&o));
-    assert_eq!(owed()[2], "70 EUR");
+    assert_eq!(owed()[2], "70.00 EUR");
     // One line per payment, in order: 1 was paid in part, then settled.
     let o = abo(&dir, &["invoices"], "");
     let list = String::from_utf8_lossy(&o.stdout);
@@ -978,7 +979,7 @@ fn settling_invoices() {
     assert!(o.status.success(), "{}", err(&o));
     let o = abo(&dir, &["invoices", "--json"], "");
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
-    assert_eq!((v[4]["total"].as_str(), v[4]["owed"].as_str(), v[4]["status"].as_str()), (Some("40 EUR"), Some(""), Some("settled")));
+    assert_eq!((v[4]["total"].as_str(), v[4]["owed"].as_str(), v[4]["status"].as_str()), (Some("40.00 EUR"), Some(""), Some("settled")));
 
     std::fs::remove_dir_all(&base).unwrap();
 }

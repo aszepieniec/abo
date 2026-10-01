@@ -59,7 +59,10 @@ only when asked for with its button. Each wrong answer says why under it and
 the form comes back as filled in; sent twice, it opens one company. A flag
 no question asks for with the other answers — a sales rate under `--vat
 none`, a network on a bank option — is refused, not dropped; and input that
-runs out mid-way stops init with what was missing, rather than asking again.
+runs out mid-way stops init, naming the question it ran out at, rather than
+taking the rest as blank; on a terminal, Ctrl-D on an empty line is a blank
+answer, refused where one is needed. A failure, the first commit's
+included — no git identity, say — leaves no directory behind.
 **Done when** the company's directory is a git repository with one commit
 holding `abo.toml`, `journal/main.journal`, `journal/accounts.journal` (the
 default accounts, plus the VAT accounts the method needs) and `.gitignore`,
@@ -175,7 +178,7 @@ its path, as a payment of an invoice names the invoice: `pays:` for a part,
 Browser: **Bills** lists every filed document, and every one a booking names
 that the books lack, newest first. Each shows its amount, what its booking
 credits (`?` where bookings disagree), and what is open: what it credits to
-a liability less what payments naming it alone took off, nought once
+a liability less what payments naming it alone took off, blank once
 settled or when it credited no liability. Bills not booked or still owed
 come first, and what is open is summed in each commodity. Pay books a
 payment of it, Upload files a document the books lack, Delete undoes the
@@ -185,8 +188,10 @@ Reverting a bill's booking cancels the bill: the reversal is tagged
 payment is reverted. Reverting a payment or a cancelling takes it back: the
 reversal is tagged `takes-back: settles <what>` (or `pays`, `cancels`), for
 bills and invoices alike, and reverting that puts it back. A bill payment
-pays off the bill's liability, no more than is open; a cancelling moves the
-opposite of the booking. Undo refuses an entry reversed since, and a bill or
+pays off the bill's liability, no more than is open, and the one that
+settles it all that is open; it is dated no earlier than the bill. A bill is
+booked once: a second booking naming it is refused, naming the first. A
+cancelling moves the opposite of the booking. Undo refuses an entry reversed since, and a bill or
 invoice that other entries still name. Filing a missing document for a
 booking moves every tag naming it and records its hash, in one commit.
 **Done when** the payable or receivable it settles goes to zero, and shows
@@ -302,7 +307,9 @@ commit, and recording writes a dated entry, with a balance assertion when
 nothing is outstanding and without one otherwise. After a marking or a
 recording the page is reloaded fresh, so reloading it does not do it again.
 Refused: an account that is not declared or not an asset, an undeclared
-commodity, clearing what is cleared already, and recording a statement
+commodity, a balance with more places than its commodity has, clearing a
+posting to another account or in a closed period, clearing what is cleared
+already, and recording a statement
 recorded already — but for recording it again, asserted, once what was
 outstanding at the first recording has cleared.
 
@@ -345,13 +352,14 @@ leaving the amount out.
 **Log**: every change to the books, newest first, as the `abo` command that
 made it, with every default it used written out; reads and refusals change
 nothing and are not there. Each opens to the command and the diff its commit
-made. A commit undone since is struck through and says so. CLI: `abo log`.
+made, documents shown as binary. The last 50 show, and **Show all** the rest.
+A commit undone since is struck through and says so. CLI: `abo log`.
 **Done when** the last change appears as a command that, typed, would make it
 again.
 
 ### F2. Undo something just done — Supported (browser, CLI)
-Every operation that succeeds says so in a green notice that fades after a
-couple of seconds (hovering holds it), with **Undo** on it. The **Log** offers
+Every operation that succeeds says so in a green notice that fades after
+ten seconds (hovering holds it), with **Undo** on it. The **Log** offers
 **Undo** on every line, greyed out where it cannot: the opening of the books,
 a filed document that is booked, something already undone, a change that
 something since has changed the same lines of, or one in a closed period. CLI:
@@ -364,8 +372,9 @@ shows it struck through; undoing the undo brings it back, and it is no longer
 shown undone. Undoing the first entry of a year takes its emptied year file
 and `include` line with it, and undoing that puts both back. Refused, with
 nothing changed, when something since has changed
-the same lines — the refusal names that line of the log, to undo first — or
-when it would change a closed period. Undoing an
+the same lines — the refusal names that line of the log, to undo first, never
+one undone since — when it would change a closed period, or when it would
+leave a bill both settled and cancelled, or paid more than it owes. Undoing an
 invoice frees its number for the next one; undo only one not yet sent.
 
 ### F3. Un-tick a transaction cleared by mistake — Supported (as F2)
@@ -436,36 +445,39 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 ---
 
-## Last verified: 2026-09-29
+## Last verified: 2026-10-01
 
 Four fresh agents, each with its own copy of the demo books and its own
 server, typst installed, working from this file and not the source: setting
-up (A, F6); booking, reconciling and reports (B1–B4, D, E); invoicing and
-corrections (C1, C3, F5, F7); settling, the Log and undo (B5, B6, C2, F1–F4).
-Every **Done when** held but where the table says otherwise. What they found
-was fixed on 2026-09-30, with a test for each, and not yet verified again.
+up (A, F6); booking, reconciling and reports (B1–B3, D, E); invoicing and
+corrections (C1, C3, F5, F7, G1); bills, settling, the Log and undo (B4–B6,
+C2, F1–F4). What they found was fixed the same day, with a test for each in
+`tests/regressions.rs`, and not yet verified again.
 
 | Workflow | Result |
 |---|---|
-| A2, A3, B1–B4, B6, C2, D1, D2, E1–E4, F3, F5, F6 | Verified; the refusals found missing are fixed since (below) |
-| A1 | Failed, fixed: input that ran out mid-way asked again for ever; a flag no question asked for was dropped without a word; the closing message named `abo add` |
-| A3b, A4 | Failed, fixed: no success notice or Undo after saving in the browser; an edit that changed nothing said nothing; a change whose commit failed left `abo.toml` changed and staged, for the next commit to sweep up. Also: an option added with flags got no name, and "the start of more than one" listed every option |
-| B5 | Failed, fixed: the Pay page booked a negative or nought amount, or the receivable as where money arrived; `pays:`/`settles:` were taken on entries that pay nothing, and twice for one invoice |
-| C1, C3 | Failed, fixed: nought, negative and out-of-range VAT invoices were issued; any commodity was taken, `eur` beside EUR; an invoice in BTC without `--decimals` was stated to two places, and a line that rounded to nothing was kept |
-| F1, F2 | Failed, fixed: an undone invoice could not be undone (git read typst's PDFs as text); an undo undone left the original shown as undone; a refusal showed raw git output instead of naming the line in the way |
-| F4 | Failed, fixed: after a booked document's booking was reverted, the refusal still advised reverting it |
-| F7 | Failed, fixed: the CLI and a direct POST reverted invoices, cancelled ones included, and credit notes; a reversal could be dated before its original |
-| D1, D2 (in passing) | Fixed: clearing what was cleared gave a raw git error; a statement could be recorded twice; any account, not declared or not an asset, was taken |
-| B2 (in passing) | Fixed: `abo file` took a date in a closed period |
+| A2, A3b, B1, B2, C2, D2, E1–E4, F7 | Verified |
+| A1 | Failed, fixed: with no git identity the first commit failed and left a half-made company behind; piped input that ran out was taken as blank answers to the rest; `--vat-input` was named `--input` in a refusal; 100 was refused as a rate; control characters were taken in answers |
+| A3 | Failed, fixed: in a data directory every page with a value in its path — an entry, an invoice, a statement, Undo — answered 500; `--dir` naming a file served it |
+| A4 | Failed, fixed: an edit whose input ran out cleared fields and committed; comments in `[[payment]]` tables were dropped; another kind kept the old kind's account and name |
+| B3 | Failed, fixed: in the browser, a document booked already was refused without naming the entry that booked it |
+| B4 | Failed, fixed: undoing a payment's reversal after the bill was cancelled left it settled and cancelled; a `settles:` payment of less than was open was taken; a bill could be booked twice; a payment could be dated before the bill; a booking's page promised to cancel a bill a payment still names |
+| B5 | Failed, fixed: a direct POST took a payment into an income or liability account |
+| B6 | Failed, fixed: an entry that only settles an invoice could not be reverted |
+| C1, C3 | Failed, fixed: 0% was taken from a company not VAT registered; `--decimals` above the commodity's places was taken; a tag that is no number was taken as the last invoice for dating |
+| D1, F3 | Failed, fixed: a posting to a non-asset account, to another account than the form's, or in a closed period could be cleared, the last then not undone |
+| F1 | Failed, fixed: invoice PDFs showed as text in the Log; only the last 50 lines could be seen |
+| F2 | Failed, fixed: a refusal named a line undone since rather than the one in the way |
+| F4 | Failed, fixed: the filing of a cancelled bill's document advised undoing its booking, which was refused |
+| F5 | Failed, fixed: a credit note could be dated before its invoice |
+| F6 | Failed, fixed: an undo refused for a closed period left the journal changed and staged, out of date order, and every later booking refused |
+| G1 | Failed, fixed: content cut off at phone width, the Log's Undo among it; boxes now scroll sideways within themselves |
+| (in passing) | Fixed: an empty description and an entry of noughts were booked; amounts were written as typed, `10 EUR`, not `10.00 EUR`; a bad period showed hledger's raw error; a VAT box configured twice was printed twice; the demo books had no git identity for the CLI |
 
-Known then, fixed on 2026-09-30 as well: a company in a data directory was
-listed but not served; a document filed from the CLI could not be booked from
-the browser; an invoice's page did not show its payments; undoing a year's
-first entry left its empty file and `include`; the Log offered Undo on lines
-it would refuse; on a phone the invoice list scrolled sideways and the bill
-upload went straight to the camera; a renamed company kept its old name as a
-bank option's holder; and an older invoice template left new fields off
-without a word.
+Known, not fixed: error pages answer 200; at 0% a BTC invoice prints a VAT
+line where EUR does not; unit prices print as typed; the same IBAN may be
+added twice; and the Log offers Undo on a line that the bill check would then
+refuse.
 
 Not yet done: users and logins (the rest of M5), and a web app manifest
 (M6, G1).

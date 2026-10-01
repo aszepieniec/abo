@@ -140,11 +140,53 @@ fn change(ctx: &Ctx, msg: &str, f: impl FnOnce(&mut Vec<PaymentOption>) -> Resul
     f(&mut options)?;
     let path = ctx.root.join("abo.toml");
     let mut doc: toml_edit::DocumentMut = std::fs::read_to_string(&path)?.parse()?;
-    let tables: toml_edit::DocumentMut = toml::to_string(&crate::repo::Payments { payment: options.clone() })?.parse()?;
+    let mut tables: toml_edit::DocumentMut = toml::to_string(&crate::repo::Payments { payment: options.clone() })?.parse()?;
+    let old: Vec<toml_edit::Table> =
+        doc.get("payment").and_then(|p| p.as_array_of_tables()).map(|a| a.iter().cloned().collect()).unwrap_or_default();
+    let ids: Vec<&str> = options.iter().map(|o| o.id.as_str()).collect();
+    let id = |t: &toml_edit::Table| t.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    // Where the first stood, the rest after it in order: a table kept and a
+    // new one each carry a place in a different file.
+    let at = old.iter().filter_map(|t| t.position()).min().unwrap_or(usize::MAX / 2);
+    if let Some(new) = tables.get_mut("payment").and_then(|p| p.as_array_of_tables_mut()) {
+        for (i, t) in new.iter_mut().enumerate() {
+            // The table it was: by its id, or where an edit gave it a new one.
+            let was = old.iter().find(|o| id(o) == id(t)).or_else(|| old.get(i).filter(|o| !ids.contains(&id(o).as_str())));
+            if let Some(was) = was {
+                *t = kept(was, t);
+            }
+            t.set_position(at + i);
+        }
+    }
     match tables.get("payment") {
         Some(t) => doc["payment"] = t.clone(),
         None => _ = doc.remove("payment"),
     }
     let commit = ctx.write_and_commit(&path, &doc.to_string(), msg)?;
     Ok(PaymentReport { options, commit })
+}
+
+/// `was` made into `now` in place, so that its comments stay: a value that
+/// changes keeps the comment beside it.
+fn kept(was: &toml_edit::Table, now: &toml_edit::Table) -> toml_edit::Table {
+    let mut t = was.clone();
+    t.retain(|k, _| now.contains_key(k));
+    for (k, v) in now.iter() {
+        match (t.get_mut(k).and_then(|i| i.as_value_mut()), v.as_value()) {
+            (Some(old), Some(new)) => {
+                let bare = |v: &toml_edit::Value| {
+                    let mut v = v.clone();
+                    v.decor_mut().clear();
+                    v.to_string()
+                };
+                if bare(old) != bare(new) {
+                    let decor = old.decor().clone();
+                    *old = new.clone();
+                    *old.decor_mut() = decor;
+                }
+            }
+            _ => _ = t.insert(k, v.clone()),
+        }
+    }
+    t
 }

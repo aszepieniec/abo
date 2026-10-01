@@ -63,7 +63,19 @@ pub fn status(
     if !account.split(':').next().is_some_and(|a| a.eq_ignore_ascii_case("assets")) {
         bail!("{account} is not an asset account; a statement is of money held, such as a bank account, cash or a wallet");
     }
-    journal::commodity(ctx, commodity)?;
+    let (_, places) = journal::commodity(ctx, commodity)?;
+    if let (Some(dp), Some(s)) = (places, statement) {
+        if s.normalize().scale() > dp {
+            bail!("{s} {commodity} has more places than {commodity} has: {dp}");
+        }
+    }
+    // Stated to the commodity's places: 0 EUR is 0.00 EUR.
+    let fix = |mut q: Decimal| {
+        if let Some(dp) = places.filter(|dp| q.scale() < *dp) {
+            q.rescale(dp);
+        }
+        q.to_string()
+    };
     // -e is exclusive, so ask for everything before the day after.
     let end = jiff::civil::Date::strptime("%Y-%m-%d", date)
         .context("bad date")?
@@ -106,9 +118,9 @@ pub fn status(
         account: account.to_string(),
         commodity: commodity.to_string(),
         date: date.to_string(),
-        cleared: cleared.to_string(),
-        statement: statement.map(|s| s.to_string()),
-        difference: statement.map(|s| (s - cleared).to_string()),
+        cleared: fix(cleared),
+        statement: statement.map(fix),
+        difference: statement.map(|s| fix(s - cleared)),
         reconciled: statement.is_some_and(|s| (s - cleared).is_zero()),
         outstanding,
     })
@@ -160,6 +172,12 @@ fn mark(ctx: &Ctx, keys: &[String]) -> Result<ClearReport> {
             bail!("bad journal file in key {key:?}");
         }
         let line: usize = line.parse().with_context(|| format!("bad line in key {key:?}"))?;
+        if !account.split(':').next().is_some_and(|a| a.eq_ignore_ascii_case("assets")) {
+            bail!("{account} is not an asset account; only money held is cleared against a statement");
+        }
+        if ctx.cfg.company.closed_through.as_deref().is_some_and(|c| expected <= c) {
+            bail!("{key} is dated in a closed period (closed through {})", ctx.cfg.company.closed_through.as_deref().unwrap_or_default());
+        }
         let path = ctx.journal_dir().join(name);
         let text = files
             .entry(path.clone())
@@ -287,7 +305,13 @@ fn assert_balance(ctx: &Ctx, r: &Reconciliation, balance: Decimal) -> Result<Add
     let statement = format!("{balance} {}", r.commodity);
     let tagged = journal::hledger(ctx, &["print", &format!("acct:^{}$", r.account), &format!("tag:reconciled=^{}$", r.date), "-O", "json"])?;
     let recorded: Vec<serde_json::Value> = serde_json::from_str(&tagged)?;
-    let same = |t: &&serde_json::Value| t["ttags"].as_array().into_iter().flatten().any(|g| g[0] == "statement" && g[1] == statement.as_str());
+    // By value: 0 and 0.00 are one balance.
+    let same = |t: &&serde_json::Value| {
+        t["ttags"].as_array().into_iter().flatten().any(|g| {
+            let v = g[1].as_str().unwrap_or_default().split_once(' ');
+            g[0] == "statement" && v.is_some_and(|(q, c)| c == r.commodity && Decimal::from_str_exact(q).is_ok_and(|q| q == balance))
+        })
+    };
     let asserted = |t: &&serde_json::Value| !t["tpostings"][0]["pbalanceassertion"].is_null();
     if recorded.iter().filter(same).any(|t| asserted(&t) || assertion.is_none()) {
         bail!("the statement of {} for {} is recorded already, at {statement}", r.date, r.account);
