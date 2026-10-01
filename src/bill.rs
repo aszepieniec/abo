@@ -47,6 +47,9 @@ pub fn file(ctx: &Ctx, src: &str, bytes: &[u8], date: &str, issuer: &str) -> Res
 }
 
 fn file_it(ctx: &Ctx, bytes: &[u8], date: &str, issuer: &str) -> Result<FileReport> {
+    if crate::repo::since(3) {
+        journal::date(date)?;
+    }
     if issuer.chars().any(crate::repo::hidden) && crate::repo::since(2) {
         bail!("the issuer {issuer:?} holds a control character, such as a line break");
     }
@@ -276,6 +279,10 @@ pub struct Bill {
     pub refs: Vec<crate::settle::Tagged>,
     /// Its payments and its cancelling, less those taken back.
     pub standing: Vec<crate::settle::Tagged>,
+    /// What its payments took off what it owes, those taken back netted
+    /// out, whether or not it shows settled; unknown where a payment pays
+    /// other bills too.
+    pub paid: Option<Decimal>,
 }
 
 impl Bill {
@@ -359,6 +366,7 @@ pub fn bills(ctx: &Ctx) -> Result<Vec<Bill>> {
             open: Figure::Unknown,
             refs: vec![],
             standing: vec![],
+            paid: None,
         };
         let mut paid = Some(Decimal::ZERO);
         for t in &txns {
@@ -411,6 +419,7 @@ pub fn bills(ctx: &Ctx) -> Result<Vec<Bill>> {
             }
             b.refs.push(r);
         }
+        b.paid = paid;
         let nought = |c: &str| Figure::Is(fix(Decimal::ZERO, c), c.to_string());
         b.open = match (&b.owed, paid) {
             _ if !b.booked() => Figure::Unknown,
@@ -457,6 +466,14 @@ pub fn problems(ctx: &Ctx) -> Result<Vec<String>> {
         if let Figure::Is(q, c) = &b.open {
             if q.is_sign_negative() {
                 out.push(format!("{} paid {} {c} more than it owes", b.file, -q));
+            }
+        }
+        // Settled or not, what was paid against what it owed.
+        if let (Some((_, owed, c)), Some(paid), true) = (&b.owed, b.paid, crate::repo::since(3)) {
+            if paid > *owed {
+                out.push(format!("{} paid {} {c} more than it owes", b.file, paid - owed));
+            } else if paid < *owed && b.standing.iter().any(|r| r.tag == SETTLES) && !b.cancelled() {
+                out.push(format!("{} settled with {} {c} still owed", b.file, owed - paid));
             }
         }
     }

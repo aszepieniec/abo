@@ -64,6 +64,8 @@ pub async fn serve(ctx: Ctx, port: u16) -> Result<()> {
         .layer(axum::middleware::from_fn(csrf))
         .layer(axum::middleware::from_fn(log));
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    // As bound: asked for port 0, the system's choice.
+    let addr = listener.local_addr()?;
     info!(%company, books = %root.display(), "http://{addr}");
     axum::serve(listener, app).with_graceful_shutdown(shutdown()).await?;
     Ok(())
@@ -123,6 +125,7 @@ pub async fn serve_data(root: PathBuf, port: u16) -> Result<()> {
         .layer(axum::middleware::from_fn(log))
         .with_state(Arc::new(root.clone()));
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    let addr = listener.local_addr()?;
     info!(data = %root.display(), "http://{addr}");
     axum::serve(listener, app).with_graceful_shutdown(shutdown()).await?;
     Ok(())
@@ -259,7 +262,14 @@ impl questions::Source for Posted<'_> {
 
     fn lines(&mut self, key: &str, _: &str, _: &str) -> Result<String> {
         // Blank lines dropped: on the terminal a blank line ends the answer.
-        Ok(self.raw(key).lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n"))
+        let v = self.raw(key).lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
+        // Said under its field, with the rest of what is wrong, and kept
+        // out of what is checked further.
+        if v.chars().any(|c| crate::repo::hidden(c) && c != '\n') && crate::repo::since(2) {
+            self.problems.insert(key.to_string(), format!("{v:?} holds a control character, or one that hides text."));
+            return Ok(v.chars().filter(|c| !crate::repo::hidden(*c) || *c == '\n').collect());
+        }
+        Ok(v)
     }
 
     fn choice(&mut self, key: &str, _: &str, noun: &str, options: &[&'static str], offer: &str) -> Result<String> {
@@ -465,10 +475,11 @@ async fn company_submit(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
             problems = posted.problems;
             bail!("answers to look at again");
         }
-        let mut take = |k: &str| a.remove(k).unwrap_or_default();
+        // A field the form did not send is left as it is, not cleared.
+        let mut take = |k: &str| a.remove(k).filter(|_| f.contains_key(k));
         let (name, address, country, tax_id) = (take("name"), take("address"), take("country"), take("tax_id"));
         // Sent as it stood, it is refused as the CLI refuses it: like that already.
-        company::edit(&ctx, company::Change { name: Some(name), address: Some(address), country: Some(country), tax_id: Some(tax_id) })?;
+        company::edit(&ctx, company::Change { name, address, country, tax_id })?;
         Ok(done(&ctx, "/company"))
     });
     match changed {
@@ -1542,6 +1553,9 @@ struct InvoiceForm {
     customer_tax_id: String,
     #[serde(default)]
     vat_reason: String,
+    /// Places, fewer than the commodity's own; blank for its own.
+    #[serde(default)]
+    decimals: String,
     #[serde(default)]
     token: String,
     /// `pay-<id>`, one per payment option ticked.
@@ -1801,6 +1815,18 @@ async fn invoice_form(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
                     note: d.note,
                     // Not registered, an invoice is given no rate at all.
                     vat_rate: if matches!(ctx.cfg.vat, crate::repo::Vat::None) { String::new() } else { d.vat_rate },
+                    // Places as it was stated to, where fewer than its commodity's.
+                    decimals: {
+                        let stated = rust_decimal::Decimal::from_str_exact(&d.total).map(|t| t.scale()).ok();
+                        let own = journal::commodity(&ctx, &d.currency).ok().and_then(|(_, p)| p);
+                        stated.filter(|s| own.is_some_and(|o| s < &o)).map(|s| s.to_string()).unwrap_or_default()
+                    },
+                    // Where it asked to be paid, by the names it printed.
+                    // ponytail: by name; two options of one name tick both.
+                    rest: ctx.cfg.payment.iter()
+                        .filter(|o| d.payment.iter().any(|p| p.label == o.label))
+                        .map(|o| (format!("pay-{}", o.id), "on".to_string()))
+                        .collect(),
                     currency: if d.currency == ctx.cfg.company.currency { String::new() } else { d.currency },
                     ..Default::default()
                 }
@@ -1840,7 +1866,10 @@ async fn invoice_submit(
                 r => Some(rust_decimal::Decimal::from_str_exact(r)?),
             },
             currency: (!f.currency.trim().is_empty()).then(|| f.currency.trim().to_owned()),
-            decimals: None,
+            decimals: match f.decimals.trim() {
+                "" => None,
+                d => Some(d.parse().with_context(|| format!("places {d:?} is not a number"))?),
+            },
             reference: f.reference.clone(),
             pay_to: f.rest.keys().filter_map(|k| k.strip_prefix("pay-")).map(str::to_owned).collect(),
             note: f.note.clone(),
@@ -1930,6 +1959,10 @@ fn invoice_page(ctx: &Ctx, f: &InvoiceForm, error: Option<&str>) -> Result<Marku
                             }
                         }
                     }
+                    label.field { "Places"
+                        span.hint { "Blank for the commodity's own; fewer to round to." }
+                        input type="text" name="decimals" value=(f.decimals);
+                    }
                     label.field { "Their reference" input type="text" name="reference" value=(f.reference); }
                     label.field { "Note" input type="text" name="note" value=(f.note); }
                     div.actions { button.btn-primary type="submit" { (icon("check")) " Issue it" } }
@@ -1965,7 +1998,8 @@ async fn invoices(Books(ctx): Books, Query(q): Query<Fields>) -> Response {
                                 // the buttons and status marks over it (CSS, no script).
                                 tr.row-link {
                                     td.nowrap { a.stretch href={"/entry/" (i.key)} { code { (i.number) } }
-                                        div.narrow.small.muted { (i.total) } }
+                                        // What the wide columns say, where they are hidden.
+                                        div.narrow.small.muted { (i.date) " · " (i.total) @if !i.due.is_empty() { " · due " (i.due) } } }
                                     td.date.wide { (i.date) }
                                     td { (i.customer) }
                                     td.amt.wide { (i.total) }
@@ -2161,6 +2195,14 @@ async fn pay_submit(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
             .collect();
         if tags.is_empty() {
             bail!("say which invoice it pays");
+        }
+        // Paid in what it was issued in: another commodity is an exchange,
+        // an entry of its own.
+        let all = settle::invoices(&ctx)?;
+        for (_, n) in &tags {
+            if let Some(c) = all.iter().find(|i| &i.number == n).and_then(|i| i.total.rsplit(' ').next()).filter(|c| *c != commodity) {
+                bail!("invoice {n} is in {c}, not {commodity}");
+            }
         }
         let p = |account: String, amount| Posting { account, amount: Some(amount), commodity: commodity.clone(), assertion: None };
         journal::post(&ctx, &Entry {
@@ -2487,6 +2529,21 @@ fn bill_pay_page(ctx: &Ctx, b: &bill::Bill, f: &Fields, error: Option<&str>) -> 
 }
 
 /// Where money is paid from: the asset accounts but the receivable and VAT.
+/// The commodities an account has ever held.
+fn commodities_in(ctx: &Ctx, account: &str) -> Result<Vec<String>> {
+    let txns: Vec<serde_json::Value> = serde_json::from_str(&journal::hledger(ctx, &["print", &format!("acct:^{account}$"), "-O", "json"])?)?;
+    let mut held: Vec<String> = txns
+        .iter()
+        .flat_map(|t| t["tpostings"].as_array().cloned().unwrap_or_default())
+        .filter(|p| p["paccount"] == account)
+        .flat_map(|p| p["pamount"].as_array().cloned().unwrap_or_default())
+        .filter_map(|a| a["acommodity"].as_str().map(str::to_string))
+        .collect();
+    held.sort();
+    held.dedup();
+    Ok(held)
+}
+
 fn money_accounts(ctx: &Ctx) -> Result<Vec<String>> {
     Ok(journal::declared_accounts(ctx)?
         .into_iter()
@@ -2507,6 +2564,10 @@ async fn bill_pay_submit(Books(ctx): Books, Form(f): Form<Fields>) -> Response {
         }
         if !money_accounts(&ctx)?.contains(&get("from")) {
             bail!("{} is not an account money is paid from", get("from"));
+        }
+        let held = commodities_in(&ctx, &get("from"))?;
+        if !held.is_empty() && !held.contains(&commodity) {
+            bail!("{} holds no {commodity}, only {}; pay the bill from an account that holds {commodity}", get("from"), held.join(", "));
         }
         let p = |account: String, amount| Posting { account, amount: Some(amount), commodity: commodity.clone(), assertion: None };
         journal::post(&ctx, &Entry {
@@ -2655,6 +2716,7 @@ async fn bill_submit(Books(ctx): Books, mut mp: Multipart) -> Response {
         let entry = Entry { date: get("date").to_string(), description: get("description").to_string(), tags: vec![], postings };
         // Refused before filing, so a bill that cannot be booked is not filed.
         journal::validate(&ctx, &entry)?;
+        ctx.untouched()?;
         let filed = bill::file(&ctx, src, bytes, &entry.date, get("issuer"))?;
         let r = bill::bill(&ctx, &filed.file, &entry.description, vec![], entry.postings)?;
         info!(commit = %r.commit, file = %filed.file, "bill booked");

@@ -185,9 +185,22 @@ fn check_syntax(field: &str, value: &str, forbidden: &str) -> Result<()> {
     Ok(())
 }
 
+/// A date as abo takes one, `2026-03-01`: read as a date before anything
+/// compares it, as text it would sort among dates wrongly.
+pub fn date(s: &str) -> Result<Date> {
+    let shaped = s.len() == 10 && s.bytes().enumerate().all(|(i, b)| if i == 4 || i == 7 { b == b'-' } else { b.is_ascii_digit() });
+    if !shaped && crate::repo::since(3) {
+        bail!("{s:?} is not a date such as 2026-03-01");
+    }
+    Date::from_str(s).with_context(|| format!("{s:?} is not a date such as 2026-03-01"))
+}
+
 /// Steps 0-5 of the validation chain. Step 6 (hledger check) lives in `add`,
 /// because it needs the entry written somewhere.
 pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
+    if crate::repo::since(3) {
+        date(&e.date)?;
+    }
     // 0. no field may carry journal syntax
     check_syntax("description", &e.description, ";")?;
     if e.description.trim().is_empty() && crate::repo::since(2) {
@@ -326,6 +339,9 @@ pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
             if open.is_none() && paying.len() == 1 && off > owed && crate::repo::since(2) {
                 bail!("it pays {off} {commodity} off the bill {v}, which owed {owed} {commodity} in all");
             }
+            if open.is_none() && k == crate::settle::PAYS && paying.len() == 1 && off == owed && crate::repo::since(3) {
+                bail!("it pays all the bill {v} owed; tag it {}: instead", crate::settle::SETTLES);
+            }
             // A part that leaves nothing open settles it.
             if open.is_some_and(|o| k == crate::settle::PAYS && paying.len() == 1 && off == o) && crate::repo::since(2) {
                 bail!("it pays all that is open of the bill {v}; tag it {}: instead", crate::settle::SETTLES);
@@ -360,6 +376,26 @@ pub fn validate(ctx: &Ctx, e: &Entry) -> Result<()> {
         };
         if !stands {
             bail!("{TAKES_BACK}: no {tag}: {what} stands to be taken back");
+        }
+        if crate::repo::since(3) {
+            // The mark of a reversal, and of nothing else: the entry it
+            // reverses carries what it takes back.
+            let txns: Vec<serde_json::Value> = serde_json::from_str(&hledger(ctx, &["print", &format!("tag:{tag}"), "-O", "json"])?)?;
+            let carried = e.tag("reverses").is_some_and(|h| {
+                txns.iter()
+                    .filter(|t| t["ttags"].as_array().into_iter().flatten().any(|g| g[0] == tag && g[1] == what))
+                    .filter_map(|t| booking(ctx, &crate::reconcile::key_of(t).ok()?).ok())
+                    .any(|b| b.commit.as_deref() == Some(h))
+            });
+            if !carried {
+                bail!("{TAKES_BACK}: is the mark of a reversal; to take back the {tag}: {what}, revert the entry that carries it");
+            }
+            // A part paid of a bill settled since stays, or the settling falls short.
+            if tag == crate::settle::PAYS && what.starts_with("bills/") {
+                if let Some(s) = crate::bill::bills(ctx)?.into_iter().find(|b| b.file == what).and_then(|b| b.standing.into_iter().find(|t| t.tag == crate::settle::SETTLES)) {
+                    bail!("{what} is settled since, by {} {}; revert that first", s.date, s.description);
+                }
+            }
         }
     }
 
@@ -410,11 +446,22 @@ pub fn add_with(ctx: &Ctx, e: &Entry, also: &[&Path]) -> Result<AddReport> {
     ctx.untouched()?;
     // Written to its commodity's places: 10 EUR as 10.00 EUR.
     let mut e = e.clone();
+    // Since rules 3 noughts past them too, 100.000 as 100.00, and the
+    // balance a posting asserts as well; only noughts: validation refused
+    // more places than the commodity has.
     for p in e.postings.iter_mut().filter(|_| crate::repo::since(2)) {
-        if let (Some(a), (_, Some(dp))) = (p.amount.as_mut(), commodity(ctx, &p.commodity)?) {
-            if a.scale() < dp {
+        let (_, places) = commodity(ctx, &p.commodity)?;
+        let Some(dp) = places else { continue };
+        let to_places = |a: &mut Decimal| {
+            if a.scale() < dp || (a.scale() > dp && crate::repo::since(3)) {
                 a.rescale(dp);
             }
+        };
+        if let Some(a) = p.amount.as_mut() {
+            to_places(a);
+        }
+        if let Some(a) = p.assertion.as_mut().filter(|_| crate::repo::since(3)) {
+            to_places(a);
         }
     }
     let e = &e;
@@ -660,6 +707,12 @@ pub fn reverse(ctx: &Ctx, key: &str, date: &str) -> Result<AddReport> {
             (Some(n), Some(of)) => bail!("{n} is a credit note, cancelling invoice {of}; it stands. Issue invoice {of} again if it was cancelled by mistake"),
             (Some(n), None) => bail!("{n} is an invoice; it is corrected by a credit note, not reverted: abo credit {n}"),
             _ => {}
+        }
+        if crate::repo::since(3) {
+            let today = jiff::Zoned::now().date();
+            if self::date(date)? > today {
+                bail!("{date} is after today, {today}; a reversal is dated when it is booked, or before");
+            }
         }
         if date < b.date.as_str() {
             bail!("a reversal may not be dated before what it reverses, {}", b.date);

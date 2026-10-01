@@ -119,6 +119,11 @@ pub trait Source {
     /// Something wrong with the item under `prefix` as a whole, to be said
     /// under its question `first`. True to ask the item again.
     fn item_problem(&mut self, prefix: &str, first: &str, problem: String, answers: &Answers) -> Result<bool>;
+    /// What a blank answer to `key` stands for: what the question offers,
+    /// or, where answers are being changed, what is there now.
+    fn offer(&self, _key: &str, offered: String) -> String {
+        offered
+    }
 }
 
 impl Check {
@@ -157,7 +162,7 @@ pub fn walk(qs: &[Q], prefix: &str, out: &mut Answers, context: &Context, src: &
                 let k = format!("{prefix}{key}");
                 let v = {
                     let env = Env { answers: out, prefix, context };
-                    let offered = offer.eval(&env);
+                    let offered = src.offer(&k, offer.eval(&env));
                     let check = |s: &str| check.run(if s.is_empty() { &offered } else { s }, &env);
                     src.text(&k, label, hint, &offered, &check)?
                 };

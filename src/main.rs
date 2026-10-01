@@ -843,7 +843,13 @@ async fn run(cli: Cli) -> Result<()> {
                         o.id = new_id.unwrap_or(o.id);
                         o
                     } else {
-                        let asked = ask_option(&ctx, questions::option_answers(&now), others(&now.id))?;
+                        // As it stands, blanks included: a part it lacks is
+                        // put on the line blank, not as an added one's offer.
+                        let mut start = questions::option_answers(&now);
+                        for k in ["label", "holder", "iban", "bic", "bank", "network", "address", "details"] {
+                            start.entry(k.into()).or_default();
+                        }
+                        let asked = ask_option(&ctx, start, others(&now.id))?;
                         let Some(o) = asked else {
                             println!("Nothing changed.");
                             return Ok(());
@@ -1199,6 +1205,10 @@ fn question(label: &str, hint: &str) -> String {
 }
 
 impl questions::Source for Terminal {
+    fn offer(&self, key: &str, offered: String) -> String {
+        self.start.get(key).cloned().unwrap_or(offered)
+    }
+
     fn note(&mut self, title: &str, note: &str) -> Result<()> {
         if note.is_empty() {
             return Ok(());

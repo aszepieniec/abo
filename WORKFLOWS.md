@@ -61,7 +61,8 @@ no question asks for with the other answers — a sales rate under `--vat
 none`, a network on a bank option — is refused, not dropped; and input that
 runs out mid-way stops init, naming the question it ran out at, rather than
 taking the rest as blank; on a terminal, Ctrl-D on an empty line is a blank
-answer, refused where one is needed. A failure, the first commit's
+answer, and where one is not enough init stops there, saying what was
+needed, rather than asking again as it does after Enter. A failure, the first commit's
 included — no git identity, say — leaves no directory behind.
 **Done when** the company's directory is a git repository with one commit
 holding `abo.toml`, `journal/main.journal`, `journal/accounts.journal` (the
@@ -457,13 +458,25 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 ## Last verified: 2026-10-01
 
-Run twice that day, by four fresh agents each time, each with its own copy of
+Run three times that day, by four fresh agents each time, each with its own copy of
 the demo books and its own server, typst installed, working from this file
 and not the source: setting up (A, F6); booking, reconciling and reports
 (B1–B3, D, E); invoicing and corrections (C1, C3, F5, F7, G1); bills,
 settling, the Log and undo (B4–B6, C2, F1–F4). Every fault of the first run
-held fixed in the second. What the second found was fixed the same day, with
-a test for each in `tests/regressions.rs`, and not yet verified again.
+held fixed in the second, and of the 40-odd fixed after the second all but
+three held in the third, those three having been fixed too narrowly. What the
+third found was fixed the same day, with a test for each in
+`tests/regressions.rs`, under rules 3, and not yet verified again.
+
+| Workflow | Third run |
+|---|---|
+| A2, A3, B3, B5, C1, C2, C3, D1, D2, E1–E4, F1, F3, F4, F6, F7 | Verified |
+| B4, B6, F2 | Failed, fixed: an undo or a revert could leave a bill paid more than it owes, or shown settled with money still owed, while Bills showed nothing open; a `takes-back:` typed by hand counted as a reversal's, so a bill could be cancelled under its payment and an invoice settled twice; a part paying all a `?` bill owed was taken |
+| B1, B2 | Failed, fixed: `abo file` and `abo invoice` compared a date as text before reading it — `2026-1-5` was filed in a closed period, `26-9-1` as the year 0026; the browser's File and book filed the document and then refused the booking, over a hand edit in the year file; `100.000 EUR` was written and reported as typed, and a recorded balance too |
+| F5 | Failed, fixed: Correct forgot where the invoice asked to be paid and the places it was stated to; the form now has Places |
+| G1 | Failed, fixed: at phone width the invoice list hid each invoice's date and due date |
+| A1, A3b, A4 | Failed, fixed: an answer of spaces was taken from flags; a bad line in an address hid every other problem in the form; an edit answered as it stood still changed the holder; `abo.toml` could send money to an account that is no asset; `credit --note` and a few rare invisible characters slipped through |
+| (in passing) | Fixed: Pay pages took money in another commodity than the bill's or invoice's; a negative due period, and a reversal dated after today, were taken; an undo held up by a hand edit blamed "something since"; a company form missing a field cleared it; `abo bal -f` read another file. The tests' servers now bind a port the system picks, and each run clears away the books of runs gone before |
 
 | Workflow | Second run |
 |---|---|

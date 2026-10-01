@@ -357,6 +357,8 @@ fn revert_commit(ctx: &Ctx, hash: &str) -> Result<String> {
     if ctx.git(&["diff", "--cached", "--quiet"]).is_err() && crate::repo::since(2) {
         bail!("something is staged in the books that no abo command made; commit or unstage it first");
     }
+    // A hand edit in a journal file would only show as lines changed since.
+    ctx.untouched()?;
     let full = ctx.git(&["rev-parse", "--verify", &format!("{hash}^{{commit}}")])?;
     let full = full.trim();
     let subject = ctx.git(&["log", "-1", "--format=%s", full])?;

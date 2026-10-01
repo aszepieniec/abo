@@ -9,6 +9,24 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+/// Every test's books are in the temp directory, `abo-reg-<test>-<pid>`, and
+/// left there to look at: those of runs whose process is gone are cleared
+/// away, once a run, or every run would leave its books behind for good.
+/// ponytail: reads /proc for the process, so Linux alone.
+fn sweep() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let me = std::process::id();
+        for e in std::fs::read_dir(std::env::temp_dir()).into_iter().flatten().flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let pid = name.strip_prefix("abo-reg-").and_then(|r| r.rsplit('-').next()?.parse::<u32>().ok());
+            if pid.is_some_and(|p| p != me && !Path::new(&format!("/proc/{p}")).exists()) {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    });
+}
+
 /// Fresh books, `Test Ltd` in EUR under the effective VAT method, in a
 /// directory of their own; `extra` adds to or overrides init's flags.
 fn books(name: &str, extra: &[&str]) -> PathBuf {
@@ -26,6 +44,7 @@ fn books(name: &str, extra: &[&str]) -> PathBuf {
 }
 
 fn abo(dir: &Path, args: &[&str]) -> Output {
+    sweep();
     Command::new(env!("CARGO_BIN_EXE_abo")).args(args).current_dir(dir).stdin(Stdio::null()).output().unwrap()
 }
 
@@ -112,35 +131,38 @@ impl Drop for Server {
     }
 }
 
-/// A port no other server of this run was given. One the system hands out
-/// and takes back could go to two tests at once, whose servers then race
-/// for it; these are counted out instead, from a start of this run's own.
-fn free_port() -> u16 {
-    static NEXT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
-    let base = 20000 + (std::process::id() % 2000) as u16 * 10;
-    loop {
-        let port = base + NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
-            return port;
+/// Start a server, `cmd` given all but its port: it binds port 0, the
+/// system's choice, and says which. No port is chosen here and taken there,
+/// where another test, or a connection of the system's own, could have it
+/// in between.
+fn start(mut cmd: Command) -> Server {
+    use std::io::BufRead as _;
+    let mut child = cmd.args(["--port", "0"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    let out = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    // Read on to the end, so the server never waits on a full pipe.
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+            if let Some(port) = line.split("http://127.0.0.1:").nth(1).and_then(|r| r.split(|c: char| !c.is_ascii_digit()).next()?.parse::<u16>().ok()) {
+                let _ = tx.send(port);
+            }
         }
-    }
+    });
+    let port = rx.recv_timeout(Duration::from_secs(60)).expect("the server did not say where it listens");
+    Server { child, port }
 }
 
 fn serve(dir: &Path) -> Server {
-    let port = free_port();
-    let child = Command::new(env!("CARGO_BIN_EXE_abo"))
-        .args(["serve", "--port", &port.to_string()])
-        .current_dir(dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let start = Instant::now();
-    while TcpStream::connect(("127.0.0.1", port)).is_err() {
-        assert!(start.elapsed() < Duration::from_secs(10), "abo serve did not start");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    Server { child, port }
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_abo"));
+    cmd.arg("serve").current_dir(dir);
+    start(cmd)
+}
+
+/// `abo serve --dir data`: every company of a data directory.
+fn serve_data(data: &Path) -> Server {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_abo"));
+    cmd.args(["serve", "--dir"]).arg(data);
+    start(cmd)
 }
 
 /// (status, the Location header, the whole answer)
@@ -865,14 +887,7 @@ fn an_undo_refused_for_a_closed_period_leaves_the_journal_as_it_was() {
 fn a_company_of_a_data_directory_serves_its_pages_with_values_in_the_path() {
     let dir = books("data-dir-paths", &[]);
     ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank"]);
-    let port = free_port();
-    let child = Command::new(env!("CARGO_BIN_EXE_abo"))
-        .args(["serve", "--port", &port.to_string(), "--dir"]).arg(dir.parent().unwrap())
-        .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
-    let s = Server { child, port };
-    while TcpStream::connect(("127.0.0.1", port)).is_err() {
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let s = serve_data(dir.parent().unwrap());
     for path in ["/c/test-ltd/report/pl", &format!("/c/test-ltd/entry/{}", enc(&key(&dir, "desc:Fees")))] {
         let (status, _, page) = http(&s, "GET", path, &[]);
         assert_eq!(status, 200, "{path}: {page}");
@@ -1318,17 +1333,10 @@ fn the_demo_books_take_commits_from_a_terminal() {
     let _ = std::fs::remove_dir_all(&base);
     let home = base.join("home");
     std::fs::create_dir_all(&home).unwrap();
-    let port = free_port();
     // No git identity anywhere but what the demo sets itself.
-    let child = Command::new(env!("CARGO_BIN_EXE_abo")).args(["demo", "--port", &port.to_string()])
-        .env("TMPDIR", &base).env("HOME", &home).env("XDG_CONFIG_HOME", &home)
-        .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
-    let _s = Server { child, port };
-    let start = Instant::now();
-    while TcpStream::connect(("127.0.0.1", port)).is_err() {
-        assert!(start.elapsed() < Duration::from_secs(60), "abo demo did not start");
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_abo"));
+    cmd.arg("demo").env("TMPDIR", &base).env("HOME", &home).env("XDG_CONFIG_HOME", &home);
+    let _s = start(cmd);
     let o = Command::new(env!("CARGO_BIN_EXE_abo")).args(["post", "--date", "2026-09-30", "--desc", "T", "Expenses:General=1.00", "Assets:Bank"])
         .current_dir(base.join("abo-demo")).env("HOME", &home).env("XDG_CONFIG_HOME", &home).env("GIT_CONFIG_NOSYSTEM", "1")
         .stdin(Stdio::null()).output().unwrap();
@@ -1473,13 +1481,7 @@ fn a_token_is_one_companys_alone() {
     let dir = books("token-company", &[]);
     let base = dir.parent().unwrap();
     ok(base, &["init", "Other Ltd", "--currency", "EUR", "--vat", "none", "--git-name", "t", "--git-email", "t@example.invalid"]);
-    let port = free_port();
-    let child = Command::new(env!("CARGO_BIN_EXE_abo")).args(["serve", "--port", &port.to_string(), "--dir"]).arg(base)
-        .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
-    let s = Server { child, port };
-    while TcpStream::connect(("127.0.0.1", port)).is_err() {
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let s = serve_data(base);
     for company in ["test-ltd", "other-ltd"] {
         http(&s, "POST", &format!("/c/{company}/post"), &[("token", "same"), ("date", "2026-03-01"), ("description", "Fees"),
             ("postings", "Expenses:General=5.00\nAssets:Bank")]);
@@ -1802,4 +1804,218 @@ fn a_bill_document_is_served_from_under_bills_alone() {
         let (status, _, page) = http(&s, "GET", path, &[]);
         assert!(status == 404 && !page.contains("[company]") && !page.contains("[core]"), "{path}: {page}");
     }
+}
+
+// ---- found by the third verification run, 2026-10-01 ----
+
+#[test]
+fn an_undo_leaves_no_bill_paid_more_than_it_owes() {
+    let dir = books("undo-overpaid", &[]);
+    let b = bill(&dir, "Acme", "2026-03-01", "110.00");
+    assert!(pay(&dir, "pays", &b, "2026-03-10", "50.00").status.success());
+    ok(&dir, &["revert", "--date", "2026-03-11", &key(&dir, "desc:Pay 2026-03-10")]);
+    let taken_back = log_len(&dir);
+    assert!(pay(&dir, "settles", &b, "2026-03-12", "110.00").status.success());
+    refused(&dir, &["undo", &taken_back.to_string()], "more than it owes");
+    clean(&dir);
+}
+
+#[test]
+fn no_payment_of_a_settled_bill_goes_from_under_it() {
+    let dir = books("settled-short", &[]);
+    let b = bill(&dir, "Acme", "2026-03-01", "110.00");
+    assert!(pay(&dir, "pays", &b, "2026-03-10", "50.00").status.success());
+    let part = log_len(&dir);
+    assert!(pay(&dir, "settles", &b, "2026-03-11", "60.00").status.success());
+    refused(&dir, &["undo", &part.to_string()], "still owed");
+    refused(&dir, &["revert", "--date", "2026-03-12", &key(&dir, "desc:Pay 2026-03-10")], "settled");
+    clean(&dir);
+}
+
+#[test]
+fn takes_back_is_a_reversals_alone() {
+    let dir = books("hand-takes-back", &[]);
+    let b = bill(&dir, "Acme", "2026-03-01", "60.00");
+    assert!(pay(&dir, "pays", &b, "2026-03-10", "20.00").status.success());
+    refused(&dir, &["post", "--date", "2026-03-11", "--desc", "tb", "--tag", &format!("takes-back=pays {b}"), "Liabilities:Payable=-1.00", "Assets:Bank"], "reversal");
+}
+
+#[test]
+fn a_date_is_read_as_a_date_before_anything_else() {
+    let dir = books("dates-first", &[]);
+    close(&dir, "2026-06-30");
+    let scan = dir.parent().unwrap().join("scan.pdf");
+    std::fs::write(&scan, b"%PDF-1.4\n% a\n").unwrap();
+    for date in ["2026-1-5", "26-9-1", "20260105"] {
+        refused(&dir, &["file", "--date", date, "--issuer", "Early", &scan.to_string_lossy()], "not a date");
+        refused(&dir, &["invoice", "--to", "C", "--item", "1|10|x", "--date", date], "not a date");
+    }
+    assert!(!dir.join("bills").exists());
+}
+
+#[test]
+fn file_and_book_files_nothing_it_cannot_book() {
+    let dir = books("file-book-dirty", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank"]);
+    std::fs::write(dir.join("journal/2026.journal"), read(&dir, "journal/2026.journal") + "; by hand\n").unwrap();
+    let s = serve(&dir);
+    let body = "--b0undary\r\nContent-Disposition: form-data; name=\"document\"; filename=\"b.pdf\"\r\nContent-Type: application/pdf\r\n\r\n%PDF-1.4\n% b\n\r\n\
+                --b0undary\r\nContent-Disposition: form-data; name=\"date\"\r\n\r\n2026-03-05\r\n\
+                --b0undary\r\nContent-Disposition: form-data; name=\"issuer\"\r\n\r\nAcme\r\n\
+                --b0undary\r\nContent-Disposition: form-data; name=\"description\"\r\n\r\nAcme\r\n\
+                --b0undary\r\nContent-Disposition: form-data; name=\"postings\"\r\n\r\nExpenses:General=1.00\nLiabilities:Payable\r\n\
+                --b0undary\r\nContent-Disposition: form-data; name=\"token\"\r\n\r\nfb1\r\n--b0undary--\r\n";
+    let (_, _, page) = send(&s, "POST", "/bill", "multipart/form-data; boundary=b0undary", body.as_bytes());
+    assert!(page.contains("changes no abo command made"), "{page}");
+    assert!(!dir.join("bills").exists(), "the document was filed");
+}
+
+#[test]
+fn trailing_noughts_are_written_to_the_places() {
+    let dir = books("trailing-noughts", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=100.000", "Assets:Bank"]);
+    let journal = read(&dir, "journal/2026.journal");
+    assert!(journal.contains("100.00 EUR") && !journal.contains("100.000"), "{journal}");
+    ok(&dir, &["clear", &format!("{}:Assets:Bank", key(&dir, "desc:^Fees$"))]);
+    ok(&dir, &["reconcile", "--account", "Assets:Bank", "--date", "2026-03-31", "--balance=-100", "--record"]);
+    assert!(read(&dir, "journal/2026.journal").contains("= -100.00 EUR"), "{}", read(&dir, "journal/2026.journal"));
+}
+
+#[test]
+fn a_correction_starts_from_where_the_invoice_asked_to_be_paid_and_its_places() {
+    if Command::new("typst").arg("--version").output().is_err() {
+        return;
+    }
+    let dir = books("correct-filled", &["--vat", "none", "--payment", "{ kind = \"bank\", iban = \"CH9300762011623852957\" }",
+                                        "--payment", "{ kind = \"cash\", details = \"Till\" }"]);
+    std::fs::write(dir.join("journal/accounts.journal"), read(&dir, "journal/accounts.journal") + "commodity 0.00000001 BTC\n").unwrap();
+    ok(&dir, &["invoice", "--to", "C", "--item", "1|10|x", "--date", "2026-03-01", "--pay-to", "cash"]);
+    ok(&dir, &["invoice", "--to", "C", "--item", "1|0.0123|x", "--date", "2026-03-02", "--currency", "BTC", "--decimals", "4"]);
+    let s = serve(&dir);
+    let (_, _, page) = http(&s, "GET", "/invoice?from=2026-0001", &[]);
+    assert!(page.contains("name=\"pay-cash\" checked") && !page.contains("name=\"pay-bank\" checked"), "{page}");
+    let (_, _, page) = http(&s, "GET", "/invoice?from=2026-0002", &[]);
+    assert!(page.contains("name=\"decimals\" value=\"4\""), "{page}");
+}
+
+#[test]
+fn an_invoice_due_date_shows_at_phone_width() {
+    if Command::new("typst").arg("--version").output().is_err() {
+        return;
+    }
+    let dir = books("due-narrow", &[]);
+    ok(&dir, &["invoice", "--to", "C", "--item", "1|10|x", "--date", "2026-03-01"]);
+    let s = serve(&dir);
+    let (_, _, page) = http(&s, "GET", "/invoices", &[]);
+    let narrow = page.split("class=\"narrow small muted\"").nth(1).unwrap_or_default();
+    assert!(narrow.split("</div>").next().unwrap_or_default().contains("due 2026-03-31"), "{page}");
+}
+
+#[test]
+fn an_answer_of_spaces_is_no_answer() {
+    let dir = books("spaces", &[]);
+    refused(&dir, &["payment-options", "add", "w", "--kind", "crypto", "--network", " ", "--address", "bc1q"], "network and an address");
+    refused(&dir, &["payment-options", "add", "v", "--kind", "crypto", "--network", "BTC", "--address", " "], "network and an address");
+    refused(&dir, &["payment-options", "add", "t", "--kind", "cash", "--detail", " "], "where and when");
+}
+
+#[test]
+fn a_bad_line_in_an_address_is_said_under_it_with_the_rest() {
+    let base = std::env::temp_dir().join(format!("abo-reg-new-ctrl-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let s = serve_data(&base);
+    let (_, _, page) = http(&s, "POST", "/new", &[("token", "n1"), ("p.n", "0"), ("name", "Acme"), ("address", "x\u{1}y"), ("currency", "xx")]);
+    assert!(page.contains("is not a currency code") && page.contains("control character"), "{page}");
+}
+
+#[test]
+fn an_edit_answered_as_it_stands_changes_nothing() {
+    let dir = books("edit-unchanged", &[]);
+    // Added with flags: no account holder.
+    ok(&dir, &["payment-options", "add", "bank", "--iban", "CH9300762011623852957"]);
+    assert!(!read(&dir, "abo.toml").contains("holder"));
+    let mut c = Command::new(env!("CARGO_BIN_EXE_abo")).args(["payment-options", "edit", "bank"]).current_dir(&dir)
+        .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+    c.stdin.take().unwrap().write_all("\n".repeat(30).as_bytes()).unwrap();
+    let o = c.wait_with_output().unwrap();
+    assert!(!o.status.success() && err(&o).contains("like that already"), "{}", err(&o));
+}
+
+#[test]
+fn an_undo_held_up_by_a_hand_edit_says_so() {
+    let dir = books("undo-hand-edit", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank"]);
+    std::fs::write(dir.join("journal/2026.journal"), read(&dir, "journal/2026.journal") + "; by hand\n").unwrap();
+    refused(&dir, &["undo", &log_len(&dir).to_string()], "changes no abo command made");
+}
+
+#[test]
+fn abo_toml_sends_no_money_to_an_account_that_is_no_asset() {
+    let dir = books("config-option-account", &["--payment", "{ kind = \"bank\", iban = \"CH9300762011623852957\" }"]);
+    std::fs::write(dir.join("abo.toml"), read(&dir, "abo.toml").replace("account = \"Assets:Bank\"", "account = \"Expenses:General\"")).unwrap();
+    refused(&dir, &["bal"], "not an account money arrives in");
+}
+
+#[test]
+fn money_is_paid_in_its_own_commodity() {
+    let dir = books("pay-commodity", &[]);
+    std::fs::write(dir.join("journal/accounts.journal"), read(&dir, "journal/accounts.journal") + "commodity 0.00000001 BTC\ncommodity 1000.00 USD\naccount Assets:Wallet\n").unwrap();
+    by_hand(&dir, "Declare");
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Coins", "Assets:Wallet=0.5 BTC", "Equity:Opening"]);
+    let b = bill(&dir, "Acme", "2026-03-01", "40.00");
+    invoice(&dir, "2026-0001", "2026-03-01", "110.00");
+    let s = serve(&dir);
+    let (_, _, page) = http(&s, "POST", "/bill/pay", &[("token", "c1"), ("file", &b), ("as", "settles"), ("date", "2026-03-02"), ("amount", "40.00"), ("from", "Assets:Wallet"), ("description", "P")]);
+    assert!(page.contains("holds no EUR"), "{page}");
+    let (_, _, page) = http(&s, "POST", "/invoices/pay", &[("token", "c2"), ("n", "2026-0001"), ("inv-2026-0001", "settles"), ("date", "2026-03-05"),
+        ("amount", "700"), ("commodity", "USD"), ("into", "Assets:Bank"), ("description", "Customer pays")]);
+    assert!(page.contains("is in EUR"), "{page}");
+}
+
+#[test]
+fn a_part_of_a_bill_whose_open_is_unknown_is_less_than_it_owed() {
+    let dir = books("unknown-pays-all", &[]);
+    let a = bill(&dir, "Acme", "2026-03-01", "40.00");
+    let b = bill(&dir, "Beta", "2026-03-01", "30.00");
+    ok(&dir, &["post", "--date", "2026-03-05", "--desc", "Both", "--tag", &format!("pays={a}"), "--tag", &format!("pays={b}"), "Liabilities:Payable=20.00", "Assets:Bank"]);
+    let o = pay(&dir, "pays", &a, "2026-03-06", "40.00");
+    assert!(!o.status.success() && err(&o).contains("settles"), "{}", err(&o));
+}
+
+#[test]
+fn no_invoice_is_due_before_its_date() {
+    invoice_refused("due-negative", &["--item", "1|10|x", "--due-days=-3"], "due");
+}
+
+#[test]
+fn a_reversal_is_not_dated_after_today() {
+    let dir = books("revert-ahead", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank"]);
+    refused(&dir, &["revert", "--date", "2099-01-01", &key(&dir, "desc:^Fees$")], "after today");
+}
+
+#[test]
+fn a_company_form_without_a_field_keeps_what_it_holds() {
+    let dir = books("company-missing-field", &["--tax-id", "CHE-1"]);
+    let s = serve(&dir);
+    http(&s, "POST", "/company", &[("token", "c1"), ("name", "Other Ltd"), ("address", ""), ("country", "")]);
+    assert!(read(&dir, "abo.toml").contains("tax_id    = \"CHE-1\""), "{}", read(&dir, "abo.toml"));
+}
+
+#[test]
+fn hledger_reads_these_books_alone() {
+    let dir = books("bal-file", &[]);
+    refused(&dir, &["bal", "-f", "/etc/passwd"], "reads these books alone");
+    refused(&dir, &["reg", "--file=/etc/passwd"], "reads these books alone");
+}
+
+#[test]
+fn no_filler_that_prints_as_nothing_is_taken() {
+    let dir = books("fillers", &[]);
+    for c in ['\u{3164}', '\u{115F}', '\u{034F}', '\u{E0041}'] {
+        refused(&dir, &["company", "--name", &format!("A{c}B")], "control character");
+    }
+    invoice(&dir, "2026-0001", "2026-03-01", "110.00");
+    refused(&dir, &["credit", "2026-0001", "--date", "2026-03-02", "--note", "bad\u{200B}note"], "control character");
 }

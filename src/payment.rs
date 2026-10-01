@@ -33,6 +33,16 @@ pub fn find<'a>(options: &'a [PaymentOption], id: &str) -> Result<&'a PaymentOpt
 /// the fields of its kind, a declared account.
 pub fn check(ctx: &Ctx, mut o: PaymentOption, others: &[&PaymentOption]) -> Result<PaymentOption> {
     let msg = anyhow::Error::msg;
+    // As the questions take them: an answer of spaces is no answer, and
+    // a blank line is no line.
+    if crate::repo::since(3) {
+        for v in [&mut o.label, &mut o.holder, &mut o.iban, &mut o.bic, &mut o.network, &mut o.address, &mut o.account] {
+            *v = v.trim().to_string();
+        }
+        for v in [&mut o.bank, &mut o.details] {
+            *v = v.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
+        }
+    }
     answer::option_id(&o.id).map_err(msg)?;
     if others.iter().any(|p| p.id == o.id) {
         bail!("{:?} is already the id of a payment option", o.id);

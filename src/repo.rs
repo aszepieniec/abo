@@ -276,6 +276,9 @@ impl Ctx {
                 bail!("there is a payment option {:?} twice; ids are one each", o.id);
             }
         }
+        if let Some(o) = c.payment.iter().find(|o| !o.account.to_lowercase().starts_with("assets:") && since(3)) {
+            bail!("payment option {:?}: {} is not an account money arrives in; give an Assets account", o.id, o.account);
+        }
         if !c.invoice.receivable.to_lowercase().starts_with("assets:") {
             bail!("[invoice] receivable = {:?}: what customers owe is an asset, an Assets account", c.invoice.receivable);
         }
@@ -586,8 +589,11 @@ pub mod answer {
 /// own (`ABO_RULES`), so that books made under laxer ones come out the same.
 /// 1: abo until the verification runs of 2026-10-01; a log line naming none.
 /// 2: what those runs, and the thinking after them, added — each check
-///    `since(2)` guards. A later tightening is 3, and so on.
-pub const RULES: u32 = 2;
+///    `since(2)` guards.
+/// 3: what the third run found: dates read as dates first, amounts to their
+///    places, payments in their own commodity, takes-back for reversals
+///    alone, and the rest `since(3)` guards. A later tightening is 4.
+pub const RULES: u32 = 3;
 
 /// The rules in force: `ABO_RULES` when a replay sets it, else the latest.
 pub fn rules() -> u32 {
@@ -606,6 +612,8 @@ pub fn hidden(c: char) -> bool {
     c.is_control()
         || matches!(c, '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}'
             | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
+        // Fillers that print as nothing, and the tag characters: since rules 3.
+        || matches!(c, '\u{034F}' | '\u{115F}' | '\u{1160}' | '\u{3164}' | '\u{FFA0}' | '\u{E0000}'..='\u{E007F}') && since(3)
 }
 
 /// Push `--name value`, or `--name=value` when the value starts with a dash

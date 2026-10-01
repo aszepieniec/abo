@@ -64,9 +64,9 @@ pub struct Data {
     net: String,
     pub vat_rate: String,
     vat: String,
-    total: String,
+    pub total: String,
     pub note: String,
-    payment: Vec<PayOut>,
+    pub payment: Vec<PayOut>,
     /// On a credit note, the invoice it cancels and that invoice's date.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     credits: String,
@@ -92,7 +92,7 @@ pub struct Data {
 
 #[derive(Serialize, Deserialize)]
 pub struct PayOut {
-    label: String,
+    pub label: String,
     details: Vec<String>,
 }
 
@@ -217,6 +217,12 @@ fn issue_it(ctx: &Ctx, args: &IssueArgs) -> Result<IssueReport> {
     }
     // Every default is taken already, by `resolved`.
     let date = args.date.clone().unwrap_or_default();
+    if crate::repo::since(3) {
+        journal::date(&date)?;
+        if args.due_days.is_some_and(|d| d < 0) {
+            bail!("an invoice is due on its date or after, not {} days before", -args.due_days.unwrap_or_default());
+        }
+    }
     let year = date.get(..4).context("bad date")?.to_string();
     let number = next_number(ctx, &year)?;
     if crate::repo::since(2) {
@@ -413,6 +419,12 @@ pub fn credit(ctx: &Ctx, args: &CreditArgs) -> Result<IssueReport> {
 }
 
 fn credit_it(ctx: &Ctx, number: &str, date: &str, note: &str) -> Result<IssueReport> {
+    if crate::repo::since(3) {
+        journal::date(date)?;
+        if note.chars().any(|c| crate::repo::hidden(c) && c != '\n') {
+            bail!("the note {note:?} holds a control character");
+        }
+    }
     pdf_path(number).with_context(|| format!("{number:?} is not an invoice number such as 2026-0017"))?;
     let tagged = |tag: &str| -> Result<Vec<serde_json::Value>> {
         Ok(serde_json::from_str(&journal::hledger(ctx, &["print", &format!("tag:{tag}=^{number}$"), "-O", "json"])?)?)
