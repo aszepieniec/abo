@@ -1541,8 +1541,8 @@ fn standing_and_paid_by_their_definitions(#[strategy(plan())] plan: Vec<Step>) {
         }
         let mut memo = BTreeMap::new();
         let model = n.standing();
-        for e in 1..=n.entries.len() {
-            prop_assert_eq!(standing(n, e, &mut memo), model[e], "standing({})", e);
+        for (e, &s) in model.iter().enumerate().skip(1) {
+            prop_assert_eq!(standing(n, e, &mut memo), s, "standing({})", e);
         }
         for d in 1..=n.entries.len() {
             let Some(debt) = n.debt(d) else { continue };
