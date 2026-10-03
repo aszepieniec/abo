@@ -1289,6 +1289,26 @@ fn a_document_follows_its_bill(#[strategy(plan())] plan: Vec<Step>, #[strategy("
     prop_assert_eq!(n.documents[&h].of, Some(n.entries.len()));
 }
 
+/// N4: a payment moves money through a money account — an asset, not the
+/// receivable, not input VAT — and is refused naming N4 exactly when it does
+/// not.
+#[proptest]
+fn payments_move_through_money_accounts(#[strategy(plan())] plan: Vec<Step>, debt: Index, from: Index) {
+    let (m, last_day) = end(&plan);
+    let today = last_day.max(m.config.company.closed_through.unwrap_or(last_day)).tomorrow().unwrap();
+    let standing = m.standing();
+    let open: Vec<EntryId> = (1..=m.entries.len()).filter(|&d| m.open(d, &standing) > Decimal::ZERO).collect();
+    let Some(d) = pick(&debt, &open) else { return Ok(()) };
+    let from = pick(&from, &[BANK, RECEIVABLE, INPUT, OUTPUT, PAYABLE, "Expenses:Other", "Equity:Opening"]).unwrap();
+    let owed = m.debt(d).unwrap().owed;
+    let cost = (owed.commodity != "EUR").then(|| eur(Decimal::new(1, 2)));
+    let pay = Op::Pay { debt: d, date: today, amount: m.open(d, &standing), from: from.into(), cost };
+    let input = matches!(&m.config.vat, Vat::Effective { input, .. } if input == from);
+    let money = class(from) == "Assets" && from != m.config.invoice.receivable && !input;
+    let refused = apply(&m, &pay, today).is_err_and(|v| v.iter().any(|v| v.code == "N4"));
+    prop_assert_eq!(refused, !money, "paying {} from {}", d, from);
+}
+
 /// A debt paid in two parts is settled, as paid in one.
 #[proptest]
 fn paying_in_parts_settles(#[strategy(plan())] plan: Vec<Step>, debt: Index, #[strategy(1u32..100)] percent: u32) {

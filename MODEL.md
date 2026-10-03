@@ -509,7 +509,7 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 |---|---|---|---|
 | G-D1 | For every debt, what it owes, what is paid and what is open are defined; what is open is between nought and what it owes, and nought once it is cancelled | I-B2, I-P1, I-P2, I-R1, I-R3, I-E3 | `open_lies_between_nought_and_owed`, `standing_and_paid_by_their_definitions` |
 | G-D2 | On every account a debt is on, the balance is what the debts there have open | I-P3 | `open_debts_are_the_balances` |
-| G-D3 | A debt is settled by payments and write-offs, through money accounts, and cancelled by its reversal or credit note, in no other way; what pays it is reverted before it is cancelled | I-P1, I-P2, I-R1, I-R3, N4 | `paying_what_is_open_settles`, `paying_in_parts_settles`, `writing_off_settles`, `crediting_cancels`, `payments_are_reverted_first`, `reverting_twice_restores` |
+| G-D3 | A debt is settled by payments and write-offs, through money accounts, and cancelled by its reversal or credit note, in no other way; what pays it is reverted before it is cancelled | I-P1, I-P2, I-R1, I-R3, N4 | `paying_what_is_open_settles`, `paying_in_parts_settles`, `writing_off_settles`, `crediting_cancels`, `payments_are_reverted_first`, `reverting_twice_restores`, `payments_move_through_money_accounts` |
 
 ### An invoice, and its customer
 
@@ -564,8 +564,6 @@ and the code have drifted apart; the books are as they were.
 
 ### What the list leaves out
 
-- **N4** — money is paid through a money account — serves G-D3, and no
-  property tests it on its own.
 - **Five tests served no guarantee:** `rendered_text_is_tidy`,
   `amounts_are_written_to_their_places`, `the_journal_is_in_order`,
   `the_files_are_exactly_the_states` and `canonical_text` tested §7's
