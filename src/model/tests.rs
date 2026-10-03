@@ -1621,12 +1621,12 @@ fn edited(m: &Books, file: &Index, edit: &Edit) -> Files {
     f
 }
 
-/// I-K1, I-K3 at their edges: in a commodity of any places from 0 to 16, the
+/// I-K1, I-K3 at their edges: in a commodity of any places from 0 to 8, the
 /// greatest amount the bound allows, and the least, and a cost at the bound,
 /// are taken, read back, and read by hledger as the model has them; one unit
 /// more is refused.
 #[proptest(cases = 64)]
-fn extremes_survive_hledger(#[strategy(0u32..17)] places: u32, negative: bool, #[strategy(1i64..1000)] small: i64) {
+fn extremes_survive_hledger(#[strategy(0u32..9)] places: u32, negative: bool, #[strategy(1i64..1000)] small: i64) {
     let today = day("2026-06-30");
     let mut m = apply(&fresh(), &Op::CommodityAdd("ZZZ".into(), places), today).unwrap();
     let unit = Decimal::new(1, places);
@@ -1658,10 +1658,10 @@ fn extremes_survive_hledger(#[strategy(0u32..17)] places: u32, negative: bool, #
 fn any_text_the_rules_allow_survives(
     // Valid by construction: no hidden character, no `;`, begun by no status
     // or code mark, no space at either end; a segment holds no `:`, and no
-    // space but single U+0020s between other characters.
+    // space but single U+0020s between other characters, and may hold `;`.
     #[strategy("[A-Za-z0-9\u{a1}-\u{ac}\u{ae}-\u{17f}\u{1f600}-\u{1f64f}]([ -:<-~\u{a0}-\u{ac}\u{ae}-\u{17f}\u{391}-\u{3a1}\u{3a3}-\u{3c9}\u{2000}-\u{200a}\u{2010}-\u{2027}\u{2030}-\u{205e}\u{3000}-\u{303f}\u{1f600}-\u{1f64f}]{0,22}[!-:<-~\u{a1}-\u{ac}\u{ae}-\u{17f}])?")]
     description: String,
-    #[strategy("[!-9<-~\u{a1}-\u{ac}\u{ae}-\u{17f}\u{2010}-\u{2027}\u{3001}-\u{303f}]( ?[!-9<-~\u{a1}-\u{ac}\u{ae}-\u{17f}\u{2010}-\u{2027}\u{3001}-\u{303f}]){0,15}")]
+    #[strategy("[!-9;-~\u{a1}-\u{ac}\u{ae}-\u{17f}\u{2010}-\u{2027}\u{3001}-\u{303f}]( ?[!-9;-~\u{a1}-\u{ac}\u{ae}-\u{17f}\u{2010}-\u{2027}\u{3001}-\u{303f}]){0,15}")]
     segment: String,
     #[strategy("[ -~\u{a0}-\u{ac}\u{ae}-\u{17f}\u{2010}-\u{2027}\n]{1,40}")] lines: String,
 ) {
@@ -1735,3 +1735,101 @@ fn hledger(m: &Books, through: Option<Date>) -> Result<(), String> {
     Ok(())
 }
 
+
+/// Where a character stands in a description or an account segment.
+const PLACES: [&str; 3] = ["start", "middle", "end"];
+
+fn placed(place: &str, c: char, tag: usize) -> String {
+    match place {
+        "start" => format!("{c}x{tag}"),
+        "middle" => format!("{tag}x{c}x"),
+        _ => format!("{tag}x{c}"),
+    }
+}
+
+/// For each (character, place, field) asked, whether hledger reads back the
+/// description or the account segment the character stands in as written.
+/// Each is an entry of its own, and a chunk hledger refuses is halved until
+/// the one entry that does it is found, so that one refused takes no other
+/// with it.
+fn ask_hledger(asked: &[(char, &'static str, &'static str)], first: usize, out: &mut Vec<(char, &'static str, &'static str, bool)>) {
+    let dir = std::env::temp_dir().join(format!("abo-chars-{}-{first}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("j.journal");
+    let mut j = String::new();
+    for (i, (c, place, field)) in asked.iter().enumerate() {
+        let text = placed(place, *c, first + i);
+        j += &match *field {
+            "DESCRIPTION" => format!("2026-01-01 {text}\n    Expenses:A  1\n    Assets:B  -1\n\n"),
+            _ => format!("2026-01-01 A\n    Expenses:{text}  1\n    Assets:B  -1\n\n"),
+        };
+    }
+    std::fs::write(&path, j).unwrap();
+    let run = |cmd: &str| Command::new("hledger").arg("--no-conf").arg("-f").arg(&path).arg(cmd).output().unwrap();
+    let (descriptions, accounts) = (run("descriptions"), run("accounts"));
+    std::fs::remove_dir_all(&dir).unwrap();
+    if !descriptions.status.success() || !accounts.status.success() {
+        if asked.len() == 1 {
+            out.push((asked[0].0, asked[0].1, asked[0].2, false));
+        } else {
+            let half = asked.len() / 2;
+            ask_hledger(&asked[..half], first, out);
+            ask_hledger(&asked[half..], first + half, out);
+        }
+        return;
+    }
+    let lines = |o: &std::process::Output| String::from_utf8_lossy(&o.stdout).lines().map(String::from).collect::<BTreeSet<_>>();
+    let (d, a) = (lines(&descriptions), lines(&accounts));
+    for (i, (c, place, field)) in asked.iter().enumerate() {
+        let text = placed(place, *c, first + i);
+        let read = if *field == "DESCRIPTION" { d.contains(&text) } else { a.contains(&format!("Expenses:{text}")) };
+        out.push((*c, place, field, read));
+    }
+}
+
+/// Runs of characters, as Rust range patterns.
+fn runs(cs: &BTreeSet<char>) -> String {
+    let mut out: Vec<String> = vec![];
+    let mut it = cs.iter().copied().peekable();
+    while let Some(start) = it.next() {
+        let mut end = start;
+        while it.peek().is_some_and(|n| *n as u32 == end as u32 + 1) {
+            end = it.next().unwrap();
+        }
+        out.push(if start == end { format!("'\\u{{{:x}}}'", start as u32) } else { format!("'\\u{{{:x}}}'..='\\u{{{:x}}}'", start as u32, end as u32) });
+    }
+    out.join(" | ")
+}
+
+/// I-E0 and §2.2 from hledger itself: every character `hidden` lets through,
+/// at the start, in the middle and at the end of a description and of an
+/// account segment, asked of hledger; those it does not read back as written
+/// are `check::hledger_changes`. Slow: run with `--ignored` after an
+/// hledger upgrade, and when it fails, make that function what it prints.
+#[test]
+#[ignore]
+fn hledger_reads_these_characters() {
+    let chars: Vec<char> = (' '..=char::MAX).filter(|c| !crate::repo::hidden(*c)).collect();
+    let asked: Vec<(char, &'static str, &'static str)> =
+        chars.iter().flat_map(|c| PLACES.into_iter().flat_map(move |p| ["DESCRIPTION", "SEGMENT"].map(|f| (*c, p, f)))).collect();
+    let mut out = vec![];
+    for (k, chunk) in asked.chunks(20_000).enumerate() {
+        ask_hledger(chunk, k * 20_000, &mut out);
+    }
+    let mut bad: BTreeMap<String, BTreeSet<char>> = BTreeMap::new();
+    let mut wrong = vec![];
+    for (c, place, field, read) in out {
+        if !read {
+            bad.entry(format!("{field}_{}", place.to_uppercase())).or_default().insert(c);
+        }
+        if read == check::hledger_changes(field, place, c) {
+            wrong.push(format!("{field} {place} {:?}: hledger {}", c, if read { "reads it" } else { "changes it" }));
+        }
+    }
+    if !wrong.is_empty() {
+        for (k, v) in &bad {
+            println!("{k}: {}", runs(v));
+        }
+        panic!("hledger_changes is not what hledger does, at {} places, such as {:?}; hledger does the above", wrong.len(), &wrong[..wrong.len().min(10)]);
+    }
+}

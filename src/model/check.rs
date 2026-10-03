@@ -26,11 +26,47 @@ pub fn lines_ok(s: &str) -> bool {
     s.split('\n').all(text_ok)
 }
 
-/// hledger reads every other space in an account's name as U+0020, so a
-/// segment holds that one alone: two names hledger would read as one are
-/// not two accounts.
+/// Every Unicode space but U+0020, which hledger reads in an account's name
+/// as U+0020.
+fn other_space(c: char) -> bool {
+    matches!(c, '\u{a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}' | '\u{202f}' | '\u{205f}' | '\u{3000}')
+}
+
+/// Whether hledger reads `c` other than as written, standing at `place`
+/// ("start", "middle" or "end") of a "DESCRIPTION" or an account
+/// "SEGMENT". Not a reading of hledger's grammar: the table
+/// `hledger_reads_these_characters` found by asking hledger 1.50.3 of every
+/// character `hidden` lets through, and checks again.
+pub fn hledger_changes(field: &str, place: &str, c: char) -> bool {
+    let space = c == ' ' || other_space(c);
+    match (field, place) {
+        ("DESCRIPTION", "start") => space || matches!(c, '!' | '(' | '*' | ';'),
+        ("DESCRIPTION", "middle") => c == ';',
+        ("DESCRIPTION", "end") => space || c == ';',
+        ("SEGMENT", "end") => space,
+        _ => other_space(c),
+    }
+}
+
+/// Each character of `s`, at its place, is one hledger reads as written.
+fn hledger_reads(field: &str, s: &str) -> bool {
+    let last = s.chars().count().saturating_sub(1);
+    s.chars().enumerate().all(|(i, c)| {
+        let places: &[&str] = match i {
+            0 if last == 0 => &["start", "end"],
+            0 => &["start"],
+            i if i == last => &["end"],
+            _ => &["middle"],
+        };
+        places.iter().all(|p| !hledger_changes(field, p, c))
+    })
+}
+
+/// A segment of an account's name: what hledger reads as written, and of
+/// its grammar, no `:`, which separates segments, and no two spaces, which
+/// end the name.
 pub fn segment_ok(s: &str) -> bool {
-    !s.is_empty() && text_ok(s) && !s.contains([':', ';']) && !s.contains("  ") && s.trim() == s && !s.chars().any(|c| c != ' ' && c.is_whitespace())
+    !s.is_empty() && text_ok(s) && !s.contains(':') && !s.contains("  ") && hledger_reads("SEGMENT", s)
 }
 
 pub fn account_ok(a: &str) -> bool {
@@ -41,10 +77,10 @@ pub fn commodity_ok(c: &str) -> bool {
     c.len() >= 3 && c.bytes().all(|b| b.is_ascii_uppercase())
 }
 
-/// What the journal's date line can hold and give back unchanged: not empty,
-/// no comment, no status mark or code at its start, no space at either end.
+/// What the journal's date line can hold and give back unchanged: not
+/// empty, and what hledger reads as written.
 pub fn description_ok(d: &str) -> bool {
-    !d.is_empty() && text_ok(d) && !d.contains(';') && d.trim() == d && !d.starts_with(['*', '!', '('])
+    !d.is_empty() && text_ok(d) && hledger_reads("DESCRIPTION", d)
 }
 
 pub fn hash_ok(h: &str) -> bool {
@@ -56,8 +92,8 @@ fn slug_ok(s: &str) -> bool {
     s.split('-').all(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
 }
 
-/// Below this in magnitude, every sum and product the model takes of the
-/// state's numbers fits a `Decimal` (about 7.9e28).
+/// Below this in magnitude, with at most 8 places (I-K0), an amount has 20
+/// digits of the 28 a `Decimal` holds: a sum of fewer than 10^8 is exact.
 pub const BOUND: i64 = 1_000_000_000_000;
 
 /// Every number the state holds: what the derived ones are computed from.
@@ -191,8 +227,8 @@ pub fn check(m: &Books) -> Vec<Violation> {
         }
     }
     for (c, p) in &m.commodities {
-        if !commodity_ok(c) || *p > 16 {
-            no!("I-K0", "{c} {p}: a commodity is three or more capital letters, with 0 to 16 places");
+        if !commodity_ok(c) || *p > 8 {
+            no!("I-K0", "{c} {p}: a commodity is three or more capital letters, with 0 to 8 places");
         }
     }
     for a in amounts {

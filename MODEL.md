@@ -111,10 +111,11 @@ invariant.
 ### 2.2 Accounts, commodities and prices
 
 `Account` is a path of segments joined by `:`: `Assets:Bank:PostFinance`. A
-segment is a non-empty text holding no `:` and no `;`, no space but U+0020 —
-hledger reads every other, a no-break space among them, as that one — no two
-spaces in a row, and no space at either end. `Commodity` is three or more capital letters, A to
-Z: EUR, CHF, BTC. `Places` is the digits after the point, 0 to 16:
+segment is a non-empty text that holds no `:`, which separates segments, and
+no two spaces in a row, which end the name — those from hledger's grammar —
+and whose every character hledger reads as written where it stands
+(§2.3, *Which characters*). `Commodity` is three or more capital letters, A to
+Z: EUR, CHF, BTC. `Places` is the digits after the point, 0 to 8:
 `commodity 1000.00 EUR` declares 2, BTC has 8. A price `P 2026-09-30 BTC
 60000.00 EUR` says that on that date one BTC was worth 60000.00 EUR; hledger
 reads it to value amounts in another commodity.
@@ -167,7 +168,7 @@ around it. Once added, an entry never changes.
 ```rust
 struct Entry {
     date:        Date,
-    description: Text,   // not empty; no ';'; not begun by '*', '!' or '('; no space at either end
+    description: Text,   // not empty; every character one hledger reads as written
     kind:        Kind,
 }
 
@@ -180,9 +181,25 @@ struct Posting {
 struct Amount { quantity: Decimal, commodity: Commodity }
 ```
 
-A description is what the date line holds after the date. The rules on it are
-the ones under which hledger reads it back as written: `;` would begin a
-comment, and `*`, `!` and `(` a status or a code.
+A description is what the date line holds after the date.
+
+**Which characters.** What hledger reads back as written is not guessed from
+its grammar: `hledger_reads_these_characters` asks hledger of every character
+`hidden` lets through, at the start, in the middle and at the end of a
+description and of an account segment, each in an entry of its own, and
+`hledger_changes` is the table it found. With hledger 1.50.3:
+
+| | Start | Middle | End |
+|---|---|---|---|
+| Description | a space, `!`, `(`, `*`, `;` | `;` | a space, `;` |
+| Segment | another space | another space | a space |
+
+where *a space* is U+0020 or any other Unicode space — the no-break space,
+U+2000 to U+200A, U+3000 and the rest — and *another space* any but U+0020,
+which hledger reads in an account's name as U+0020. In a description, `;`
+begins a comment, and `!`, `*` and `(` at the start a status or a code. The
+test is slow, and is run when hledger is upgraded; it fails where the table is
+no longer what hledger does.
 
 **A cost** is what a posting's amount was exchanged for, in another commodity.
 An entry balances when, for each commodity, its amounts sum to nought (I-E1);
@@ -469,7 +486,7 @@ not in the books.
 | | Guarantee | Rules | Properties |
 |---|---|---|---|
 | G-H1 | hledger reads the journal without error, checking its accounts, commodities, balance, date order and balance assertions | I-A1, I-K0, I-K1, I-D1, I-E0, I-E1, I-E2, I-S3, §7 | `hledger_agrees` |
-| G-H2 | hledger reads every entry, account, commodity and price exactly as abo holds it: date, description, tags, account, amount, cost | I-A0, I-K0, I-K3, I-D1, I-E0, §7 | `hledger_reads_entries_as_written`, `hledger_reads_declarations`, `any_text_the_rules_allow_survives`, `extremes_survive_hledger` |
+| G-H2 | hledger reads every entry, account, commodity and price exactly as abo holds it: date, description, tags, account, amount, cost | I-A0, I-K0, I-K3, I-D1, I-E0, §7 | `hledger_reads_entries_as_written`, `hledger_reads_declarations`, `hledger_reads_these_characters`, `any_text_the_rules_allow_survives`, `extremes_survive_hledger` |
 | G-H3 | hledger's balance of every account, in every commodity, through any date, at any depth and at cost, is the model's | I-A2, I-E1, I-E2 | `hledger_agrees`, `hledger_agrees_through_any_date`, `hledger_rolls_parents_up`, `at_cost_everything_sums_to_nought` |
 | G-H4 | hledger checks every whole statement, every entry's balance and every account's declaration on its own, so that a fault in `check` shows as a disagreement | I-S3, §7.3 | `hledger_catches_what_check_catches` |
 
@@ -582,23 +599,26 @@ not reused: those missing below were rules about a value now derived.
   statement is of, or the configuration names for postings is a `leaf`.
   Declaring an account under one of those breaks it, and is refused; to split
   an account, its balance is moved by an entry to new accounts beside it.
-- **I-K0** A commodity is three or more capital letters, A to Z, with 0 to 16
-  places: with the 12 digits I-K3 allows before the point, 28, all an exact
-  decimal holds.
+- **I-K0** A commodity is three or more capital letters, A to Z, with 0 to 8
+  places — BTC's eight. With the 12 digits I-K3 allows before the point, an
+  amount has 20 digits at most, of the 28 an exact decimal holds: a sum of
+  fewer than 10^8 amounts then has 28 at most, and is exact.
 - **I-K1** No amount, cost, price or statement balance has more digits after
   the point than its commodity's places.
 - **I-K2** A price is above nought, and in another commodity than its own.
 - **I-K3** Every number the state holds — an amount, a cost, a price, a
   statement's balance, an invoice line's quantity and unit price — is below
-  10^12 in magnitude, and every VAT rate is 0 to 100 percent. Within these,
-  every sum and product the model takes fits an exact decimal (28 digits).
+  10^12 in magnitude, and every VAT rate is 0 to 100 percent. Within these
+  and I-K0, every sum the books take is exact, and every product an invoice
+  takes fits.
   Checked first, and alone: the rest computes with these numbers.
 - **I-D1** Every date is in the years 1 to 9999, which the files write as four
   digits and hledger reads. Checked first, and alone, with I-K3.
 
 ### 4.2 Entries
 
-- **I-E0** Every description is one the date line can hold (§2.3).
+- **I-E0** Every description is not empty, and every character in it one
+  hledger reads as written where it stands (§2.3).
 - **I-E1** Every entry has two postings or more, and balances: for each
   commodity, the amounts of its postings without a cost and the costs of those
   with one sum to nought. This is how hledger checks it.
@@ -1070,13 +1090,18 @@ What the properties found, each now a rule above:
   I-B1 refuses the second.
 - hledger reads every Unicode space in an account's name — a no-break space
   among them — as U+0020: two names abo told apart were one to hledger. A
-  segment holds no other space (§2.2).
+  segment holds no other space (§2.2). Which characters hledger reads as
+  written, where, is now a table asked of hledger for every character
+  (§2.3), not a list of exceptions found one by one; asked, it showed that
+  abo had refused `;` in an account's name, which hledger reads as written.
 - abo began an invoice's description with the customer's name, so a customer
   named `(Acme) GmbH` was read by hledger as a code, and refused: the number
   comes first (§7.2). A customer whose first line was blank was refused by the
   description's rule, not the invoice's: I-I1 asks for a name.
 - An amount at the bound in a commodity of 17 or 18 places is 29 or 30 digits,
-  past what an exact decimal holds: I-K0 allows 16.
+  past what an exact decimal holds; and a sum of amounts of 16 places would
+  lose its last digits, silently: I-K0 allows 8, which leaves 8 digits for
+  sums.
 - `render` rounded an amount to its commodity's places, so `abo tidy` changed
   an amount with more places than declared, or in a commodity not declared:
   it pads, and never rounds.
