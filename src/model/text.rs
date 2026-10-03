@@ -1,4 +1,4 @@
-//! The canonical form, MODEL.md §6, and reading it back, §7: `render` writes a
+//! The canonical form, MODEL.md §7, and reading it back, §8: `render` writes a
 //! state's text files, `parse` reads them, and `read` says where files depart
 //! from what `render` would write for what they say.
 

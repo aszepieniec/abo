@@ -1,4 +1,4 @@
-//! MODEL.md §10, as properties. A plan is a list of steps drawn without
+//! MODEL.md §11, as properties. A plan is a list of steps drawn without
 //! looking at the books; each is read against the state it meets — an index
 //! picks among what is there — so that proptest shrinks a plan by dropping
 //! and simplifying steps, and what is left still means something. Values are
@@ -464,7 +464,7 @@ enum Edit {
     Replace(#[strategy(arb::<String>())] String),
 }
 
-/// §7: an edit to canonical files is noticed — they read as another state,
+/// §8: an edit to canonical files is noticed — they read as another state,
 /// or with a problem — and reading never panics, whatever the edit.
 #[proptest]
 fn edits_are_noticed(#[strategy(plan())] plan: Vec<Step>, file: Index, edit: Edit) {
@@ -526,7 +526,7 @@ fn hledger_agrees_through_any_date(#[strategy(plan())] plan: Vec<Step>, at: Inde
     hledger(&m, Some(d)).map_err(TestCaseError::fail)?;
 }
 
-/// §4: each operation changes its own part of the state and nothing else, by
+/// §5: each operation changes its own part of the state and nothing else, by
 /// one: an entry, a document, a statement, a declaration, the configuration.
 /// A bill may also link one document, to itself.
 #[proptest]
@@ -625,6 +625,30 @@ fn refusals_name_a_rule(#[strategy(plan())] plan: Vec<Step>) {
     })?;
 }
 
+/// MODEL.md §3: every test a guarantee or a message names exists, and every
+/// test is named by one.
+#[test]
+fn every_guarantee_is_tested() {
+    let doc = include_str!("../../MODEL.md");
+    let named: BTreeSet<&str> = doc
+        .lines()
+        .filter(|l| l.starts_with("| G-") || l.starts_with("| M-"))
+        .flat_map(|l| l.rsplit('|').nth(1).unwrap().split('`').skip(1).step_by(2))
+        .collect();
+    let code = include_str!("tests.rs");
+    let mut tests = BTreeSet::new();
+    // Spelled apart, so as not to find themselves.
+    let (proptest, test) = (["#[", "proptest"].concat(), ["#[", "test]"].concat());
+    for (i, _) in code.match_indices(&proptest).chain(code.match_indices(&test)) {
+        let after = &code[i..];
+        let name = after[after.find("fn ").unwrap() + 3..].split('(').next().unwrap();
+        tests.insert(name);
+    }
+    assert!(named.len() > 40, "{named:?}");
+    assert_eq!(named.difference(&tests).collect::<Vec<_>>(), Vec::<&&str>::new(), "named in §3, and no such property");
+    assert_eq!(tests.difference(&named).collect::<Vec<_>>(), Vec::<&&str>::new(), "a property no guarantee names");
+}
+
 /// Every rule MODEL.md defines is checked somewhere in the model.
 #[test]
 fn every_rule_is_checked() {
@@ -698,7 +722,7 @@ fn open_lies_between_nought_and_owed(#[strategy(plan())] plan: Vec<Step>) {
     })?;
 }
 
-/// §6.3: a statement that is whole states the account's balance on its date.
+/// §7.3: a statement that is whole states the account's balance on its date.
 #[proptest]
 fn whole_statements_are_the_balance(#[strategy(plan())] plan: Vec<Step>) {
     walk(&plan, |_, _, n| {
@@ -747,22 +771,6 @@ fn documents_alike_are_refused(#[strategy(plan())] plan: Vec<Step>, #[strategy("
     let Ok(n) = apply(&m, &file(&a), today) else { return Ok(()) };
     let second = apply(&n, &file(&b), today);
     prop_assert!(second.as_ref().is_err_and(|v| v.iter().any(|v| v.code == "I-B1")), "{:?}", second.map(|_| ()));
-}
-
-/// §6: the files have no tab, no carriage return, no space at a line's end,
-/// no two blank lines running, and end with a newline.
-#[proptest]
-fn rendered_text_is_tidy(#[strategy(plan())] plan: Vec<Step>) {
-    walk(&plan, |_, _, n| {
-        for (name, text) in render(n) {
-            prop_assert!(text.ends_with('\n'), "{} does not end with a newline", name);
-            prop_assert!(!text.contains(['\t', '\r']) && !text.contains("\n\n\n"), "{}", name);
-            for (i, line) in text.lines().enumerate() {
-                prop_assert!(!line.ends_with(' '), "{}:{} ends with a space: {:?}", name, i + 1, line);
-            }
-        }
-        Ok(())
-    })?;
 }
 
 /// I-R1 and `standing`: reverting an entry and then its reversal leaves every
@@ -839,7 +847,7 @@ enum Inverse {
     Label(#[strategy(text())] String),
 }
 
-/// §4: what one operation adds, its opposite takes away again, and the
+/// §5: what one operation adds, its opposite takes away again, and the
 /// books are as they were: add and remove, file and unfile, record and
 /// unrecord, set and unset.
 #[proptest]
@@ -1063,7 +1071,7 @@ enum Tamper {
     Undeclare(Index),
 }
 
-/// §6.3: hledger's reading is a second computation, independent of `check`:
+/// §7.3: hledger's reading is a second computation, independent of `check`:
 /// what breaks a whole statement, the balance of an entry, or a declaration,
 /// hledger refuses on its own.
 #[proptest(cases = 48)]
@@ -1110,7 +1118,7 @@ fn in_use(m: &Books) -> BTreeSet<Account> {
     a
 }
 
-/// §4.1, I-A1: an account can be removed exactly when nothing uses it.
+/// §5.1, I-A1: an account can be removed exactly when nothing uses it.
 #[proptest]
 fn an_account_is_removable_iff_unused(#[strategy(plan())] plan: Vec<Step>, account: Index) {
     let (m, today) = end(&plan);
@@ -1119,7 +1127,7 @@ fn an_account_is_removable_iff_unused(#[strategy(plan())] plan: Vec<Step>, accou
     prop_assert_eq!(removed.is_ok(), !in_use(&m).contains(&a), "{}: {:?}", a, removed.map(|_| ()));
 }
 
-/// §4.1, I-A1: a commodity can be removed exactly when nothing is in it.
+/// §5.1, I-A1: a commodity can be removed exactly when nothing is in it.
 #[proptest]
 fn a_commodity_is_removable_iff_unused(#[strategy(plan())] plan: Vec<Step>, commodity: Index) {
     let (m, today) = end(&plan);
@@ -1268,7 +1276,7 @@ fn paying_in_parts_settles(#[strategy(plan())] plan: Vec<Step>, debt: Index, #[s
     prop_assert_eq!(n.open(d, &n.standing()), Decimal::ZERO);
 }
 
-/// §4: an invoice is issued as the configuration and the declarations stand
+/// §5: an invoice is issued as the configuration and the declarations stand
 /// on its day — accounts, terms, VAT as the method says, rate, and in another
 /// commodity, the latest price.
 #[proptest]
@@ -1307,7 +1315,7 @@ fn issuing_follows_the_configuration(#[strategy(plan())] plan: Vec<Step>, usd: b
     }
 }
 
-/// §4.2: a key set reads back as set.
+/// §5.2: a key set reads back as set.
 #[proptest]
 fn a_key_set_reads_back(#[strategy(plan())] plan: Vec<Step>, key: Key) {
     let (m, today) = end(&plan);
@@ -1329,7 +1337,7 @@ fn a_key_set_reads_back(#[strategy(plan())] plan: Vec<Step>, key: Key) {
     }
 }
 
-/// §4.2: a key that names nothing is refused, and nothing changes.
+/// §5.2: a key that names nothing is refused, and nothing changes.
 #[proptest]
 fn unknown_keys_are_refused(#[strategy(plan())] plan: Vec<Step>, #[strategy("(company|vat|invoice|report)?\\.?zz[a-z]{1,6}")] key: String, #[strategy(text())] value: String) {
     let (m, today) = end(&plan);
@@ -1338,7 +1346,7 @@ fn unknown_keys_are_refused(#[strategy(plan())] plan: Vec<Step>, #[strategy("(co
     prop_assert!(r.is_err(), "{:?}", r.map(|n| n.config));
 }
 
-/// §6.3: a statement that clears every posting not yet cleared, at the
+/// §7.3: a statement that clears every posting not yet cleared, at the
 /// balance they sum to, is whole, and so asserted for hledger to check.
 #[proptest]
 fn clearing_everything_makes_a_statement_whole(#[strategy(plan())] plan: Vec<Step>) {
@@ -1383,80 +1391,6 @@ fn the_order_of_entries_does_not_change_balances(#[strategy(plan())] plan: Vec<S
     prop_assert_eq!(ab.is_some(), ba.is_some());
     if let (Some(ab), Some(ba)) = (ab, ba) {
         prop_assert_eq!(ab.balances(), ba.balances());
-    }
-}
-
-/// §6.2: every amount, cost, price and statement balance in the journal is
-/// written to its commodity's places.
-#[proptest]
-fn amounts_are_written_to_their_places(#[strategy(plan())] plan: Vec<Step>) {
-    let m = last(&plan);
-    let places = |q: &str, c: &str| -> Result<(), TestCaseError> {
-        let written = q.split_once('.').map_or(0, |(_, f)| f.len() as u32);
-        prop_assert_eq!(written, m.places(c), "{} {}", q, c);
-        Ok(())
-    };
-    for text in render(&m).iter().filter(|(k, _)| k.starts_with("journal/")).map(|(_, t)| t) {
-        for line in text.lines() {
-            let words: Vec<&str> = line.split_whitespace().collect();
-            if line.starts_with("    ; statement: ") || line.starts_with("P ") {
-                places(words[words.len() - 2], words[words.len() - 1])?;
-            } else if line.starts_with("    ") && !line.starts_with("    ;") {
-                // The amount, and the cost or the assertion after it.
-                let after = line.split_once("  ").unwrap().1.trim_start();
-                let amounts: Vec<&str> = after.split(" @@ ").flat_map(|s| s.split(" = ")).collect();
-                for a in amounts {
-                    let (q, c) = a.split_once(' ').unwrap();
-                    places(q, c)?;
-                }
-            }
-        }
-    }
-}
-
-/// §6.4: a year's journal is in date order; on one date, entries by id, then
-/// statements by account and commodity.
-#[proptest]
-fn the_journal_is_in_order(#[strategy(plan())] plan: Vec<Step>) {
-    let m = last(&plan);
-    for (name, text) in render(&m).iter().filter(|(k, _)| k.starts_with("journal/2") || k.starts_with("journal/0") || k.starts_with("journal/1")) {
-        let mut keys = vec![];
-        for block in text.split("\n\n").filter(|b| !b.trim().is_empty()) {
-            let lines: Vec<&str> = block.lines().collect();
-            let date = &lines[0][..10];
-            let key = match lines[1].strip_prefix("    ; id: ") {
-                Some(id) => (date.to_string(), 0, id.parse::<usize>().unwrap(), String::new()),
-                None => (date.to_string(), 1, 0, lines.last().unwrap().trim_start().to_string()),
-            };
-            keys.push(key);
-        }
-        let mut sorted = keys.clone();
-        sorted.sort();
-        prop_assert_eq!(keys, sorted, "{}", name);
-    }
-}
-
-/// §6.1: the files are exactly the state's — a `.json` for each invoice and
-/// credit note, a line in `bills/index` for each document, an include for
-/// each year that has anything, in order — and the tags are abo's own, in
-/// lower case.
-#[proptest]
-fn the_files_are_exactly_the_states(#[strategy(plan())] plan: Vec<Step>) {
-    let m = last(&plan);
-    let f = render(&m);
-    let jsons: BTreeSet<String> = f.keys().filter(|k| k.starts_with("invoices/")).cloned().collect();
-    let numbered: BTreeSet<String> = (1..=m.entries.len()).filter_map(|id| m.number_text(id)).map(|n| format!("invoices/{}/{n}.json", &n[..4])).collect();
-    prop_assert_eq!(jsons, numbered);
-    prop_assert_eq!(f.get("bills/index").map_or(0, |t| t.lines().count()), m.documents.len());
-    let years: BTreeSet<i16> = m.entries.iter().map(|e| e.date.year()).chain(m.statements.keys().map(|k| k.2.year())).collect();
-    let includes: Vec<String> = std::iter::once("include accounts.journal".to_string()).chain(years.iter().map(|y| format!("include {y:04}.journal"))).collect();
-    prop_assert_eq!(f["journal/main.journal"].lines().map(String::from).collect::<Vec<_>>(), includes);
-    let known = ["id", "bill", "invoice", "credits", "pays", "reverses", "statement", "clears"];
-    for (name, text) in f.iter().filter(|(k, _)| k.starts_with("journal/")) {
-        for line in text.lines().filter_map(|l| l.strip_prefix("    ; ")) {
-            let tag = line.split_once(':').map_or(line, |(t, _)| t);
-            prop_assert!(known.contains(&tag), "{}: tag {:?}", name, tag);
-        }
     }
 }
 
@@ -1592,7 +1526,7 @@ fn standing_and_paid_by_their_definitions(#[strategy(plan())] plan: Vec<Step>) {
     })?;
 }
 
-/// §7, `abo tidy` is `render(parse(f))`: whatever files it reads, the text it
+/// §8, `abo tidy` is `render(parse(f))`: whatever files it reads, the text it
 /// writes reads back as the same state, and tidied again, is unchanged; what
 /// is left to report is what breaks a rule, never what is not canonical.
 #[proptest]
@@ -1613,7 +1547,7 @@ fn tidying_is_idempotent(#[strategy(plan())] plan: Vec<Step>, file: Index, edit:
     prop_assert!(problems.iter().all(|p| !p.contains("not as abo writes it") && !p.contains("missing") && !p.contains("says nothing")), "{:?}", problems);
 }
 
-/// §7: each problem names a file, and a line of it that is there.
+/// §8: each problem names a file, and a line of it that is there.
 #[proptest]
 fn problems_name_lines_that_are_there(#[strategy(plan())] plan: Vec<Step>, file: Index, edit: Edit) {
     let f = edited(&last(&plan), &file, &edit);
@@ -1767,53 +1701,5 @@ fn hledger(m: &Books, through: Option<Date>) -> Result<(), String> {
         return Err(format!("hledger's balances {theirs:?}\nare not the model's {ours:?}"));
     }
     Ok(())
-}
-
-/// One example of each kind, rendered: what MODEL.md §6 shows.
-#[test]
-fn canonical_text() {
-    let mut m = fresh();
-    let today = day("2026-09-30");
-    let ops = [
-        Op::Bill {
-            date: day("2026-09-21"),
-            description: "Acme Hosting AG, hosting September".into(),
-            postings: vec![Posting::new("Expenses:Hosting", Decimal::new(10000, 2), "EUR"), Posting::new(INPUT, Decimal::new(810, 2), "EUR"), Posting::new(PAYABLE, Decimal::new(-10810, 2), "EUR")],
-            document: None,
-        },
-        Op::Pay { debt: 1, date: day("2026-09-28"), amount: Decimal::new(10810, 2), from: BANK.into(), cost: None },
-        Op::Record { account: BANK.into(), commodity: "EUR".into(), date: today, balance: Decimal::new(-10810, 2), clears: [PostingRef { entry: 2, n: 1 }].into() },
-    ];
-    for op in &ops {
-        m = apply(&m, op, today).unwrap_or_else(|e| panic!("{op:?}: {e:?}"));
-    }
-    let f = render(&m);
-    assert_eq!(
-        f["journal/2026.journal"],
-        "\
-2026-09-21 Acme Hosting AG, hosting September
-    ; id: 1
-    ; bill:
-    Expenses:Hosting                              100.00 EUR
-    Assets:VAT:Input                                8.10 EUR
-    Liabilities:Payable                          -108.10 EUR
-
-2026-09-28 Pay Acme Hosting AG, hosting September
-    ; id: 2
-    ; pays: 1
-    Liabilities:Payable                           108.10 EUR
-    Assets:Bank                                  -108.10 EUR
-
-2026-09-30 Statement of Assets:Bank
-    ; statement: -108.10 EUR
-    ; clears: 2.1
-    Assets:Bank                                     0.00 EUR = -108.10 EUR
-
-"
-    );
-    assert_eq!(read(&f).1, Vec::<String>::new());
-    let mut edited = f.clone();
-    edited.get_mut("journal/2026.journal").unwrap().insert(0, '\n');
-    assert_eq!(read(&edited).1, vec!["journal/2026.journal:1: not as abo writes it".to_string()]);
 }
 

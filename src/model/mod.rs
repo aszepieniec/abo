@@ -1,6 +1,6 @@
 //! The books as MODEL.md defines them, executable: the state, what is derived
 //! from it, its invariants (`check`), its operations (`apply`), and its one
-//! text (`render`, `parse`). The tests are the document's claims (§10).
+//! text (`render`, `parse`). The tests are the document's claims (§11).
 //!
 //! Each fact is held once. A field is an input — something said from outside
 //! that nothing else determines — or a check — a number from outside that is

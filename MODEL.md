@@ -8,7 +8,7 @@ says so.
 
 The definitions are also code: `src/model`, whose types, `check`, `apply`,
 `render` and `parse` are the ones below, and whose tests are the claims this
-document makes (§10). Where the two differ, the code is wrong or this is, and
+document makes (§11). Where the two differ, the code is wrong or this is, and
 a test is what says which.
 
 ---
@@ -16,7 +16,7 @@ a test is what says which.
 ## 1. Definitions
 
 **The model** is a set M of states. A state `m ∈ M` is a value of the type
-`Books` below whose invariants (§3) all hold.
+`Books` below whose invariants (§4) all hold.
 
 **The representation** is a function `render: Books → Files`, from a state
 to the contents of the text files in the books' directory: `abo.toml`, the
@@ -33,7 +33,7 @@ of each (§2.5).
 On files that are not canonical — a hand edit, books written by an older abo —
 `parse` returns the state it can read and the list of places where the files
 depart from canonical form, each named by file and line. It never refuses to
-read the books on that account (§7).
+read the books on that account (§8).
 
 **An operation** is a partial function `M → M`: defined where its
 preconditions hold, and then giving a state that again satisfies every
@@ -54,7 +54,7 @@ otherwise.
 Everything else is a function of the state (§2.7): an invoice's number, its
 amounts and its postings; a reversal's postings; a document's path; whether
 a debt is settled. A value stored twice can disagree with itself, and needs an
-invariant to say it does not; a value derived cannot. So an invariant (§3)
+invariant to say it does not; a value derived cannot. So an invariant (§4)
 says only that an input is well formed, or that a check agrees.
 
 **hledger compatibility** is the condition that for every `m ∈ M`:
@@ -289,7 +289,7 @@ struct Document {
 
 Its path follows from these and its hash:
 `bills/<year>/<date>-<name>-<first 8 digits of the hash>.<ext>`. The hash is a
-check: the file at that path has it, or `parse` reports it (§7).
+check: the file at that path has it, or `parse` reports it (§8).
 
 The document names its bill, not the bill its document: a booking and its
 document come in either order, and the one that comes second records the link
@@ -352,7 +352,7 @@ Everything an invoice depends on that can change later — the configured
 accounts, the VAT rate, the payment options, a price — it holds as it was when
 issued. Those are inputs to it, not copies: the configuration says what holds
 now, the invoice what held then. A commodity's places do not change while
-anything is in it (§4.1), so the amounts, computed again, are always the ones
+anything is in it (§5.1), so the amounts, computed again, are always the ones
 printed.
 
 **An invoice's PDF** is made once, when the invoice is issued, from its content
@@ -360,7 +360,7 @@ and the company's template, and kept as made; a credit note's from the
 invoice's content, negated, and its note. It is not made again: the template
 is the company's to change, and an invoice already sent must not change with
 it. Its hash is a check, so that a PDF changed or lost since is a problem
-`parse` reports (§7).
+`parse` reports (§8).
 
 Every invoice in the books is one abo issued, so every invoice has both. An
 invoice issued elsewhere — before abo, or by other software — is not an
@@ -411,7 +411,7 @@ what September's statement clears (I-S3).
 | `open(d)` | nought if `d` is reversed, else `owed − paid` |
 | `settled(d)` | `d` stands, and `open(d)` is nought |
 | `cleared(p)` | some statement clears posting `p` |
-| `whole(s)` | every posting to the statement's account, in its commodity, dated on or before it, is cleared by it or an earlier statement: its balance is then the account's, and hledger checks it too (§6.3) |
+| `whole(s)` | every posting to the statement's account, in its commodity, dated on or before it, is cleared by it or an earlier statement: its balance is then the account's, and hledger checks it too (§7.3) |
 
 `reversed` and `standing` are defined by each other; since a reverser has a
 greater id than what it reverses (I-E3), they are defined by induction on the
@@ -430,25 +430,151 @@ of today's Bills page cannot occur.
 and the date the books are closed through; the VAT method and its accounts;
 the receivable, income, terms and VAT rate invoices are issued with; the
 payment options, by id; and the tax return's boxes, by code. Its invariants
-are in §3.8. It is part of the state, so changing it is an operation like any
-other (§4.2).
+are in §4.8. It is part of the state, so changing it is an operation like any
+other (§5.2).
 
 ---
 
-## 3. Invariants
+## 3. Guarantees
 
-The invariants and conditions below are the rules the five verification runs
-kept finding broken one way or another; each fault they found violates one of
-them. Under this model each is checked in one place, `check`, on the state an
-operation produces.
+A **guarantee** is a property of the books that something reading them relies
+on. The readers are hledger; the files on disk and whoever reads or edits
+them; the record of what each debt owes; an invoice and the customer who
+received it; the bank statement; the tax return and the periods filed with it; a bill's
+document; and whoever runs a command. The list below is closed: it is what
+the books promise, and nothing else is promised.
+
+Three rules tie it to the rest of this document:
+
+- Every rule of §4 is there because a guarantee needs it, and the table says
+  which. A rule no guarantee needs is removed.
+- Every guarantee has the properties of §11 that test it, and the table names
+  them; `every_guarantee_is_tested` checks that each property named exists
+  and that every property is named. A property no guarantee needs is removed.
+- A new property is written when a new reader is added, with its guarantee —
+  not otherwise.
+
+A property that fails then means that the rules do not imply a guarantee, or
+that the code does not keep the rules; it never means that a guarantee was
+missing, because the list says what is guaranteed.
+
+The guarantees are of the books: broken, the books contradict themselves or
+lose something. The last table holds what is not: the messages abo gives, and
+the checks that this document and its tests stay in step with the code. Their
+tests stay, and a failure there is a defect in a message or in this document,
+not in the books.
+
+### hledger
+
+| | Guarantee | Rules | Properties |
+|---|---|---|---|
+| G-H1 | hledger reads the journal without error, checking its accounts, commodities, balance, date order and balance assertions | I-A1, I-K0, I-K1, I-D1, I-E0, I-E1, I-E2, I-S3, §7 | `hledger_agrees` |
+| G-H2 | hledger reads every entry, account, commodity and price exactly as abo holds it: date, description, tags, account, amount, cost | I-A0, I-K0, I-K3, I-D1, I-E0, §7 | `hledger_reads_entries_as_written`, `hledger_reads_declarations`, `any_text_the_rules_allow_survives`, `extremes_survive_hledger` |
+| G-H3 | hledger's balance of every account, in every commodity, through any date, at any depth and at cost, is the model's | I-A2, I-E1, I-E2 | `hledger_agrees`, `hledger_agrees_through_any_date`, `hledger_rolls_parents_up`, `at_cost_everything_sums_to_nought` |
+| G-H4 | hledger checks every whole statement, every entry's balance and every account's declaration on its own, so that a fault in `check` shows as a disagreement | I-S3, §7.3 | `hledger_catches_what_check_catches` |
+
+### The files
+
+| | Guarantee | Rules | Properties |
+|---|---|---|---|
+| G-F1 | The files say the state and nothing else: `parse(render(m)) = m`, so each state has one text | §7 | `files_say_the_state` |
+| G-F2 | An edit to the files is never read as the same state with no problem | §7, §8 | `edits_are_noticed` |
+| G-F3 | Reading never fails, whatever the text: it gives a state, or problems | §8 | `edits_are_noticed` |
+| G-F4 | `abo tidy`, which is `render(parse(f))`, gives text read as the same state, and tidying it again changes nothing | §7, §8 | `tidying_is_idempotent` |
+
+### Debts
+
+What is owed, debt by debt: read by the Bills and Invoices pages, by `pay`
+and `write_off`, and by whoever reconciles the receivable and the payable
+with the ledger. Broken, the ledger and the debts in it disagree.
+
+| | Guarantee | Rules | Properties |
+|---|---|---|---|
+| G-D1 | For every debt, what it owes, what is paid and what is open are defined; what is open is between nought and what it owes, and nought once it is cancelled | I-B2, I-P1, I-P2, I-R1, I-R3, I-E3 | `open_lies_between_nought_and_owed`, `standing_and_paid_by_their_definitions` |
+| G-D2 | On every account a debt is on, the balance is what the debts there have open | I-P3 | `open_debts_are_the_balances` |
+| G-D3 | A debt is settled by payments and write-offs, through money accounts, and cancelled by its reversal or credit note, in no other way; what pays it is reverted before it is cancelled | I-P1, I-P2, I-R1, I-R3, N4 | `paying_what_is_open_settles`, `paying_in_parts_settles`, `writing_off_settles`, `crediting_cancels`, `payments_are_reverted_first`, `reverting_twice_restores` |
+
+### An invoice, and its customer
+
+| | Guarantee | Rules | Properties |
+|---|---|---|---|
+| G-I1 | An invoice's entry posts what the invoice says, its amounts rounded commercially | §2.4, §2.5 | `invoices_post_what_they_say`, `rounding_is_half_away_from_nought` |
+| G-I2 | Invoice numbers run 1, 2, 3, … within each year, in date order, without gap or repeat | I-I2 | `invoice_numbers_run_without_gaps` |
+| G-I3 | An invoice, once issued, never changes — its number, amounts and postings — whatever is configured, declared or booked after it; it is corrected by a credit note | I-K0, I-R1, §5.1 | `entries_never_change`, `invoices_are_credited_not_reverted` |
+| G-I4 | An invoice is issued as the configuration and the declarations stand on its day | I-I1, I-C1, I-C2, I-K2, N3 | `issuing_follows_the_configuration` |
+
+### The bank statement
+
+| | Guarantee | Rules | Properties |
+|---|---|---|---|
+| G-S1 | A posting is cleared by one statement at most; a statement's balance is what it and the account's earlier ones clear, and a whole one is the account's balance | I-S2, I-S3 | `whole_statements_are_the_balance`, `clearing_everything_makes_a_statement_whole`, `unrecording_and_recording_again_restores` |
+
+### The tax return, and periods filed
+
+| | Guarantee | Rules | Properties |
+|---|---|---|---|
+| G-P1 | Nothing dated on or before `closed_through` changes, and it never moves back | N2, N6 | `closed_periods_stay_closed`, `closed_dates_are_refused` |
+| G-P2 | Nothing is dated after the day it is added | N1 | `nothing_is_dated_after_today` |
+| G-P3 | VAT accounts are posted to only as the VAT method in force allows | N3, I-C3 | *none yet* |
+
+### A bill's document
+
+| | Guarantee | Rules | Properties |
+|---|---|---|---|
+| G-B1 | Each document has a path of its own and is filed once; it keeps its bill while the bill stands, and follows it when it is booked again | I-B1 | `document_paths_are_distinct`, `documents_alike_are_refused`, `documents_keep_their_bill`, `a_document_follows_its_bill` |
+
+### Whoever runs a command
+
+| | Guarantee | Rules | Properties |
+|---|---|---|---|
+| G-O1 | An operation changes what it names, and nothing else; an entry once added never changes; the opposite of an operation gives back the books as they were | §5 | `each_operation_changes_only_its_part`, `balances_move_by_the_new_entry`, `entries_never_change`, `inverses_restore`, `setting_twice_is_setting_once`, `reverting_twice_restores` |
+| G-O2 | Balances depend on the entries alone: not on the order they are booked in, nor on the names of the accounts — roles come from the configuration | I-C3, I-A0 | `the_order_of_entries_does_not_change_balances`, `names_mean_nothing` |
+| G-O3 | A declaration is removed exactly when nothing uses it, and nothing is declared under an account posted to | I-A1, I-A2 | `an_account_is_removable_iff_unused`, `a_commodity_is_removable_iff_unused`, `declaring_under_a_posted_account_is_refused` |
+| G-O4 | A configuration key reads back as set; a key that names nothing is refused | I-C1, I-C2, I-C3, §5.2 | `a_key_set_reads_back`, `unknown_keys_are_refused` |
+
+### Messages, and checks of this document
+
+Not guarantees of the books: broken, a message is less use, or this document
+and the code have drifted apart; the books are as they were.
+
+| | What | Rules | Tests |
+|---|---|---|---|
+| M-1 | Each problem `read` reports names a line of a file that is there | §8 | `problems_name_lines_that_are_there` |
+| M-2 | Every refusal names a rule this document defines | §4 | `refusals_name_a_rule` |
+| M-3 | Every rule this document defines is checked in the model's code | §4 | `every_rule_is_checked` |
+| M-4 | Every test a row of §3 names exists, and every test is named by a row | §3 | `every_guarantee_is_tested` |
+| M-5 | Refusing is not all the rules do: of the steps plans draw, a third or more are taken | §4 | `enough_is_taken` |
+
+### What the list leaves out
+
+- **G-P3 has no property yet.** N3 is a rule with nothing to test it: the next
+  property to write.
+- **N4** — money is paid through a money account — serves G-D3, and no
+  property tests it on its own.
+- **Five tests served no guarantee:** `rendered_text_is_tidy`,
+  `amounts_are_written_to_their_places`, `the_journal_is_in_order`,
+  `the_files_are_exactly_the_states` and `canonical_text` tested §7's
+  description of the text, which no reader relies on beyond G-F1 and G-H1.
+  They are removed.
+- Every number the books hold or compute is exact — no overflow, and no
+  rounding but where §2.5 says — is not a guarantee of its own: it is what
+  G-H2, G-I1 and G-I3 need, and I-K0, I-K3 and I-D1 are its rules.
+
+---
+
+## 4. Invariants
+
+The invariants and conditions below are the rules that imply the guarantees
+of §3; each is there because a guarantee needs it, and §3 says which. Each is
+checked in one place, `check`, on the state an operation produces.
 
 Each is numbered so that tests and refusals can name it. An invariant is a
 property of the state alone, and says that an input is well formed or that a
 check agrees (§1). Rules that also need the day a change is made, or today's
-configuration, are conditions on the change, in §3.9. Numbers once used are
+configuration, are conditions on the change, in §4.9. Numbers once used are
 not reused: those missing below were rules about a value now derived.
 
-### 3.1 Accounts and commodities
+### 4.1 Accounts and commodities
 
 - **I-A0** Every declared account's segments are well formed, and its first
   names a class.
@@ -472,7 +598,7 @@ not reused: those missing below were rules about a value now derived.
 - **I-D1** Every date is in the years 1 to 9999, which the files write as four
   digits and hledger reads. Checked first, and alone, with I-K3.
 
-### 3.2 Entries
+### 4.2 Entries
 
 - **I-E0** Every description is one the date line can hold (§2.3).
 - **I-E1** Every entry has two postings or more, and balances: for each
@@ -483,7 +609,7 @@ not reused: those missing below were rules about a value now derived.
 - **I-E3** An entry that names another names one with a smaller id, and is
   dated on or after it.
 
-### 3.3 Bills
+### 4.3 Bills
 
 - **I-B1** A document's name and extension are well formed, and no two
   documents have one path — which takes two of one issuer and day whose hashes
@@ -491,7 +617,7 @@ not reused: those missing below were rules about a value now derived.
   documents name the same one.
 - **I-B2** A bill's booking credits exactly one liability account.
 
-### 3.4 Invoices
+### 4.4 Invoices
 
 - **I-I1** An invoice has a line or more, a total above nought, a customer
   named on the first line,
@@ -502,7 +628,7 @@ not reused: those missing below were rules about a value now derived.
 - **I-I2** Within a year, invoices and credit notes are dated in the order of
   their ids, so their numbers follow their dates.
 
-### 3.5 Payments
+### 4.5 Payments
 
 - **I-P1** A standing payment names a debt that stands, and has exactly one
   posting to the debt's account: in the debt's commodity, taking something
@@ -520,9 +646,9 @@ not reused: those missing below were rules about a value now derived.
   This was N5, a condition on `post`: it looked only at the debts there were
   when the entry was posted, so an entry to the receivable before the first
   invoice passed it, and the balance and what is open disagreed from the
-  first invoice on. The property test of §10 found it.
+  first invoice on. The property test of §11 found it.
 
-### 3.6 Reversals
+### 4.6 Reversals
 
 - **I-R1** An entry is reversed by at most one standing entry. An invoice is
   reversed by a credit note alone — it is corrected by a credit note, DESIGN
@@ -531,14 +657,14 @@ not reused: those missing below were rules about a value now derived.
   its reversal, names it. So a bill's booking is not reverted, nor an invoice
   credited, while a payment of it stands: the payment is reverted first.
 
-### 3.7 Statements
+### 4.7 Statements
 
 - **I-S2** A statement clears postings that exist, to its account, in its
   commodity, dated on or before it, and cleared by no other statement.
 - **I-S3** A statement's balance is the sum of the postings it and the
   account's earlier statements, in its commodity, clear.
 
-### 3.8 Configuration
+### 4.8 Configuration
 
 - **I-C1** The company has a name; no text in the configuration holds a hidden
   character.
@@ -550,7 +676,7 @@ not reused: those missing below were rules about a value now derived.
   asset, output and flat-rate VAT are liabilities. A flat rate is above
   nought; terms and the VAT rate are not below it.
 
-### 3.9 Conditions on a change
+### 4.9 Conditions on a change
 
 These hold of each change when it is made, not of the state: they need the
 day it is made, or the configuration in force then, and the state remembers
@@ -559,7 +685,7 @@ neither for an entry made long ago.
 - **N1** No entry or statement is dated after the day it is added.
 - **N2** On or before `closed_through`, no entry is added, no statement
   recorded or removed, and no price added or removed.
-- **N3** VAT accounts are posted to only as the VAT method allows (DESIGN §6):
+- **N3** VAT accounts are posted to only as the VAT method allows (DESIGN §7):
   a bill posts nothing to output VAT, nor, under a flat rate, to the flat
   rate's account. An invoice books output VAT as the method in force says,
   which `invoice` does by construction.
@@ -575,7 +701,7 @@ undo, while nothing has happened since.
 
 ---
 
-## 4. Operations
+## 5. Operations
 
 Each operation is `op(m, args) → m'`, defined when its preconditions hold.
 `apply` builds `m'`, then checks the invariants on it (`check`) and the
@@ -598,17 +724,17 @@ are not — the debt paid is a debt, the statement removed exists — refuse as
 | `revert(entry, date)` | a `Reversal` entry |
 | `record(account, commodity, date, balance, postings)` | a `Statement` clearing those postings |
 | `unrecord(account, commodity)` | removes the latest statement of the account in the commodity; an earlier one cannot go, since later ones count what it cleared (I-S3) |
-| `config_set(key, value)`, `config_unset(key)` | `config` (§4.2) |
+| `config_set(key, value)`, `config_unset(key)` | `config` (§5.2) |
 | `account_add(account)`, `account_remove(account)` | `accounts` |
 | `commodity_add(commodity, places)`, `commodity_remove(commodity)` | `commodities` |
 | `price_add(date, commodity, amount)`, `price_remove(date, commodity)` | `prices` |
-| `undo()` | the state before the last operation (§4.3) |
+| `undo()` | the state before the last operation (§5.3) |
 
 No operation changes an entry once added. Every one adds something; removes a
 document that names no bill, or an account's latest statement; links a
 document to its bill; or changes the configuration or the declarations.
 
-### 4.1 Declarations
+### 5.1 Declarations
 
 Accounts, commodities and prices are declared by commands, as payment options
 are, and listed and removed the same way:
@@ -638,7 +764,7 @@ keeps its places; one not yet used is removed and added again, and a balance
 is moved to another account by an entry. A price removed changes no invoice:
 each holds the price it used.
 
-### 4.2 Configuration
+### 5.2 Configuration
 
 The configuration is read and changed as `git config` does it, by keys named
 as in `abo.toml`:
@@ -668,7 +794,7 @@ refused with the number of the one it would break; a key that names nothing,
 or a value of the wrong kind, is refused as `abo.toml` would not read. `abo company` and `abo payment-options`
 stay, to ask what they need as questions; each answer is a `config_set`.
 
-### 4.3 Undo
+### 5.3 Undo
 
 Undo restores the state before the last operation, and is defined only while
 that operation is the last: undo of anything older is not an operation. An
@@ -684,7 +810,7 @@ from: settled twice, paid more than owed, a reversal naming what is gone, a
 statement over postings no longer cleared. Undo of an undo is redo of the
 last operation, and is allowed while nothing has happened since.
 
-### 4.4 The log
+### 5.4 The log
 
 Each operation appends its line to `.abo/log.jsonl` as today: the command and
 its stamp. The log is a record of what was done, not a source of the state:
@@ -694,7 +820,7 @@ history, not the log, is what restores a state.
 
 ---
 
-## 5. What changes for workflows
+## 6. What changes for workflows
 
 Six workflows change shape under the model:
 
@@ -721,9 +847,9 @@ Six workflows change shape under the model:
 
 ---
 
-## 6. The canonical form
+## 7. The canonical form
 
-### 6.1 Files
+### 7.1 Files
 
 ```
 abo.toml                     # the configuration, written by render
@@ -734,7 +860,7 @@ invoices/2026/2026-0017.json # invoice 2026-0017's content and its PDF's hash, w
 invoices/2026/2026-0017.pdf  # made at issue, kept as made
 bills/2026/…                 # bills' documents, kept as they came; known by their hash
 bills/index                  # every document: its hash, path and bill, written by render
-templates/…                  # the company's, not the model's (§9)
+templates/…                  # the company's, not the model's (§10)
 ```
 
 `render` writes the text files: `abo.toml`, the journal, each invoice's and
@@ -745,7 +871,7 @@ PDF's hash. The two kinds of binary file are not rendered — a bill's document
 is kept as it came, an invoice's PDF as it was made — and the state holds the
 hash of each, so `parse` can tell one that is missing or changed.
 
-### 6.2 An entry
+### 7.2 An entry
 
 ```
 2026-09-21 Acme Hosting AG, hosting September
@@ -796,9 +922,9 @@ as given in the invoice's content.
 A derived value written out — an invoice's postings and number, a reversal's
 postings, a statement's assertion — is written for hledger and for a person
 reading; `parse` does not read it as a fact. A file whose written value
-differs from the derived one is not canonical (§7).
+differs from the derived one is not canonical (§8).
 
-### 6.3 A statement
+### 7.3 A statement
 
 A statement is written as an entry of one posting of nought, without an id,
 naming each posting it clears as `<entry>.<n>`, one a line:
@@ -822,7 +948,7 @@ posting, is not used: writing it would change an old entry's text each time a
 later statement cleared one of its postings, and an entry's text is fixed when
 it is added.
 
-### 6.4 Order and form
+### 7.4 Order and form
 
 - A year's entries and statements are in date order; on one date, entries by
   id, then statements by account and commodity.
@@ -840,7 +966,7 @@ it is added.
   `alias`, no automated or periodic transactions, no hledger directive that
   changes how what follows is read.
 
-### 6.5 abo.toml
+### 7.5 abo.toml
 
 Written by `render` from `config`, keys in a fixed order, values
 in their canonical forms (an IBAN in groups of four, a BIC in capitals). In
@@ -848,11 +974,11 @@ in their canonical forms (an IBAN in groups of four, a BIC in capitals). In
 `8.1`, not `8.10`, so that one value is one text. Only
 abo writes it: every change goes through `abo config`, `abo company` and `abo
 payment-options`, a comment written in it by hand is not kept, and any other
-hand edit is a problem `parse` reports (§7).
+hand edit is a problem `parse` reports (§8).
 
 ---
 
-## 7. Reading what abo did not write
+## 8. Reading what abo did not write
 
 `read` reads every file into a state and a list of problems. A problem is a
 place — file and line — and what is wrong with it: not readable (`parse` fails
@@ -873,19 +999,19 @@ written, and its sweeping a hand edit into its own commit.
 
 ---
 
-## 8. Books from before
+## 9. Books from before
 
 Books written before the model — under rules 1 to 4 — are not migrated: no real
 books were written then, only the demo, which is rebuilt on every start, and
 the tests', which are rebuilt with the code. `parse` reads such books as far as
-it can and reports the rest as not canonical (§7). Should real books from before
+it can and reports the rest as not canonical (§8). Should real books from before
 ever turn up, a converter is written then, for what they hold.
 
 With the model, one set of invariants holds, and the 76 rule-version switches go.
 
 ---
 
-## 9. What the model does not cover
+## 10. What the model does not cover
 
 - **Templates** (`templates/*.typ`) are the company's, edited by hand, and not
   part of the state. An invoice's content and its PDF's hash are.
@@ -895,78 +1021,16 @@ With the model, one set of invariants holds, and the 76 rule-version switches go
 
 ---
 
-## 10. Testing
+## 11. Testing
 
 Every state an operation produces passes `check`, by construction: `apply`
 keeps no other. What the tests check is what construction does not give. They
 are properties (`src/model/tests.rs`, with proptest), each over plans of up to
-60 operations on fresh books:
+60 operations on fresh books.
 
-| Property | Claim |
-|---|---|
-| **The text** | |
-| `files_say_the_state` (T1) | for every state reached, `parse(render(m)) = m`, and `read` finds the files canonical and sound; as `parse` is a function, `render` is injective (§1) |
-| `edits_are_noticed` | an edit to canonical files — a character inserted, deleted or recased, a long number, a whole file replaced by anything — reads as another state or with a problem, and reading never panics (§7) |
-| `rendered_text_is_tidy` | no tab, no carriage return, no space at a line's end, no two blank lines running, a newline at the end (§6) |
-| `amounts_are_written_to_their_places` | every amount, cost, price and statement balance in the journal is written to its commodity's places (§6.2) |
-| `the_journal_is_in_order` | a year's journal is in date order; on one date, entries by id, then statements by account and commodity (§6.4) |
-| `the_files_are_exactly_the_states` | a `.json` for each invoice and credit note and no other, a line in `bills/index` for each document, an include for each year that has anything, in order; the tags are abo's own, in lower case (§6.1, §6.4) |
-| `tidying_is_idempotent` | `abo tidy`, which is `render(parse(f))`, gives text that reads back as the same state, and tidied again is unchanged — whatever files it read, rules broken or not; what is left to report is what breaks a rule (§7) |
-| `problems_name_lines_that_are_there` | each problem names a line of its file that is there (§7) |
-| **hledger** | |
-| `hledger_agrees` (T2) | hledger reads `render(m)` — `check accounts commodities balanced ordereddates`, balance assertions included — and its balance of every account in every commodity is the model's; so every `whole` statement is checked by hledger as well (§6.3) |
-| `hledger_agrees_through_any_date` | the same, through the date of any entry (§1: every period) |
-| `hledger_reads_entries_as_written` | hledger reads every entry's date, description and tags as written, and each posting's account and amount, and at cost its cost — so it and abo agree on what each entry is, though hledger decides nothing (§1) |
-| `hledger_reads_declarations` | hledger's declared accounts, commodities and prices are the model's |
-| `hledger_rolls_parents_up` | a parent's balance is the sum of its leaves', as hledger rolls accounts up at depths 1 and 2 (§2.2) |
-| `at_cost_everything_sums_to_nought` | at cost, the balances of all accounts sum to nought in every commodity, as hledger values them (§2.3) |
-| `hledger_catches_what_check_catches` | a whole statement's balance, an entry's posting or a declaration, tampered with past `check`, is refused by hledger on its own: its reading is a second computation (§6.3) |
-| `extremes_survive_hledger` | in a commodity of 0 to 16 places, the greatest and least amounts the bound allows, and a cost at the bound, are taken, read back, and read by hledger as written; one unit more is refused (I-K0, I-K1, I-K3) |
-| `any_text_the_rules_allow_survives` | any description and account segment the rules allow, hledger reads exactly as written; any text the configuration and an invoice may hold comes back from `abo.toml` and the `.json` unchanged (I-E0, §2.2) |
-| **Operations** | |
-| `each_operation_changes_only_its_part` | an operation changes its own part of the state and nothing else, by one; a bill may also link one document, to itself (§4) |
-| `balances_move_by_the_new_entry` | an operation moves the balances by the new entry's postings, and by nothing else |
-| `inverses_restore` | add and remove, file and unfile, record and unrecord, set and unset: the second gives back the books as they were (§4) |
-| `setting_twice_is_setting_once` | `config set` of a key to a value, twice, is once (§4.2) |
-| `reverting_twice_restores` | reverting an entry and then its reversal leaves every earlier entry standing as it did, every debt as open, the balances as they were (I-R1, §2.7) |
-| `paying_what_is_open_settles` | paying a debt what it has open settles it; paying more is refused, by I-P2 |
-| `writing_off_settles` | a write-off leaves nothing open; refused, it names a rule |
-| `crediting_cancels` | a credit note cancels its invoice — it does not stand, and nothing is open — and takes the next number of its year |
-| `paying_in_parts_settles` | a debt paid in two parts is settled, as paid in one |
-| `payments_are_reverted_first` | a debt with a payment standing is not reverted or credited; once its payments are reverted, it is (I-R3) |
-| `invoices_are_credited_not_reverted` | an invoice or credit note is not reverted (I-R1) |
-| `a_document_follows_its_bill` | a document that names a bill is neither taken out nor filed again; its bill booked, reverted and booked again keeps it (§2.5) |
-| `an_account_is_removable_iff_unused`, `a_commodity_is_removable_iff_unused` | a declaration is removed exactly when nothing uses it (§4.1, I-A1) |
-| `declaring_under_a_posted_account_is_refused` | no account is declared under one that is posted to (I-A2) |
-| `closed_dates_are_refused` | a period closed, an entry or statement dated in it is refused, by N2, and so is closing less, by N6 |
-| `issuing_follows_the_configuration` | an invoice is issued with the accounts, terms, VAT method and rate configured on its day, and in another commodity the latest price (§2.5, §4) |
-| `a_key_set_reads_back`, `unknown_keys_are_refused` | a key set reads back as set; a key that names nothing is refused (§4.2) |
-| `clearing_everything_makes_a_statement_whole` | a statement clearing all that is not yet cleared, at what it sums to, is whole, and asserted for hledger (§6.3) |
-| `unrecording_and_recording_again_restores` | the latest statement taken out and recorded again gives the books as they were |
-| `the_order_of_entries_does_not_change_balances` | two entries booked in either order give the same balances |
-| **What stays** | |
-| `entries_never_change` | an entry, once added, is unchanged, and so are its derived postings and number (§2.3, §2.7) |
-| `closed_periods_stay_closed` | no operation adds, removes or changes what is on or before `closed_through`, and it does not move back (N2, N6) |
-| `documents_keep_their_bill` | a document filed for a bill keeps it while the bill stands (§2.5) |
-| `nothing_is_dated_after_today` | nothing added is dated after the day it is added (N1) |
-| **What is derived** | |
-| `open_debts_are_the_balances` | on every account a debt is on, the balance is what the debts there have open (I-P3) |
-| `open_lies_between_nought_and_owed` | what a debt that stands has open is between nought and what it owes, and nought once it does not stand (§2.7) |
-| `invoice_numbers_run_without_gaps` | in each year, invoices and credit notes are numbered 1, 2, 3, … in the order of their ids and their dates (§2.7, I-I2) |
-| `invoices_post_what_they_say` | an invoice's entry debits the receivable with its total, and credits output VAT with its VAT and income with its net, or income with its total (§2.4) |
-| `whole_statements_are_the_balance` | a whole statement states the account's balance on its date (§6.3) |
-| `standing_and_paid_by_their_definitions` | `standing` and `paid`, computed from the words of §2.7 alone by recursion, are the model's |
-| `names_mean_nothing` | renamed throughout, each segment but the class to a name of its own, the books break the same rules, balance the same, and take or refuse every operation alike, by the same rules: roles come from the configuration, never from names (§2.2) |
-| `document_paths_are_distinct`, `documents_alike_are_refused` | no two documents have one path; of two of one issuer and day whose hashes begin alike, the second is refused (I-B1) |
-| `rounding_is_half_away_from_nought` | rounding is to the nearest, half away from nought, the same either side of it, to no more places than asked (§2.5) |
-| **This document** | |
-| `refusals_name_a_rule` | every refusal names a rule this document defines, or `OP` |
-| `every_rule_is_checked` | every rule this document defines is checked in the model's code |
-| `enough_is_taken` | of the steps 100 plans draw, at least a third are taken: an invariant that refused everything would pass the rest |
-
-The properties that take an operation to the state a plan reaches reach their
-assertions in a sixth to a half of their cases, measured; the rest are states
-the operation does not apply to, such as crediting an invoice that is paid.
+Each property tests a guarantee of §3, whose tables name them; that every
+property there exists, and every property is there, is itself a test,
+`every_guarantee_is_tested`.
 
 A plan is a list of steps drawn without looking at the books: post, file,
 unfile, bill, invoice, credit, pay, write-off, revert, record, unrecord,
@@ -982,9 +1046,9 @@ many plans each property draws; 256 by default, and 48 for hledger's.
 What the properties found, each now a rule above:
 
 - hledger takes a total cost's sign from its amount: a cost written with a
-  sign was read as the opposite one. Costs are written unsigned (§6.2).
+  sign was read as the opposite one. Costs are written unsigned (§7.2).
 - hledger wants a decimal point in a commodity directive: a commodity of no
-  places is declared `commodity 1000. JPY` (§6.4).
+  places is declared `commodity 1000. JPY` (§7.4).
 - Numbers past an exact decimal's range made the model panic: I-K3.
 - Dates outside four-digit years were written as nothing could read: I-D1,
   and years are written with four digits, `0841`.
@@ -1004,7 +1068,7 @@ What the properties found, each now a rule above:
   segment holds no other space (§2.2).
 - abo began an invoice's description with the customer's name, so a customer
   named `(Acme) GmbH` was read by hledger as a code, and refused: the number
-  comes first (§6.2). A customer whose first line was blank was refused by the
+  comes first (§7.2). A customer whose first line was blank was refused by the
   description's rule, not the invoice's: I-I1 asks for a name.
 - An amount at the bound in a commodity of 17 or 18 places is 29 or 30 digits,
   past what an exact decimal holds: I-K0 allows 16.
@@ -1013,7 +1077,7 @@ What the properties found, each now a rule above:
   it pads, and never rounds.
 - `config set` read every value beginning with `{` as a table, so an address
   beginning with one could not be set: a value is the first reading the key
-  takes (§4.2).
+  takes (§5.2).
 - A problem at a file's end — its last newline gone — named a line past it.
 
 The 172 regression tests stay; most become tests of one invariant each, once

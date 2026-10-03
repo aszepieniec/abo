@@ -1,4 +1,4 @@
-//! The operations, MODEL.md §4, and the conditions on a change, §3.9. Each
+//! The operations, MODEL.md §5, and the conditions on a change, §4.9. Each
 //! builds the next state; `apply` keeps it only if every invariant and every
 //! condition holds of it. Undo is not here: it is the state before, which
 //! whoever holds the states keeps.

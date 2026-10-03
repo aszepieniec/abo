@@ -1,4 +1,4 @@
-//! The invariants, MODEL.md §3: each a property of the state alone, named by
+//! The invariants, MODEL.md §4: each a property of the state alone, named by
 //! its number.
 
 use super::*;
