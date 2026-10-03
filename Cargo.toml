@@ -8,7 +8,7 @@ anyhow = "1"
 axum = { version = "0.8", features = ["multipart"] }
 maud = "0.27"
 clap = { version = "4", features = ["derive"] }
-jiff = "0.2"
+jiff = { version = "0.2", features = ["serde"] }
 rust_decimal = "1"
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
@@ -29,3 +29,13 @@ unicode-general-category = "1.1.0"
 # list, and by tests/tty.rs for a terminal to press keys on.
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", default-features = false, features = ["term"] }
+
+# The model's property tests (src/model/props.rs). The features add
+# `arbitrary` impls for the wildest values a test draws.
+[dev-dependencies]
+proptest = "1"
+test-strategy = "0.4"
+proptest-arbitrary-interop = "0.1"
+arbitrary = "1"
+rust_decimal = { version = "1", features = ["rust-fuzz"] }
+jiff = { version = "0.2", features = ["arbitrary"] }

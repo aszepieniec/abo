@@ -2,6 +2,7 @@ mod bill;
 mod company;
 mod invoice;
 mod journal;
+mod model;
 mod payment;
 mod questions;
 mod report;

@@ -1,0 +1,435 @@
+//! The invariants, MODEL.md §3: each a property of the state alone, named by
+//! its number.
+
+use super::*;
+use crate::repo::{answer, hidden};
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Violation {
+    pub code: &'static str,
+    pub what: String,
+}
+
+impl std::fmt::Display for Violation {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.what)
+    }
+}
+
+/// One line, nothing hidden.
+pub fn text_ok(s: &str) -> bool {
+    !s.chars().any(hidden)
+}
+
+/// Lines, newlines between them, nothing else hidden.
+pub fn lines_ok(s: &str) -> bool {
+    s.split('\n').all(text_ok)
+}
+
+/// hledger reads every other space in an account's name as U+0020, so a
+/// segment holds that one alone: two names hledger would read as one are
+/// not two accounts.
+pub fn segment_ok(s: &str) -> bool {
+    !s.is_empty() && text_ok(s) && !s.contains([':', ';']) && !s.contains("  ") && s.trim() == s && !s.chars().any(|c| c != ' ' && c.is_whitespace())
+}
+
+pub fn account_ok(a: &str) -> bool {
+    a.split(':').all(segment_ok) && CLASSES.contains(&class(a))
+}
+
+pub fn commodity_ok(c: &str) -> bool {
+    c.len() >= 3 && c.bytes().all(|b| b.is_ascii_uppercase())
+}
+
+/// What the journal's date line can hold and give back unchanged: not empty,
+/// no comment, no status mark or code at its start, no space at either end.
+pub fn description_ok(d: &str) -> bool {
+    !d.is_empty() && text_ok(d) && !d.contains(';') && d.trim() == d && !d.starts_with(['*', '!', '('])
+}
+
+pub fn hash_ok(h: &str) -> bool {
+    h.len() == 64 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Words of lower-case letters and digits, one dash between them.
+fn slug_ok(s: &str) -> bool {
+    s.split('-').all(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
+}
+
+/// Below this in magnitude, every sum and product the model takes of the
+/// state's numbers fits a `Decimal` (about 7.9e28).
+pub const BOUND: i64 = 1_000_000_000_000;
+
+/// Every number the state holds: what the derived ones are computed from.
+fn numbers(m: &Books) -> Vec<Decimal> {
+    let mut v = vec![];
+    for e in &m.entries {
+        match &e.kind {
+            Kind::Plain(ps) | Kind::Bill(ps) | Kind::Payment { postings: ps, .. } => {
+                for p in ps {
+                    v.push(p.amount.quantity);
+                    v.extend(p.cost.as_ref().map(|c| c.quantity));
+                }
+            }
+            Kind::Invoice { content, .. } => {
+                for l in &content.lines {
+                    v.extend([l.quantity, l.unit_price]);
+                }
+                if let InvoiceVat::Charged { rate, home } = &content.vat {
+                    v.push(*rate);
+                    v.extend(home.as_ref().map(|h| h.price.quantity));
+                }
+            }
+            Kind::CreditNote { .. } | Kind::Reversal { .. } => {}
+        }
+    }
+    v.extend(m.prices.values().map(|p| p.quantity));
+    v.extend(m.statements.values().map(|s| s.balance));
+    v.push(m.config.invoice.vat_rate);
+    if let Vat::Flat { rate, .. } = m.config.vat {
+        v.push(rate);
+    }
+    v
+}
+
+/// Every date the state holds.
+fn dates(m: &Books) -> Vec<Date> {
+    let mut v: Vec<Date> = m.entries.iter().map(|e| e.date).collect();
+    for e in &m.entries {
+        if let Kind::Invoice { content, .. } = &e.kind {
+            v.push(content.due);
+            if let InvoiceVat::Charged { home: Some(h), .. } = &content.vat {
+                v.push(h.date);
+            }
+        }
+    }
+    v.extend(m.prices.keys().map(|k| k.1));
+    v.extend(m.statements.keys().map(|k| k.2));
+    v.extend(m.documents.values().map(|d| d.date));
+    v.extend(m.config.company.closed_through);
+    v
+}
+
+pub fn check(m: &Books) -> Vec<Violation> {
+    // Four digits of year, as the files write it and hledger reads it.
+    if let Some(d) = dates(m).into_iter().find(|d| !(1..=9999).contains(&d.year())) {
+        return vec![Violation { code: "I-D1", what: format!("{d} is not in the years 1 to 9999") }];
+    }
+    // First, and alone: what follows computes with these.
+    if let Some(q) = numbers(m).into_iter().find(|q| q.abs() >= Decimal::from(BOUND)) {
+        return vec![Violation { code: "I-K3", what: format!("{q} is not below {BOUND} in magnitude") }];
+    }
+    let mut rates = vec![m.config.invoice.vat_rate];
+    if let Vat::Flat { rate, .. } = m.config.vat {
+        rates.push(rate);
+    }
+    for e in &m.entries {
+        if let Kind::Invoice { content, .. } = &e.kind {
+            if let InvoiceVat::Charged { rate, .. } = content.vat {
+                rates.push(rate);
+            }
+        }
+    }
+    if let Some(r) = rates.into_iter().find(|r| *r < Decimal::ZERO || *r > Decimal::ONE_HUNDRED) {
+        return vec![Violation { code: "I-K3", what: format!("a rate of {r} percent is not 0 to 100") }];
+    }
+    // What is owed is paid in amounts, so it is bounded as they are.
+    for (i, e) in m.entries.iter().enumerate() {
+        if let Kind::Invoice { content, .. } = &e.kind {
+            if m.checked_totals(content).is_none_or(|(net, _, total)| net.abs() >= Decimal::from(BOUND) || total.abs() >= Decimal::from(BOUND)) {
+                return vec![Violation { code: "I-K3", what: format!("invoice {}'s total is not below {BOUND} in magnitude", i + 1) }];
+            }
+        }
+    }
+    let mut v = vec![];
+    macro_rules! no {
+        ($code:literal, $($t:tt)*) => { v.push(Violation { code: $code, what: format!($($t)*) }) };
+    }
+    let standing = m.standing();
+    let postings = m.all_postings();
+    let fits = |q: Decimal, c: &str| round(q, m.places(c)) == q;
+
+    // 3.1 Accounts and commodities.
+    for a in &m.accounts {
+        if !account_ok(a) {
+            no!("I-A0", "{a:?} is not an account whose first segment names a class");
+        }
+    }
+    let leaf = |a: &str| !m.accounts.iter().any(|b| b.len() > a.len() && b.starts_with(a) && b.as_bytes()[a.len()] == b':');
+    let mut posted: BTreeSet<&str> = postings.iter().map(|(_, _, p)| p.account.as_str()).collect();
+    posted.extend(m.statements.keys().map(|k| k.0.as_str()));
+    let configured = m.config_accounts();
+    posted.extend(configured.iter().map(String::as_str));
+    for a in &posted {
+        if !m.accounts.contains(*a) {
+            no!("I-A1", "{a} is not declared");
+        } else if !leaf(a) {
+            no!("I-A2", "{a} is posted to, and has accounts under it");
+        }
+    }
+    let mut amounts: Vec<&Amount> = vec![];
+    for (_, _, p) in &postings {
+        amounts.push(&p.amount);
+        amounts.extend(&p.cost);
+    }
+    amounts.extend(m.prices.values());
+    let mut used: BTreeSet<&str> = amounts.iter().map(|a| a.commodity.as_str()).collect();
+    used.extend(m.statements.keys().map(|k| k.1.as_str()));
+    used.extend(m.prices.keys().map(|k| k.0.as_str()));
+    used.insert(&m.config.company.currency);
+    for e in &m.entries {
+        if let Kind::Invoice { content, .. } = &e.kind {
+            used.insert(&content.commodity);
+            if let InvoiceVat::Charged { home: Some(h), .. } = &content.vat {
+                used.insert(&h.price.commodity);
+            }
+        }
+    }
+    for c in used {
+        if !m.commodities.contains_key(c) {
+            no!("I-A1", "{c} is not declared");
+        }
+    }
+    for (c, p) in &m.commodities {
+        if !commodity_ok(c) || *p > 16 {
+            no!("I-K0", "{c} {p}: a commodity is three or more capital letters, with 0 to 16 places");
+        }
+    }
+    for a in amounts {
+        if !fits(a.quantity, &a.commodity) {
+            no!("I-K1", "{} {} has more places than {} has", a.quantity, a.commodity, a.commodity);
+        }
+    }
+    for (key, s) in &m.statements {
+        if !fits(s.balance, &key.1) {
+            no!("I-K1", "the statement of {} on {} has more places than {} has", key.0, key.2, key.1);
+        }
+    }
+    for ((c, d), p) in &m.prices {
+        if p.quantity <= Decimal::ZERO || p.commodity == *c {
+            no!("I-K2", "the price of {c} on {d} is above nought and in another commodity");
+        }
+    }
+
+    // 3.2 Entries.
+    for (i, e) in m.entries.iter().enumerate() {
+        let id = i + 1;
+        if !description_ok(&e.description) {
+            no!("I-E0", "entry {id}'s description {:?} cannot be written on its date line", e.description);
+        }
+        let ps = m.postings(id);
+        let mut sums: BTreeMap<&str, Decimal> = BTreeMap::new();
+        for p in &ps {
+            let a = p.cost.as_ref().unwrap_or(&p.amount);
+            *sums.entry(&a.commodity).or_default() += a.quantity;
+            if let Some(c) = &p.cost {
+                let same_sign = (c.quantity > Decimal::ZERO && p.amount.quantity > Decimal::ZERO)
+                    || (c.quantity < Decimal::ZERO && p.amount.quantity < Decimal::ZERO);
+                if c.commodity == p.amount.commodity || !same_sign {
+                    no!("I-E2", "entry {id}: a cost is in another commodity, with the amount's sign");
+                }
+            }
+        }
+        if ps.len() < 2 || sums.values().any(|s| !s.is_zero()) {
+            no!("I-E1", "entry {id} does not balance");
+        }
+        if let Some(of) = e.kind.names() {
+            match m.entry(of) {
+                Some(n) if of < id && n.date <= e.date => {}
+                _ => no!("I-E3", "entry {id} names {of}, which is not an earlier entry dated on or before it"),
+            }
+        }
+    }
+
+    // 3.3 Bills.
+    let mut documented = BTreeSet::new();
+    let mut paths = BTreeSet::new();
+    for (h, d) in &m.documents {
+        if !paths.insert(d.path(h)) {
+            no!("I-B1", "two documents have the path {}", d.path(h));
+        }
+        if !hash_ok(h) || !slug_ok(&d.name) || d.ext.is_empty() || !d.ext.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()) {
+            no!("I-B1", "{} is not a document's path", d.path(h));
+        }
+        if let Some(of) = d.of {
+            if !matches!(m.entry(of), Some(Entry { kind: Kind::Bill(_), .. })) {
+                no!("I-B1", "{} names {of}, which is not a bill", d.path(h));
+            } else if !documented.insert(of) {
+                no!("I-B1", "two documents name bill {of}");
+            }
+        }
+    }
+    for (i, e) in m.entries.iter().enumerate() {
+        if matches!(e.kind, Kind::Bill(_)) && m.debt(i + 1).is_none() {
+            no!("I-B2", "bill {} credits not exactly one liability", i + 1);
+        }
+    }
+
+    // 3.4 Invoices.
+    let mut last: BTreeMap<i16, Date> = BTreeMap::new();
+    for (i, e) in m.entries.iter().enumerate() {
+        let id = i + 1;
+        match &e.kind {
+            Kind::Invoice { content: c, pdf } => {
+                let (_, _, total) = m.totals(c);
+                let charged = matches!(c.vat, InvoiceVat::Charged { .. });
+                let texts = c.lines.iter().map(|l| l.description.as_str()).chain([c.reference.as_str()]).chain(c.pay_to.iter().flat_map(|p| p.lines.iter().chain([&p.label]).map(String::as_str)));
+                let home_ok = match &c.vat {
+                    InvoiceVat::Charged { home: Some(h), .. } => h.price.quantity > Decimal::ZERO && h.price.commodity != c.commodity,
+                    InvoiceVat::Exempt { reason } => !reason.trim().is_empty() && text_ok(reason),
+                    _ => true,
+                };
+                let accounts_ok = class(&c.accounts.receivable) == "Assets"
+                    && class(&c.accounts.income) == "Income"
+                    && c.accounts.output.as_ref().is_none_or(|o| class(o) == "Liabilities" && charged);
+                if c.lines.is_empty() || total <= Decimal::ZERO || c.due < e.date || !home_ok || !accounts_ok || !hash_ok(pdf)
+                    || !lines_ok(&c.customer) || c.customer.lines().next().is_none_or(|l| l.trim().is_empty()) || !lines_ok(&c.note) || !texts.into_iter().all(text_ok)
+                {
+                    no!("I-I1", "invoice {id} is not one abo could have issued");
+                }
+            }
+            Kind::CreditNote { of, note, pdf } => {
+                if !matches!(m.entry(*of), Some(Entry { kind: Kind::Invoice { .. }, .. })) || !hash_ok(pdf) || !lines_ok(note) {
+                    no!("I-I1", "credit note {id} is not of an invoice");
+                }
+            }
+            _ => continue,
+        }
+        // The last of its own year: one of another year may come between.
+        if last.get(&e.date.year()).is_some_and(|l| *l > e.date) {
+            no!("I-I2", "invoice {id} is dated before the one numbered before it");
+        }
+        last.insert(e.date.year(), e.date);
+    }
+
+    // 3.5 Payments.
+    for (i, e) in m.entries.iter().enumerate() {
+        let id = i + 1;
+        let Kind::Payment { of, .. } = e.kind else { continue };
+        if !standing[id] {
+            continue;
+        }
+        match m.debt(of) {
+            Some(d) if standing[of] => {
+                if !m.takes_off(id, &d).is_some_and(|q| q > Decimal::ZERO) {
+                    no!("I-P1", "payment {id} takes nothing off {of}");
+                }
+            }
+            _ => no!("I-P1", "payment {id} names {of}, which is not a debt that stands"),
+        }
+    }
+    for id in 1..=m.entries.len() {
+        if let Some(d) = m.debt(id).filter(|_| standing[id]) {
+            if m.paid(id, &standing) > d.owed.quantity {
+                no!("I-P2", "{id} is paid more than it owes");
+            }
+        }
+    }
+
+    // An account a debt is on moves only through debts and their payments.
+    let on: BTreeSet<Account> = (1..=m.entries.len()).filter_map(|d| m.debt(d)).map(|d| d.account).collect();
+    for (i, e) in m.entries.iter().enumerate() {
+        let id = i + 1;
+        let own = match &e.kind {
+            Kind::Bill(_) | Kind::Invoice { .. } => m.debt(id),
+            Kind::Payment { of, .. } => m.debt(*of),
+            Kind::Reversal { .. } | Kind::CreditNote { .. } => continue,
+            Kind::Plain(_) => None,
+        };
+        let there: Vec<Posting> = m.postings(id).into_iter().filter(|p| on.contains(&p.account)).collect();
+        if there.len() > 1 || there.iter().any(|p| own.as_ref().is_none_or(|d| d.account != p.account)) {
+            no!("I-P3", "entry {id} posts to an account a debt is on, and is not that debt or its payment");
+        }
+    }
+
+    // 3.6 Reversals.
+    let mut reversers: BTreeMap<EntryId, usize> = BTreeMap::new();
+    for (i, e) in m.entries.iter().enumerate() {
+        let id = i + 1;
+        let target = |of| m.entry(of).map(|t| &t.kind);
+        match &e.kind {
+            Kind::Reversal { of } if matches!(target(*of), Some(Kind::Invoice { .. } | Kind::CreditNote { .. })) => {
+                no!("I-R1", "{id} reverts {of}: an invoice is credited, a credit note stands")
+            }
+            _ => {}
+        }
+        if let Some(of) = e.kind.reverses().filter(|_| standing[id]) {
+            *reversers.entry(of).or_default() += 1;
+        }
+    }
+    for (of, n) in &reversers {
+        if *n > 1 {
+            no!("I-R1", "{of} is reversed by {n} standing entries");
+        }
+    }
+    for (i, e) in m.entries.iter().enumerate() {
+        let id = i + 1;
+        if let Some(of) = e.kind.names() {
+            if standing[id] && of < standing.len() && !standing[of] && e.kind.reverses() != Some(of) {
+                no!("I-R3", "{of} is reversed while {id}, which names it, stands");
+            }
+        }
+    }
+
+    // 3.7 Statements.
+    let mut by_ref: BTreeMap<PostingRef, (&str, &str, Date)> = BTreeMap::new();
+    let lookup: BTreeMap<PostingRef, (Date, &Posting)> = postings.iter().map(|(r, d, p)| (*r, (*d, p))).collect();
+    for (key, s) in &m.statements {
+        for r in &s.clears {
+            match lookup.get(r) {
+                Some((d, p)) if p.account == key.0 && p.amount.commodity == key.1 && *d <= key.2 => {}
+                _ => no!("I-S2", "the statement of {} on {} clears {}.{}, not a posting to it on or before then", key.0, key.2, r.entry, r.n),
+            }
+            if let Some(other) = by_ref.insert(*r, (&key.0, &key.1, key.2)) {
+                no!("I-S2", "{}.{} is cleared by the statements of {} on {} and {}", r.entry, r.n, key.0, other.2, key.2);
+            }
+        }
+        let sum: Decimal = m.cleared_through(key).iter().filter_map(|r| lookup.get(r)).map(|(_, p)| p.amount.quantity).sum();
+        if sum != s.balance {
+            no!("I-S3", "the statement of {} on {} says {} {}; what it and earlier ones clear sums to {sum}", key.0, key.2, s.balance, key.1);
+        }
+    }
+
+    // 3.8 Configuration.
+    let c = &m.config;
+    let co = &c.company;
+    if co.name.trim().is_empty() || ![&co.name, &co.tax_id, &co.country].iter().all(|t| text_ok(t)) || !lines_ok(&co.address)
+        || !c.report.vat.iter().all(|(k, b)| text_ok(k) && text_ok(&b.label) && text_ok(&b.query))
+    {
+        no!("I-C1", "the company has a name, and no text in the configuration holds a hidden character");
+    }
+    for (id, o) in &c.payment {
+        let needs = match o.kind {
+            PayKind::Bank => !o.iban.is_empty() || !o.details.is_empty(),
+            PayKind::Cash => !o.details.is_empty(),
+            PayKind::Crypto => !o.network.is_empty() && !o.address.is_empty(),
+        };
+        let iban = o.iban.is_empty() || answer::iban(&o.iban).as_ref() == Ok(&o.iban);
+        let bic = o.bic.is_empty() || answer::bic(&o.bic).as_ref() == Ok(&o.bic);
+        let texts = [&o.label, &o.iban, &o.bic, &o.network, &o.address].iter().all(|t| text_ok(t)) && lines_ok(&o.details);
+        if answer::option_id(id).is_err() || !needs || !iban || !bic || !texts {
+            no!("I-C2", "payment option {id} is not well formed");
+        }
+    }
+    let mut kinds = vec![(&c.invoice.receivable, "Assets"), (&c.invoice.income, "Income")];
+    match &c.vat {
+        Vat::None => {}
+        Vat::Flat { account, rate } => {
+            kinds.push((account, "Liabilities"));
+            if *rate <= Decimal::ZERO {
+                no!("I-C3", "a flat rate is above nought");
+            }
+        }
+        Vat::Effective { input, output } => kinds.extend([(input, "Assets"), (output, "Liabilities")]),
+    }
+    kinds.extend(c.payment.values().map(|o| (&o.account, "Assets")));
+    for (a, k) in kinds {
+        if class(a) != k {
+            no!("I-C3", "{a} is named where an {k} account is wanted");
+        }
+    }
+    if c.invoice.terms_days < 0 {
+        no!("I-C3", "terms are not below nought");
+    }
+    v
+}
