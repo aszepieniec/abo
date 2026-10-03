@@ -515,7 +515,7 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 |---|---|---|---|
 | G-P1 | Nothing dated on or before `closed_through` changes, and it never moves back | N2, N6 | `closed_periods_stay_closed`, `closed_dates_are_refused` |
 | G-P2 | Nothing is dated after the day it is added | N1 | `nothing_is_dated_after_today` |
-| G-P3 | VAT accounts are posted to only as the VAT method in force allows | N3, I-C3 | *none yet* |
+| G-P3 | VAT accounts are posted to only as the VAT method in force allows: input VAT by bills, output VAT by invoices and credit notes, a flat rate's account by neither; each also by plain entries and reversals; none by a payment or a write-off | N3, I-C3 | `vat_accounts_move_as_the_method_says` |
 
 ### A bill's document
 
@@ -547,8 +547,6 @@ and the code have drifted apart; the books are as they were.
 
 ### What the list leaves out
 
-- **G-P3 has no property yet.** N3 is a rule with nothing to test it: the next
-  property to write.
 - **N4** — money is paid through a money account — serves G-D3, and no
   property tests it on its own.
 - **Five tests served no guarantee:** `rendered_text_is_tidy`,
@@ -685,10 +683,12 @@ neither for an entry made long ago.
 - **N1** No entry or statement is dated after the day it is added.
 - **N2** On or before `closed_through`, no entry is added, no statement
   recorded or removed, and no price added or removed.
-- **N3** VAT accounts are posted to only as the VAT method allows (DESIGN §7):
+- **N3** VAT accounts are posted to only as the VAT method allows (DESIGN §6):
   a bill posts nothing to output VAT, nor, under a flat rate, to the flat
-  rate's account. An invoice books output VAT as the method in force says,
-  which `invoice` does by construction.
+  rate's account; a payment or a write-off posts nothing to any VAT account —
+  the VAT was booked with the debt, and writing a bill off to input VAT would
+  change what is reclaimed. An invoice books output VAT as the method in force
+  says, which `invoice` does by construction.
 - **N4** `pay` moves the money through a money account: an asset, not the
   receivable, not input VAT. (`write_off` names the account the rest goes
   to.)
@@ -1056,6 +1056,9 @@ What the properties found, each now a rule above:
   and what is open disagree: N5 became I-P3.
 - Reading an edited `bills/index` panicked on a hash not in ASCII: `read` is
   total on any text.
+- A write-off could go to a VAT account, and so change the VAT reclaimed or
+  owed: N3 covers payments and write-offs too. Found by the property for
+  G-P3, the first written from the list of guarantees.
 - I-I2 compared an invoice's date with the one numbered just before it, so an
   invoice of the year before, between two of this year's, let them be dated
   out of order: it now compares within the year.

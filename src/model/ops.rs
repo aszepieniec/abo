@@ -253,6 +253,17 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
         }
         _ => {}
     }
+    // What pays or writes off a debt moves no VAT: that was booked with it.
+    if let Op::Pay { .. } | Op::WriteOff { .. } = op {
+        let vat: Vec<&Account> = match &m.config.vat {
+            Vat::None => vec![],
+            Vat::Flat { account, .. } => vec![account],
+            Vat::Effective { input, output } => vec![input, output],
+        };
+        if let Some(a) = vat.into_iter().find(|a| posts(a)) {
+            no!("N3", "a payment or a write-off posts nothing to {a}");
+        }
+    }
     if let Op::Pay { from, .. } = op {
         let vat = matches!(&m.config.vat, Vat::Effective { input, .. } if input == from);
         if class(from) != "Assets" || *from == m.config.invoice.receivable || vat {

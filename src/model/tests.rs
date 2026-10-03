@@ -185,7 +185,7 @@ enum Draw {
     Credit { invoice: Index, #[strategy(hash())] pdf: String, when: When },
     #[weight(4)]
     Pay { debt: Index, part: Part, #[strategy(proptest::bool::weighted(0.1))] from_receivable: bool, when: When },
-    WriteOff { debt: Index, when: When },
+    WriteOff { debt: Index, to: Index, when: When },
     #[weight(2)]
     Revert { entry: Index, when: When },
     #[weight(2)]
@@ -274,7 +274,10 @@ fn op(d: &Draw, m: &Books, today: Date) -> Option<Op> {
                 .map(|_| eur(amount.checked_mul(Decimal::new(9, 1)).map(|q| round(q, 2)).unwrap_or_default().max(Decimal::new(1, 2))));
             Op::Pay { debt, date: when.at(today), amount, from: if from_receivable { RECEIVABLE } else { BANK }.into(), cost }
         }
-        Draw::WriteOff { debt, when } => Op::WriteOff { debt: pick(&debt, &debts).unwrap_or(1), date: when.at(today), to: "Expenses:Other".into() },
+        Draw::WriteOff { debt, to, when } => {
+            let to = pick(&to, &["Expenses:Other", "Income:Sales", INPUT, OUTPUT]).unwrap();
+            Op::WriteOff { debt: pick(&debt, &debts).unwrap_or(1), date: when.at(today), to: to.into() }
+        }
         Draw::Revert { entry, when } => Op::Revert { entry: pick(&entry, &ids).unwrap(), date: when.at(today) },
         Draw::Record { clears: bits, off } => {
             let key = (BANK.to_string(), "EUR".to_string(), today);
@@ -604,6 +607,34 @@ fn nothing_is_dated_after_today(#[strategy(plan())] plan: Vec<Step>) {
         if let (Some(_), Ok(n)) = (op, outcome) {
             prop_assert!(n.entries[m.entries.len()..].iter().all(|e| e.date <= today));
             prop_assert!(n.statements.keys().filter(|k| !m.statements.contains_key(*k)).all(|k| k.2 <= today));
+        }
+        Ok(())
+    })?;
+}
+
+/// G-P3: under the VAT method in force when an entry is added, input VAT is
+/// posted to by bills, output VAT by invoices and credit notes, a flat
+/// rate's account by neither; each also by plain entries, which settle with
+/// the tax office, and by reversals; and none by a payment or a write-off.
+#[proptest]
+fn vat_accounts_move_as_the_method_says(#[strategy(plan())] plan: Vec<Step>) {
+    walk(&plan, |m, op, n| {
+        if op.is_none() || n.entries.len() == m.entries.len() {
+            return Ok(());
+        }
+        let id = n.entries.len();
+        let kind = &n.entries[id - 1].kind;
+        let by_hand = matches!(kind, Kind::Plain(_) | Kind::Reversal { .. });
+        let allowed = |a: &str| -> bool {
+            match &m.config.vat {
+                Vat::Effective { input, .. } if a == input => by_hand || matches!(kind, Kind::Bill(_)),
+                Vat::Effective { output, .. } if a == output => by_hand || matches!(kind, Kind::Invoice { .. } | Kind::CreditNote { .. }),
+                Vat::Flat { account, .. } if a == account => by_hand,
+                _ => true,
+            }
+        };
+        for p in n.postings(id) {
+            prop_assert!(allowed(&p.account), "{:?} posts to {} under {:?}", op, p.account, m.config.vat);
         }
         Ok(())
     })?;
