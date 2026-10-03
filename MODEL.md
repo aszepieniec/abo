@@ -551,7 +551,19 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | G-O4 | A configuration key reads back as set; a key that names nothing is refused | I-C1, I-C2, I-C3, §5.2 | `a_key_set_reads_back`, `unknown_keys_are_refused` |
 | G-O5 | Every command does what its operation does in the model: taken exactly when the model takes it; then the files say the model's state, with every document and PDF beside them; refused, with the rules the model names, in JSON and in words, and nothing written; undo as §5.3. What the commands show is the model's | §5 | `the_cli_is_the_model`, `refusals_in_words_name_their_rules`, `what_abo_shows_is_the_models`, `lists_show_what_the_books_hold`, `reports_read_the_books_as_the_model_does`, `a_key_set_reads_back_through_the_cli`, `company_changes_only_what_it_is_told`, `payment_options_follow_add_edit_remove`, `pay_takes_what_is_open_from_money`, `record_all_clears_everything`, `a_document_filed_for_a_bill_names_it` |
 | G-O6 | Changes sent at once are each made, one after another | §5 | `changes_at_once_are_each_made` |
-| G-O7 | `abo init` opens books that read with no problem, configured as it was told; or it refuses and leaves nothing behind | §2.8 | `init_opens_valid_books_or_nothing` |
+| G-O7 | `abo init`, and the form that asks its questions in the browser, open books that read with no problem, configured as told; or refuse and leave nothing behind | §2.8 | `init_opens_valid_books_or_nothing`, `a_new_company_opens_like_init` |
+
+### Whoever uses the pages
+
+The web pages read the books through the store and change them by the same
+operations, each logged as the command that makes the same change.
+
+| | Guarantee | Rules | Properties |
+|---|---|---|---|
+| G-W1 | A form does what its operation does in the model: taken exactly when the model takes it, and then the files say the model's state; refused, the page names the model's rules, and nothing changes | §5 | `the_web_is_the_model` |
+| G-W2 | Every page answers, whatever the books hold: none fails | §5 | `every_page_answers` |
+| G-W3 | A form sent twice is done once | §5 | `a_form_sent_twice_changes_once` |
+| G-W4 | A post from another site changes nothing | §5 | `cross_site_posts_are_refused` |
 
 ### Messages, and checks of this document
 
@@ -1033,7 +1045,7 @@ the tests', which are rebuilt with the code. `parse` reads such books as far as
 it can and reports the rest as not canonical (§8). Should real books from before
 ever turn up, a converter is written then, for what they hold.
 
-With the model, one set of invariants holds, and the 76 rule-version switches go.
+With the model, one set of invariants holds, and the 76 rule-version switches are gone.
 
 ---
 
@@ -1075,7 +1087,9 @@ The commands are tested the same way, through the binary
 step, abo and the model agree on whether it is taken; the files on disk are
 what `render` writes for the model's state; and a refusal names the model's
 rules and changes nothing. The other CLI properties are those §3 names under
-G-F5 and G-O5 to G-O7.
+G-F5 and G-O5 to G-O7. The web pages are tested so too (`src/web_tests.rs`):
+the same plans posted as their forms to a running `abo serve`, under G-W1 to
+G-W4.
 
 What the properties found, each now a rule above:
 

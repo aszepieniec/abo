@@ -2,13 +2,14 @@
 //! (`abo init`, and a payment option's for `abo payment-options add` and
 //! `edit`); the browser shows them as a form (`/new`). Both go through
 //! `walk`, each with its own `Source` of answers, and `books` turns the
-//! answers into what `repo::init` takes. A question added here is asked in
+//! answers into what `store::init` takes. A question added here is asked in
 //! both places, in the same order, with the same default and check.
 //!
 //! Answers are strings, keyed as the form's fields are: `name`, `method`,
 //! and within the n-th payment option `p<n>.iban`.
 
-use crate::repo::{answer, Company, Kind, PaymentOption, Vat};
+use crate::model::{self, PayKind, PayOption, Vat};
+use crate::repo::answer;
 use anyhow::{bail, Result};
 use rust_decimal::Decimal;
 use std::collections::BTreeMap;
@@ -89,8 +90,8 @@ impl Env<'_> {
         here.or_else(|| self.answers.get(key)).map_or("", String::as_str)
     }
 
-    fn kind(&self) -> Kind {
-        Kind::from_name(self.get("kind")).unwrap_or_default()
+    fn kind(&self) -> PayKind {
+        kind(self.get("kind")).unwrap_or_default()
     }
 
     /// Ids taken: outside these answers, and by the options before this one.
@@ -128,7 +129,7 @@ pub trait Source {
 
 impl Check {
     fn run(&self, s: &str, env: &Env) -> Result<String, String> {
-        if s.chars().any(crate::repo::hidden) && crate::repo::since(2) {
+        if s.chars().any(crate::repo::hidden) {
             return Err(format!("{s:?} holds a control character, such as a line break; type it on one line."));
         }
         match self {
@@ -171,7 +172,7 @@ pub fn walk(qs: &[Q], prefix: &str, out: &mut Answers, context: &Context, src: &
             Q::Lines { key, label, hint } => {
                 let k = format!("{prefix}{key}");
                 let v = src.lines(&k, label, hint)?;
-                if v.chars().any(|c| crate::repo::hidden(c) && c != '\n') && crate::repo::since(2) {
+                if v.chars().any(|c| crate::repo::hidden(c) && c != '\n') {
                     bail!("{label}: {v:?} holds a control character");
                 }
                 out.insert(k, v);
@@ -376,14 +377,14 @@ pub static OPTION: &[Q] = &[
                 key: "label",
                 label: "Name on invoices",
                 hint: "",
-                offer: Offer::From("Bank transfer, Cash, or the network", |env| env.kind().label(env.get("network"))),
+                offer: Offer::From("Bank transfer, Cash, or the network", |env| PayOption { kind: env.kind(), network: env.get("network").into(), ..Default::default() }.printed().label),
                 check: Check::Free,
             },
             Q::Text {
                 key: "id",
                 label: "Id, for abo commands",
                 hint: "",
-                offer: Offer::From("the kind: bank, cash or crypto, numbered if taken", |env| env.kind().free_id(&env.taken())),
+                offer: Offer::From("the kind: bank, cash or crypto, numbered if taken", |env| free_id(env.kind(), &env.taken())),
                 check: Check::By(|s, env| match s {
                     s if env.taken().iter().any(|t| t == s) => Err(format!("{s:?} is already the id of a payment option.")),
                     s => answer::option_id(s),
@@ -393,7 +394,7 @@ pub static OPTION: &[Q] = &[
                 key: "account",
                 label: "Account the money arrives in",
                 hint: "",
-                offer: Offer::From("Assets:Bank, Assets:Cash or Assets:Crypto, by kind", |env| env.kind().account().to_string()),
+                offer: Offer::From("Assets:Bank, Assets:Cash or Assets:Crypto, by kind", |env| kind_account(env.kind()).to_string()),
                 check: Check::By(account_check),
             },
         ],
@@ -406,11 +407,11 @@ const fn account(key: &'static str, label: &'static str, offer: &'static str, ch
 
 /// VAT paid on purchases is owed back: an asset. VAT charged is owed on.
 fn asset(s: &str, env: &Env) -> Result<String, String> {
-    account_check(s, env).and_then(|a| if a.to_lowercase().starts_with("assets:") || !crate::repo::since(2) { Ok(a) } else { Err(format!("{a} is not an Assets account, as VAT to reclaim is.")) })
+    account_check(s, env).and_then(|a| if model::class(&a) == "Assets" { Ok(a) } else { Err(format!("{a} is not an Assets account, as VAT to reclaim is.")) })
 }
 
 fn liability(s: &str, env: &Env) -> Result<String, String> {
-    account_check(s, env).and_then(|a| if a.to_lowercase().starts_with("liabilities:") || !crate::repo::since(2) { Ok(a) } else { Err(format!("{a} is not a Liabilities account, as VAT owed is.")) })
+    account_check(s, env).and_then(|a| if model::class(&a) == "Liabilities" { Ok(a) } else { Err(format!("{a} is not a Liabilities account, as VAT owed is.")) })
 }
 
 const fn percent(key: &'static str, label: &'static str, offer: Offer) -> Q {
@@ -425,7 +426,7 @@ fn account_check(s: &str, env: &Env) -> Result<String, String> {
     let a = answer::account(s)?;
     match &env.context.declared {
         Some(d) if !d.contains(&a) => {
-            Err(format!("{a} is not declared; declare it in journal/accounts.journal, or choose another."))
+            Err(format!("{a} is not declared; declare it with `abo account add`, or choose another."))
         }
         _ => Ok(a),
     }
@@ -441,9 +442,12 @@ fn name(s: &str, env: &Env) -> Result<String, String> {
     }
 }
 
-/// What is wrong with the payment option under `env.prefix` as a whole.
+/// What is wrong with the payment option under `env.prefix` as a whole: as
+/// the books would refuse it (I-C2), and money arriving in an asset.
 pub fn option_problem(env: &Env) -> Option<String> {
-    option(env.answers, env.prefix).problem().map(|p| sentence(&p))
+    let (id, o) = option(env.answers, env.prefix);
+    let why = model::option_problem(&id, &o).or_else(|| (model::class(&o.account) != "Assets").then(|| format!("{} is not an account money arrives in; give an Assets account", o.account)))?;
+    Some(sentence(&why))
 }
 
 /// "a bank option needs ..." as a sentence.
@@ -453,14 +457,48 @@ fn sentence(s: &str) -> String {
     s
 }
 
+// ---- kinds ----
+
+pub const KINDS: [&str; 3] = ["bank", "cash", "crypto"];
+
+pub fn kind(name: &str) -> Option<PayKind> {
+    match name {
+        "bank" => Some(PayKind::Bank),
+        "cash" => Some(PayKind::Cash),
+        "crypto" => Some(PayKind::Crypto),
+        _ => None,
+    }
+}
+
+pub fn kind_name(k: PayKind) -> &'static str {
+    match k {
+        PayKind::Bank => "bank",
+        PayKind::Cash => "cash",
+        PayKind::Crypto => "crypto",
+    }
+}
+
+/// Where money paid this way arrives, unless said otherwise.
+pub fn kind_account(k: PayKind) -> &'static str {
+    match k {
+        PayKind::Bank => "Assets:Bank",
+        PayKind::Cash => "Assets:Cash",
+        PayKind::Crypto => "Assets:Crypto",
+    }
+}
+
+/// An id free to take: the kind's name, numbered if that is taken.
+pub fn free_id(k: PayKind, taken: &[String]) -> String {
+    (1..).map(|n| if n == 1 { kind_name(k).to_string() } else { format!("{}-{n}", kind_name(k)) }).find(|id| !taken.contains(id)).unwrap()
+}
+
 // ---- from answers to books ----
 
-/// The payment option answered under `prefix`.
-pub fn option(a: &Answers, prefix: &str) -> PaymentOption {
+/// The payment option answered under `prefix`, and its id.
+pub fn option(a: &Answers, prefix: &str) -> (String, PayOption) {
     let get = |k: &str| a.get(&format!("{prefix}{k}")).cloned().unwrap_or_default();
-    PaymentOption {
-        id: get("id"),
-        kind: Kind::from_name(&get("kind")).unwrap_or_default(),
+    let o = PayOption {
+        kind: kind(&get("kind")).unwrap_or_default(),
         label: get("label"),
         holder: get("holder"),
         iban: get("iban"),
@@ -470,13 +508,14 @@ pub fn option(a: &Answers, prefix: &str) -> PaymentOption {
         address: get("address"),
         details: get("details"),
         account: get("account"),
-    }
+    };
+    (get("id"), o)
 }
 
 /// A payment option as answers, to ask its questions again starting from it.
-pub fn option_answers(o: &PaymentOption) -> Answers {
+pub fn option_answers(id: &str, o: &PayOption) -> Answers {
     let fields = [
-        ("id", &o.id),
+        ("id", id),
         ("label", &o.label),
         ("holder", &o.holder),
         ("iban", &o.iban),
@@ -487,21 +526,19 @@ pub fn option_answers(o: &PaymentOption) -> Answers {
         ("details", &o.details),
         ("account", &o.account),
     ];
-    let mut a: Answers = fields.into_iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| (k.to_string(), v.clone())).collect();
-    a.insert("kind".into(), o.kind.name().into());
+    let mut a: Answers = fields.into_iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    a.insert("kind".into(), kind_name(o.kind).into());
     a
 }
 
+/// New books as `INIT`'s answers give them.
 pub struct NewBooks {
     pub slug: String,
-    pub company: Company,
-    pub vat: Vat,
-    pub sales_rate: Decimal,
-    pub payment: Vec<PaymentOption>,
+    pub config: model::Config,
     pub author: Option<(String, String)>,
 }
 
-/// `INIT`'s answers, all of them checked, as what `repo::init` takes.
+/// `INIT`'s answers, all of them checked, as what `store::init` takes.
 pub fn books(a: &Answers) -> NewBooks {
     let get = |k: &str| a.get(k).cloned().unwrap_or_default();
     let rate = |k: &str| get(k).parse().unwrap_or_default();
@@ -515,18 +552,25 @@ pub fn books(a: &Answers) -> NewBooks {
     let (git_name, git_email) = (get("git_name"), get("git_email"));
     NewBooks {
         slug: crate::repo::slug(&get("name")),
-        company: Company {
-            name: get("name"),
-            address: get("address"),
-            country: get("country"),
-            tax_id: get("tax_id"),
-            old_payment: None,
-            currency: get("currency"),
-            closed_through: None,
+        config: model::Config {
+            company: model::Company {
+                name: get("name"),
+                address: get("address"),
+                country: get("country"),
+                tax_id: get("tax_id"),
+                currency: get("currency"),
+                closed_through: None,
+            },
+            invoice: model::InvoiceCfg {
+                receivable: "Assets:Receivable".into(),
+                income: "Income:Sales".into(),
+                terms_days: 30,
+                vat_rate: if matches!(vat, Vat::None) { Decimal::ZERO } else { rate("sales_rate") },
+            },
+            vat,
+            payment,
+            report: Default::default(),
         },
-        sales_rate: if matches!(vat, Vat::None) { Decimal::ZERO } else { rate("sales_rate") },
-        vat,
-        payment,
         author: (!git_name.is_empty() || !git_email.is_empty()).then_some((git_name, git_email)),
     }
 }
@@ -534,7 +578,7 @@ pub fn books(a: &Answers) -> NewBooks {
 impl NewBooks {
     /// The `abo init` that opens these books without asking anything.
     pub fn argv(&self) -> Vec<String> {
-        let c = &self.company;
+        let c = &self.config.company;
         let mut a = vec!["init".to_string(), c.name.clone()];
         let mut flag = |f: &str, v: &str| crate::repo::flag(&mut a, f, v);
         for line in c.address.lines() {
@@ -546,7 +590,7 @@ impl NewBooks {
             }
         }
         flag("--currency", &c.currency);
-        match &self.vat {
+        match &self.config.vat {
             Vat::None => flag("--vat", "none"),
             Vat::Flat { rate, account } => {
                 flag("--vat", "flat");
@@ -559,15 +603,20 @@ impl NewBooks {
                 flag("--vat-output", output);
             }
         }
-        if !matches!(self.vat, Vat::None) {
-            flag("--sales-rate", &self.sales_rate.to_string());
+        if !matches!(self.config.vat, Vat::None) {
+            flag("--sales-rate", &self.config.invoice.vat_rate.to_string());
         }
         if let Some((name, email)) = &self.author {
             flag("--git-name", name);
             flag("--git-email", email);
         }
-        for o in &self.payment {
-            flag("--payment", &toml::Value::try_from(o).map(|v| v.to_string()).unwrap_or_default());
+        for (id, o) in &self.config.payment {
+            let mut t = toml::Value::try_from(o).unwrap_or(toml::Value::Table(Default::default()));
+            if let Some(t) = t.as_table_mut() {
+                t.retain(|_, v| v.as_str() != Some(""));
+                t.insert("id".into(), toml::Value::from(id.as_str()));
+            }
+            flag("--payment", &t.to_string());
         }
         a
     }

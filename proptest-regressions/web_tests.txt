@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 75406cfaefda06be7f508a4ae4426de4038a51b8b7f6f641882634d587f6943b # shrinks to input = _EveryPageAnswersArgs { plan: [Step { advance: 0, draw: File { sha256: "0aaa00a000a0a00a0a00aa006a44b846a3823b7e526edff73a7caa4f8d21debc", name: "acme-ag", bill: Some(Index(9943729386522712235)), when: Ago(2) } }] }

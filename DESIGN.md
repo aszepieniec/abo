@@ -61,37 +61,31 @@ company-books/
   templates/credit-note.typ
   bills/2026/2026-09-21-acme-a1b2c3d4.pdf
   invoices/2026/2026-0017.pdf
-  invoices/2026/2026-0017.json   # what the PDF printed, for a credit note
+  invoices/2026/2026-0017.json   # what the invoice says, and its PDF's hash
+  bills/index             # every document: its hash, path and bill
   .abo/                   # gitignored: the log, typst's scratch files
 ```
 
-Documents are linked to entries by hledger tags, never by a join table:
+What the files say, and how, is MODEL.md's: §2 the state, §7 its one text.
+An entry carries its id and its kind as tags:
 
 ```
-2026-09-21 Acme Hosting
-    ; bill: bills/2026/2026-09-21-acme-inv1234.pdf
-    ; sha256: 9f2a...
-    Expenses:Hosting        100.00 EUR
-    Assets:VAT:Input          10.00 EUR
-    Liabilities:Payable    -1010.00 EUR
+2026-09-21 Acme Hosting AG, hosting September
+    ; id: 412
+    ; bill:
+    Expenses:Hosting                              100.00 EUR
+    Assets:VAT:Input                               10.00 EUR
+    Liabilities:Payable                          -110.00 EUR
 ```
 
-- `sha256:` is the duplicate check. Before booking a document, `hledger print tag:sha256=<hash>` must return nothing.
-- `invoice:` on issued invoices carries the invoice number. The next number is
-  `max(invoice:) + 1` read from the journal — no counter file, no state to corrupt.
-- `credits:` on a credit note names the invoice it cancels. A credit note is
-  numbered in the same series (it carries `invoice:` too), repeats the
-  invoice's lines negated from the committed `.json`, and books the invoice's
-  entry negated. An issued invoice is never edited or undone once sent: it is
-  cancelled in full and a corrected one issued after it.
-- `pays:` and `settles:` on a payment name the invoices it pays: part of one,
-  or the payment that settles it. An invoice is paid once something
-  `settles:` it, part paid while only `pays:` name it. Status is read from the
-  tags, never from amounts, so a payment of several invoices is never split
-  between them by abo, and a payment booked untagged is settled by adding the
-  tag to it (`abo settle --by`). One settled where the books do not show gets
-  an entry of the tag alone, the one entry allowed no postings. An invoice paid on
-  the spot, booking nothing to the receivable, is settled as issued.
+- A bill's document names its bill, in `bills/index`, by the bill's id; its
+  hash is also the duplicate check.
+- `invoice:` carries an invoice's number, which is its place in its year:
+  counted, not stored. `credits:` on a credit note names the invoice it
+  cancels, by id; it is numbered in the same series, and its entry is the
+  invoice's negated.
+- `pays:` on a payment names the one debt it pays, by id. Whether a debt is
+  settled is what the amounts say, never a tag.
 
 Account naming: CamelCase segments, acronyms in capitals: `Assets:Bank`,
 `Expenses:Telecom`, `Liabilities:VAT:Output`. If your accountant wants a
@@ -102,13 +96,15 @@ numbered chart of accounts, `Assets:1020:Bank` also sorts correctly.
 ## 3. Source layout
 
 ```
-src/main.rs      clap dispatch, #[tokio::main]
-src/repo.rs      abo.toml, path resolution, git add/commit
-src/journal.rs   read account declarations, build + validate + append entries
-src/bill.rs      file a bill's document; book it
-src/report.rs    hledger passthrough (-O json / -O csv)
-src/invoice.rs   fill typst template, compile
-src/web.rs       axum + maud
+src/main.rs       clap dispatch, #[tokio::main]
+src/model/        the books as MODEL.md defines them: state, check, operations, text
+src/store.rs      the books on disk: read through the model, change by an Op, commit, log
+src/questions.rs  init's and a payment option's questions, for the terminal and the form
+src/repo.rs       finding the books, git, checking what a person types
+src/statement.rs  P&L, balance sheet, tax return; typst
+src/report.rs     hledger passthrough (-O json / -O csv)
+src/invoice.rs    an invoice's PDF, from what the model holds of it
+src/web.rs        axum + maud
 ```
 
 No `lib.rs`/`bin/` split, no workspace, no crate-per-module.
@@ -150,16 +146,16 @@ Two commands, each a commit and a line in the log.
    `bills/<year>/<date>-<issuer-slug>-<sha8>.<ext>` and commits it. The content
    type comes from the bytes. A document whose hash is filed already is
    refused.
-2. `abo bill --desc <text> [--tag ref=...] <bills/...> <postings>` books an
-   entry against a filed document. The entry is dated as the file name says and
-   tagged `bill:` with the path and `sha256:` with the hash of the committed
-   bytes; the validator (§6) refuses a hash already booked. A document that is
-   not committed, or has changed since, is refused.
+2. `abo bill --desc <text> --document <bills/...> <postings>` books a bill
+   against a filed document, dated as the document is, and the document names
+   the bill (MODEL.md §2.5). A document whose bytes have changed since it was
+   filed is a problem `abo check` names, and the books are not changed until
+   it is mended.
 
 The issuer slug keeps only `[a-z0-9]` and collapses the rest to `-`, so an
 issuer of `../../.ssh/authorized_keys` cannot escape the directory. There is a
-test for exactly that. The supplier's own invoice number is tagged `ref:`,
-never `invoice:`, which is reserved for the numbering of invoices we issue.
+test for exactly that. The supplier's own invoice number goes in the
+description; `invoice:` is the numbering of invoices we issue.
 
 Document filenames are derived from the date, the issuer slug and the sha256 —
 **never** from a client-supplied filename (§8). The browser's **Book a bill**
@@ -178,8 +174,7 @@ help a model gives, and it belongs in a larger application around `abo`: one
 that shows a person the `abo file` and `abo bill` it suggests, takes their
 corrections, and runs the commands they settle on. `abo` then sees only those
 commands, validates them as it would a typed one (§6), and logs them. Nothing
-in the books depends on what a model said, and a replay of the log (§7,
-"Logging") needs no model and no network.
+in the books depends on what a model said.
 
 An earlier version called the Messages API from `abo bill` itself, with the
 conversation kept in `.abo/`. It was taken out so that the backbone is
@@ -192,24 +187,15 @@ application wants it.
 
 ### The validation chain
 
-Runs in `journal.rs`, on every entry from any source. Order matters; stop at the
-first failure.
+Every change is an operation of the model (MODEL.md §5), whichever page or
+command makes it: `model::apply` builds the next state and keeps it only if
+every invariant (§4) and every condition on the change holds of it; refused,
+nothing is written, and the refusal names the rules. The store then writes
+what changed and commits it. hledger reads the files after, and the property
+tests check that it reads them as the model does (§3, G-H1 to G-H4).
 
-0. No field carries journal syntax (control characters, `;`, oversize).
-1. Postings balance per commodity (or exactly one amount elided).
-2. Every account already declared in `accounts.journal`. An undeclared account is
-   an explicit "create this account?" step, never an implicit write.
-3. VAT shape matches the configured method (below).
-4. `sha256:` not already present in the journal.
-5. Date inside an open period.
-6. Write to a temporary journal, run
-   `hledger check accounts balanced ordereddates`, and append + commit only on
-   exit 0.
-
-Step 6 is free and catches everything the first five miss. It is also the test.
-
-Money is `rust_decimal::Decimal`, or `i64` minor units tagged with a commodity.
-**Never `f64`.** Rates may be `Decimal`.
+Money is `rust_decimal::Decimal`, at most 8 places, so that sums are exact
+(MODEL.md I-K0, I-K3). **Never `f64`.** Rates may be `Decimal`.
 
 ### Commodities
 
@@ -542,33 +528,9 @@ command it amounts to; the bill form is two, `abo file` and `abo bill`.
 Beside the command is its stamp: git's author name and email and the second
 the operation began. Every commit the operation makes carries the stamp as
 both author and committer date, and an invoice PDF carries it as its creation
-date. Run the lines in order, each with `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`
-and `GIT_AUTHOR_DATE` set from its stamp, and the books come out the same,
-commit hash for commit hash. `tests/replay.rs` does exactly that.
-
-A line also names the rules it was taken under, `"rules": 2`; one naming none
-was taken under rules 1. Checks tighten as faults are found, and a line taken
-under laxer rules could be refused by today's, or write its entry otherwise
-(`10 EUR`, now `10.00 EUR`). So a replay runs each line with `ABO_RULES` set
-to the rules it names, and every check added after rules 1 is guarded by the
-version that added it (`repo::since(2)`). `repo::RULES` lists what each
-version added; a new tightening is the next number. Rules 3 holds what the
-third verification run of 2026-10-01 found, rules 4 what the fourth did.
-The demo's books are made under rules 3, as books carried over from before
-would be: they hold invoices tagged by hand, which rules 4 no longer takes.
-
-Since rules 4, the tags abo writes itself — `reverses`, `takes-back`,
-`cancels`, `invoice`, `credits`, `bill`, `sha256` — are refused in `abo post`
-and its form: each is written only by the command that keeps it true. Every
-check on one of them had been on that tag alone, and each verification run
-found a way past it by typing two together. `pays:` and `settles:` stay a
-person's to write, one bill or invoice to a payment. An undo, which takes
-entries out without the checks that put them in, may leave the books no
-less whole than it found them (`journal::problems`). Older rules are for
-replaying: abo says so on stderr whenever `ABO_RULES` names any. An `abo file`
-line names the document it was given, so a replay needs the documents at those
-paths; the browser's names only what the upload was called, so a replay has
-to supply that document itself, identified by the hash in the line.
+date. The log is a record of what was done, not a source of the books: they
+are read from their files alone, and the git history is what restores them
+(MODEL.md §5.4).
 
 `/log` and `abo log` show the lines, each with the command as it would be
 typed and, on `/log`, the diff its commit made. The log is working state like
@@ -618,9 +580,9 @@ from every source. Two rules keep that boundary where it is.
    derived from the date, the issuer slug and the sha256. What remains is the
    free-text fields, and journal syntax is what they can smuggle — a newline
    opens a second transaction, and because hledger reads tags out of comments,
-   a `;` in a description forges the `sha256:` tag that the duplicate check
-   depends on. Step 0 of the chain rejects control characters, `;` and
-   over-long values.
+   a `;` in a description forges a tag. What each field may hold is the
+   table of what hledger reads back as written, asked of hledger itself
+   (MODEL.md §2.3), with every hidden character refused.
 
 This matters most for the application a model lives in (§5). A supplier's PDF
 can contain text addressed to the model, and what that text can reach is the

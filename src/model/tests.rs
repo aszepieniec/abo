@@ -667,7 +667,7 @@ fn every_guarantee_is_tested() {
         .filter(|l| l.starts_with("| G-") || l.starts_with("| M-"))
         .flat_map(|l| l.rsplit('|').nth(1).unwrap().split('`').skip(1).step_by(2))
         .collect();
-    let code = [include_str!("tests.rs"), include_str!("../cli_tests.rs")].concat();
+    let code = [include_str!("tests.rs"), include_str!("../cli_tests.rs"), include_str!("../web_tests.rs")].concat();
     let mut tests = BTreeSet::new();
     // Spelled apart, so as not to find themselves.
     let (proptest, test) = (["#[", "proptest"].concat(), ["#[", "test]"].concat());

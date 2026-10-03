@@ -1,7 +1,6 @@
 //! hledger passthrough. Nothing is computed here; hledger computes everything.
 
-use crate::journal::hledger;
-use crate::repo::Ctx;
+use crate::store::Store;
 use anyhow::{bail, Result};
 
 /// The options `abo bal` and `abo reg` pass on: those that choose what is
@@ -16,7 +15,7 @@ const PASSED: [&str; 47] = [
     "--flat", "--tree", "--layout",
 ];
 
-pub fn run(ctx: &Ctx, cmd: &str, args: &[String], json: bool) -> Result<String> {
+pub fn run(s: &Store, cmd: &str, args: &[String], json: bool) -> Result<String> {
     // A query is a word; an option is passed on if it is listed.
     for a in args {
         let option = a.starts_with('-') && a.parse::<f64>().is_err();
@@ -30,5 +29,5 @@ pub fn run(ctx: &Ctx, cmd: &str, args: &[String], json: bool) -> Result<String> 
         a.extend(["-O", "json"]);
     }
     a.extend(args.iter().map(String::as_str));
-    hledger(ctx, &a)
+    s.hledger(&a)
 }

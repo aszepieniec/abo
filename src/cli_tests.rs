@@ -21,13 +21,13 @@ fn cases(n: u32) -> ProptestConfig {
 }
 
 /// Any text an argument can be: anything but a NUL, which no argument holds.
-fn arg_text() -> impl Strategy<Value = String> {
+pub(crate) fn arg_text() -> impl Strategy<Value = String> {
     arb::<String>().prop_map(|s| s.replace('\0', ""))
 }
 
 /// The binary `cargo test` built beside this test, and not an older one:
 /// `cargo test --bin abo` builds the tests alone.
-fn exe() -> PathBuf {
+pub(crate) fn exe() -> PathBuf {
     let me = std::env::current_exe().unwrap();
     let abo = me.parent().unwrap().parent().unwrap().join("abo");
     let at = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
@@ -43,10 +43,10 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// A directory of its own, gone with the value.
-struct Dir(PathBuf);
+pub(crate) struct Dir(pub(crate) PathBuf);
 
 impl Dir {
-    fn new() -> Dir {
+    pub(crate) fn new() -> Dir {
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let d = std::env::temp_dir().join(format!("abo-cli-{}-{n}", std::process::id()));
@@ -85,17 +85,17 @@ fn abo(dir: &Path, today: Date, args: &[String]) -> Out {
     Out { ok: o.status.success(), code: o.status.code(), json: serde_json::from_slice(&o.stdout).ok(), stderr: String::from_utf8_lossy(&o.stderr).into_owned() }
 }
 
-fn args(a: &[&str]) -> Vec<String> {
+pub(crate) fn args(a: &[&str]) -> Vec<String> {
     a.iter().map(|s| s.to_string()).collect()
 }
 
-fn start() -> Date {
+pub(crate) fn start() -> Date {
     "2025-12-01".parse().unwrap()
 }
 
 /// Books as `abo init` opens them, with what the model tests' plans name
 /// declared by commands: the parent directory, and the books' own.
-fn opened() -> (Dir, PathBuf) {
+pub(crate) fn opened() -> (Dir, PathBuf) {
     let parent = Dir::new();
     let init = args(&[
         "init", "Test", "LLC", "--currency", "EUR", "--vat", "effective", "--vat-input", mt::INPUT, "--vat-output", mt::OUTPUT,
@@ -122,7 +122,7 @@ fn amount(a: &model::Amount) -> String {
     format!("{} {}", a.quantity, a.commodity)
 }
 
-fn posting(p: &model::Posting) -> String {
+pub(crate) fn posting(p: &model::Posting) -> String {
     let mut s = format!("{}={}", p.account, amount(&p.amount));
     if let Some(c) = &p.cost {
         s += &format!(" @@ {} {}", c.quantity.abs(), c.commodity);
@@ -149,7 +149,8 @@ fn command(op: &Op, m: &Books, src: &Path) -> (Vec<String>, Option<Op>) {
             a.extend(postings.iter().map(posting));
         }
         Op::File { sha256, date, name, ext, bill } => {
-            let bytes = sha256.as_bytes().to_vec();
+            // A PDF's header, then what makes it this one.
+            let bytes = [b"%PDF-1.4\n".as_slice(), sha256.as_bytes()].concat();
             let path = src.join(format!("doc.{ext}"));
             std::fs::write(&path, &bytes).unwrap();
             a = vec![s("file"), flag("date", date), flag("issuer", name)];
@@ -208,7 +209,7 @@ fn command(op: &Op, m: &Books, src: &Path) -> (Vec<String>, Option<Op>) {
     (a, model_op)
 }
 
-fn head(dir: &Path) -> String {
+pub(crate) fn head(dir: &Path) -> String {
     crate::repo::git_in(dir, &["rev-parse", "HEAD"]).unwrap()
 }
 
@@ -476,7 +477,7 @@ fn a_key_set_reads_back_through_the_cli(key: mt::Key) {
 
 
 /// Books after a plan run as commands, and the day it ended.
-fn after(plan: &[Step]) -> (Dir, PathBuf, Date) {
+pub(crate) fn after(plan: &[Step]) -> (Dir, PathBuf, Date) {
     let (parent, books) = opened();
     let src = Dir::new();
     let mut today = start();
@@ -494,7 +495,7 @@ fn after(plan: &[Step]) -> (Dir, PathBuf, Date) {
     (parent, books, today)
 }
 
-fn plan() -> impl Strategy<Value = Vec<Step>> {
+pub(crate) fn plan() -> impl Strategy<Value = Vec<Step>> {
     vec(any::<Step>(), 1..20)
 }
 
@@ -719,7 +720,7 @@ fn record_all_clears_everything(#[strategy(plan())] plan: Vec<Step>) {
 
 /// `abo file --for BILL`: the document names the bill.
 #[proptest(cases(12))]
-fn a_document_filed_for_a_bill_names_it(#[strategy(plan())] plan: Vec<Step>, bill: proptest::sample::Index, #[strategy("[a-z0-9]{8,24}")] bytes: String) {
+fn a_document_filed_for_a_bill_names_it(#[strategy(plan())] plan: Vec<Step>, bill: proptest::sample::Index, #[strategy("%PDF-1.4\n[a-z0-9]{8,24}")] bytes: String) {
     let (_parent, books, today) = after(&plan);
     let m = store::Store::open(&books).unwrap().books;
     let bills: Vec<usize> = (1..=m.entries.len()).filter(|&d| matches!(m.entries[d - 1].kind, model::Kind::Bill(_))).collect();

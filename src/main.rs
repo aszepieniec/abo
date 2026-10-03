@@ -1,25 +1,20 @@
-mod bill;
-mod company;
 mod invoice;
-mod journal;
 mod model;
-mod payment;
 mod questions;
 mod report;
-mod reconcile;
 mod repo;
-mod settle;
 mod store;
 mod statement;
-mod undo;
 mod web;
 #[cfg(test)]
 mod cli_tests;
+#[cfg(test)]
+mod web_tests;
 
 use anyhow::{bail, Context as _, Result};
 use clap::{Parser, Subcommand};
 use model::Op;
-use repo::{answer, Ctx};
+use repo::answer;
 use store::Store;
 use rust_decimal::Decimal;
 use std::io::Write as _;
@@ -134,9 +129,10 @@ impl InitFlags {
 
 #[derive(clap::Args)]
 struct OptionParts {
-    /// Adding, it defaults to bank. Changed, the fields of the old kind go.
-    #[arg(long, value_enum)]
-    kind: Option<repo::Kind>,
+    /// bank, cash or crypto. Adding, it defaults to bank. Changed, the
+    /// fields of the old kind go.
+    #[arg(long, value_parser = questions::KINDS)]
+    kind: Option<String>,
     /// What invoices call it, such as "PostFinance bank account".
     #[arg(long)]
     label: Option<String>,
@@ -170,22 +166,21 @@ struct OptionParts {
 
 impl OptionParts {
     fn given(&self) -> bool {
-        let one = [&self.label, &self.holder, &self.iban, &self.bic, &self.network, &self.address, &self.account];
-        self.kind.is_some() || one.iter().any(|v| v.is_some()) || !self.bank.is_empty() || !self.details.is_empty()
+        let one = [&self.kind, &self.label, &self.holder, &self.iban, &self.bic, &self.network, &self.address, &self.account];
+        one.iter().any(|v| v.is_some()) || !self.bank.is_empty() || !self.details.is_empty()
     }
 
     /// `now` with the parts given put over it. Another kind starts with
-    /// only what every kind has: id, name, further lines, account; a name
-    /// or an account that was the old kind's default becomes the new one's.
-    fn over(self, now: repo::PaymentOption) -> repo::PaymentOption {
-        let network = self.network.clone().unwrap_or_default();
-        let mut o = match self.kind {
-            Some(kind) if kind != now.kind => repo::PaymentOption {
+    /// only what every kind has: name, further lines, account; a name or an
+    /// account that was the old kind's default becomes the new one's.
+    fn over(self, now: model::PayOption) -> model::PayOption {
+        let kind = self.kind.as_deref().and_then(questions::kind);
+        let mut o = match kind {
+            Some(kind) if kind != now.kind => model::PayOption {
                 kind,
-                id: now.id,
-                label: if now.label == now.kind.label(&now.network) { kind.label(&network) } else { now.label },
+                label: if now.label == (model::PayOption { kind: now.kind, network: now.network.clone(), ..Default::default() }).printed().label { String::new() } else { now.label },
                 details: now.details,
-                account: if now.account == now.kind.account() { kind.account().to_string() } else { now.account },
+                account: if now.account == questions::kind_account(now.kind) { questions::kind_account(kind).to_string() } else { now.account },
                 ..Default::default()
             },
             _ => now,
@@ -660,18 +655,6 @@ async fn run(cli: Cli) -> Result<()> {
         std::fs::create_dir_all(d)?;
     }
     let here = cli.dir.clone().unwrap_or(std::env::current_dir()?);
-    // Older rules are for replaying a log; left set by mistake they would
-    // quietly let through what today's refuse.
-    if let Some(v) = std::env::var_os("ABO_RULES").filter(|v| v.to_str().and_then(|v| v.parse::<u32>().ok()) != Some(repo::rules())) {
-        eprintln!("abo: ABO_RULES={} names no rules abo has, 1 to {}; checking by rules {}", v.to_string_lossy(), repo::RULES, repo::rules());
-    }
-    if repo::rules() < repo::RULES {
-        eprintln!(
-            "abo: checking by rules {} of {}, as ABO_RULES says; unset it unless replaying a log",
-            repo::rules(),
-            repo::RULES
-        );
-    }
     // One command at a time in a company's books, whoever runs it; the
     // server takes the lock per change instead, and init has no books yet.
     // ponytail: held for the whole command, questions asked on the terminal
@@ -734,55 +717,53 @@ async fn run(cli: Cli) -> Result<()> {
                 }
             }
             let b = questions::books(&answers);
-            let commit = store::init(&dir, config_of(&b), b.author.clone(), b.argv())?;
+            let commit = store::init(&dir, b.config.clone(), b.author.clone(), b.argv())?;
             let r = serde_json::json!({ "root": dir.display().to_string(), "commit": commit });
             emit(cli.json, &r, || format!("Books opened in {} ({commit}).\nNext: cd {slug}, then `abo account add` and `abo post`.", dir.display()))
         }
         Cmd::Post { date, description, postings } => {
             let mut s = Store::open(&here)?;
-            let postings = postings.iter().map(|p| posting(&s, p)).collect::<Result<_>>()?;
-            let op = Op::Post { date: day(date.as_deref())?, description, postings };
+            let postings = postings.iter().map(|p| store::posting(&s.books, p)).collect::<Result<_>>()?;
+            let op = Op::Post { date: store::day(date.as_deref())?, description, postings };
             changed(&mut s, &op, argv, "Post", &[], cli.json)
         }
         Cmd::File { date, issuer, bill, src } => {
             let mut s = Store::open(&here)?;
             let bytes = std::fs::read(&src).with_context(|| format!("{}", src.display()))?;
-            let ext = src.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
-            if !["pdf", "jpg", "jpeg", "png", "webp"].contains(&ext.as_str()) {
-                bail!("{} is not a PDF, JPEG, PNG or WebP", src.display());
-            }
+            // What it is, from what it holds, not from its name.
+            let ext = store::sniff(&bytes).with_context(|| format!("{}", src.display()))?.0.to_string();
             let name = repo::slug(&issuer);
             if name.is_empty() {
                 bail!("an issuer is needed, with letters or digits to name the file after");
             }
             let sha256 = store::sha256(&bytes);
-            let doc = model::Document { date: day(Some(&date))?, name, ext, of: bill };
+            let doc = model::Document { date: store::day(Some(&date))?, name, ext, of: bill };
             let path = doc.path(&sha256);
             let op = Op::File { sha256, date: doc.date, name: doc.name.clone(), ext: doc.ext.clone(), bill };
             changed(&mut s, &op, argv, &format!("File {path}"), &[(path.clone(), bytes)], cli.json)
         }
         Cmd::Unfile { document } => {
             let mut s = Store::open(&here)?;
-            let sha256 = filed(&s, &document)?;
+            let sha256 = store::filed(&s.books, &document)?;
             changed(&mut s, &Op::Unfile { sha256 }, argv, &format!("Take out {document}"), &[], cli.json)
         }
         Cmd::Bill { date, description, document, postings } => {
             let mut s = Store::open(&here)?;
-            let document = document.map(|d| filed(&s, &d)).transpose()?;
+            let document = document.map(|d| store::filed(&s.books, &d)).transpose()?;
             let date = match (&date, &document) {
                 (None, Some(h)) => s.books.documents[h].date,
-                _ => day(date.as_deref())?,
+                _ => store::day(date.as_deref())?,
             };
-            let postings = postings.iter().map(|p| posting(&s, p)).collect::<Result<_>>()?;
+            let postings = postings.iter().map(|p| store::posting(&s.books, p)).collect::<Result<_>>()?;
             let op = Op::Bill { date, description, postings, document };
             changed(&mut s, &op, argv, "Book a bill", &[], cli.json)
         }
         Cmd::Invoice { to, items, date, due_days, vat_rate, currency, reference, pay_to, note, customer_tax_id, vat_reason } => {
             let mut s = Store::open(&here)?;
-            let lines: Vec<model::Line> = items.iter().enumerate().map(|(n, raw)| line(n + 1, raw)).collect::<Result<_>>()?;
+            let lines: Vec<model::Line> = items.iter().enumerate().map(|(n, raw)| store::line(n + 1, raw)).collect::<Result<_>>()?;
             let commodity = currency.unwrap_or_else(|| s.books.config.company.currency.clone());
             let more = model::InvoiceMore { customer_tax_id, due_days, pay_to };
-            let date = day(date.as_deref())?;
+            let date = store::day(date.as_deref())?;
             let customer = to.replace("\\n", "\n");
             let op = |pdf: String| Op::Invoice {
                 date,
@@ -800,13 +781,13 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Credit { date, note, number } => {
             let mut s = Store::open(&here)?;
-            let invoice = debt(&s, &number)?;
-            let date = day(date.as_deref())?;
+            let invoice = store::debt(&s.books, &number)?;
+            let date = store::day(date.as_deref())?;
             issue(&mut s, |pdf| Op::Credit { invoice, date, note: note.clone(), pdf }, argv, cli.json)
         }
         Cmd::Invoices { open } => {
             let s = Store::open(&here)?;
-            let all = invoices(&s.books, store::today()?);
+            let all = store::invoices(&s.books, store::today()?);
             let all: Vec<_> = all.into_iter().filter(|i| !open || i.has_open).collect();
             emit(cli.json, &all, || {
                 all.iter()
@@ -818,23 +799,23 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Pay { debt: d, amount, from, cost, date } => {
             let mut s = Store::open(&here)?;
-            let id = debt(&s, &d)?;
+            let id = store::debt(&s.books, &d)?;
             // Whether it is a debt is the model's to say, as every rule is.
             let commodity = s.books.debt(id).map(|x| x.owed.commodity).unwrap_or_default();
             let amount = amount.unwrap_or_else(|| s.books.open(id, &s.books.standing()));
             let from = from.or_else(|| s.books.config.payment.values().next().map(|o| o.account.clone())).unwrap_or_else(|| "Assets:Bank".into());
-            let cost = cost.map(|c| value(&s, &c)).transpose()?;
-            let op = Op::Pay { debt: id, date: day(date.as_deref())?, amount, from, cost };
+            let cost = cost.map(|c| store::amount(&s.books, &c)).transpose()?;
+            let op = Op::Pay { debt: id, date: store::day(date.as_deref())?, amount, from, cost };
             changed(&mut s, &op, argv, &format!("Pay {amount} {commodity} of {d}"), &[], cli.json)
         }
         Cmd::WriteOff { debt: d, to, date } => {
             let mut s = Store::open(&here)?;
-            let id = debt(&s, &d)?;
-            changed(&mut s, &Op::WriteOff { debt: id, date: day(date.as_deref())?, to }, argv, &format!("Write off {d}"), &[], cli.json)
+            let id = store::debt(&s.books, &d)?;
+            changed(&mut s, &Op::WriteOff { debt: id, date: store::day(date.as_deref())?, to }, argv, &format!("Write off {d}"), &[], cli.json)
         }
         Cmd::Revert { date, entry } => {
             let mut s = Store::open(&here)?;
-            changed(&mut s, &Op::Revert { entry, date: day(date.as_deref())? }, argv, &format!("Revert {entry}"), &[], cli.json)
+            changed(&mut s, &Op::Revert { entry, date: store::day(date.as_deref())? }, argv, &format!("Revert {entry}"), &[], cli.json)
         }
         Cmd::Reconcile { account, commodity, date, balance } => {
             let s = Store::open(&here)?;
@@ -842,8 +823,8 @@ async fn run(cli: Cli) -> Result<()> {
             if !s.books.accounts.contains(&account) {
                 bail!("{account} is not declared; `abo account` lists those that are");
             }
-            let date = day(date.as_deref())?;
-            let r = reconciled(&s.books, &account, &commodity, date, balance);
+            let date = store::day(date.as_deref())?;
+            let r = store::reconciled(&s.books, &account, &commodity, date, balance);
             emit(cli.json, &r, || {
                 let mut out = format!("{account} at {date} ({commodity})\n  cleared               {:>14}\n", r["cleared"].as_str().unwrap_or_default());
                 if let Some(d) = r["difference"].as_str() {
@@ -864,8 +845,8 @@ async fn run(cli: Cli) -> Result<()> {
         Cmd::Record { account, commodity, date, balance, all, clears } => {
             let mut s = Store::open(&here)?;
             let commodity = commodity.unwrap_or_else(|| s.books.config.company.currency.clone());
-            let date = day(date.as_deref())?;
-            let mut refs: std::collections::BTreeSet<model::PostingRef> = clears.iter().map(|c| posting_ref(c)).collect::<Result<_>>()?;
+            let date = store::day(date.as_deref())?;
+            let mut refs: std::collections::BTreeSet<model::PostingRef> = clears.iter().map(|c| store::posting_ref(c)).collect::<Result<_>>()?;
             if all {
                 let cleared: std::collections::BTreeSet<_> = s.books.statements.values().flat_map(|st| st.clears.iter().copied()).collect();
                 refs.extend(s.books.all_postings().into_iter().filter(|(r, d, p)| p.account == account && p.amount.commodity == commodity && *d <= date && !cleared.contains(r)).map(|(r, ..)| r));
@@ -881,18 +862,15 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Pl { period, pdf } => {
             let s = Store::open(&here)?;
-            let ctx = s.ctx();
-            statement(&ctx, statement::profit_and_loss(&ctx, &period)?, pdf, cli.json)
+            statement(&s, statement::profit_and_loss(&s, &period)?, pdf, cli.json)
         }
         Cmd::Bs { date, pdf } => {
             let s = Store::open(&here)?;
-            let ctx = s.ctx();
-            statement(&ctx, statement::balance_sheet(&ctx, &day(date.as_deref())?.to_string())?, pdf, cli.json)
+            statement(&s, statement::balance_sheet(&s, &store::day(date.as_deref())?.to_string())?, pdf, cli.json)
         }
         Cmd::Vat { period, pdf } => {
             let s = Store::open(&here)?;
-            let ctx = s.ctx();
-            statement(&ctx, statement::vat_return(&ctx, &period)?, pdf, cli.json)
+            statement(&s, statement::vat_return(&s, &period)?, pdf, cli.json)
         }
         Cmd::Log { last } => {
             let s = Store::open(&here)?;
@@ -970,48 +948,45 @@ async fn run(cli: Cli) -> Result<()> {
             let what = match change {
                 None | Some(PaymentCmd::List) => None,
                 Some(PaymentCmd::Add { id, parts }) => {
-                    let o = if parts.given() {
+                    let (id, o) = if parts.given() {
                         let id = id.context("an option added with flags needs an id")?;
-                        let kind = parts.kind.unwrap_or_default();
-                        parts.over(repo::PaymentOption { id, kind, account: kind.account().into(), ..Default::default() })
+                        let kind = parts.kind.as_deref().and_then(questions::kind).unwrap_or_default();
+                        (id, parts.over(model::PayOption { kind, account: questions::kind_account(kind).into(), ..Default::default() }))
                     } else {
                         let start = id.map(|id| questions::Answers::from([("id".into(), id)])).unwrap_or_default();
-                        let Some(o) = ask_option(&s.ctx(), start, others(&options, ""))? else {
+                        let Some(o) = ask_option(&s, start, others(&options, ""))? else {
                             println!("Nothing added.");
                             return Ok(());
                         };
                         o
                     };
-                    if options.contains_key(&o.id) {
-                        bail!("there is a payment option {:?} already", o.id);
+                    if options.contains_key(&id) {
+                        bail!("there is a payment option {id:?} already");
                     }
-                    let id = o.id.clone();
-                    options.insert(id.clone(), pay_option(&o));
+                    options.insert(id.clone(), canonical(o));
                     Some(format!("Add the payment option {id}"))
                 }
                 Some(PaymentCmd::Edit { id, new_id, parts }) => {
                     let id = find(&options, &id)?;
-                    let now = repo_option(&id, &options[&id]);
-                    let o = if new_id.is_some() || parts.given() {
-                        let mut o = parts.over(now.clone());
-                        o.id = new_id.unwrap_or(o.id);
-                        o
+                    let now = options[&id].clone();
+                    let (new, o) = if new_id.is_some() || parts.given() {
+                        (new_id.unwrap_or(id.clone()), parts.over(now))
                     } else {
-                        let mut start = questions::option_answers(&now);
+                        let mut start = questions::option_answers(&id, &now);
                         for k in ["label", "holder", "iban", "bic", "bank", "network", "address", "details"] {
                             start.entry(k.into()).or_default();
                         }
-                        let Some(o) = ask_option(&s.ctx(), start, others(&options, &id))? else {
+                        let Some(o) = ask_option(&s, start, others(&options, &id))? else {
                             println!("Nothing changed.");
                             return Ok(());
                         };
                         o
                     };
-                    if o.id != id && options.contains_key(&o.id) {
-                        bail!("there is a payment option {:?} already", o.id);
+                    if new != id && options.contains_key(&new) {
+                        bail!("there is a payment option {new:?} already");
                     }
                     options.remove(&id);
-                    options.insert(o.id.clone(), pay_option(&o));
+                    options.insert(new, canonical(o));
                     Some(format!("Change the payment option {id}"))
                 }
                 Some(PaymentCmd::Remove { id }) => {
@@ -1107,12 +1082,12 @@ async fn run(cli: Cli) -> Result<()> {
                     emit(cli.json, &all, || all.iter().map(|p| format!("{} {} {} {}", p["date"].as_str().unwrap_or_default(), p["of"].as_str().unwrap_or_default(), p["price"].as_str().unwrap_or_default(), p["in"].as_str().unwrap_or_default())).collect::<Vec<_>>().join("\n"))
                 }
                 Some(PriceCmd::Add { date, code, price }) => {
-                    let price = value(&s, &price.join(" "))?;
-                    let date = day(Some(&date))?;
+                    let price = store::amount(&s.books, &price.join(" "))?;
+                    let date = store::day(Some(&date))?;
                     changed(&mut s, &Op::PriceAdd { of: code.clone(), date, price }, argv, &format!("Price {code} on {date}"), &[], cli.json)
                 }
                 Some(PriceCmd::Remove { date, code }) => {
-                    let date = day(Some(&date))?;
+                    let date = store::day(Some(&date))?;
                     changed(&mut s, &Op::PriceRemove { of: code.clone(), date }, argv, &format!("Take out the price of {code} on {date}"), &[], cli.json)
                 }
             }
@@ -1143,7 +1118,7 @@ async fn run(cli: Cli) -> Result<()> {
             // Inside a company's books, that company alone; anywhere else, a
             // data directory holding any number of them.
             match repo::books_root(&here)? {
-                Some(_) => web::serve(Ctx::open(&here)?, port).await,
+                Some(root) => web::serve(root, port).await,
                 None => web::serve_data(here.canonicalize()?, port).await,
             }
         }
@@ -1151,7 +1126,7 @@ async fn run(cli: Cli) -> Result<()> {
             logging(&missing);
             let dir = std::env::temp_dir().join("abo-demo");
             tracing::info!(dir = %dir.display(), "building toy books");
-            web::serve(repo::demo(&dir)?, port).await
+            web::serve(store::demo(&dir)?, port).await
         }
     }
 }
@@ -1174,13 +1149,13 @@ fn logging(missing: &[&'static Dep]) {
 }
 
 fn statement(
-    ctx: &Ctx,
+    books: &Store,
     s: statement::Statement,
     pdf: Option<PathBuf>,
     json: bool,
 ) -> Result<()> {
     if let Some(path) = &pdf {
-        statement::pdf(ctx, &s, path)?;
+        statement::pdf(books, &s, path)?;
     }
     emit(json, &s, || {
         let money = statement::money;
@@ -1205,69 +1180,6 @@ fn statement(
     })
 }
 
-/// A date as written, or today.
-fn day(s: Option<&str>) -> Result<model::Date> {
-    match s {
-        Some(s) => s.trim().parse().with_context(|| format!("{s:?} is not a date, such as 2026-09-30")),
-        None => store::today(),
-    }
-}
-
-/// `12.50` in the company currency, or `12.50 EUR`.
-fn value(s: &Store, text: &str) -> Result<model::Amount> {
-    let text = text.trim();
-    let (q, c) = text.split_once(' ').map(|(q, c)| (q, c.trim())).unwrap_or((text, s.books.config.company.currency.as_str()));
-    let quantity = Decimal::from_str_exact(q).with_context(|| format!("{q:?} is not a number"))?;
-    Ok(model::Amount { quantity, commodity: c.to_string() })
-}
-
-/// `account=amount [COMMODITY]`, and `@@ cost COMMODITY` after one exchanged
-/// for another: the cost written unsigned, its sign the amount's.
-fn posting(s: &Store, text: &str) -> Result<model::Posting> {
-    let (account, rest) = text.split_once('=').with_context(|| format!("{text:?} is not account=amount"))?;
-    let (amount, cost) = match rest.split_once("@@") {
-        Some((a, c)) => (a, Some(c)),
-        None => (rest, None),
-    };
-    let amount = value(s, amount)?;
-    let cost = cost.map(|c| value(s, c)).transpose()?.map(|c| model::Amount { quantity: if amount.quantity < Decimal::ZERO { -c.quantity.abs() } else { c.quantity.abs() }, commodity: c.commodity });
-    Ok(model::Posting { account: account.trim().to_string(), amount, cost })
-}
-
-/// `quantity|unit price|description`, line `n` of an invoice.
-fn line(n: usize, raw: &str) -> Result<model::Line> {
-    let mut parts = raw.splitn(3, '|');
-    let (Some(q), Some(u), Some(d)) = (parts.next(), parts.next(), parts.next()) else {
-        bail!("line {n}, {raw:?}, is not `quantity|unit price|description`");
-    };
-    let number = |what: &str, v: &str| Decimal::from_str_exact(v.trim()).with_context(|| format!("line {n}, {raw:?}: the {what} {:?} is not a number", v.trim()));
-    let (quantity, unit_price) = (number("quantity", q)?, number("unit price", u)?);
-    Ok(model::Line { description: d.to_string(), quantity, unit_price })
-}
-
-/// An entry by its id, or an invoice or credit note by its number.
-fn debt(s: &Store, text: &str) -> Result<usize> {
-    if let Ok(id) = text.parse::<usize>() {
-        return Ok(id);
-    }
-    (1..=s.books.entries.len())
-        .find(|&id| s.books.number_text(id).as_deref() == Some(text))
-        .with_context(|| format!("there is no entry {text:?}: give an entry's id, or an invoice's number such as 2026-0017"))
-}
-
-/// A filed document's hash, by its path or its hash: a text that is the
-/// path of none is taken as a hash, for the model to say whether one is filed.
-fn filed(s: &Store, text: &str) -> Result<String> {
-    Ok(s.books.documents.iter().find(|(h, d)| d.path(h) == text).map(|(h, _)| h.clone()).unwrap_or_else(|| text.to_string()))
-}
-
-/// `ENTRY.N`: posting N of entry ENTRY, from 0, as `abo reconcile` gives it.
-fn posting_ref(text: &str) -> Result<model::PostingRef> {
-    let (e, n) = text.split_once('.').with_context(|| format!("{text:?} is not ENTRY.N, as abo reconcile gives it"))?;
-    let bad = || format!("{text:?} is not ENTRY.N, as abo reconcile gives it");
-    Ok(model::PostingRef { entry: e.parse().with_context(bad)?, n: n.parse().with_context(bad)? })
-}
-
 /// Make a change, and say what it made.
 fn changed(s: &mut Store, op: &Op, argv: Vec<String>, what: &str, also: &[(String, Vec<u8>)], json: bool) -> Result<()> {
     let before = s.books.entries.len();
@@ -1282,124 +1194,14 @@ fn changed(s: &mut Store, op: &Op, argv: Vec<String>, what: &str, also: &[(Strin
     })
 }
 
-/// Issue an invoice or a credit note: tried first, for its number; its PDF
-/// made; then committed with it.
+/// Issue an invoice or a credit note, and say so.
 fn issue(s: &mut Store, op: impl Fn(String) -> Op, argv: Vec<String>, json: bool) -> Result<()> {
-    s.changeable()?;
-    let trial = model::apply(&s.books, &op("0".repeat(64)), store::today()?).map_err(store::Refused)?;
-    let id = trial.entries.len();
-    let number = trial.number_text(id).context("what was issued is not numbered")?;
-    let (bytes, seeded, warnings) = invoice::pdf_of(&Ctx::from_model(&s.root, &trial), &trial, id)?;
-    for w in &warnings {
+    let r = s.issue(op, argv)?;
+    for w in &r.warnings {
         eprintln!("Warning: {w}");
     }
-    let pdf = format!("invoices/{}/{number}.pdf", &number[..4]);
-    let mut also = vec![(pdf.clone(), bytes.clone())];
-    if let Some(t) = seeded {
-        also.push((t.to_string(), std::fs::read(s.root.join(t))?));
-    }
-    let credit = matches!(trial.entries[id - 1].kind, model::Kind::CreditNote { .. });
-    let what = if credit { format!("Credit note {number}") } else { format!("Invoice {number}") };
-    let r = s.change(&op(store::sha256(&bytes)), argv, &what, &also);
-    if r.is_err() {
-        if let Some(t) = seeded {
-            let _ = std::fs::remove_file(s.root.join(t));
-        }
-    }
-    let commit = r?.unwrap_or_default();
-    let row = invoices(&s.books, store::today()?).into_iter().find(|i| i.entry == id);
-    let total = row.map(|r| r.total).unwrap_or_default();
-    let out = serde_json::json!({ "number": number, "entry": id, "pdf": pdf, "total": total, "commit": commit, "warnings": warnings });
-    emit(json, &out, || format!("{what} for {total}: {pdf}\nCommitted {commit}."))
-}
-
-#[derive(serde::Serialize)]
-struct InvoiceRow {
-    entry: usize,
-    number: String,
-    date: String,
-    customer: String,
-    total: String,
-    due: String,
-    /// What is open, in the invoice's commodity; nothing for a credit note.
-    open: String,
-    status: String,
-    #[serde(skip)]
-    has_open: bool,
-}
-
-/// Every invoice and credit note, in the order of their numbers.
-fn invoices(b: &model::Books, today: model::Date) -> Vec<InvoiceRow> {
-    use model::Kind;
-    let standing = b.standing();
-    (1..=b.entries.len())
-        .filter_map(|id| {
-            let e = &b.entries[id - 1];
-            let number = b.number_text(id)?;
-            let (inv, credit) = match &e.kind {
-                Kind::Invoice { .. } => (id, false),
-                Kind::CreditNote { of, .. } => (*of, true),
-                _ => return None,
-            };
-            let Kind::Invoice { content: c, .. } = &b.entry(inv)?.kind else { return None };
-            let places = b.places(&c.commodity);
-            let money = |mut d: Decimal| {
-                d.rescale(places);
-                format!("{d} {}", c.commodity)
-            };
-            let total = b.totals(c).2 * if credit { -Decimal::ONE } else { Decimal::ONE };
-            let open = if credit { Decimal::ZERO } else { b.open(id, &standing) };
-            let mut status = match () {
-                _ if credit => format!("credits {}", b.number_text(inv).unwrap_or_default()),
-                _ if !standing[id] => "cancelled".to_string(),
-                _ if open.is_zero() => "settled".to_string(),
-                _ if open < total => format!("part paid, {} open", money(open)),
-                _ => "open".to_string(),
-            };
-            if !credit && standing[id] && !open.is_zero() && c.due < today {
-                status += ", overdue";
-            }
-            Some(InvoiceRow {
-                entry: id,
-                number,
-                date: e.date.to_string(),
-                customer: c.customer.lines().next().unwrap_or("").trim().to_string(),
-                total: money(total),
-                due: if credit { String::new() } else { c.due.to_string() },
-                open: if credit { String::new() } else { money(open) },
-                status,
-                has_open: !open.is_zero(),
-            })
-        })
-        .collect()
-}
-
-/// An account against a statement: what statements on or before `date`
-/// cleared, and the postings to it they did not.
-fn reconciled(b: &model::Books, account: &str, commodity: &str, date: model::Date, balance: Option<Decimal>) -> serde_json::Value {
-    let places = b.places(commodity);
-    let money = |mut d: Decimal| {
-        d.rescale(places);
-        d.to_string()
-    };
-    let cleared: std::collections::BTreeSet<model::PostingRef> =
-        b.statements.iter().filter(|(k, _)| k.0 == account && k.1 == commodity && k.2 <= date).flat_map(|(_, s)| s.clears.iter().copied()).collect();
-    let ps: Vec<_> = b.all_postings().into_iter().filter(|(_, d, p)| p.account == account && p.amount.commodity == commodity && *d <= date).collect();
-    let done: Decimal = ps.iter().filter(|(r, ..)| cleared.contains(r)).map(|(_, _, p)| p.amount.quantity).sum();
-    let outstanding: Vec<serde_json::Value> = ps
-        .iter()
-        .filter(|(r, ..)| !cleared.contains(r))
-        .map(|(r, d, p)| serde_json::json!({ "ref": format!("{}.{}", r.entry, r.n), "date": d.to_string(), "amount": money(p.amount.quantity), "description": b.entries[r.entry - 1].description }))
-        .collect();
-    serde_json::json!({
-        "account": account,
-        "commodity": commodity,
-        "date": date.to_string(),
-        "cleared": money(done),
-        "statement": balance.map(money),
-        "difference": balance.map(|s| money(s - done)),
-        "outstanding": outstanding,
-    })
+    let what = if matches!(s.books.entries[r.entry - 1].kind, model::Kind::CreditNote { .. }) { "Credit note" } else { "Invoice" };
+    emit(json, &r, || format!("{what} {} for {}: {}\nCommitted {}.", r.number, r.total, r.pdf, r.commit))
 }
 
 /// Every key of a table, dotted, with its value.
@@ -1411,37 +1213,16 @@ fn flat(v: &toml::Value, prefix: &str) -> Vec<(String, String)> {
     }
 }
 
-/// `abo init`'s answers as the model's configuration.
-fn config_of(b: &questions::NewBooks) -> model::Config {
-    let c = &b.company;
-    model::Config {
-        company: model::Company { name: c.name.clone(), currency: c.currency.clone(), address: c.address.clone(), tax_id: c.tax_id.clone(), country: c.country.clone(), closed_through: None },
-        vat: match &b.vat {
-            repo::Vat::None => model::Vat::None,
-            repo::Vat::Flat { rate, account } => model::Vat::Flat { rate: *rate, account: account.clone() },
-            repo::Vat::Effective { input, output } => model::Vat::Effective { input: input.clone(), output: output.clone() },
-        },
-        invoice: model::InvoiceCfg { receivable: "Assets:Receivable".into(), income: "Income:Sales".into(), terms_days: 30, vat_rate: b.sales_rate },
-        payment: b.payment.iter().map(|o| (o.id.clone(), pay_option(o))).collect(),
-        report: Default::default(),
-    }
-}
-
 /// An option as given, trimmed as a typed answer is, its IBAN and BIC in
 /// their canonical forms where they are valid: what is left wrong, the model
 /// refuses (I-C2).
-fn pay_option(o: &repo::PaymentOption) -> model::PayOption {
+fn canonical(o: model::PayOption) -> model::PayOption {
     let one = |s: &str| s.trim().to_string();
     let lines = |s: &str| s.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
-    let iban = answer::iban(&o.iban).unwrap_or_else(|_| one(&o.iban));
+    let iban = if o.iban.trim().is_empty() { String::new() } else { answer::iban(&o.iban).unwrap_or_else(|_| one(&o.iban)) };
     let bic = if o.bic.trim().is_empty() { String::new() } else { answer::bic(&o.bic).unwrap_or_else(|_| one(&o.bic)) };
-    let iban = if o.iban.trim().is_empty() { String::new() } else { iban };
     model::PayOption {
-        kind: match o.kind {
-            repo::Kind::Bank => model::PayKind::Bank,
-            repo::Kind::Cash => model::PayKind::Cash,
-            repo::Kind::Crypto => model::PayKind::Crypto,
-        },
+        kind: o.kind,
         label: one(&o.label),
         holder: one(&o.holder),
         iban,
@@ -1454,29 +1235,9 @@ fn pay_option(o: &repo::PaymentOption) -> model::PayOption {
     }
 }
 
-fn repo_option(id: &str, o: &model::PayOption) -> repo::PaymentOption {
-    repo::PaymentOption {
-        id: id.to_string(),
-        kind: match o.kind {
-            model::PayKind::Bank => repo::Kind::Bank,
-            model::PayKind::Cash => repo::Kind::Cash,
-            model::PayKind::Crypto => repo::Kind::Crypto,
-        },
-        label: o.label.clone(),
-        holder: o.holder.clone(),
-        iban: o.iban.clone(),
-        bic: o.bic.clone(),
-        bank: o.bank.clone(),
-        network: o.network.clone(),
-        address: o.address.clone(),
-        details: o.details.clone(),
-        account: o.account.clone(),
-    }
-}
-
 fn passthrough(here: &std::path::Path, cmd: &str, args: &[String], json: bool) -> Result<()> {
     let s = Store::open(here)?;
-    print!("{}", report::run(&s.ctx(), cmd, args, json)?);
+    print!("{}", report::run(&s, cmd, args, json)?);
     Ok(())
 }
 
@@ -1782,17 +1543,16 @@ impl questions::Source for Flags {
         Ok(())
     }
 
-    // Since rules 4 trimmed, as the terminal and the form take them: the
-    // same answers open the same books, however given.
+    // Trimmed, as the terminal and the form take them: the same answers
+    // open the same books, however given.
     fn text(&mut self, key: &str, label: &str, _: &str, _: &str, check: &dyn Fn(&str) -> Result<String, String>) -> Result<String> {
-        let v = self.0.get(key).map_or("", String::as_str);
-        let v = if repo::since(4) { v.trim() } else { v };
+        let v = self.0.get(key).map_or("", String::as_str).trim();
         check(v).map_err(|e| anyhow::anyhow!("{label}: {e}"))
     }
 
     fn lines(&mut self, key: &str, _: &str, _: &str) -> Result<String> {
         let v = self.0.get(key).cloned().unwrap_or_default();
-        Ok(if repo::since(4) { v.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n") } else { v })
+        Ok(v.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n"))
     }
 
     fn choice(&mut self, key: &str, label: &str, noun: &str, options: &[&'static str], offer: &str) -> Result<String> {
@@ -1814,10 +1574,10 @@ impl questions::Source for Flags {
 }
 
 /// A payment option's questions, starting from `start`; `None` if skipped.
-fn ask_option(ctx: &Ctx, start: questions::Answers, others: Vec<String>) -> Result<Option<repo::PaymentOption>> {
-    let context = questions::Context { root: None, ids: others, declared: Some(journal::declared_accounts(ctx)?) };
+fn ask_option(s: &Store, start: questions::Answers, others: Vec<String>) -> Result<Option<(String, model::PayOption)>> {
+    let context = questions::Context { root: None, ids: others, declared: Some(s.books.accounts.iter().cloned().collect()) };
     // The company's name, offered as the account holder.
-    let mut answers = questions::Answers::from([("name".into(), ctx.cfg.company.name.clone())]);
+    let mut answers = questions::Answers::from([("name".into(), s.books.config.company.name.clone())]);
     let mut term = Terminal { given: Default::default(), start };
     if questions::ask_item(questions::OPTION, "", "skip", questions::option_problem, &mut answers, &context, &mut term)? {
         return Ok(None);

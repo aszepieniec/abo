@@ -16,7 +16,7 @@ mod text;
 #[cfg(test)]
 pub(crate) mod tests;
 
-pub use check::{check, Violation};
+pub use check::{check, option_problem, Violation};
 pub use ops::{apply, shape, InvoiceMore, Op, Shape};
 pub use text::{parse, read, render, Files};
 
@@ -226,16 +226,17 @@ pub struct InvoiceCfg {
     pub vat_rate: Decimal,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PayKind {
+    #[default]
     Bank,
     Cash,
     Crypto,
 }
 
 /// A payment option; its id is its key in `Config::payment`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PayOption {
     pub kind: PayKind,
@@ -272,7 +273,11 @@ pub struct Report {
 #[serde(deny_unknown_fields)]
 pub struct VatBox {
     pub label: String,
+    /// An hledger query: the box's figure is its balance over the period.
     pub query: String,
+    /// Turned over, for a box on the credit side, such as VAT owed.
+    #[serde(default)]
+    pub invert: bool,
 }
 
 impl PayOption {

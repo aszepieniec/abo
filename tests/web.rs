@@ -42,15 +42,20 @@ fn serve(data: &Path, home: &Path) -> Server {
 /// (status, the Location header, the body)
 fn http(s: &Server, method: &str, path: &str, form: &[(&str, &str)]) -> (u16, String, String) {
     let body: String = form.iter().map(|(k, v)| format!("{}={}", enc(k), enc(v))).collect::<Vec<_>>().join("&");
+    send(s, method, path, "application/x-www-form-urlencoded", body.as_bytes())
+}
+
+fn send(s: &Server, method: &str, path: &str, content_type: &str, body: &[u8]) -> (u16, String, String) {
     let host = format!("127.0.0.1:{}", s.port);
     let mut c = TcpStream::connect(&host).unwrap();
     write!(
         c,
         "{method} {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nConnection: close\r\n\
-         Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{body}",
+         Content-Type: {content_type}\r\nContent-Length: {}\r\n\r\n",
         body.len()
     )
     .unwrap();
+    c.write_all(body).unwrap();
     let mut out = String::new();
     c.read_to_string(&mut out).unwrap();
     let status = out[9..12].parse().unwrap();
@@ -163,17 +168,15 @@ fn new_company() {
     assert_eq!(c["company"]["address"].as_str(), Some("1 Street\n3000 City"));
     assert_eq!(c["company"]["currency"].as_str(), Some("CHF"));
     assert_eq!(c["vat"]["method"].as_str(), Some("effective"));
-    assert_eq!(c["invoice"]["vat_rate"].as_float(), Some(8.1));
-    let (bank, cash) = (&c["payment"][0], &c["payment"][1]);
-    assert_eq!(bank["id"].as_str(), Some("bank"));
+    assert_eq!(c["invoice"]["vat_rate"].as_str(), Some("8.1"));
+    let (bank, cash) = (&c["payment"]["bank"], &c["payment"]["cash"]);
     assert_eq!(bank["label"].as_str(), Some("Bank transfer"));
     assert_eq!(bank["holder"].as_str(), Some("Test & Sons Ltd"));
     assert_eq!(bank["iban"].as_str(), Some("CH93 0076 2011 6238 5295 7"));
-    assert!(bank.get("network").is_none());
-    assert_eq!(cash["id"].as_str(), Some("cash"));
+    assert_eq!(bank["network"].as_str(), Some(""));
     assert_eq!(cash["label"].as_str(), Some("Cash"));
     assert_eq!(cash["details"].as_str(), Some("At our office"));
-    assert!(c["payment"].as_array().unwrap().len() == 2, "the skipped option was kept");
+    assert!(c["payment"].as_table().unwrap().len() == 2, "the skipped option was kept");
     let log = Command::new("git").args(["log", "--format=%an <%ae>"]).current_dir(&books).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&log.stdout), "Ann <ann@example.invalid>\n");
 
@@ -191,7 +194,6 @@ fn new_company() {
 /// books: both ask `questions::INIT`, and this is what says they mean the
 /// same by it.
 #[test]
-#[ignore = "web: moves onto the store in the next pass"]
 fn terminal_and_form_agree() {
     let base = std::env::temp_dir().join(format!("abo-parity-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
@@ -258,41 +260,55 @@ fn terminal_and_form_agree() {
         assert_eq!(read(&typed), read(&posted), "{file} differs");
     }
     let config = std::fs::read_to_string(typed.join("parity-ltd/abo.toml")).unwrap();
-    for has in ["id = \"bank\"", "iban = \"CH93 0076 2011 6238 5295 7\"", "id = \"crypto\"", "account = \"Assets:Crypto\"", "rate    = 5.3"] {
+    for has in ["[payment.bank]", "iban = \"CH93 0076 2011 6238 5295 7\"", "[payment.crypto]", "account = \"Assets:Crypto\"", "rate = \"5.3\""] {
         assert!(config.contains(has), "no {has:?} in\n{config}");
     }
     std::fs::remove_dir_all(&base).unwrap();
 }
 
-/// The company page changes the details and the payment options with the
-/// commands the terminal would run: each a line in the log, as typed.
-#[test]
-#[ignore = "web: moves onto the store in the next pass"]
-fn company_page() {
-    let base = std::env::temp_dir().join(format!("abo-company-page-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
-    std::fs::create_dir_all(&base).unwrap();
+/// Books of `Test Ltd`, no VAT, by Ann, in `base`; served.
+fn company_books(base: &Path) -> (std::path::PathBuf, Server) {
+    let _ = std::fs::remove_dir_all(base);
+    std::fs::create_dir_all(base).unwrap();
     let o = Command::new(env!("CARGO_BIN_EXE_abo"))
         .args(["init", "Test Ltd", "--currency", "EUR", "--vat", "none", "--git-name", "Ann", "--git-email", "ann@example.invalid"])
-        .current_dir(&base)
-        .env("HOME", &base)
-        .env("XDG_CONFIG_HOME", &base)
+        .current_dir(base)
+        .env("HOME", base)
+        .env("XDG_CONFIG_HOME", base)
         .output()
         .unwrap();
     assert!(o.status.success(), "init failed: {}", String::from_utf8_lossy(&o.stderr));
     let books = base.join("test-ltd");
-    let s = serve(&books, &base);
-    let argv = || -> serde_json::Value {
-        let log = std::fs::read_to_string(books.join(".abo/log.jsonl")).unwrap();
-        serde_json::from_str::<serde_json::Value>(log.lines().last().unwrap()).unwrap()["argv"].clone()
-    };
+    let s = serve(&books, base);
+    (books, s)
+}
+
+/// The last line of the log's command.
+fn last_argv(books: &Path) -> Vec<String> {
+    let log = std::fs::read_to_string(books.join(".abo/log.jsonl")).unwrap();
+    serde_json::from_str::<serde_json::Value>(log.lines().last().unwrap()).unwrap()["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap().to_string())
+        .collect()
+}
+
+/// The company page changes the details and the payment options, each a
+/// line in the log.
+#[test]
+fn company_page() {
+    let base = std::env::temp_dir().join(format!("abo-company-page-{}", std::process::id()));
+    let (books, s) = company_books(&base);
 
     let (_, _, page) = http(&s, "GET", "/", &[]);
     assert!(page.contains("class=\"brand\" href=\"/company\""), "{page}");
 
     let (status, to, _) = http(&s, "POST", "/company", &[("token", "c"), ("name", "Test Ltd"), ("address", "1 Street"), ("country", "CH"), ("tax_id", "")]);
     assert_eq!((status, to.as_str()), (303, "/company?done=2"));
-    assert_eq!(argv(), serde_json::json!(["company", "--country", "CH", "--address", "1 Street"]));
+    assert_eq!(last_argv(&books)[0], "company");
+    let c: toml::Value = toml::from_str(&std::fs::read_to_string(books.join("abo.toml")).unwrap()).unwrap();
+    assert_eq!((c["company"]["address"].as_str(), c["company"]["country"].as_str()), (Some("1 Street"), Some("CH")));
 
     // Refused answers say why under their fields, and nothing is added.
     let (status, _, page) = http(&s, "POST", "/company/payment", &[("token", "p0"), ("was", ""), ("kind", "crypto"), ("account", "Assets:Nope")]);
@@ -302,7 +318,7 @@ fn company_page() {
     let add = [("token", "p1"), ("was", ""), ("kind", "cash"), ("details", "At our office")];
     let (status, to, _) = http(&s, "POST", "/company/payment", &add);
     assert_eq!((status, to.as_str()), (303, "/company?done=3"));
-    assert_eq!(argv(), serde_json::json!(["payment-options", "add", "cash", "--kind", "cash", "--label", "Cash", "--account", "Assets:Cash", "--detail", "At our office"]));
+    assert_eq!(last_argv(&books)[..3], ["payment-options", "add", "cash"]);
 
     let (_, _, page) = http(&s, "GET", "/company/payment", &[]);
     assert!(page.contains("<option value=\"crypto\">") && !page.contains("value=\"skip\""), "{page}");
@@ -313,102 +329,126 @@ fn company_page() {
     let edit = [("token", "p2"), ("was", "cash"), ("kind", "cash"), ("details", "At the till"), ("label", "Cash"), ("id", "cash"), ("account", "Assets:Cash")];
     let (status, _, _) = http(&s, "POST", "/company/payment", &edit);
     assert_eq!(status, 303);
-    assert_eq!(argv(), serde_json::json!(["payment-options", "edit", "cash", "--kind", "cash", "--label", "Cash", "--account", "Assets:Cash", "--detail", "At the till"]));
+    assert_eq!(last_argv(&books)[..3], ["payment-options", "edit", "cash"]);
+    assert!(std::fs::read_to_string(books.join("abo.toml")).unwrap().contains("At the till"));
 
     let (status, _, _) = http(&s, "POST", "/company/payment/remove", &[("token", "p3"), ("id", "cash")]);
     assert_eq!(status, 303);
-    assert_eq!(argv(), serde_json::json!(["payment-options", "remove", "cash"]));
+    assert_eq!(last_argv(&books), ["payment-options", "remove", "cash"]);
+    assert!(!std::fs::read_to_string(books.join("abo.toml")).unwrap().contains("At the till"));
 
     drop(s);
     std::fs::remove_dir_all(&base).unwrap();
 }
 
+/// What the company page logs is the command that makes the same change in
+/// a terminal: run there, on the books as they were, it leaves abo.toml as
+/// the page left it.
 #[test]
-#[ignore = "web: moves onto the store in the next pass"]
+fn company_page_logs_what_a_terminal_would_run() {
+    let base = std::env::temp_dir().join(format!("abo-company-argv-{}", std::process::id()));
+    let (books, s) = company_books(&base);
+    let replay = base.join("replay");
+    assert!(Command::new("cp").arg("-r").arg(&books).arg(&replay).status().unwrap().success());
+    let posts: [(&str, &[(&str, &str)]); 3] = [
+        ("/company", &[("token", "c"), ("name", "Test Ltd"), ("address", "1 Street"), ("country", "CH"), ("tax_id", "")]),
+        ("/company/payment", &[("token", "p1"), ("was", ""), ("kind", "cash"), ("details", "At our office")]),
+        ("/company/payment", &[("token", "p2"), ("was", "cash"), ("kind", "cash"), ("details", "At the till"), ("label", "Cash"), ("id", "cash"), ("account", "Assets:Cash")]),
+    ];
+    for (path, form) in posts {
+        let (status, _, page) = http(&s, "POST", path, form);
+        assert_eq!(status, 303, "{page}");
+        let argv = last_argv(&books);
+        let o = Command::new(env!("CARGO_BIN_EXE_abo")).args(&argv).current_dir(&replay).env("HOME", &base).env("XDG_CONFIG_HOME", &base)
+            .stdin(Stdio::null()).output().unwrap();
+        assert!(o.status.success(), "{argv:?}: {}", String::from_utf8_lossy(&o.stderr));
+        let read = |d: &Path| std::fs::read_to_string(d.join("abo.toml")).unwrap();
+        assert_eq!(read(&replay), read(&books), "{argv:?} does not make the change {path} made");
+    }
+    drop(s);
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
 fn bills_page() {
     let base = std::env::temp_dir().join(format!("abo-bills-page-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    let abo = |dir: &Path, args: &[&str]| {
-        let o = Command::new(env!("CARGO_BIN_EXE_abo")).args(args).current_dir(dir).env("HOME", &base).env("XDG_CONFIG_HOME", &base).output().unwrap();
+    let abo = |dir: &Path, args: &[&str]| -> serde_json::Value {
+        let o = Command::new(env!("CARGO_BIN_EXE_abo")).arg("--json").args(args).current_dir(dir).env("HOME", &base).env("XDG_CONFIG_HOME", &base).output().unwrap();
         assert!(o.status.success(), "{args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        serde_json::from_slice(&o.stdout).unwrap_or_default()
     };
     abo(&base, &["init", "Test Ltd", "--currency", "EUR", "--vat", "none", "--git-name", "Ann", "--git-email", "ann@example.invalid"]);
     let books = base.join("test-ltd");
     let scan = base.join("scan.pdf");
     std::fs::write(&scan, b"%PDF-1.4\n% a bill\n").unwrap();
-    abo(&books, &["file", "--date", "2026-03-01", "--issuer", "Acme", &scan.to_string_lossy()]);
-    let file = std::fs::read_dir(books.join("bills/2026")).unwrap().next().unwrap().unwrap().file_name().to_string_lossy().to_string();
-    let file = format!("bills/2026/{file}");
+    let filed = abo(&books, &["file", "--date", "2026-03-01", "--issuer", "Acme", &scan.to_string_lossy()]);
+    let file = filed["what"].as_str().unwrap().strip_prefix("File ").unwrap().to_string();
     let s = serve(&books, &base);
 
-    // Filed, not booked: Book it, no Pay; the document is always there.
+    // Filed, not booked: Book it and Delete, no Pay; the document is always there.
     let (_, _, page) = http(&s, "GET", "/bills", &[]);
-    assert!(page.contains("not booked") && page.contains(&format!("href=\"/{file}\" download")) && !page.contains("/bill/pay"), "{page}");
+    assert!(page.contains("not booked") && page.contains(&format!("href=\"/{file}\" download")) && !page.contains("/pay?debt="), "{page}");
+    assert!(page.contains(&format!("/bill?file={}", enc(&file))) && page.contains("action=\"/bill/unfile\""), "{page}");
 
-    // Not booked, so it can be deleted: the undo of its filing, then Bills.
-    let del = page.split("action=\"/undo/").nth(1).and_then(|r| r.split('"').next()).expect("a Delete").to_string();
-    let (status, to, _) = http(&s, "POST", &format!("/undo/{del}"), &[("token", "d1"), ("to", "/bills")]);
-    assert_eq!((status, to.starts_with("/bills?done=")), (303, true));
+    // Not booked, so it can be deleted; and the delete undone.
+    let (status, to, _) = http(&s, "POST", "/bill/unfile", &[("token", "d1"), ("file", &file)]);
+    assert_eq!((status, to.starts_with("/bills?done=")), (303, true), "{to}");
     assert!(!books.join(&file).exists());
-    let (status, _, _) = http(&s, "POST", &format!("/undo/{}", del.parse::<usize>().unwrap() + 1), &[("token", "d2")]);
+    let (status, _, _) = http(&s, "POST", "/undo", &[("token", "d2")]);
     assert_eq!(status, 303);
     assert!(books.join(&file).exists());
 
-    abo(&books, &["bill", "--desc", "Hosting", &file, "Expenses:General=110.00", "Liabilities:Payable=-110.00"]);
+    let hosting = abo(&books, &["bill", "--desc", "Hosting", "--document", &file, "Expenses:General=110.00", "Liabilities:Payable=-110.00"])["entry"].to_string();
     let (_, _, page) = http(&s, "GET", "/bills", &[]);
-    assert!(!page.contains("action=\"/undo/"), "a booked bill is not deleted: {page}");
-    assert!(page.contains("unpaid") && page.contains("110.00 EUR") && page.contains("/bill/pay?file="), "{page}");
+    assert!(!page.contains("action=\"/bill/unfile\""), "a booked bill is not deleted: {page}");
+    assert!(page.contains("unpaid") && page.contains("110.00 EUR") && page.contains(&format!("/pay?debt={hosting}")), "{page}");
 
-    // A part, then the rest: Open follows, as an invoice's owed does.
-    let part = [("token", "b1"), ("file", file.as_str()), ("as", "pays"), ("date", "2026-03-05"), ("amount", "40.00"), ("from", "Assets:Bank"), ("description", "Pay part")];
-    let (status, _, _) = http(&s, "POST", "/bill/pay", &part);
+    // A part, then the rest: Open follows, as an invoice's does.
+    let part = [("token", "b1"), ("debt", hosting.as_str()), ("date", "2026-03-05"), ("amount", "40.00"), ("from", "Assets:Bank")];
+    let (status, _, _) = http(&s, "POST", "/pay", &part);
     assert_eq!(status, 303);
     let (_, _, page) = http(&s, "GET", "/bills", &[]);
-    assert!(page.contains("part paid 2026-03-05") && page.contains("70.00 EUR") && page.contains("/bill/pay?file="), "{page}");
-    let rest = [("token", "b2"), ("file", file.as_str()), ("as", "settles"), ("date", "2026-03-06"), ("amount", "70.00"), ("from", "Assets:Bank"), ("description", "Pay the rest")];
-    let (status, _, _) = http(&s, "POST", "/bill/pay", &rest);
+    assert!(page.contains("part paid") && page.contains("70.00 EUR") && page.contains(&format!("/pay?debt={hosting}")), "{page}");
+    let rest = [("token", "b2"), ("debt", hosting.as_str()), ("date", "2026-03-06"), ("amount", "70.00"), ("from", "Assets:Bank")];
+    let (status, _, _) = http(&s, "POST", "/pay", &rest);
     assert_eq!(status, 303);
-    let (_, _, page) = http(&s, "GET", &format!("/bill/view?file={}", enc(&file)), &[]);
-    assert!(page.contains("settled 2026-03-06") && !page.contains("open 0.00 EUR") && page.contains(">Hosting<") && !page.contains("/bill/pay"), "{page}");
+    let (_, _, page) = http(&s, "GET", &format!("/entry/{hosting}"), &[]);
+    assert!(page.contains("0.00 EUR open") && page.contains(">Hosting<") && !page.contains("/pay?debt="), "{page}");
 
-    // Settled once, not twice.
-    let (_, _, page) = http(&s, "POST", "/bill/pay", &[("token", "b3"), rest[1], rest[2], rest[3], rest[4], rest[5], rest[6]]);
-    assert!(page.contains("is not owed"), "{page}");
+    // Paid once, not twice.
+    let (_, _, page) = http(&s, "POST", "/pay", &[("token", "b3"), rest[1], rest[2], rest[3], rest[4]]);
+    assert!(page.contains("I-P2"), "{page}");
 
     // Paid, it is not cancelled; a bill not paid is, by reverting its booking.
-    // The bill's own booking: the last entry linked before its "booking" mark.
-    let key = |page: &str| {
-        let before = &page[..page.find(">booking<").unwrap()];
-        before.rsplit("href=\"/entry/").next().unwrap().split('"').next().unwrap().to_string()
-    };
-    let (_, _, page) = http(&s, "GET", &format!("/bill/view?file={}", enc(&file)), &[]);
-    let (_, _, refused) = http(&s, "POST", &format!("/entry/{}/revert", key(&page)), &[("token", "r1")]);
-    assert!(refused.contains("revert that first"), "{refused}");
+    let (_, _, refused) = http(&s, "POST", &format!("/entry/{hosting}/revert"), &[("token", "r1")]);
+    assert!(refused.contains("I-R"), "{refused}");
     let scan2 = base.join("scan2.pdf");
     std::fs::write(&scan2, b"%PDF-1.4\n% another bill\n").unwrap();
-    abo(&books, &["file", "--date", "2026-04-01", "--issuer", "Mistake", &scan2.to_string_lossy()]);
-    let wrong = std::fs::read_dir(books.join("bills/2026")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).find(|n| n.contains("mistake")).unwrap();
-    let wrong = format!("bills/2026/{wrong}");
-    abo(&books, &["bill", "--desc", "Not ours", &wrong, "Expenses:General=30.00", "Liabilities:Payable=-30.00"]);
+    let wrong = abo(&books, &["file", "--date", "2026-04-01", "--issuer", "Mistake", &scan2.to_string_lossy()]);
+    let wrong = wrong["what"].as_str().unwrap().strip_prefix("File ").unwrap().to_string();
+    let not_ours = abo(&books, &["bill", "--desc", "Not ours", "--document", &wrong, "Expenses:General=30.00", "Liabilities:Payable=-30.00"])["entry"].to_string();
     let (_, _, page) = http(&s, "GET", "/bills", &[]);
-    // Open first, and summed.
-    assert!(page.find("Not ours").unwrap() < page.find(">Hosting<").unwrap() && page.contains("Open in all") && page.contains("<strong><div>30.00 EUR</div></strong>"), "{page}");
+    assert!(page.find("Not ours").unwrap() < page.find(">Hosting<").unwrap(), "newest first: {page}");
     let (_, _, page) = http(&s, "GET", "/bills?open=1", &[]);
-    assert!(page.contains("Not ours") && !page.contains(">Hosting<") && page.contains("<strong><div>30.00 EUR</div></strong>"), "only what is open: {page}");
-    let (_, _, page) = http(&s, "GET", &format!("/bill/view?file={}", enc(&wrong)), &[]);
-    let (status, _, _) = http(&s, "POST", &format!("/entry/{}/revert", key(&page)), &[("token", "r2")]);
+    assert!(page.contains("Not ours") && !page.contains(">Hosting<") && page.contains("30.00 EUR"), "only what is open: {page}");
+    let (status, _, _) = http(&s, "POST", &format!("/entry/{not_ours}/revert"), &[("token", "r2")]);
     assert_eq!(status, 303);
     let (_, _, page) = http(&s, "GET", "/bills", &[]);
-    assert!(page.contains("cancelled 20") && !page.contains("Open in all") && page.matches("/bill/pay?file=").count() == 0, "{page}");
+    assert!(page.contains("cancelled") && !page.contains("/pay?debt="), "{page}");
 
-    // Named by its booking but gone from the books: a row still, to upload it to.
-    let git = |args: &[&str]| assert!(Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"]).args(args).current_dir(&books).status().unwrap().success());
-    git(&["rm", "-q", &file]);
-    git(&["commit", "-q", "-m", "lose it"]);
+    // Booked without its document: a row still, to upload it to.
+    let lost = abo(&books, &["bill", "--date", "2026-05-01", "--desc", "Lost", "Expenses:General=9.00", "Liabilities:Payable=-9.00"])["entry"].to_string();
     let (_, _, page) = http(&s, "GET", "/bills", &[]);
-    assert!(page.contains("Upload PDF") && page.contains("/file\"") && page.contains("value=\"/bills\"") && page.contains("110.00 EUR"), "{page}");
-    assert!(!page.contains(&format!("href=\"/{file}\" download")), "{page}");
+    assert!(page.contains(&format!("popovertarget=\"up-{lost}\"")) && page.contains(&format!("action=\"/entry/{lost}/file\"")) && page.contains("value=\"/bills\""), "{page}");
+    let body = "--b0undary\r\nContent-Disposition: form-data; name=\"document\"; filename=\"l.pdf\"\r\nContent-Type: application/pdf\r\n\r\n%PDF-1.4\n% lost\n\r\n\
+                        --b0undary\r\nContent-Disposition: form-data; name=\"to\"\r\n\r\n/bills\r\n\
+                        --b0undary\r\nContent-Disposition: form-data; name=\"token\"\r\n\r\nu1\r\n--b0undary--\r\n".to_string();
+    let (status, to, page) = send(&s, "POST", &format!("/entry/{lost}/file"), "multipart/form-data; boundary=b0undary", body.as_bytes());
+    assert_eq!((status, to.starts_with("/bills?done=")), (303, true), "{page}");
+    let (_, _, page) = http(&s, "GET", "/bills", &[]);
+    assert!(!page.contains(&format!("popovertarget=\"up-{lost}\"")) && page.contains("2026-05-01-lost-"), "{page}");
 
     drop(s);
     std::fs::remove_dir_all(&base).unwrap();

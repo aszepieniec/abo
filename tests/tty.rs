@@ -58,8 +58,8 @@ fn abo(cwd: &Path, args: &[&str], steps: &[(&str, &str)]) -> (ExitStatus, String
         .env("TERM", "xterm")
         // No global git identity to offer, and no stray config of the
         // machine running the tests.
-        .env("HOME", &base)
-        .env("XDG_CONFIG_HOME", &base)
+        .env("HOME", base)
+        .env("XDG_CONFIG_HOME", base)
         .env("GIT_AUTHOR_NAME", "abo test")
         .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
         .env("GIT_COMMITTER_NAME", "abo test")

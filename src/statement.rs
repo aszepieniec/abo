@@ -3,13 +3,13 @@
 //! out. Which accounts belong on which line of a tax return is configuration,
 //! because it differs everywhere — see §6.
 
-use crate::journal;
-use crate::repo::Ctx;
+use crate::store::Store;
 use anyhow::{bail, Context as _, Result};
 use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::process::Command;
 
 #[derive(Serialize, Clone)]
@@ -81,13 +81,13 @@ fn add(into: &mut Bag, from: &Bag, sign: Decimal) {
 
 /// `hledger balance` over a query, as account -> bag. Extra flags let the
 /// caller ask for period movement (a P&L) or a running balance (a sheet).
-pub fn balances(ctx: &Ctx, query: &str, extra: &[&str]) -> Result<Vec<(String, Bag)>> {
+pub fn balances(s: &Store, query: &str, extra: &[&str]) -> Result<Vec<(String, Bag)>> {
     let mut args = vec!["balance", "--flat", "-O", "json"];
     if !query.is_empty() {
         args.insert(1, query);
     }
     args.extend_from_slice(extra);
-    let out = journal::hledger(ctx, &args)?;
+    let out = s.hledger(&args)?;
     let v: Value = serde_json::from_str(&out).context("reading hledger balance")?;
     let rows = v.get(0).and_then(Value::as_array).context("no rows in balance report")?;
 
@@ -97,7 +97,7 @@ pub fn balances(ctx: &Ctx, query: &str, extra: &[&str]) -> Result<Vec<(String, B
         let mut bag = Bag::new();
         for a in row[3].as_array().into_iter().flatten() {
             let commodity = a["acommodity"].as_str().unwrap_or_default().to_string();
-            *bag.entry(commodity).or_default() += journal::decimal(&a["aquantity"])?;
+            *bag.entry(commodity).or_default() += decimal(&a["aquantity"])?;
         }
         result.push((account, bag));
     }
@@ -110,11 +110,11 @@ fn top(account: &str) -> String {
 
 /// Income and expenses have credit balances and debit balances respectively;
 /// a reader wants both columns positive, so one side is turned over.
-fn section(ctx: &Ctx, title: &str, account: &str, extra: &[&str], invert: bool) -> Result<(Section, Bag)> {
+fn section(s: &Store, title: &str, account: &str, extra: &[&str], invert: bool) -> Result<(Section, Bag)> {
     let sign = if invert { Decimal::NEGATIVE_ONE } else { Decimal::ONE };
     let mut total = Bag::new();
     let mut lines = Vec::new();
-    for (name, bag) in balances(ctx, &top(account), extra)? {
+    for (name, bag) in balances(s, &top(account), extra)? {
         let mut shown = Bag::new();
         add(&mut shown, &bag, sign);
         add(&mut total, &bag, sign);
@@ -129,18 +129,18 @@ fn period_flags(period: &str) -> Vec<&str> {
 }
 
 /// A period hledger reads, refused in words of its own when it does not.
-fn checked_period(ctx: &Ctx, period: &str) -> Result<()> {
-    if !period.is_empty() && journal::hledger(ctx, &["accounts", "-p", period]).is_err() {
+fn checked_period(s: &Store, period: &str) -> Result<()> {
+    if !period.is_empty() && s.hledger(&["accounts", "-p", period]).is_err() {
         bail!("{period:?} is not a period; give one such as 2026, 2026q1, 2026-08 or last month");
     }
     Ok(())
 }
 
-pub fn profit_and_loss(ctx: &Ctx, period: &str) -> Result<Statement> {
-    checked_period(ctx, period)?;
+pub fn profit_and_loss(s: &Store, period: &str) -> Result<Statement> {
+    checked_period(s, period)?;
     let extra = period_flags(period);
-    let (income, income_total) = section(ctx, "Income", "income", &extra, true)?;
-    let (expenses, expense_total) = section(ctx, "Expenses", "expenses", &extra, false)?;
+    let (income, income_total) = section(s, "Income", "income", &extra, true)?;
+    let (expenses, expense_total) = section(s, "Expenses", "expenses", &extra, false)?;
 
     let mut profit = Bag::new();
     add(&mut profit, &income_total, Decimal::ONE);
@@ -149,16 +149,13 @@ pub fn profit_and_loss(ctx: &Ctx, period: &str) -> Result<Statement> {
     Ok(Statement {
         title: "Profit and loss".into(),
         period: if period.is_empty() { "All time".into() } else { period.to_string() },
-        company: ctx.cfg.company.name.clone(),
+        company: s.books.config.company.name.clone(),
         sections: vec![income, expenses],
         bottom: Line { code: None, label: "Profit for the period".into(), amounts: amounts(&profit) },
     })
 }
 
-pub fn balance_sheet(ctx: &Ctx, date: &str) -> Result<Statement> {
-    if crate::repo::since(4) {
-        journal::date(date)?;
-    }
+pub fn balance_sheet(s: &Store, date: &str) -> Result<Statement> {
     // -H gives the running balance, and -e is exclusive, so ask for the day after.
     let end = jiff::civil::Date::strptime("%Y-%m-%d", date)
         .context("bad date")?
@@ -166,16 +163,16 @@ pub fn balance_sheet(ctx: &Ctx, date: &str) -> Result<Statement> {
         .to_string();
     let extra = vec!["-H", "-e", end.as_str()];
 
-    let (assets, asset_total) = section(ctx, "Assets", "assets", &extra, false)?;
-    let (liabilities, liability_total) = section(ctx, "Liabilities", "liabilities", &extra, true)?;
-    let (mut equity, mut equity_total) = section(ctx, "Equity", "equity", &extra, true)?;
+    let (assets, asset_total) = section(s, "Assets", "assets", &extra, false)?;
+    let (liabilities, liability_total) = section(s, "Liabilities", "liabilities", &extra, true)?;
+    let (mut equity, mut equity_total) = section(s, "Equity", "equity", &extra, true)?;
 
     // Profit that has not been closed into equity is still equity. Without
     // this line a balance sheet drawn from a journal simply does not balance,
     // and the difference looks like a bug rather than the year's result.
     let mut retained = Bag::new();
     for account in ["income", "expenses"] {
-        for (_, bag) in balances(ctx, &top(account), &extra)? {
+        for (_, bag) in balances(s, &top(account), &extra)? {
             add(&mut retained, &bag, Decimal::NEGATIVE_ONE);
         }
     }
@@ -197,7 +194,7 @@ pub fn balance_sheet(ctx: &Ctx, date: &str) -> Result<Statement> {
     Ok(Statement {
         title: "Balance sheet".into(),
         period: format!("As at {date}"),
-        company: ctx.cfg.company.name.clone(),
+        company: s.books.config.company.name.clone(),
         sections: vec![assets, liabilities, equity],
         bottom: Line {
             code: None,
@@ -207,30 +204,11 @@ pub fn balance_sheet(ctx: &Ctx, date: &str) -> Result<Statement> {
     })
 }
 
-/// One line of a tax return. Which accounts feed which numbered box is set by
-/// the tax authority wherever the company is, so it lives in abo.toml.
-#[derive(Deserialize, Clone, Default)]
-pub struct VatLine {
-    pub code: String,
-    pub label: String,
-    /// An hledger query. Its balance over the period is the figure.
-    #[serde(default)]
-    pub query: String,
-    /// Turn the sign over, for the credit-balance side.
-    #[serde(default)]
-    pub invert: bool,
-    /// This line is `rate` percent of the line with this code.
-    #[serde(default)]
-    pub of: String,
-    #[serde(default)]
-    pub rate: Decimal,
-    /// This line is the sum of these codes. A leading `-` subtracts.
-    #[serde(default)]
-    pub sum: Vec<String>,
-}
-
-pub fn vat_return(ctx: &Ctx, period: &str) -> Result<Statement> {
-    let spec = &ctx.cfg.report.vat;
+/// The tax return: a line for each box of `report.vat`, in the order of their
+/// codes, its figure the balance of its hledger query over the period, in the
+/// company's currency, turned over for a box on the credit side.
+pub fn vat_return(s: &Store, period: &str) -> Result<Statement> {
+    let spec = &s.books.config.report.vat;
     if spec.is_empty() {
         bail!(
             "no tax return is configured. Add a box for each on the form: \
@@ -238,81 +216,43 @@ pub fn vat_return(ctx: &Ctx, period: &str) -> Result<Statement> {
              its figure the balance of the hledger query over the period."
         );
     }
-    if let Some(l) = spec.iter().enumerate().find_map(|(i, l)| spec[..i].iter().any(|m| m.code == l.code).then_some(l)) {
-        bail!("box {} is in [[report.vat]] twice; each box on the form is one line", l.code);
-    }
-    checked_period(ctx, period)?;
-    let currency = ctx.cfg.company.currency.clone();
+    checked_period(s, period)?;
+    let currency = s.books.config.company.currency.clone();
+    let places = s.books.places(&currency);
     // A return is filed in one currency. Anything else is valued in it at the
-    // price on the day of each posting, from the books' own `P` directives.
+    // price on the day of each posting, from the books' own prices.
     let value = format!("--value=then,{currency}");
     let mut extra = period_flags(period);
     extra.push(&value);
-    let hundred = Decimal::ONE_HUNDRED;
-
-    let mut values: BTreeMap<String, Decimal> = BTreeMap::new();
     let mut lines = Vec::new();
-    for l in spec {
-        let value = if !l.query.is_empty() {
-            let mut v = Decimal::ZERO;
-            for (account, bag) in balances(ctx, &l.query, &extra)? {
-                for (c, x) in &bag {
-                    if c == &currency {
-                        v += x;
-                    } else if !x.is_zero() {
-                        // No price to value it with. Dropping it would file a
-                        // plausible wrong number.
-                        bail!(
-                            "box {} includes {x} {c} in {account}, and the books have no {c} price \
-                             in {currency} to value it with. Add one to journal/accounts.journal, \
-                             `P <date> {c} <price> {currency}`, dated on or before each posting.",
-                            l.code
-                        );
-                    }
+    for (code, b) in spec {
+        let mut v = Decimal::ZERO;
+        for (account, bag) in balances(s, &b.query, &extra)? {
+            for (c, x) in &bag {
+                if c == &currency {
+                    v += x;
+                } else if !x.is_zero() {
+                    // No price to value it with. Dropping it would file a
+                    // plausible wrong number.
+                    bail!(
+                        "box {code} includes {x} {c} in {account}, and the books have no {c} price \
+                         in {currency} to value it with: `abo price add <date> {c} <price> {currency}`, \
+                         dated on or before each posting."
+                    );
                 }
             }
-            if l.invert { -v } else { v }
-        } else if !l.of.is_empty() {
-            let base = *values
-                .get(&l.of)
-                .with_context(|| format!("box {} refers to {}, which is not above it", l.code, l.of))?;
-            (base * l.rate / hundred).round_dp_with_strategy(
-                ctx.cfg.invoice.decimals,
-                rust_decimal::RoundingStrategy::MidpointAwayFromZero,
-            )
-        } else if !l.sum.is_empty() {
-            let mut v = Decimal::ZERO;
-            for term in &l.sum {
-                let (code, sign) = match term.strip_prefix('-') {
-                    Some(c) => (c, Decimal::NEGATIVE_ONE),
-                    None => (term.as_str(), Decimal::ONE),
-                };
-                let x = values
-                    .get(code)
-                    .with_context(|| format!("box {} refers to {code}, which is not above it", l.code))?;
-                v += x * sign;
-            }
-            v
-        } else {
-            bail!("box {} has no query, no `of`, and no `sum`", l.code);
-        };
+        }
+        let v = if b.invert { -v } else { v };
         // every box to the currency's places, and never "-0"
-        let mut value = if value.is_zero() { Decimal::ZERO } else { value }
-            .round_dp_with_strategy(ctx.cfg.invoice.decimals, rust_decimal::RoundingStrategy::MidpointAwayFromZero);
-        value.rescale(ctx.cfg.invoice.decimals);
-        values.insert(l.code.clone(), value);
-        lines.push(Line {
-            code: Some(l.code.clone()),
-            label: l.label.clone(),
-            amounts: vec![Amount { quantity: value.to_string(), commodity: currency.clone() }],
-        });
+        let mut v = crate::model::round(if v.is_zero() { Decimal::ZERO } else { v }, places);
+        v.rescale(places);
+        lines.push(Line { code: Some(code.clone()), label: b.label.clone(), amounts: vec![Amount { quantity: v.to_string(), commodity: currency.clone() }] });
     }
-
     let bottom = lines.last().cloned().context("no lines")?;
     Ok(Statement {
         title: "Tax return".into(),
         period: if period.is_empty() { "All time".into() } else { period.to_string() },
-        company: ctx.cfg.company.name.clone(),
+        company: s.books.config.company.name.clone(),
         sections: vec![Section { title: String::new(), lines, total: vec![] }],
         bottom: Line { code: None, label: format!("{} ({})", bottom.label, bottom.code.unwrap_or_default()), amounts: bottom.amounts },
     })
@@ -324,8 +264,8 @@ const TEMPLATE: &str = include_str!("report.typ");
 
 /// Render to PDF at `out`. It changes nothing in the books, so it is not
 /// logged.
-pub fn pdf(ctx: &Ctx, s: &Statement, out: &std::path::Path) -> Result<()> {
-    render(ctx, s, out)
+pub fn pdf(s: &Store, st: &Statement, out: &std::path::Path) -> Result<()> {
+    render(&s.root, st, out)
 }
 
 /// The books' own `templates/report.typ` if they have one; otherwise abo's,
@@ -333,15 +273,15 @@ pub fn pdf(ctx: &Ctx, s: &Statement, out: &std::path::Path) -> Result<()> {
 /// download link, a browser prefetching it — so making one must never write
 /// to the books. To change the layout, copy `.abo/report.typ` into
 /// `templates/` and commit it; from then on that one is used.
-fn render(ctx: &Ctx, s: &Statement, out: &std::path::Path) -> Result<()> {
-    let own = ctx.root.join(TEMPLATE_REL).is_file();
+fn render(root: &Path, st: &Statement, out: &Path) -> Result<()> {
+    let own = root.join(TEMPLATE_REL).is_file();
     if !own {
-        let builtin = ctx.root.join(BUILTIN_REL);
+        let builtin = root.join(BUILTIN_REL);
         std::fs::create_dir_all(builtin.parent().unwrap())?;
         std::fs::write(&builtin, TEMPLATE)?;
     }
     let template = if own { TEMPLATE_REL } else { BUILTIN_REL };
-    compile(ctx, template, TEMPLATE, DATA_REL, s, out).map(|_| ())
+    compile(root, template, TEMPLATE, DATA_REL, st, out).map(|_| ())
 }
 
 const BUILTIN_REL: &str = ".abo/report.typ";
@@ -352,14 +292,14 @@ const BUILTIN_REL: &str = ".abo/report.typ";
 /// this call created — the seeded template, the folders made for it and for
 /// `out` — so a missing typst leaves the books as they were.
 pub fn compile(
-    ctx: &Ctx,
+    root: &Path,
     template_rel: &str,
     template_src: &str,
     data_rel: &str,
     data: &impl Serialize,
     out: &std::path::Path,
 ) -> Result<bool> {
-    let template = ctx.root.join(template_rel);
+    let template = root.join(template_rel);
     let seeded = !template.exists();
     let mut made = vec![];
     let mut dir = |d: &std::path::Path| -> Result<()> {
@@ -377,10 +317,10 @@ pub fn compile(
         if seeded {
             std::fs::write(&template, template_src)?;
         }
-        let json = ctx.root.join(data_rel);
+        let json = root.join(data_rel);
         std::fs::create_dir_all(json.parent().unwrap())?;
         std::fs::write(&json, serde_json::to_vec_pretty(data)?)?;
-        typst(ctx, &template, out)
+        typst(root, &template, out)
     })();
     if result.is_err() {
         if seeded {
@@ -394,12 +334,11 @@ pub fn compile(
 }
 
 /// Compile a template to PDF. The one place abo runs typst.
-pub fn typst(ctx: &Ctx, template: &std::path::Path, out: &std::path::Path) -> Result<()> {
+pub fn typst(root: &Path, template: &Path, out: &Path) -> Result<()> {
     let mut typst = Command::new("typst");
-    typst.arg("compile").arg("--root").arg(&ctx.root);
-    // Dated by the operation's stamp, not the clock: an invoice replayed
-    // from the log is the same PDF, byte for byte.
-    if let Ok(s) = ctx.stamp() {
+    typst.arg("compile").arg("--root").arg(root);
+    // Dated by the operation's stamp, as its commit is.
+    if let Ok(s) = crate::repo::Stamp::now(root) {
         typst.arg("--creation-timestamp").arg(s.time.to_string());
     }
     let result = typst.arg(template).arg(out).output();
@@ -413,4 +352,11 @@ pub fn typst(ctx: &Ctx, template: &std::path::Path, out: &std::path::Path) -> Re
         bail!("typst: {}", String::from_utf8_lossy(&result.stderr).trim());
     }
     Ok(())
+}
+
+/// An amount as hledger's JSON gives it: a mantissa and its places.
+fn decimal(q: &Value) -> Result<Decimal> {
+    let mantissa: i128 = q["decimalMantissa"].to_string().parse().context("amount has no mantissa")?;
+    let places = q["decimalPlaces"].as_u64().context("amount has no scale")? as u32;
+    Decimal::try_from_i128_with_scale(mantissa, places).context("an amount past what a decimal holds")
 }

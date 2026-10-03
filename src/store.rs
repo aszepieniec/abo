@@ -3,6 +3,7 @@
 //! it, and committed with the line of the log that says what made it.
 
 use crate::model::{self, Books, Files, Op, Violation};
+use rust_decimal::Decimal;
 use crate::repo::{self, Stamp};
 use anyhow::{bail, Context as _, Result};
 use sha2::{Digest as _, Sha256};
@@ -37,6 +38,18 @@ pub fn today() -> Result<model::Date> {
         Ok(d) => d.parse().with_context(|| format!("ABO_TODAY={d:?} is not a date")),
         Err(_) => Ok(jiff::Zoned::now().date()),
     }
+}
+
+/// What a document's first bytes say it is — its extension and type — as
+/// the bills a person files are: a PDF, or a photograph.
+pub fn sniff(bytes: &[u8]) -> Result<(&'static str, &'static str)> {
+    Ok(match bytes {
+        [0x25, 0x50, 0x44, 0x46, ..] => ("pdf", "application/pdf"),
+        [0xFF, 0xD8, 0xFF, ..] => ("jpg", "image/jpeg"),
+        [0x89, b'P', b'N', b'G', ..] => ("png", "image/png"),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => ("webp", "image/webp"),
+        _ => bail!("not a PDF, JPEG, PNG or WebP"),
+    })
 }
 
 pub fn sha256(bytes: &[u8]) -> String {
@@ -91,11 +104,6 @@ impl Store {
             }
         }
         Ok(Store { root, books, problems })
-    }
-
-    /// What the reports and the PDFs, written before the model, read.
-    pub fn ctx(&self) -> repo::Ctx {
-        repo::Ctx::from_model(&self.root, &self.books)
     }
 
     /// Apply `op`, write what changed, with `also` — documents and PDFs, by
@@ -300,4 +308,384 @@ pub fn init(dir: &Path, config: model::Config, author: Option<(String, String)>,
         let _ = std::fs::remove_dir_all(dir);
     }
     r
+}
+
+// ---- what people type, and what the books show ----
+
+/// A date as written, or today.
+pub fn day(s: Option<&str>) -> Result<model::Date> {
+    match s {
+        Some(s) => s.trim().parse().with_context(|| format!("{s:?} is not a date, such as 2026-09-30")),
+        None => today(),
+    }
+}
+
+/// `12.50` in the company currency, or `12.50 EUR`.
+pub fn amount(b: &Books, text: &str) -> Result<model::Amount> {
+    let text = text.trim();
+    let (q, c) = text.split_once(' ').map(|(q, c)| (q, c.trim())).unwrap_or((text, b.config.company.currency.as_str()));
+    let quantity = Decimal::from_str_exact(q).with_context(|| format!("{q:?} is not a number"))?;
+    Ok(model::Amount { quantity, commodity: c.to_string() })
+}
+
+/// `account=amount [COMMODITY]`, and `@@ cost COMMODITY` after one exchanged
+/// for another: the cost written unsigned, its sign the amount's.
+pub fn posting(b: &Books, text: &str) -> Result<model::Posting> {
+    let (account, rest) = text.split_once('=').with_context(|| format!("{text:?} is not account=amount"))?;
+    let (amount, cost) = match rest.split_once("@@") {
+        Some((a, c)) => (a, Some(c)),
+        None => (rest, None),
+    };
+    let amount = self::amount(b, amount)?;
+    let cost = cost.map(|c| self::amount(b, c)).transpose()?.map(|c| model::Amount { quantity: if amount.quantity < Decimal::ZERO { -c.quantity.abs() } else { c.quantity.abs() }, commodity: c.commodity });
+    Ok(model::Posting { account: account.trim().to_string(), amount, cost })
+}
+
+/// `quantity|unit price|description`, line `n` of an invoice.
+pub fn line(n: usize, raw: &str) -> Result<model::Line> {
+    let mut parts = raw.splitn(3, '|');
+    let (Some(q), Some(u), Some(d)) = (parts.next(), parts.next(), parts.next()) else {
+        bail!("line {n}, {raw:?}, is not `quantity|unit price|description`");
+    };
+    let number = |what: &str, v: &str| Decimal::from_str_exact(v.trim()).with_context(|| format!("line {n}, {raw:?}: the {what} {:?} is not a number", v.trim()));
+    let (quantity, unit_price) = (number("quantity", q)?, number("unit price", u)?);
+    Ok(model::Line { description: d.to_string(), quantity, unit_price })
+}
+
+/// An entry by its id, or an invoice or credit note by its number.
+pub fn debt(b: &Books, text: &str) -> Result<usize> {
+    if let Ok(id) = text.parse::<usize>() {
+        return Ok(id);
+    }
+    (1..=b.entries.len())
+        .find(|&id| b.number_text(id).as_deref() == Some(text))
+        .with_context(|| format!("there is no entry {text:?}: give an entry's id, or an invoice's number such as 2026-0017"))
+}
+
+/// A filed document's hash, by its path or its hash: a text that is the
+/// path of none is taken as a hash, for the model to say whether one is filed.
+pub fn filed(b: &Books, text: &str) -> Result<String> {
+    Ok(b.documents.iter().find(|(h, d)| d.path(h) == text).map(|(h, _)| h.clone()).unwrap_or_else(|| text.to_string()))
+}
+
+/// `ENTRY.N`: posting N of entry ENTRY, from 0, as `abo reconcile` gives it.
+pub fn posting_ref(text: &str) -> Result<model::PostingRef> {
+    let (e, n) = text.split_once('.').with_context(|| format!("{text:?} is not ENTRY.N, as abo reconcile gives it"))?;
+    let bad = || format!("{text:?} is not ENTRY.N, as abo reconcile gives it");
+    Ok(model::PostingRef { entry: e.parse().with_context(bad)?, n: n.parse().with_context(bad)? })
+}
+
+#[derive(serde::Serialize)]
+pub struct InvoiceRow {
+    pub entry: usize,
+    pub number: String,
+    pub date: String,
+    pub customer: String,
+    pub total: String,
+    pub due: String,
+    /// What is open, in the invoice's commodity; nothing for a credit note.
+    pub open: String,
+    pub status: String,
+    #[serde(skip)]
+    pub has_open: bool,
+}
+
+/// Every invoice and credit note, in the order of their numbers.
+pub fn invoices(b: &Books, today: model::Date) -> Vec<InvoiceRow> {
+    use model::Kind;
+    let standing = b.standing();
+    (1..=b.entries.len())
+        .filter_map(|id| {
+            let e = &b.entries[id - 1];
+            let number = b.number_text(id)?;
+            let (inv, credit) = match &e.kind {
+                Kind::Invoice { .. } => (id, false),
+                Kind::CreditNote { of, .. } => (*of, true),
+                _ => return None,
+            };
+            let Kind::Invoice { content: c, .. } = &b.entry(inv)?.kind else { return None };
+            let places = b.places(&c.commodity);
+            let money = |mut d: Decimal| {
+                d.rescale(places);
+                format!("{d} {}", c.commodity)
+            };
+            let total = b.totals(c).2 * if credit { -Decimal::ONE } else { Decimal::ONE };
+            let open = if credit { Decimal::ZERO } else { b.open(id, &standing) };
+            let mut status = match () {
+                _ if credit => format!("credits {}", b.number_text(inv).unwrap_or_default()),
+                _ if !standing[id] => "cancelled".to_string(),
+                _ if open.is_zero() => "settled".to_string(),
+                _ if open < total => format!("part paid, {} open", money(open)),
+                _ => "open".to_string(),
+            };
+            if !credit && standing[id] && !open.is_zero() && c.due < today {
+                status += ", overdue";
+            }
+            Some(InvoiceRow {
+                entry: id,
+                number,
+                date: e.date.to_string(),
+                customer: c.customer.lines().next().unwrap_or("").trim().to_string(),
+                total: money(total),
+                due: if credit { String::new() } else { c.due.to_string() },
+                open: if credit { String::new() } else { money(open) },
+                status,
+                has_open: !open.is_zero(),
+            })
+        })
+        .collect()
+}
+
+/// An account against a statement: what statements on or before `date`
+/// cleared, and the postings to it they did not.
+pub fn reconciled(b: &Books, account: &str, commodity: &str, date: model::Date, balance: Option<Decimal>) -> serde_json::Value {
+    let places = b.places(commodity);
+    let money = |mut d: Decimal| {
+        d.rescale(places);
+        d.to_string()
+    };
+    let cleared: std::collections::BTreeSet<model::PostingRef> =
+        b.statements.iter().filter(|(k, _)| k.0 == account && k.1 == commodity && k.2 <= date).flat_map(|(_, s)| s.clears.iter().copied()).collect();
+    let ps: Vec<_> = b.all_postings().into_iter().filter(|(_, d, p)| p.account == account && p.amount.commodity == commodity && *d <= date).collect();
+    let done: Decimal = ps.iter().filter(|(r, ..)| cleared.contains(r)).map(|(_, _, p)| p.amount.quantity).sum();
+    let outstanding: Vec<serde_json::Value> = ps
+        .iter()
+        .filter(|(r, ..)| !cleared.contains(r))
+        .map(|(r, d, p)| serde_json::json!({ "ref": format!("{}.{}", r.entry, r.n), "date": d.to_string(), "amount": money(p.amount.quantity), "description": b.entries[r.entry - 1].description }))
+        .collect();
+    serde_json::json!({
+        "account": account,
+        "commodity": commodity,
+        "date": date.to_string(),
+        "cleared": money(done),
+        "statement": balance.map(money),
+        "difference": balance.map(|s| money(s - done)),
+        "outstanding": outstanding,
+    })
+}
+
+
+/// An invoice or credit note issued: its entry, number, PDF and commit.
+#[derive(serde::Serialize)]
+pub struct Issued {
+    pub entry: usize,
+    pub number: String,
+    pub pdf: String,
+    pub total: String,
+    pub commit: String,
+    /// What the books' own template left off the PDF.
+    pub warnings: Vec<String>,
+}
+
+impl Store {
+    /// hledger over the books' journal, without a config of its own.
+    pub fn hledger(&self, args: &[&str]) -> Result<String> {
+        let out = std::process::Command::new("hledger")
+            .arg("--no-conf")
+            .arg("-f")
+            .arg(self.root.join("journal/main.journal"))
+            .args(args)
+            .output()
+            .context("running hledger")?;
+        if !out.status.success() {
+            bail!("hledger {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// Issue an invoice or a credit note: `op` with its PDF's hash. Tried
+    /// first, for its number; its PDF made; then committed with it.
+    pub fn issue(&mut self, op: impl Fn(String) -> Op, argv: Vec<String>) -> Result<Issued> {
+        self.changeable()?;
+        let trial = model::apply(&self.books, &op("0".repeat(64)), today()?).map_err(Refused)?;
+        let id = trial.entries.len();
+        let number = trial.number_text(id).context("what was issued is not numbered")?;
+        let (bytes, seeded, warnings) = crate::invoice::pdf_of(&self.root, &trial, id)?;
+        let pdf = format!("invoices/{}/{number}.pdf", &number[..4]);
+        let mut also = vec![(pdf.clone(), bytes.clone())];
+        if let Some(t) = seeded {
+            also.push((t.to_string(), std::fs::read(self.root.join(t))?));
+        }
+        let credit = matches!(trial.entries[id - 1].kind, model::Kind::CreditNote { .. });
+        let what = if credit { format!("Credit note {number}") } else { format!("Invoice {number}") };
+        let r = self.change(&op(sha256(&bytes)), argv, &what, &also);
+        if r.is_err() {
+            if let Some(t) = seeded {
+                let _ = std::fs::remove_file(self.root.join(t));
+            }
+        }
+        let commit = r?.unwrap_or_default();
+        let total = invoices(&self.books, today()?).into_iter().find(|i| i.entry == id).map(|r| r.total).unwrap_or_default();
+        Ok(Issued { entry: id, number, pdf, total, commit, warnings })
+    }
+}
+
+/// Toy books in `dir`, made afresh by the same operations a person makes:
+/// the demo's. Their dates count back from today, so that none is ahead.
+pub fn demo(dir: &Path) -> Result<PathBuf> {
+    if dir.exists() {
+        std::fs::remove_dir_all(dir).with_context(|| format!("clearing {}", dir.display()))?;
+    }
+    std::fs::create_dir_all(dir.parent().unwrap_or(Path::new(".")))?;
+    let config: model::Config = toml::from_str(
+        r#"
+        [company]
+        name = "Example Ltd"
+        currency = "EUR"
+        address = "1 Example Street\n10000 Example City"
+        country = "Exampleland"
+        tax_id = "TAX-123456789"
+        [vat]
+        method = "effective"
+        input = "Assets:VAT:Input"
+        output = "Liabilities:VAT:Output"
+        [invoice]
+        receivable = "Assets:Receivable"
+        income = "Income:Sales"
+        terms_days = 30
+        # Obviously a placeholder: real rates are statutory.
+        vat_rate = "10"
+        [payment.bank]
+        kind = "bank"
+        label = "Bank transfer"
+        holder = "Example Ltd"
+        # The IBAN of the ISO 13616 examples: it passes the check.
+        iban = "CH93 0076 2011 6238 5295 7"
+        bic = "POFICHBEXXX"
+        account = "Assets:Bank"
+        # An illustrative return: which accounts feed which box is set by
+        # the tax authority wherever the company is.
+        [report.vat.1]
+        label = "Turnover"
+        query = "acct:^Income(:|$)"
+        invert = true
+        [report.vat.2]
+        label = "Tax charged on turnover"
+        query = "acct:^Liabilities:VAT:Output(:|$)"
+        invert = true
+        [report.vat.3]
+        label = "Input tax paid"
+        query = "acct:^Assets:VAT:Input(:|$)"
+        "#,
+    )?;
+    let author = Some(("abo demo".to_string(), "demo@example.invalid".to_string()));
+    init(dir, config, author, vec!["demo".into()])?;
+    let mut s = Store::open(dir)?;
+    let now = today()?;
+    let ago = |days: i64| now.checked_sub(jiff::Span::new().days(days)).unwrap_or(now);
+    let argv = || vec!["demo".to_string()];
+    let p = |a: &str, q: &str, c: &str| model::Posting::new(a, Decimal::from_str_exact(q).unwrap_or_default(), c);
+    let d = |q: &str| Decimal::from_str_exact(q).unwrap_or_default();
+    for a in ["Expenses:Hosting", "Expenses:Salary", "Assets:Wallet:BTC"] {
+        s.change(&Op::AccountAdd(a.into()), argv(), &format!("Declare {a}"), &[])?;
+    }
+    s.change(&Op::CommodityAdd("BTC".into(), 8), argv(), "Declare BTC", &[])?;
+    s.change(&Op::CommodityAdd("USD".into(), 2), argv(), "Declare USD", &[])?;
+    s.change(&Op::PriceAdd { of: "BTC".into(), date: ago(150), price: model::Amount { quantity: d("60000.00"), commodity: "EUR".into() } }, argv(), "Price BTC", &[])?;
+    let post = |s: &mut Store, days: i64, description: &str, postings: Vec<model::Posting>| -> Result<usize> {
+        s.change(&Op::Post { date: ago(days), description: description.into(), postings }, argv(), description, &[])?;
+        Ok(s.books.entries.len())
+    };
+    // A bill and its document: a small PDF made with typst, or without typst,
+    // the bill alone.
+    let bill = |s: &mut Store, days: i64, issuer: &str, description: &str, postings: Vec<model::Posting>| -> Result<usize> {
+        let document = match demo_document(&s.root, issuer, description, &postings, ago(days)) {
+            Ok(bytes) => {
+                let sha256 = sha256(&bytes);
+                let doc = model::Document { date: ago(days), name: crate::repo::slug(issuer), ext: "pdf".into(), of: None };
+                let path = doc.path(&sha256);
+                s.change(&Op::File { sha256: sha256.clone(), date: doc.date, name: doc.name, ext: "pdf".into(), bill: None }, argv(), &format!("File {path}"), &[(path, bytes)])?;
+                Some(sha256)
+            }
+            Err(e) => {
+                tracing::warn!(%e, "the demo's bill of {issuer} has no document");
+                None
+            }
+        };
+        s.change(&Op::Bill { date: ago(days), description: description.into(), postings, document }, argv(), "Book a bill", &[])?;
+        Ok(s.books.entries.len())
+    };
+    let pay = |s: &mut Store, days: i64, debt: usize, amount: &str| -> Result<()> {
+        s.change(&Op::Pay { debt, date: ago(days), amount: d(amount), from: "Assets:Bank".into(), cost: None }, argv(), &format!("Pay {amount} of {debt}"), &[])?;
+        Ok(())
+    };
+    let invoice = |s: &mut Store, days: i64, customer: &str, lines: &[(&str, &str, &str)]| -> Result<Option<usize>> {
+        let lines: Vec<model::Line> = lines.iter().map(|(q, u, w)| model::Line { description: w.to_string(), quantity: d(q), unit_price: d(u) }).collect();
+        let op = |pdf: String| Op::Invoice {
+            date: ago(days),
+            customer: customer.into(),
+            commodity: "EUR".into(),
+            lines: lines.clone(),
+            rate: None,
+            reason: String::new(),
+            reference: String::new(),
+            note: String::new(),
+            pdf,
+            more: Default::default(),
+        };
+        match s.issue(op, argv()) {
+            Ok(i) => Ok(Some(i.entry)),
+            Err(e) => {
+                tracing::warn!(%e, "the demo has no invoice to {customer}: typst is needed for its PDF");
+                Ok(None)
+            }
+        }
+    };
+    post(&mut s, 270, "Opening balance", vec![p("Assets:Bank", "25000.00", "EUR"), p("Equity:Opening", "-25000.00", "EUR")])?;
+    let acme = bill(&mut s, 230, "Acme Hosting AG", "Acme Hosting AG, hosting", vec![p("Expenses:Hosting", "100.00", "EUR"), p("Assets:VAT:Input", "10.00", "EUR"), p("Liabilities:Payable", "-110.00", "EUR")])?;
+    pay(&mut s, 216, acme, "110.00")?;
+    if let Some(one) = invoice(&mut s, 185, "Customer One\n1 Customer Lane\n10000 Example City", &[("10", "500.00", "Consulting")])? {
+        pay(&mut s, 170, one, "5500.00")?;
+    }
+    post(&mut s, 155, "Salary", vec![p("Expenses:Salary", "6000.00", "EUR"), p("Assets:Bank", "-6000.00", "EUR")])?;
+    post(&mut s, 150, "Petty cash", vec![p("Assets:Cash", "500.00", "EUR"), p("Assets:Bank", "-500.00", "EUR")])?;
+    post(&mut s, 148, "Paper & Pens, stationery paid in cash", vec![p("Expenses:General", "42.50", "EUR"), p("Assets:Cash", "-42.50", "EUR")])?;
+    let lex = bill(&mut s, 95, "Lex & Partners", "Lex & Partners, legal advice", vec![p("Expenses:General", "1200.00", "EUR"), p("Assets:VAT:Input", "120.00", "EUR"), p("Liabilities:Payable", "-1320.00", "EUR")])?;
+    pay(&mut s, 65, lex, "500.00")?;
+    if let Some(three) = invoice(&mut s, 50, "Customer Three\n3 Example Road\n10000 Example City", &[("4", "500.00", "Consulting, the month")])? {
+        pay(&mut s, 30, three, "1000.00")?;
+        pay(&mut s, 15, three, "500.00")?;
+    }
+    // Owed in another currency: the open total has a line of its own for it.
+    bill(&mut s, 44, "Devtools Inc", "Devtools Inc, annual licence", vec![p("Expenses:General", "250.00", "USD"), p("Liabilities:Payable", "-250.00", "USD")])?;
+    bill(&mut s, 32, "Acme Hosting AG", "Acme Hosting AG, hosting", vec![p("Expenses:Hosting", "100.00", "EUR"), p("Assets:VAT:Input", "10.00", "EUR"), p("Liabilities:Payable", "-110.00", "EUR")])?;
+    // Filed, not booked yet.
+    let lines = [p("Expenses:General", "59.00", "EUR")];
+    match demo_document(&s.root, "Telecom GmbH", "Telecom GmbH, phone", &lines, ago(8)) {
+        Ok(bytes) => {
+            let sha256 = sha256(&bytes);
+            let doc = model::Document { date: ago(8), name: "telecom-gmbh".into(), ext: "pdf".into(), of: None };
+            let path = doc.path(&sha256);
+            s.change(&Op::File { sha256, date: doc.date, name: doc.name, ext: "pdf".into(), bill: None }, argv(), &format!("File {path}"), &[(path, bytes)])?;
+        }
+        Err(e) => tracing::warn!(%e, "the demo has no bill waiting to be booked"),
+    }
+    // The bank statement of a week ago, all it shows cleared: whole.
+    let at = ago(7);
+    let cleared: std::collections::BTreeSet<model::PostingRef> = s.books.all_postings().into_iter().filter(|(_, d, p)| p.account == "Assets:Bank" && p.amount.commodity == "EUR" && *d <= at).map(|(r, ..)| r).collect();
+    let balance = s.books.all_postings().into_iter().filter(|(r, ..)| cleared.contains(r)).map(|(_, _, p)| p.amount.quantity).sum();
+    s.change(&Op::Record { account: "Assets:Bank".into(), commodity: "EUR".into(), date: at, balance, clears: cleared }, argv(), "Record the statement of Assets:Bank", &[])?;
+    Ok(dir.to_path_buf())
+}
+
+/// A bogus bill, rendered with typst: the issuer, a line per posting it
+/// debits, and the total.
+fn demo_document(root: &Path, issuer: &str, description: &str, postings: &[model::Posting], date: model::Date) -> Result<Vec<u8>> {
+    let debits: Vec<_> = postings.iter().filter(|p| p.amount.quantity > Decimal::ZERO).collect();
+    // "Acme Hosting AG, hosting": the line is what follows the issuer.
+    let what = description.split_once(", ").map_or(description, |(_, w)| w);
+    let rows: String = debits.iter().map(|p| format!("[{}], [{} {}],\n", if p.account.contains("VAT") { "VAT" } else { what }, p.amount.quantity, p.amount.commodity)).collect();
+    let total: Decimal = debits.iter().map(|p| p.amount.quantity).sum();
+    let currency = debits.first().map_or("EUR", |p| p.amount.commodity.as_str());
+    let src = format!(
+        "#set page(paper: \"a5\")\n#set text(size: 9pt)\n= {issuer}\n\n\
+         Bill to Example Ltd, 1 Example Street, 10000 Example City\n\nDate: {date}\n\n\
+         #table(columns: (1fr, auto), align: (left, right),\n{rows}[*Total*], [*{total} {currency}*])\n"
+    );
+    let tmp = root.join(".abo");
+    std::fs::create_dir_all(&tmp)?;
+    let (typ, pdf) = (tmp.join("demo-bill.typ"), tmp.join("demo-bill.pdf"));
+    std::fs::write(&typ, src.replace('&', "\\&"))?;
+    crate::statement::typst(root, &typ, &pdf)?;
+    Ok(std::fs::read(&pdf)?)
 }
