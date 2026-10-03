@@ -14,7 +14,7 @@ pub enum Op {
     Bill { date: Date, description: String, postings: Vec<Posting>, document: Option<Hash> },
     /// `rate`: the configured one when none. Nought charges none, and needs
     /// `reason`.
-    Invoice { date: Date, customer: String, commodity: Commodity, lines: Vec<Line>, rate: Option<Decimal>, reason: String, reference: String, note: String, pdf: Hash },
+    Invoice { date: Date, customer: String, commodity: Commodity, lines: Vec<Line>, rate: Option<Decimal>, reason: String, reference: String, note: String, pdf: Hash, more: InvoiceMore },
     Credit { invoice: EntryId, date: Date, note: String, pdf: Hash },
     /// `cost`: what was paid, when in another commodity than the debt's.
     Pay { debt: EntryId, date: Date, amount: Decimal, from: Account, cost: Option<Amount> },
@@ -23,6 +23,9 @@ pub enum Op {
     Record { account: Account, commodity: Commodity, date: Date, balance: Decimal, clears: BTreeSet<PostingRef> },
     Unrecord { account: Account, commodity: Commodity },
     ConfigSet { key: String, value: String },
+    /// The whole configuration at once: for what changes more than one key's
+    /// table, such as a company renamed and the options held in its name.
+    Configure(Box<Config>),
     ConfigUnset { key: String },
     AccountAdd(Account),
     AccountRemove(Account),
@@ -30,6 +33,16 @@ pub enum Op {
     CommodityRemove(Commodity),
     PriceAdd { of: Commodity, date: Date, price: Amount },
     PriceRemove { of: Commodity, date: Date },
+}
+
+/// What an invoice may say besides, each with its default: the customer's
+/// tax number, none; its terms, the configured; the payment options it
+/// prints, by id, all.
+#[derive(Clone, Debug, Default)]
+pub struct InvoiceMore {
+    pub customer_tax_id: String,
+    pub due_days: Option<i64>,
+    pub pay_to: Vec<String>,
 }
 
 pub fn apply(m: &Books, op: &Op, today: Date) -> Result<Books, Vec<Violation>> {
@@ -70,14 +83,15 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
                 }
             }
         }
-        Op::Invoice { date, customer, commodity, lines, rate, reason, reference, note, pdf } => {
+        Op::Invoice { date, customer, commodity, lines, rate, reason, reference, note, pdf, more } => {
             let c = &m.config;
             let vat = match (&c.vat, rate.unwrap_or(c.invoice.vat_rate)) {
                 (Vat::None, r) if r.is_zero() => InvoiceVat::NotRegistered,
                 (Vat::None, _) => return Err("the company is not VAT registered, so an invoice charges none".into()),
                 (_, r) if r.is_zero() => InvoiceVat::Exempt { reason },
                 (_, rate) => {
-                    let home = (commodity != c.company.currency)
+                    // Undeclared, it is I-A1's to refuse, not the price's.
+                    let home = (commodity != c.company.currency && m.commodities.contains_key(&commodity))
                         .then(|| {
                             let from = (commodity.clone(), Date::MIN);
                             m.prices
@@ -95,11 +109,25 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
                 (Vat::Effective { output, .. }, InvoiceVat::Charged { .. }) => Some(output.clone()),
                 _ => None,
             };
-            let due = jiff::Span::new().try_days(c.invoice.terms_days).and_then(|s| date.checked_add(s)).map_err(|e| e.to_string())?;
-            let pay_to = c.payment.values().map(|o| PayOut { label: o.label.clone(), lines: [&o.iban, &o.bic, &o.network, &o.address].into_iter().filter(|s| !s.is_empty()).cloned().chain(o.details.lines().map(String::from)).collect() }).collect();
+            let days = more.due_days.unwrap_or(c.invoice.terms_days);
+            if days < 0 {
+                return Err(format!("an invoice is due on its date or after, not {} days before", -days));
+            }
+            let due = jiff::Span::new().try_days(days).and_then(|s| date.checked_add(s)).map_err(|_| format!("{days} days from {date} is no date abo can write"))?;
+            let mut ids: Vec<&String> = vec![];
+            for id in &more.pay_to {
+                let id = c.payment.keys().find(|k| *k == id).ok_or(format!("there is no payment option {id:?}"))?;
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            if more.pay_to.is_empty() {
+                ids = c.payment.keys().collect();
+            }
+            let pay_to = ids.into_iter().map(|id| c.payment[id].printed()).collect();
             let accounts = InvoiceAccounts { receivable: c.invoice.receivable.clone(), income: c.invoice.income.clone(), output };
             let first = customer.lines().next().unwrap_or("").trim().to_string();
-            let content = Content { customer, commodity, lines, vat, due, pay_to, reference, note, accounts };
+            let content = Content { customer, customer_tax_id: more.customer_tax_id, commodity, lines, vat, due, pay_to, reference, note, accounts };
             n.entries.push(entry(date, String::new(), Kind::Invoice { content: Box::new(content), pdf }));
             // The number first: a name may begin with what the date line
             // reads as a status or a code, `*` or `(`; and `;` would begin a
@@ -130,6 +158,7 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
             n.statements.remove(&key);
         }
         Op::ConfigSet { key, value } => n.config = config_edit(&m.config, &key, Some(&value))?,
+        Op::Configure(c) => n.config = *c,
         Op::ConfigUnset { key } => n.config = config_edit(&m.config, &key, None)?,
         Op::AccountAdd(a) => {
             if !n.accounts.insert(a) {

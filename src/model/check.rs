@@ -318,15 +318,19 @@ pub fn check(m: &Books) -> Vec<Violation> {
                 let accounts_ok = class(&c.accounts.receivable) == "Assets"
                     && class(&c.accounts.income) == "Income"
                     && c.accounts.output.as_ref().is_none_or(|o| class(o) == "Liabilities" && charged);
-                if c.lines.is_empty() || total <= Decimal::ZERO || c.due < e.date || !home_ok || !accounts_ok || !hash_ok(pdf)
-                    || !lines_ok(&c.customer) || c.customer.lines().next().is_none_or(|l| l.trim().is_empty()) || !lines_ok(&c.note) || !texts.into_iter().all(text_ok)
+                if c.lines.is_empty() || c.lines.iter().any(|l| l.description.trim().is_empty()) || total <= Decimal::ZERO || c.due < e.date || !home_ok || !accounts_ok || !hash_ok(pdf)
+                    || !lines_ok(&c.customer) || c.customer.lines().next().is_none_or(|l| l.trim().is_empty()) || !text_ok(&c.customer_tax_id) || !lines_ok(&c.note) || !texts.into_iter().all(text_ok)
                 {
                     no!("I-I1", "invoice {id} is not one abo could have issued");
                 }
             }
             Kind::CreditNote { of, note, pdf } => {
-                if !matches!(m.entry(*of), Some(Entry { kind: Kind::Invoice { .. }, .. })) || !hash_ok(pdf) || !lines_ok(note) {
+                if !matches!(m.entry(*of), Some(Entry { kind: Kind::Invoice { .. }, .. })) {
                     no!("I-I1", "credit note {id} is not of an invoice");
+                } else if !lines_ok(note) {
+                    no!("I-I1", "credit note {id}'s note holds a hidden character");
+                } else if !hash_ok(pdf) {
+                    no!("I-I1", "credit note {id}'s PDF hash is not a SHA-256");
                 }
             }
             _ => continue,
@@ -435,16 +439,37 @@ pub fn check(m: &Books) -> Vec<Violation> {
         no!("I-C1", "the company has a name, and no text in the configuration holds a hidden character");
     }
     for (id, o) in &c.payment {
-        let needs = match o.kind {
-            PayKind::Bank => !o.iban.is_empty() || !o.details.is_empty(),
-            PayKind::Cash => !o.details.is_empty(),
-            PayKind::Crypto => !o.network.is_empty() && !o.address.is_empty(),
+        let kind = match o.kind {
+            PayKind::Bank => "bank",
+            PayKind::Cash => "cash",
+            PayKind::Crypto => "crypto",
         };
-        let iban = o.iban.is_empty() || answer::iban(&o.iban).as_ref() == Ok(&o.iban);
-        let bic = o.bic.is_empty() || answer::bic(&o.bic).as_ref() == Ok(&o.bic);
-        let texts = [&o.label, &o.iban, &o.bic, &o.network, &o.address].iter().all(|t| text_ok(t)) && lines_ok(&o.details);
-        if answer::option_id(id).is_err() || !needs || !iban || !bic || !texts {
-            no!("I-C2", "payment option {id} is not well formed");
+        // What another kind has is not this one's: a cash option has no IBAN.
+        let fields = [("holder", &o.holder), ("iban", &o.iban), ("bic", &o.bic), ("bank", &o.bank), ("network", &o.network), ("address", &o.address)];
+        let theirs: &[&str] = match o.kind {
+            PayKind::Bank => &["network", "address"],
+            PayKind::Cash => &["holder", "iban", "bic", "bank", "network", "address"],
+            PayKind::Crypto => &["holder", "iban", "bic", "bank"],
+        };
+        let needs = match o.kind {
+            PayKind::Bank if o.iban.is_empty() && o.details.is_empty() => Some("an IBAN, or details such as an account number"),
+            PayKind::Cash if o.details.is_empty() => Some("lines saying where and when"),
+            PayKind::Crypto if o.network.is_empty() || o.address.is_empty() => Some("a network and an address"),
+            _ => None,
+        };
+        let texts = [&o.label, &o.holder, &o.iban, &o.bic, &o.network, &o.address].iter().all(|t| text_ok(t)) && lines_ok(&o.details) && lines_ok(&o.bank);
+        if let Err(e) = answer::option_id(id) {
+            no!("I-C2", "payment option {id:?}: {e}");
+        } else if let Some((field, _)) = fields.iter().find(|(f, v)| theirs.contains(f) && !v.is_empty()) {
+            no!("I-C2", "payment option {id}: a {kind} option has no {field}");
+        } else if let Some(n) = needs {
+            no!("I-C2", "payment option {id}: a {kind} option needs {n}");
+        } else if !o.iban.is_empty() && answer::iban(&o.iban).as_ref() != Ok(&o.iban) {
+            no!("I-C2", "payment option {id}: {}", answer::iban(&o.iban).err().unwrap_or_else(|| format!("{:?} is an IBAN not written in groups of four", o.iban)));
+        } else if !o.bic.is_empty() && answer::bic(&o.bic).as_ref() != Ok(&o.bic) {
+            no!("I-C2", "payment option {id}: {}", answer::bic(&o.bic).err().unwrap_or_else(|| format!("{:?} is a BIC not in capitals", o.bic)));
+        } else if !texts {
+            no!("I-C2", "payment option {id} holds a hidden character");
         }
     }
     let mut kinds = vec![(&c.invoice.receivable, "Assets"), (&c.invoice.income, "Income")];

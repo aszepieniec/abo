@@ -9,14 +9,18 @@ mod report;
 mod reconcile;
 mod repo;
 mod settle;
+mod store;
 mod statement;
 mod undo;
 mod web;
+#[cfg(test)]
+mod cli_tests;
 
 use anyhow::{bail, Context as _, Result};
 use clap::{Parser, Subcommand};
-use journal::{Entry, Posting};
+use model::Op;
 use repo::{answer, Ctx};
+use store::Store;
 use rust_decimal::Decimal;
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -210,6 +214,58 @@ impl OptionParts {
 }
 
 #[derive(Subcommand)]
+enum ConfigCmd {
+    /// Every key and its value. The same as no subcommand.
+    List,
+    /// One key's value.
+    Get { key: String },
+    /// Set a key: a table's keys together as `{ name = value, ... }`, a
+    /// whole number where the key takes one, else text.
+    Set {
+        key: String,
+        #[arg(allow_hyphen_values = true)]
+        value: String,
+    },
+    /// Take a key out.
+    Unset { key: String },
+}
+
+#[derive(Subcommand)]
+enum AccountCmd {
+    /// The declared accounts. The same as no subcommand.
+    List,
+    /// Declare an account: its first segment a class, Assets to Expenses.
+    Add { account: String },
+    /// Take out an account nothing uses.
+    Remove { account: String },
+}
+
+#[derive(Subcommand)]
+enum CommodityCmd {
+    /// The commodities, with their places. The same as no subcommand.
+    List,
+    /// Declare a commodity, such as `EUR 2` or `BTC 8`: 0 to 8 places.
+    Add { code: String, places: u32 },
+    /// Take out a commodity nothing is in.
+    Remove { code: String },
+}
+
+#[derive(Subcommand)]
+enum PriceCmd {
+    /// The prices. The same as no subcommand.
+    List,
+    /// What one unit of CODE was worth on DATE: `2026-09-30 BTC 60000.00 EUR`.
+    Add {
+        date: String,
+        code: String,
+        #[arg(num_args = 1..=2, required = true)]
+        price: Vec<String>,
+    },
+    /// Take out a price.
+    Remove { date: String, code: String },
+}
+
+#[derive(Subcommand)]
 enum Cmd {
     /// Open the books for a new company, in a directory of its own named
     /// after it, inside the working directory. With no flags it asks its
@@ -224,53 +280,55 @@ enum Cmd {
         #[command(flatten)]
         flags: InitFlags,
     },
-    /// Post an entry to the journal. POSTINGs are `account=amount
-    /// [COMMODITY]`; one may omit the amount.
+    /// Book an entry. POSTINGs are `account=amount [COMMODITY]`, with `@@
+    /// cost COMMODITY` after one exchanged for another; every amount is
+    /// written.
     Post {
+        /// Defaults to today.
         #[arg(long)]
-        date: String,
+        date: Option<String>,
         #[arg(long = "desc")]
         description: String,
-        /// `key=value`, repeatable. e.g. --tag ref=INV-1234
-        #[arg(long = "tag")]
-        tags: Vec<String>,
-        #[arg(required = true)]
+        #[arg(allow_hyphen_values = true)]
         postings: Vec<String>,
     },
-    /// Put a bill's document under version control, at
-    /// bills/<year>/<date>-<issuer>-<hash>.<ext>. `abo bill` then books it.
+    /// Put a bill's document in the books, at
+    /// bills/<year>/<date>-<issuer>-<hash>.<ext>. `abo bill --document` then
+    /// books it.
     File {
         /// The date on the bill.
-        #[arg(long, required_unless_present = "entry")]
-        date: Option<String>,
+        #[arg(long)]
+        date: String,
         /// Who issued it.
-        #[arg(long, required_unless_present = "entry")]
-        issuer: Option<String>,
-        /// The document a booking names but the books lack, by the booking's
-        /// key: a bill's is filed under its old date and issuer and the
-        /// booking's tags follow; an invoice's goes where the invoice put it.
-        #[arg(long = "for", value_name = "KEY", conflicts_with_all = ["date", "issuer"])]
-        entry: Option<String>,
+        #[arg(long)]
+        issuer: String,
+        /// The bill it is the document of, by its id, when that is booked
+        /// already.
+        #[arg(long = "for", value_name = "BILL")]
+        bill: Option<usize>,
         /// A PDF, JPEG, PNG or WebP.
         src: PathBuf,
     },
+    /// Take out a document filed by mistake, by its path or hash: one no
+    /// bill names.
+    Unfile { document: String },
     /// hledger balance.
     #[command(alias = "balance")]
     Bal {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Book a bill whose document is filed, dated as the document is and
-    /// tagged with its path and hash.
+    /// Book a supplier's bill: one posting credits what is owed.
     Bill {
+        /// Defaults to the document's date, else today.
+        #[arg(long)]
+        date: Option<String>,
         #[arg(long = "desc")]
         description: String,
-        /// `key=value`, repeatable. e.g. --tag ref=INV-1234
-        #[arg(long = "tag")]
-        tags: Vec<String>,
-        /// The document's path in the books, as `abo file` gave it.
-        file: String,
-        #[arg(required = true)]
+        /// The filed document it is the bill of, by its path or hash.
+        #[arg(long)]
+        document: Option<String>,
+        #[arg(allow_hyphen_values = true)]
         postings: Vec<String>,
     },
     /// Issue an invoice: render the PDF and book the receivable.
@@ -279,32 +337,24 @@ enum Cmd {
         #[arg(long)]
         to: String,
         /// `quantity|unit price|description`, repeatable.
-        #[arg(long = "item", required = true)]
+        #[arg(long = "item")]
         items: Vec<String>,
         /// Invoice date. Defaults to today.
         #[arg(long)]
         date: Option<String>,
-        /// Payment terms. Defaults to [invoice] terms_days in abo.toml.
-        #[arg(long)]
+        /// Payment terms. Defaults to invoice.terms_days.
+        #[arg(long, allow_hyphen_values = true)]
         due_days: Option<i64>,
-        /// Percent. Defaults to [invoice] vat_rate in abo.toml.
-        #[arg(long)]
+        /// Percent. Defaults to invoice.vat_rate.
+        #[arg(long, allow_hyphen_values = true)]
         vat_rate: Option<Decimal>,
-        /// Commodity to invoice in. Defaults to the company currency; any
-        /// commodity declared in journal/accounts.journal will do.
+        /// Commodity to invoice in. Defaults to the company currency.
         #[arg(long)]
         currency: Option<String>,
-        /// Decimal places for that commodity, no more than it is declared
-        /// with. Defaults to its declared places, else [invoice] decimals.
-        #[arg(long)]
-        decimals: Option<u32>,
         /// The customer's own order reference.
         #[arg(long, default_value = "")]
         reference: String,
-        /// The id of a payment option to print, repeatable. Defaults to all
-        /// of them, as `abo payment-options` lists them; for an invoice in
-        /// another commodity than the company's, to its crypto options if
-        /// there are any.
+        /// The id of a payment option to print, repeatable. Defaults to all.
         #[arg(long)]
         pay_to: Vec<String>,
         #[arg(long, default_value = "")]
@@ -312,8 +362,8 @@ enum Cmd {
         /// The customer's tax registration number, printed under their address.
         #[arg(long, default_value = "")]
         customer_tax_id: String,
-        /// Why no VAT is charged: needed at 0% unless the company is not
-        /// VAT registered. e.g. "Export of services, outside the scope of VAT".
+        /// Why no VAT is charged: needed at 0% unless the company is not VAT
+        /// registered.
         #[arg(long, default_value = "")]
         vat_reason: String,
     },
@@ -334,41 +384,88 @@ enum Cmd {
         #[arg(long)]
         pdf: Option<PathBuf>,
     },
-    /// Tax return for a period, from the [[report.vat]] lines in abo.toml.
+    /// Tax return for a period, from the report.vat boxes of abo.toml.
     Vat {
         #[arg(long, default_value = "")]
         period: String,
         #[arg(long)]
         pdf: Option<PathBuf>,
     },
-    /// Tick booked transactions off against a statement.
+    /// An account against a statement: what is cleared, what is not yet,
+    /// each by the `ENTRY.N` that `abo record` takes.
     Reconcile {
         #[arg(long, default_value = "Assets:Bank")]
         account: String,
-        /// Which commodity to reconcile. Defaults to the company currency.
+        /// Defaults to the company currency.
         #[arg(long)]
         commodity: Option<String>,
         /// Statement date. Defaults to today.
         #[arg(long)]
         date: Option<String>,
         /// The closing balance printed on the statement.
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         balance: Option<Decimal>,
-        /// Record the statement: as a balance assertion when nothing is
-        /// outstanding, else as a note. Refuses unless the difference is zero.
-        #[arg(long)]
-        record: bool,
     },
-    /// The latest operations from the log, numbered, and whether each can be undone.
+    /// Record a bank statement: its balance, and the postings it shows, as
+    /// `ENTRY.N`.
+    Record {
+        #[arg(long, default_value = "Assets:Bank")]
+        account: String,
+        /// Defaults to the company currency.
+        #[arg(long)]
+        commodity: Option<String>,
+        /// Defaults to today.
+        #[arg(long)]
+        date: Option<String>,
+        #[arg(long, allow_hyphen_values = true)]
+        balance: Decimal,
+        /// Every posting to it not yet cleared, dated on or before it.
+        #[arg(long)]
+        all: bool,
+        clears: Vec<String>,
+    },
+    /// Take out an account's latest statement.
+    Unrecord {
+        #[arg(long, default_value = "Assets:Bank")]
+        account: String,
+        #[arg(long)]
+        commodity: Option<String>,
+    },
+    /// Pay a bill or an invoice, in part or in full. DEBT is its id, or an
+    /// invoice's number.
+    Pay {
+        debt: String,
+        /// Defaults to what it has open.
+        #[arg(long, allow_hyphen_values = true)]
+        amount: Option<Decimal>,
+        /// The money account. Defaults to the first payment option's.
+        #[arg(long)]
+        from: Option<String>,
+        /// What was paid, when in another commodity than the debt's:
+        /// `230.00 EUR`.
+        #[arg(long)]
+        cost: Option<String>,
+        /// Defaults to today.
+        #[arg(long)]
+        date: Option<String>,
+    },
+    /// Write off what a debt has open, to an account for it.
+    WriteOff {
+        debt: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        date: Option<String>,
+    },
+    /// The latest changes from the log.
     Log {
         #[arg(long, default_value_t = 20)]
         last: usize,
     },
-    /// Take back an operation, by its number in `abo log`: its change leaves
-    /// the books as a new commit, and git keeps both.
-    Undo { line: usize },
-    /// List where invoices ask to be paid, in the order they print them;
-    /// add, change or remove an option.
+    /// Take back abo's last change, while nothing has happened since; again,
+    /// and it is made again.
+    Undo,
+    /// List where invoices ask to be paid; add, change or remove an option.
     PaymentOptions {
         #[command(subcommand)]
         change: Option<PaymentCmd>,
@@ -386,9 +483,7 @@ enum Cmd {
         #[arg(long)]
         tax_id: Option<String>,
     },
-    /// Cancel an issued invoice in full with a credit note: the next number,
-    /// the invoice's lines and entry negated. Issue the corrected invoice
-    /// after it with `abo invoice`.
+    /// Cancel an issued invoice in full with a credit note, numbered next.
     Credit {
         /// Defaults to today.
         #[arg(long)]
@@ -399,41 +494,43 @@ enum Cmd {
         /// The invoice's number, such as 2026-0017.
         number: String,
     },
-    /// Every invoice and credit note: total, due date and whether it is
-    /// settled. A payment settles one by tag: `--tag pays=<number>` for a
-    /// part, `--tag settles=<number>` for the one that settles it.
+    /// Every invoice and credit note: total, due date, what is open.
     Invoices {
-        /// Only those not yet settled: open or part paid.
+        /// Only those with something open.
         #[arg(long)]
         open: bool,
     },
-    /// Settle an invoice. With --by, a booked payment that forgot to say so
-    /// is tagged `settles:` it; without, an entry of the tag alone says it
-    /// was settled where the books do not show.
-    Settle {
-        /// A booked payment's key, as `abo reconcile` and the web interface
-        /// give it.
-        #[arg(long, value_name = "KEY", conflicts_with = "date")]
-        by: Option<String>,
-        /// Defaults to today.
-        #[arg(long)]
-        date: Option<String>,
-        /// The invoice's number, such as 2026-0017.
-        number: String,
-    },
-    /// Book the opposite of an entry. KEY is `file:line:date`, as `abo
-    /// reconcile` and the web interface give it.
+    /// Book the opposite of an entry, by its id.
     Revert {
         /// Defaults to today.
         #[arg(long)]
         date: Option<String>,
-        key: String,
+        entry: usize,
     },
-    /// Mark transactions cleared. Keys come from `abo reconcile`.
-    Clear {
-        #[arg(required = true)]
-        keys: Vec<String>,
+    /// The configuration, read and changed by keys named as in abo.toml.
+    Config {
+        #[command(subcommand)]
+        change: Option<ConfigCmd>,
     },
+    /// The declared accounts.
+    Account {
+        #[command(subcommand)]
+        change: Option<AccountCmd>,
+    },
+    /// The declared commodities.
+    Commodity {
+        #[command(subcommand)]
+        change: Option<CommodityCmd>,
+    },
+    /// The declared prices.
+    Price {
+        #[command(subcommand)]
+        change: Option<PriceCmd>,
+    },
+    /// What is wrong with the books, by file and line.
+    Check,
+    /// Rewrite the books as abo writes them, where they are not.
+    Tidy,
     /// Serve the web interface on localhost. Put nginx in front for TLS.
     Serve {
         #[arg(long, default_value_t = 8801)]
@@ -510,7 +607,15 @@ fn preflight() -> Result<Vec<&'static Dep>> {
 // has to serve more than one person.
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::process::ExitCode {
-    let cli = Cli::parse();
+    // Under --json a usage error is JSON too: the output is the API.
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) if std::env::args().any(|a| a == "--json") && !matches!(e.kind(), clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion) => {
+            println!("{}", serde_json::json!({ "error": e.to_string().trim(), "rules": [] }));
+            return std::process::ExitCode::from(2);
+        }
+        Err(e) => e.exit(),
+    };
     let json = cli.json;
     match run(cli).await {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -518,7 +623,8 @@ async fn main() -> std::process::ExitCode {
             // Under --json a refusal is part of the API too, so it is JSON on
             // stdout like everything else; otherwise anyhow's usual report.
             if json {
-                println!("{}", serde_json::json!({ "error": format!("{e:#}") }));
+                let rules: Vec<&str> = e.downcast_ref::<store::Refused>().map(|r| r.0.iter().map(|v| v.code).collect()).unwrap_or_default();
+                println!("{}", serde_json::json!({ "error": format!("{e:#}"), "rules": rules }));
             } else {
                 eprintln!("Error: {e:?}");
             }
@@ -575,6 +681,7 @@ async fn run(cli: Cli) -> Result<()> {
         _ => repo::books_root(&here).ok().flatten().map(|root| repo::lock(&root, true)).transpose()?,
     };
 
+    let argv: Vec<String> = std::env::args().skip(1).collect();
     match cli.cmd {
         Cmd::Init { name, flags } => {
             // `abo init Test LLC` is one name, its words one space apart.
@@ -626,156 +733,170 @@ async fn run(cli: Cli) -> Result<()> {
                     questions::walk(questions::INIT, "", &mut answers, &context, &mut term)?;
                 }
             }
-            let r = repo::init(&dir, &questions::books(&answers))?;
-            emit(cli.json, &r, || {
-                format!(
-                    "Books opened in {} ({}).\nNext: cd {slug}, edit journal/accounts.journal, then `abo post`.",
-                    r.root, r.commit
-                )
-            })
+            let b = questions::books(&answers);
+            let commit = store::init(&dir, config_of(&b), b.author.clone(), b.argv())?;
+            let r = serde_json::json!({ "root": dir.display().to_string(), "commit": commit });
+            emit(cli.json, &r, || format!("Books opened in {} ({commit}).\nNext: cd {slug}, then `abo account add` and `abo post`.", dir.display()))
         }
-        Cmd::Post { date, description, tags, postings } => {
-            let ctx = Ctx::open(&here)?;
-            let entry = Entry { date, description, tags: tag_pairs(&tags)?, postings: parse_postings(&ctx, &postings)? };
-            let r = journal::post(&ctx, &entry)?;
-            emit(cli.json, &r, || format!("{}\nCommitted {} to {}.", r.entry.render(), r.commit, r.file))
+        Cmd::Post { date, description, postings } => {
+            let mut s = Store::open(&here)?;
+            let postings = postings.iter().map(|p| posting(&s, p)).collect::<Result<_>>()?;
+            let op = Op::Post { date: day(date.as_deref())?, description, postings };
+            changed(&mut s, &op, argv, "Post", &[], cli.json)
         }
-        Cmd::File { date, issuer, entry, src } => {
-            let ctx = Ctx::open(&here)?;
+        Cmd::File { date, issuer, bill, src } => {
+            let mut s = Store::open(&here)?;
             let bytes = std::fs::read(&src).with_context(|| format!("{}", src.display()))?;
-            if let Some(key) = entry {
-                let r = bill::refile(&ctx, &key, &src.to_string_lossy(), &bytes)?;
-                return emit(cli.json, &r, || format!("Filed {} for {key}. Committed {}.", r.file, r.commit));
+            let ext = src.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
+            if !["pdf", "jpg", "jpeg", "png", "webp"].contains(&ext.as_str()) {
+                bail!("{} is not a PDF, JPEG, PNG or WebP", src.display());
             }
-            let (date, issuer) = (date.unwrap_or_default(), issuer.unwrap_or_default());
-            let r = bill::file(&ctx, &src.to_string_lossy(), &bytes, &date, &issuer)?;
-            emit(cli.json, &r, || format!("Filed {}. Committed {}.\nNext: abo bill --desc ... {} POSTINGS", r.file, r.commit, r.file))
+            let name = repo::slug(&issuer);
+            if name.is_empty() {
+                bail!("an issuer is needed, with letters or digits to name the file after");
+            }
+            let sha256 = store::sha256(&bytes);
+            let doc = model::Document { date: day(Some(&date))?, name, ext, of: bill };
+            let path = doc.path(&sha256);
+            let op = Op::File { sha256, date: doc.date, name: doc.name.clone(), ext: doc.ext.clone(), bill };
+            changed(&mut s, &op, argv, &format!("File {path}"), &[(path.clone(), bytes)], cli.json)
         }
-        Cmd::Bill { description, tags, file, postings } => {
-            let ctx = Ctx::open(&here)?;
-            let r = bill::bill(&ctx, &file, &description, tag_pairs(&tags)?, parse_postings(&ctx, &postings)?)?;
-            emit(cli.json, &r, || format!("{}\nCommitted {} to {}.", r.entry.render(), r.commit, r.file))
+        Cmd::Unfile { document } => {
+            let mut s = Store::open(&here)?;
+            let sha256 = filed(&s, &document)?;
+            changed(&mut s, &Op::Unfile { sha256 }, argv, &format!("Take out {document}"), &[], cli.json)
         }
-        Cmd::Invoice { to, items, date, due_days, vat_rate, currency, decimals, reference, pay_to, note, customer_tax_id, vat_reason } => {
-            let ctx = Ctx::open(&here)?;
-            let args = invoice::IssueArgs {
-                customer: to.replace("\\n", "\n"),
-                items,
-                date,
-                due_days,
-                vat_rate,
-                currency,
-                decimals,
-                reference,
-                pay_to,
-                note,
-                customer_tax_id,
-                vat_reason,
+        Cmd::Bill { date, description, document, postings } => {
+            let mut s = Store::open(&here)?;
+            let document = document.map(|d| filed(&s, &d)).transpose()?;
+            let date = match (&date, &document) {
+                (None, Some(h)) => s.books.documents[h].date,
+                _ => day(date.as_deref())?,
             };
-            let r = invoice::issue(&ctx, &args)?;
-            for w in &r.warnings {
-                eprintln!("Warning: {w}");
-            }
-            emit(cli.json, &r, || {
-                format!("Invoice {} for {}: {}\nCommitted {}.", r.number, r.total, r.pdf, r.commit)
-            })
+            let postings = postings.iter().map(|p| posting(&s, p)).collect::<Result<_>>()?;
+            let op = Op::Bill { date, description, postings, document };
+            changed(&mut s, &op, argv, "Book a bill", &[], cli.json)
+        }
+        Cmd::Invoice { to, items, date, due_days, vat_rate, currency, reference, pay_to, note, customer_tax_id, vat_reason } => {
+            let mut s = Store::open(&here)?;
+            let lines: Vec<model::Line> = items.iter().enumerate().map(|(n, raw)| line(n + 1, raw)).collect::<Result<_>>()?;
+            let commodity = currency.unwrap_or_else(|| s.books.config.company.currency.clone());
+            let more = model::InvoiceMore { customer_tax_id, due_days, pay_to };
+            let date = day(date.as_deref())?;
+            let customer = to.replace("\\n", "\n");
+            let op = |pdf: String| Op::Invoice {
+                date,
+                customer: customer.clone(),
+                commodity: commodity.clone(),
+                lines: lines.clone(),
+                rate: vat_rate,
+                reason: vat_reason.clone(),
+                reference: reference.clone(),
+                note: note.clone(),
+                pdf,
+                more: more.clone(),
+            };
+            issue(&mut s, op, argv, cli.json)
         }
         Cmd::Credit { date, note, number } => {
-            let ctx = Ctx::open(&here)?;
-            let r = invoice::credit(&ctx, &invoice::CreditArgs { number, date, note })?;
-            for w in &r.warnings {
-                eprintln!("Warning: {w}");
-            }
-            emit(cli.json, &r, || format!("Credit note {} for {}: {}\nCommitted {}.", r.number, r.total, r.pdf, r.commit))
+            let mut s = Store::open(&here)?;
+            let invoice = debt(&s, &number)?;
+            let date = day(date.as_deref())?;
+            issue(&mut s, |pdf| Op::Credit { invoice, date, note: note.clone(), pdf }, argv, cli.json)
         }
         Cmd::Invoices { open } => {
-            let ctx = Ctx::open(&here)?;
-            let all: Vec<_> = settle::invoices(&ctx)?.into_iter().filter(|i| !open || !i.status.settled()).collect();
-            // Newest first, as the browser lists them; --json in number order.
+            let s = Store::open(&here)?;
+            let all = invoices(&s.books, store::today()?);
+            let all: Vec<_> = all.into_iter().filter(|i| !open || i.has_open).collect();
             emit(cli.json, &all, || {
                 all.iter()
                     .rev()
-                    .map(|i| {
-                        let due = if i.due.is_empty() { String::new() } else { format!("due {}", i.due) };
-                        let mut status: Vec<String> = i.settled_by.iter().map(|t| t.label()).collect();
-                        if status.is_empty() {
-                            status.push(i.status.label().to_string());
-                        }
-                        if i.overdue {
-                            status.push("overdue".into());
-                        }
-                        let status = status.join(", ");
-                        format!("{}  {}  {:<24}  {:>16}  {:<14}  {}", i.number, i.date, i.customer, i.total, due, status)
-                    })
+                    .map(|i| format!("{}  {}  {:<24}  {:>16}  {:<14}  {}", i.number, i.date, i.customer, i.total, if i.due.is_empty() { String::new() } else { format!("due {}", i.due) }, i.status))
                     .collect::<Vec<_>>()
                     .join("\n")
             })
         }
-        Cmd::Settle { by, date, number } => {
-            let ctx = Ctx::open(&here)?;
-            let date = date.unwrap_or_else(|| jiff::Zoned::now().date().to_string());
-            let r = settle::settle(&ctx, &number, by.as_deref(), &date)?;
-            emit(cli.json, &r, || format!("Invoice {} settled by {}.\nCommitted {}.", r.number, r.by, r.commit))
+        Cmd::Pay { debt: d, amount, from, cost, date } => {
+            let mut s = Store::open(&here)?;
+            let id = debt(&s, &d)?;
+            // Whether it is a debt is the model's to say, as every rule is.
+            let commodity = s.books.debt(id).map(|x| x.owed.commodity).unwrap_or_default();
+            let amount = amount.unwrap_or_else(|| s.books.open(id, &s.books.standing()));
+            let from = from.or_else(|| s.books.config.payment.values().next().map(|o| o.account.clone())).unwrap_or_else(|| "Assets:Bank".into());
+            let cost = cost.map(|c| value(&s, &c)).transpose()?;
+            let op = Op::Pay { debt: id, date: day(date.as_deref())?, amount, from, cost };
+            changed(&mut s, &op, argv, &format!("Pay {amount} {commodity} of {d}"), &[], cli.json)
+        }
+        Cmd::WriteOff { debt: d, to, date } => {
+            let mut s = Store::open(&here)?;
+            let id = debt(&s, &d)?;
+            changed(&mut s, &Op::WriteOff { debt: id, date: day(date.as_deref())?, to }, argv, &format!("Write off {d}"), &[], cli.json)
+        }
+        Cmd::Revert { date, entry } => {
+            let mut s = Store::open(&here)?;
+            changed(&mut s, &Op::Revert { entry, date: day(date.as_deref())? }, argv, &format!("Revert {entry}"), &[], cli.json)
+        }
+        Cmd::Reconcile { account, commodity, date, balance } => {
+            let s = Store::open(&here)?;
+            let commodity = commodity.unwrap_or_else(|| s.books.config.company.currency.clone());
+            if !s.books.accounts.contains(&account) {
+                bail!("{account} is not declared; `abo account` lists those that are");
+            }
+            let date = day(date.as_deref())?;
+            let r = reconciled(&s.books, &account, &commodity, date, balance);
+            emit(cli.json, &r, || {
+                let mut out = format!("{account} at {date} ({commodity})\n  cleared               {:>14}\n", r["cleared"].as_str().unwrap_or_default());
+                if let Some(d) = r["difference"].as_str() {
+                    out += &format!("  per the statement     {:>14}\n  to clear              {d:>14}\n", r["statement"].as_str().unwrap_or_default());
+                }
+                let rows = r["outstanding"].as_array().cloned().unwrap_or_default();
+                if rows.is_empty() {
+                    out += "\nNothing outstanding.";
+                } else {
+                    out += "\nNot yet cleared; `abo record` takes them by the first column:\n";
+                    for i in rows {
+                        out += &format!("  {:<8} {} {:>14}  {}\n", i["ref"].as_str().unwrap_or_default(), i["date"].as_str().unwrap_or_default(), i["amount"].as_str().unwrap_or_default(), i["description"].as_str().unwrap_or_default());
+                    }
+                }
+                out.trim_end().to_string()
+            })
+        }
+        Cmd::Record { account, commodity, date, balance, all, clears } => {
+            let mut s = Store::open(&here)?;
+            let commodity = commodity.unwrap_or_else(|| s.books.config.company.currency.clone());
+            let date = day(date.as_deref())?;
+            let mut refs: std::collections::BTreeSet<model::PostingRef> = clears.iter().map(|c| posting_ref(c)).collect::<Result<_>>()?;
+            if all {
+                let cleared: std::collections::BTreeSet<_> = s.books.statements.values().flat_map(|st| st.clears.iter().copied()).collect();
+                refs.extend(s.books.all_postings().into_iter().filter(|(r, d, p)| p.account == account && p.amount.commodity == commodity && *d <= date && !cleared.contains(r)).map(|(r, ..)| r));
+            }
+            let op = Op::Record { account: account.clone(), commodity: commodity.clone(), date, balance, clears: refs };
+            changed(&mut s, &op, argv, &format!("Record the statement of {account} on {date}"), &[], cli.json)
+        }
+        Cmd::Unrecord { account, commodity } => {
+            let mut s = Store::open(&here)?;
+            let commodity = commodity.unwrap_or_else(|| s.books.config.company.currency.clone());
+            let op = Op::Unrecord { account: account.clone(), commodity };
+            changed(&mut s, &op, argv, &format!("Take out the latest statement of {account}"), &[], cli.json)
         }
         Cmd::Pl { period, pdf } => {
-            let ctx = Ctx::open(&here)?;
+            let s = Store::open(&here)?;
+            let ctx = s.ctx();
             statement(&ctx, statement::profit_and_loss(&ctx, &period)?, pdf, cli.json)
         }
         Cmd::Bs { date, pdf } => {
-            let ctx = Ctx::open(&here)?;
-            let date = date.unwrap_or_else(|| jiff::Zoned::now().date().to_string());
-            statement(&ctx, statement::balance_sheet(&ctx, &date)?, pdf, cli.json)
+            let s = Store::open(&here)?;
+            let ctx = s.ctx();
+            statement(&ctx, statement::balance_sheet(&ctx, &day(date.as_deref())?.to_string())?, pdf, cli.json)
         }
         Cmd::Vat { period, pdf } => {
-            let ctx = Ctx::open(&here)?;
+            let s = Store::open(&here)?;
+            let ctx = s.ctx();
             statement(&ctx, statement::vat_return(&ctx, &period)?, pdf, cli.json)
         }
-        Cmd::Reconcile { account, commodity, date, balance, record } => {
-            let ctx = Ctx::open(&here)?;
-            let commodity = commodity.unwrap_or_else(|| ctx.cfg.company.currency.clone());
-            let date = date.unwrap_or_else(|| jiff::Zoned::now().date().to_string());
-            let r = reconcile::status(&ctx, &account, &commodity, &date, balance)?;
-            if record {
-                let Some(b) = balance else { bail!("--record needs --balance") };
-                let asserts = reconcile::asserts(&r);
-                let a = reconcile::record(&ctx, &r, b)?;
-                return emit(cli.json, &a, || {
-                    let how = if asserts {
-                        "as a balance assertion hledger will re-check"
-                    } else {
-                        "as a note without an assertion, since items are still outstanding"
-                    };
-                    let b = r.statement.as_deref().unwrap_or_default();
-                    format!("Recorded {b} {commodity} in {account} at {date} {how}.\nCommitted {}.", a.commit)
-                });
-            }
-            emit(cli.json, &r, || {
-                let mut s = format!("{} at {} ({})\n", r.account, r.date, r.commodity);
-                s += &format!("  cleared per the books  {:>14}\n", r.cleared);
-                if let (Some(b), Some(d)) = (&r.statement, &r.difference) {
-                    s += &format!("  per the statement     {b:>14}\n");
-                    s += &format!("  difference            {d:>14}\n");
-                }
-                if r.outstanding.is_empty() {
-                    s += "\nNothing outstanding.";
-                } else {
-                    s += "\nOutstanding; `abo clear <key>` once the statement shows it:\n";
-                    for i in &r.outstanding {
-                        s += &format!("  {:<22} {} {:>12}  {}\n", i.key, i.date, i.amount, i.description);
-                    }
-                }
-                s
-            })
-        }
-        Cmd::Clear { keys } => {
-            let ctx = Ctx::open(&here)?;
-            let r = reconcile::clear(&ctx, &keys)?;
-            emit(cli.json, &r, || format!("Marked {} cleared. Committed {}.", r.marked.len(), r.commit))
-        }
         Cmd::Log { last } => {
-            let ctx = Ctx::open(&here)?;
-            let all = undo::lines(&ctx);
-            let reverted = undo::reverted(&ctx);
+            let s = Store::open(&here)?;
+            let all = store::lines(&s.root);
             let rows: Vec<serde_json::Value> = all
                 .iter()
                 .enumerate()
@@ -783,46 +904,71 @@ async fn run(cli: Cli) -> Result<()> {
                 .map(|(i, l)| {
                     let mut l = l.clone();
                     l["line"] = (i + 1).into();
-                    l["undoable"] = undo::how(&ctx, &l, &reverted).is_ok().into();
                     l
                 })
                 .collect();
             emit(cli.json, &rows, || {
                 rows.iter()
                     .map(|l| {
-                        let undo = if l["undoable"] == true { "  (undo)" } else { "" };
+                        let argv: Vec<&str> = l["argv"].as_array().into_iter().flatten().filter_map(|a| a.as_str()).collect();
                         format!(
-                            "{:>4}  {}  {:<9} {}{undo}\n      {}",
+                            "{:>4}  {}  {:<9} {}\n      abo {}",
                             l["line"],
                             l["at"].as_str().unwrap_or_default().get(..16).unwrap_or_default().replace('T', " "),
-                            l["ok"]["commit"].as_str().unwrap_or_default(),
+                            l["commit"].as_str().unwrap_or_default(),
                             l["what"].as_str().unwrap_or_default(),
-                            undo::command(l),
+                            argv.join(" "),
                         )
                     })
                     .collect::<Vec<_>>()
                     .join("\n")
             })
         }
+        Cmd::Undo => {
+            let mut s = Store::open(&here)?;
+            let commit = s.undo(argv)?;
+            emit(cli.json, &serde_json::json!({ "commit": commit }), || format!("Took back the last change. Committed {commit}."))
+        }
         Cmd::Company { name, address, country, tax_id } => {
-            let ctx = Ctx::open(&here)?;
-            let address = (!address.is_empty()).then(|| address.join("\n"));
-            let c = company::Change { name, address, country, tax_id };
-            if c.name.is_none() && c.address.is_none() && c.country.is_none() && c.tax_id.is_none() {
-                let c = &ctx.cfg.company;
+            let mut s = Store::open(&here)?;
+            let mut c = s.books.config.company.clone();
+            if name.is_none() && address.is_empty() && country.is_none() && tax_id.is_none() {
                 let shown = serde_json::json!({ "name": c.name, "address": c.address, "country": c.country, "tax_id": c.tax_id });
                 return emit(cli.json, &shown, || {
                     [&c.name, &c.address, &c.country, &c.tax_id].iter().filter(|v| !v.is_empty()).map(|v| v.as_str()).collect::<Vec<_>>().join("\n")
                 });
             }
-            let r = company::edit(&ctx, c)?;
-            emit(cli.json, &r, || format!("Changed the company's details. Committed {}.", r.commit))
+            let was = c.name.clone();
+            c.name = name.unwrap_or(c.name);
+            if !address.is_empty() {
+                c.address = address.join("\n").trim_matches('\n').to_string();
+            }
+            c.country = country.unwrap_or(c.country);
+            c.tax_id = tax_id.unwrap_or(c.tax_id);
+            // An account held in the company's name is held in its new one.
+            let mut config = s.books.config.clone();
+            for o in config.payment.values_mut().filter(|o| o.holder == was) {
+                o.holder = c.name.clone();
+            }
+            config.company = c;
+            changed(&mut s, &Op::Configure(Box::new(config)), argv, "Change the company's details", &[], cli.json)
         }
         Cmd::PaymentOptions { change } => {
-            let ctx = Ctx::open(&here)?;
-            let others = |id: &str| ctx.cfg.payment.iter().filter(|p| p.id != id).map(|p| p.id.clone()).collect::<Vec<_>>();
-            let (options, commit) = match change {
-                None | Some(PaymentCmd::List) => (ctx.cfg.payment.clone(), None),
+            let mut s = Store::open(&here)?;
+            let mut options = s.books.config.payment.clone();
+            let find = |options: &std::collections::BTreeMap<String, model::PayOption>, id: &str| -> Result<String> {
+                if options.contains_key(id) {
+                    return Ok(id.to_string());
+                }
+                match &options.keys().filter(|k| k.starts_with(id)).collect::<Vec<_>>()[..] {
+                    [k] => Ok((*k).clone()),
+                    [] => bail!("there is no payment option {id:?}"),
+                    some => bail!("{id:?} is the start of more than one payment option: {}", some.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", ")),
+                }
+            };
+            let others = |options: &std::collections::BTreeMap<String, model::PayOption>, id: &str| options.keys().filter(|k| *k != id).cloned().collect::<Vec<_>>();
+            let what = match change {
+                None | Some(PaymentCmd::List) => None,
                 Some(PaymentCmd::Add { id, parts }) => {
                     let o = if parts.given() {
                         let id = id.context("an option added with flags needs an id")?;
@@ -830,69 +976,162 @@ async fn run(cli: Cli) -> Result<()> {
                         parts.over(repo::PaymentOption { id, kind, account: kind.account().into(), ..Default::default() })
                     } else {
                         let start = id.map(|id| questions::Answers::from([("id".into(), id)])).unwrap_or_default();
-                        let asked = ask_option(&ctx, start, others(""))?;
-                        let Some(o) = asked else {
+                        let Some(o) = ask_option(&s.ctx(), start, others(&options, ""))? else {
                             println!("Nothing added.");
                             return Ok(());
                         };
                         o
                     };
-                    let r = payment::add(&ctx, o)?;
-                    (r.options, Some(r.commit))
+                    if options.contains_key(&o.id) {
+                        bail!("there is a payment option {:?} already", o.id);
+                    }
+                    let id = o.id.clone();
+                    options.insert(id.clone(), pay_option(&o));
+                    Some(format!("Add the payment option {id}"))
                 }
                 Some(PaymentCmd::Edit { id, new_id, parts }) => {
-                    let now = payment::find(&ctx.cfg.payment, &id)?.clone();
+                    let id = find(&options, &id)?;
+                    let now = repo_option(&id, &options[&id]);
                     let o = if new_id.is_some() || parts.given() {
                         let mut o = parts.over(now.clone());
                         o.id = new_id.unwrap_or(o.id);
                         o
                     } else {
-                        // As it stands, blanks included: a part it lacks is
-                        // put on the line blank, not as an added one's offer.
                         let mut start = questions::option_answers(&now);
                         for k in ["label", "holder", "iban", "bic", "bank", "network", "address", "details"] {
                             start.entry(k.into()).or_default();
                         }
-                        let asked = ask_option(&ctx, start, others(&now.id))?;
-                        let Some(o) = asked else {
+                        let Some(o) = ask_option(&s.ctx(), start, others(&options, &id))? else {
                             println!("Nothing changed.");
                             return Ok(());
                         };
                         o
                     };
-                    let r = payment::edit(&ctx, &now.id, o)?;
-                    (r.options, Some(r.commit))
+                    if o.id != id && options.contains_key(&o.id) {
+                        bail!("there is a payment option {:?} already", o.id);
+                    }
+                    options.remove(&id);
+                    options.insert(o.id.clone(), pay_option(&o));
+                    Some(format!("Change the payment option {id}"))
                 }
                 Some(PaymentCmd::Remove { id }) => {
-                    let r = payment::remove(&ctx, &id)?;
-                    (r.options, Some(r.commit))
+                    let id = find(&options, &id)?;
+                    options.remove(&id);
+                    Some(format!("Remove the payment option {id}"))
                 }
             };
+            let commit = match what {
+                Some(what) => {
+                    let mut config = s.books.config.clone();
+                    config.payment = options;
+                    s.change(&Op::Configure(Box::new(config)), argv, &what, &[])?
+                }
+                None => None,
+            };
+            let options = s.books.config.payment.clone();
             let r = serde_json::json!({ "options": options, "commit": commit });
             emit(cli.json, &r, || {
-                let mut s: String = options.iter().map(|o| {
-                    let lines: String = o.lines().iter().map(|l| format!("    {l}\n")).collect();
-                    format!("{} ({}): {} -> {}\n{lines}", o.id, o.kind.name(), o.label, o.account)
-                }).collect();
+                let mut out: String = options
+                    .iter()
+                    .map(|(id, o)| {
+                        let p = o.printed();
+                        let lines: String = p.lines.iter().map(|l| format!("    {l}\n")).collect();
+                        format!("{id} ({}): {} -> {}\n{lines}", serde_json::to_value(o.kind).unwrap().as_str().unwrap_or_default(), p.label, o.account)
+                    })
+                    .collect();
                 if options.is_empty() {
-                    s += "No payment options; invoices say only when to pay.\n";
+                    out += "No payment options; invoices say only when to pay.\n";
                 }
                 if let Some(c) = &commit {
-                    s += &format!("Committed {c}.");
+                    out += &format!("Committed {c}.");
                 }
-                s.trim_end().to_string()
+                out.trim_end().to_string()
             })
         }
-        Cmd::Undo { line } => {
-            let ctx = Ctx::open(&here)?;
-            let r = undo::undo(&ctx, line)?;
-            emit(cli.json, &r, || format!("Undid line {} ({}). Committed {}.", r.line, r.op, r.commit))
+        Cmd::Config { change } => {
+            let mut s = Store::open(&here)?;
+            let keys = |s: &Store| flat(&toml::Value::try_from(&s.books.config).unwrap_or(toml::Value::Boolean(false)), "");
+            match change {
+                None | Some(ConfigCmd::List) => {
+                    let all = keys(&s);
+                    emit(cli.json, &all, || all.iter().map(|(k, v)| format!("{k} = {v}")).collect::<Vec<_>>().join("\n"))
+                }
+                Some(ConfigCmd::Get { key }) => {
+                    let mut at = toml::Value::try_from(&s.books.config)?;
+                    for part in key.split('.') {
+                        at = at.get(part).cloned().with_context(|| format!("{key} is not set"))?;
+                    }
+                    let shown = match &at {
+                        toml::Value::String(v) => v.clone(),
+                        other => other.to_string(),
+                    };
+                    emit(cli.json, &serde_json::json!({ "key": key, "value": shown }), || shown.clone())
+                }
+                Some(ConfigCmd::Set { key, value }) => {
+                    let what = format!("Set {key}");
+                    changed(&mut s, &Op::ConfigSet { key, value }, argv, &what, &[], cli.json)
+                }
+                Some(ConfigCmd::Unset { key }) => {
+                    let what = format!("Unset {key}");
+                    changed(&mut s, &Op::ConfigUnset { key }, argv, &what, &[], cli.json)
+                }
+            }
         }
-        Cmd::Revert { date, key } => {
-            let ctx = Ctx::open(&here)?;
-            let date = date.unwrap_or_else(|| jiff::Zoned::now().date().to_string());
-            let r = journal::reverse(&ctx, &key, &date)?;
-            emit(cli.json, &r, || format!("{}\nCommitted {} to {}.", r.entry.render(), r.commit, r.file))
+        Cmd::Account { change } => {
+            let mut s = Store::open(&here)?;
+            match change {
+                None | Some(AccountCmd::List) => {
+                    let all: Vec<_> = s.books.accounts.iter().cloned().collect();
+                    emit(cli.json, &all, || all.join("\n"))
+                }
+                Some(AccountCmd::Add { account }) => changed(&mut s, &Op::AccountAdd(account.clone()), argv, &format!("Declare {account}"), &[], cli.json),
+                Some(AccountCmd::Remove { account }) => changed(&mut s, &Op::AccountRemove(account.clone()), argv, &format!("Take out {account}"), &[], cli.json),
+            }
+        }
+        Cmd::Commodity { change } => {
+            let mut s = Store::open(&here)?;
+            match change {
+                None | Some(CommodityCmd::List) => {
+                    let all = s.books.commodities.clone();
+                    emit(cli.json, &all, || all.iter().map(|(c, p)| format!("{c} {p}")).collect::<Vec<_>>().join("\n"))
+                }
+                Some(CommodityCmd::Add { code, places }) => changed(&mut s, &Op::CommodityAdd(code.clone(), places), argv, &format!("Declare {code}"), &[], cli.json),
+                Some(CommodityCmd::Remove { code }) => changed(&mut s, &Op::CommodityRemove(code.clone()), argv, &format!("Take out {code}"), &[], cli.json),
+            }
+        }
+        Cmd::Price { change } => {
+            let mut s = Store::open(&here)?;
+            match change {
+                None | Some(PriceCmd::List) => {
+                    let all: Vec<_> = s.books.prices.iter().map(|((c, d), p)| serde_json::json!({ "date": d.to_string(), "of": c, "price": p.quantity.to_string(), "in": p.commodity })).collect();
+                    emit(cli.json, &all, || all.iter().map(|p| format!("{} {} {} {}", p["date"].as_str().unwrap_or_default(), p["of"].as_str().unwrap_or_default(), p["price"].as_str().unwrap_or_default(), p["in"].as_str().unwrap_or_default())).collect::<Vec<_>>().join("\n"))
+                }
+                Some(PriceCmd::Add { date, code, price }) => {
+                    let price = value(&s, &price.join(" "))?;
+                    let date = day(Some(&date))?;
+                    changed(&mut s, &Op::PriceAdd { of: code.clone(), date, price }, argv, &format!("Price {code} on {date}"), &[], cli.json)
+                }
+                Some(PriceCmd::Remove { date, code }) => {
+                    let date = day(Some(&date))?;
+                    changed(&mut s, &Op::PriceRemove { of: code.clone(), date }, argv, &format!("Take out the price of {code} on {date}"), &[], cli.json)
+                }
+            }
+        }
+        Cmd::Check => {
+            let s = Store::open(&here)?;
+            emit(cli.json, &s.problems, || if s.problems.is_empty() { "No problems.".into() } else { s.problems.join("\n") })?;
+            if !s.problems.is_empty() {
+                bail!("the books hold {} problem{}", s.problems.len(), if s.problems.len() == 1 { "" } else { "s" });
+            }
+            Ok(())
+        }
+        Cmd::Tidy => {
+            let mut s = Store::open(&here)?;
+            let commit = s.tidy(argv)?;
+            emit(cli.json, &serde_json::json!({ "commit": commit }), || match &commit {
+                Some(c) => format!("Rewrote the books as abo writes them. Committed {c}."),
+                None => "Nothing to tidy.".into(),
+            })
         }
         Cmd::Bal { args } => passthrough(&here, "balance", &args, cli.json),
         Cmd::Reg { args } => passthrough(&here, "register", &args, cli.json),
@@ -966,20 +1205,278 @@ fn statement(
     })
 }
 
-/// `key=value` pairs, in order.
-fn tag_pairs(tags: &[String]) -> Result<Vec<(String, String)>> {
-    tags.iter()
-        .map(|t| t.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())).with_context(|| format!("tag {t:?} is not key=value")))
+/// A date as written, or today.
+fn day(s: Option<&str>) -> Result<model::Date> {
+    match s {
+        Some(s) => s.trim().parse().with_context(|| format!("{s:?} is not a date, such as 2026-09-30")),
+        None => store::today(),
+    }
+}
+
+/// `12.50` in the company currency, or `12.50 EUR`.
+fn value(s: &Store, text: &str) -> Result<model::Amount> {
+    let text = text.trim();
+    let (q, c) = text.split_once(' ').map(|(q, c)| (q, c.trim())).unwrap_or((text, s.books.config.company.currency.as_str()));
+    let quantity = Decimal::from_str_exact(q).with_context(|| format!("{q:?} is not a number"))?;
+    Ok(model::Amount { quantity, commodity: c.to_string() })
+}
+
+/// `account=amount [COMMODITY]`, and `@@ cost COMMODITY` after one exchanged
+/// for another: the cost written unsigned, its sign the amount's.
+fn posting(s: &Store, text: &str) -> Result<model::Posting> {
+    let (account, rest) = text.split_once('=').with_context(|| format!("{text:?} is not account=amount"))?;
+    let (amount, cost) = match rest.split_once("@@") {
+        Some((a, c)) => (a, Some(c)),
+        None => (rest, None),
+    };
+    let amount = value(s, amount)?;
+    let cost = cost.map(|c| value(s, c)).transpose()?.map(|c| model::Amount { quantity: if amount.quantity < Decimal::ZERO { -c.quantity.abs() } else { c.quantity.abs() }, commodity: c.commodity });
+    Ok(model::Posting { account: account.trim().to_string(), amount, cost })
+}
+
+/// `quantity|unit price|description`, line `n` of an invoice.
+fn line(n: usize, raw: &str) -> Result<model::Line> {
+    let mut parts = raw.splitn(3, '|');
+    let (Some(q), Some(u), Some(d)) = (parts.next(), parts.next(), parts.next()) else {
+        bail!("line {n}, {raw:?}, is not `quantity|unit price|description`");
+    };
+    let number = |what: &str, v: &str| Decimal::from_str_exact(v.trim()).with_context(|| format!("line {n}, {raw:?}: the {what} {:?} is not a number", v.trim()));
+    let (quantity, unit_price) = (number("quantity", q)?, number("unit price", u)?);
+    Ok(model::Line { description: d.to_string(), quantity, unit_price })
+}
+
+/// An entry by its id, or an invoice or credit note by its number.
+fn debt(s: &Store, text: &str) -> Result<usize> {
+    if let Ok(id) = text.parse::<usize>() {
+        return Ok(id);
+    }
+    (1..=s.books.entries.len())
+        .find(|&id| s.books.number_text(id).as_deref() == Some(text))
+        .with_context(|| format!("there is no entry {text:?}: give an entry's id, or an invoice's number such as 2026-0017"))
+}
+
+/// A filed document's hash, by its path or its hash: a text that is the
+/// path of none is taken as a hash, for the model to say whether one is filed.
+fn filed(s: &Store, text: &str) -> Result<String> {
+    Ok(s.books.documents.iter().find(|(h, d)| d.path(h) == text).map(|(h, _)| h.clone()).unwrap_or_else(|| text.to_string()))
+}
+
+/// `ENTRY.N`: posting N of entry ENTRY, from 0, as `abo reconcile` gives it.
+fn posting_ref(text: &str) -> Result<model::PostingRef> {
+    let (e, n) = text.split_once('.').with_context(|| format!("{text:?} is not ENTRY.N, as abo reconcile gives it"))?;
+    let bad = || format!("{text:?} is not ENTRY.N, as abo reconcile gives it");
+    Ok(model::PostingRef { entry: e.parse().with_context(bad)?, n: n.parse().with_context(bad)? })
+}
+
+/// Make a change, and say what it made.
+fn changed(s: &mut Store, op: &Op, argv: Vec<String>, what: &str, also: &[(String, Vec<u8>)], json: bool) -> Result<()> {
+    let before = s.books.entries.len();
+    let commit = s.change(op, argv, what, also)?;
+    let entry = (s.books.entries.len() > before).then_some(s.books.entries.len());
+    let description = entry.map(|id| s.books.entries[id - 1].description.clone());
+    let r = serde_json::json!({ "commit": commit, "entry": entry, "what": what });
+    emit(json, &r, || match (&commit, entry, description) {
+        (None, ..) => "Nothing to change: the books say that already.".to_string(),
+        (Some(c), Some(id), Some(d)) => format!("Entry {id}: {d}.\nCommitted {c}."),
+        (Some(c), ..) => format!("{what}. Committed {c}."),
+    })
+}
+
+/// Issue an invoice or a credit note: tried first, for its number; its PDF
+/// made; then committed with it.
+fn issue(s: &mut Store, op: impl Fn(String) -> Op, argv: Vec<String>, json: bool) -> Result<()> {
+    s.changeable()?;
+    let trial = model::apply(&s.books, &op("0".repeat(64)), store::today()?).map_err(store::Refused)?;
+    let id = trial.entries.len();
+    let number = trial.number_text(id).context("what was issued is not numbered")?;
+    let (bytes, seeded, warnings) = invoice::pdf_of(&Ctx::from_model(&s.root, &trial), &trial, id)?;
+    for w in &warnings {
+        eprintln!("Warning: {w}");
+    }
+    let pdf = format!("invoices/{}/{number}.pdf", &number[..4]);
+    let mut also = vec![(pdf.clone(), bytes.clone())];
+    if let Some(t) = seeded {
+        also.push((t.to_string(), std::fs::read(s.root.join(t))?));
+    }
+    let credit = matches!(trial.entries[id - 1].kind, model::Kind::CreditNote { .. });
+    let what = if credit { format!("Credit note {number}") } else { format!("Invoice {number}") };
+    let r = s.change(&op(store::sha256(&bytes)), argv, &what, &also);
+    if r.is_err() {
+        if let Some(t) = seeded {
+            let _ = std::fs::remove_file(s.root.join(t));
+        }
+    }
+    let commit = r?.unwrap_or_default();
+    let row = invoices(&s.books, store::today()?).into_iter().find(|i| i.entry == id);
+    let total = row.map(|r| r.total).unwrap_or_default();
+    let out = serde_json::json!({ "number": number, "entry": id, "pdf": pdf, "total": total, "commit": commit, "warnings": warnings });
+    emit(json, &out, || format!("{what} for {total}: {pdf}\nCommitted {commit}."))
+}
+
+#[derive(serde::Serialize)]
+struct InvoiceRow {
+    entry: usize,
+    number: String,
+    date: String,
+    customer: String,
+    total: String,
+    due: String,
+    /// What is open, in the invoice's commodity; nothing for a credit note.
+    open: String,
+    status: String,
+    #[serde(skip)]
+    has_open: bool,
+}
+
+/// Every invoice and credit note, in the order of their numbers.
+fn invoices(b: &model::Books, today: model::Date) -> Vec<InvoiceRow> {
+    use model::Kind;
+    let standing = b.standing();
+    (1..=b.entries.len())
+        .filter_map(|id| {
+            let e = &b.entries[id - 1];
+            let number = b.number_text(id)?;
+            let (inv, credit) = match &e.kind {
+                Kind::Invoice { .. } => (id, false),
+                Kind::CreditNote { of, .. } => (*of, true),
+                _ => return None,
+            };
+            let Kind::Invoice { content: c, .. } = &b.entry(inv)?.kind else { return None };
+            let places = b.places(&c.commodity);
+            let money = |mut d: Decimal| {
+                d.rescale(places);
+                format!("{d} {}", c.commodity)
+            };
+            let total = b.totals(c).2 * if credit { -Decimal::ONE } else { Decimal::ONE };
+            let open = if credit { Decimal::ZERO } else { b.open(id, &standing) };
+            let mut status = match () {
+                _ if credit => format!("credits {}", b.number_text(inv).unwrap_or_default()),
+                _ if !standing[id] => "cancelled".to_string(),
+                _ if open.is_zero() => "settled".to_string(),
+                _ if open < total => format!("part paid, {} open", money(open)),
+                _ => "open".to_string(),
+            };
+            if !credit && standing[id] && !open.is_zero() && c.due < today {
+                status += ", overdue";
+            }
+            Some(InvoiceRow {
+                entry: id,
+                number,
+                date: e.date.to_string(),
+                customer: c.customer.lines().next().unwrap_or("").trim().to_string(),
+                total: money(total),
+                due: if credit { String::new() } else { c.due.to_string() },
+                open: if credit { String::new() } else { money(open) },
+                status,
+                has_open: !open.is_zero(),
+            })
+        })
         .collect()
 }
 
-fn parse_postings(ctx: &Ctx, postings: &[String]) -> Result<Vec<Posting>> {
-    postings.iter().map(|p| Posting::parse(p, &ctx.cfg.company.currency)).collect()
+/// An account against a statement: what statements on or before `date`
+/// cleared, and the postings to it they did not.
+fn reconciled(b: &model::Books, account: &str, commodity: &str, date: model::Date, balance: Option<Decimal>) -> serde_json::Value {
+    let places = b.places(commodity);
+    let money = |mut d: Decimal| {
+        d.rescale(places);
+        d.to_string()
+    };
+    let cleared: std::collections::BTreeSet<model::PostingRef> =
+        b.statements.iter().filter(|(k, _)| k.0 == account && k.1 == commodity && k.2 <= date).flat_map(|(_, s)| s.clears.iter().copied()).collect();
+    let ps: Vec<_> = b.all_postings().into_iter().filter(|(_, d, p)| p.account == account && p.amount.commodity == commodity && *d <= date).collect();
+    let done: Decimal = ps.iter().filter(|(r, ..)| cleared.contains(r)).map(|(_, _, p)| p.amount.quantity).sum();
+    let outstanding: Vec<serde_json::Value> = ps
+        .iter()
+        .filter(|(r, ..)| !cleared.contains(r))
+        .map(|(r, d, p)| serde_json::json!({ "ref": format!("{}.{}", r.entry, r.n), "date": d.to_string(), "amount": money(p.amount.quantity), "description": b.entries[r.entry - 1].description }))
+        .collect();
+    serde_json::json!({
+        "account": account,
+        "commodity": commodity,
+        "date": date.to_string(),
+        "cleared": money(done),
+        "statement": balance.map(money),
+        "difference": balance.map(|s| money(s - done)),
+        "outstanding": outstanding,
+    })
+}
+
+/// Every key of a table, dotted, with its value.
+fn flat(v: &toml::Value, prefix: &str) -> Vec<(String, String)> {
+    match v {
+        toml::Value::Table(t) => t.iter().flat_map(|(k, v)| flat(v, &if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") })).collect(),
+        toml::Value::String(s) => vec![(prefix.to_string(), s.clone())],
+        other => vec![(prefix.to_string(), other.to_string())],
+    }
+}
+
+/// `abo init`'s answers as the model's configuration.
+fn config_of(b: &questions::NewBooks) -> model::Config {
+    let c = &b.company;
+    model::Config {
+        company: model::Company { name: c.name.clone(), currency: c.currency.clone(), address: c.address.clone(), tax_id: c.tax_id.clone(), country: c.country.clone(), closed_through: None },
+        vat: match &b.vat {
+            repo::Vat::None => model::Vat::None,
+            repo::Vat::Flat { rate, account } => model::Vat::Flat { rate: *rate, account: account.clone() },
+            repo::Vat::Effective { input, output } => model::Vat::Effective { input: input.clone(), output: output.clone() },
+        },
+        invoice: model::InvoiceCfg { receivable: "Assets:Receivable".into(), income: "Income:Sales".into(), terms_days: 30, vat_rate: b.sales_rate },
+        payment: b.payment.iter().map(|o| (o.id.clone(), pay_option(o))).collect(),
+        report: Default::default(),
+    }
+}
+
+/// An option as given, trimmed as a typed answer is, its IBAN and BIC in
+/// their canonical forms where they are valid: what is left wrong, the model
+/// refuses (I-C2).
+fn pay_option(o: &repo::PaymentOption) -> model::PayOption {
+    let one = |s: &str| s.trim().to_string();
+    let lines = |s: &str| s.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
+    let iban = answer::iban(&o.iban).unwrap_or_else(|_| one(&o.iban));
+    let bic = if o.bic.trim().is_empty() { String::new() } else { answer::bic(&o.bic).unwrap_or_else(|_| one(&o.bic)) };
+    let iban = if o.iban.trim().is_empty() { String::new() } else { iban };
+    model::PayOption {
+        kind: match o.kind {
+            repo::Kind::Bank => model::PayKind::Bank,
+            repo::Kind::Cash => model::PayKind::Cash,
+            repo::Kind::Crypto => model::PayKind::Crypto,
+        },
+        label: one(&o.label),
+        holder: one(&o.holder),
+        iban,
+        bic,
+        network: one(&o.network),
+        address: one(&o.address),
+        bank: lines(&o.bank),
+        details: lines(&o.details),
+        account: one(&o.account),
+    }
+}
+
+fn repo_option(id: &str, o: &model::PayOption) -> repo::PaymentOption {
+    repo::PaymentOption {
+        id: id.to_string(),
+        kind: match o.kind {
+            model::PayKind::Bank => repo::Kind::Bank,
+            model::PayKind::Cash => repo::Kind::Cash,
+            model::PayKind::Crypto => repo::Kind::Crypto,
+        },
+        label: o.label.clone(),
+        holder: o.holder.clone(),
+        iban: o.iban.clone(),
+        bic: o.bic.clone(),
+        bank: o.bank.clone(),
+        network: o.network.clone(),
+        address: o.address.clone(),
+        details: o.details.clone(),
+        account: o.account.clone(),
+    }
 }
 
 fn passthrough(here: &std::path::Path, cmd: &str, args: &[String], json: bool) -> Result<()> {
-    let ctx = Ctx::open(here)?;
-    print!("{}", report::run(&ctx, cmd, args, json)?);
+    let s = Store::open(here)?;
+    print!("{}", report::run(&s.ctx(), cmd, args, json)?);
     Ok(())
 }
 

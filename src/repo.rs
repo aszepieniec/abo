@@ -266,6 +266,62 @@ impl Ctx {
         bail!("no abo.toml in {} or any parent directory", dir.display())
     }
 
+    /// The books at `root`, configured as the model reads `abo.toml`: what
+    /// the reports and the invoice PDFs, written before the model, take.
+    /// ponytail: an adapter; goes when they read the model themselves.
+    pub fn from_model(root: &Path, m: &crate::model::Books) -> Ctx {
+        let c = &m.config;
+        let kind = |k: crate::model::PayKind| match k {
+            crate::model::PayKind::Bank => Kind::Bank,
+            crate::model::PayKind::Cash => Kind::Cash,
+            crate::model::PayKind::Crypto => Kind::Crypto,
+        };
+        let cfg = Config {
+            company: Company {
+                name: c.company.name.clone(),
+                currency: c.company.currency.clone(),
+                address: c.company.address.clone(),
+                tax_id: c.company.tax_id.clone(),
+                old_payment: None,
+                country: c.company.country.clone(),
+                closed_through: c.company.closed_through.map(|d| d.to_string()),
+            },
+            vat: match &c.vat {
+                crate::model::Vat::None => Vat::None,
+                crate::model::Vat::Flat { rate, account } => Vat::Flat { rate: *rate, account: account.clone() },
+                crate::model::Vat::Effective { input, output } => Vat::Effective { input: input.clone(), output: output.clone() },
+            },
+            invoice: InvoiceCfg {
+                receivable: c.invoice.receivable.clone(),
+                income: c.invoice.income.clone(),
+                terms_days: c.invoice.terms_days,
+                decimals: m.places(&c.company.currency),
+                vat_rate: c.invoice.vat_rate,
+            },
+            report: ReportCfg {
+                vat: c.report.vat.iter().map(|(code, b)| crate::statement::VatLine { code: code.clone(), label: b.label.clone(), query: b.query.clone(), ..Default::default() }).collect(),
+            },
+            payment: c
+                .payment
+                .iter()
+                .map(|(id, o)| PaymentOption {
+                    id: id.clone(),
+                    kind: kind(o.kind),
+                    label: o.label.clone(),
+                    holder: o.holder.clone(),
+                    iban: o.iban.clone(),
+                    bic: o.bic.clone(),
+                    bank: o.bank.clone(),
+                    network: o.network.clone(),
+                    address: o.address.clone(),
+                    details: o.details.clone(),
+                    account: o.account.clone(),
+                })
+                .collect(),
+        };
+        Ctx { root: root.to_path_buf(), cfg, stamp: Default::default() }
+    }
+
     /// What abo.toml says, checked as abo would check it given by a
     /// command, for when it was edited by hand: else each mistake surfaces
     /// somewhere else, in other words.
@@ -471,7 +527,7 @@ impl Stamp {
         format!("{} {}", self.time, self.tz)
     }
 
-    fn env(&self) -> Vec<(&'static str, String)> {
+    pub(crate) fn env(&self) -> Vec<(&'static str, String)> {
         let (n, e, d) = (&self.name, &self.email, self.git_date());
         vec![
             ("GIT_AUTHOR_NAME", n.clone()),
@@ -599,6 +655,10 @@ pub mod answer {
             || s.split(':').any(|part| part.trim().is_empty() || part.trim() != part)
         {
             return Err(format!("{s:?} is not an account name, such as Assets:Bank:PostFinance."));
+        }
+        // As the books take it (I-A0): the class as written, not in another case.
+        if !crate::model::CLASSES.contains(&s.split(':').next().unwrap_or_default()) {
+            return Err(format!("{s:?} does not begin with its class: one of {}.", crate::model::CLASSES.join(", ")));
         }
         Ok(s.to_string())
     }

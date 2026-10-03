@@ -209,7 +209,7 @@ pub fn balance_sheet(ctx: &Ctx, date: &str) -> Result<Statement> {
 
 /// One line of a tax return. Which accounts feed which numbered box is set by
 /// the tax authority wherever the company is, so it lives in abo.toml.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Default)]
 pub struct VatLine {
     pub code: String,
     pub label: String,
@@ -233,9 +233,9 @@ pub fn vat_return(ctx: &Ctx, period: &str) -> Result<Statement> {
     let spec = &ctx.cfg.report.vat;
     if spec.is_empty() {
         bail!(
-            "no tax return is configured. Add [[report.vat]] lines to abo.toml: \
-             one per box on the form, each with a code, a label, and either an \
-             hledger query, or `of` and `rate`, or a `sum` of other codes."
+            "no tax return is configured. Add a box for each on the form: \
+             `abo config set report.vat.<code> '{{ label = \"...\", query = \"...\" }}'`, \
+             its figure the balance of the hledger query over the period."
         );
     }
     if let Some(l) = spec.iter().enumerate().find_map(|(i, l)| spec[..i].iter().any(|m| m.code == l.code).then_some(l)) {

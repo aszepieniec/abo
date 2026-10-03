@@ -8,12 +8,12 @@ use anyhow::{bail, Result};
 /// reported and how it looks. Anything else — another file, a file of
 /// arguments, a config, a file written — is refused, as is any not listed:
 /// a list of what is safe holds where a list of what is not did not.
-const PASSED: [&str; 46] = [
+const PASSED: [&str; 47] = [
     "-b", "--begin", "-e", "--end", "-p", "--period", "-D", "--daily", "-W", "--weekly", "-M", "--monthly",
     "-Q", "--quarterly", "-Y", "--yearly", "--depth", "-V", "--market", "-B", "--cost", "-X", "--exchange",
     "--value", "-O", "--output-format", "-E", "--empty", "-R", "--real", "-U", "--unmarked", "-P", "--pending",
     "-C", "--cleared", "-H", "--historical", "-A", "--average", "-T", "--row-total", "-N", "--no-total",
-    "--flat", "--tree",
+    "--flat", "--tree", "--layout",
 ];
 
 pub fn run(ctx: &Ctx, cmd: &str, args: &[String], json: bool) -> Result<String> {

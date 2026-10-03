@@ -498,6 +498,7 @@ not in the books.
 | G-F2 | An edit to the files is never read as the same state with no problem | §7, §8 | `edits_are_noticed` |
 | G-F3 | Reading never fails, whatever the text: it gives a state, or problems | §8 | `edits_are_noticed` |
 | G-F4 | `abo tidy`, which is `render(parse(f))`, gives text read as the same state, and tidying it again changes nothing | §7, §8 | `tidying_is_idempotent` |
+| G-F5 | Books holding a problem — a hand edit, a file changed — are read, and not changed until it is mended; `abo check` fails exactly while one is there, and `abo tidy` mends what is only not as abo writes it | §8 | `hand_edits_are_checked_and_tidied` |
 
 ### Debts
 
@@ -548,6 +549,9 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | G-O2 | Balances depend on the entries alone: not on the order they are booked in, nor on the names of the accounts — roles come from the configuration | I-C3, I-A0 | `the_order_of_entries_does_not_change_balances`, `names_mean_nothing` |
 | G-O3 | A declaration is removed exactly when nothing uses it, and nothing is declared under an account posted to | I-A1, I-A2 | `an_account_is_removable_iff_unused`, `a_commodity_is_removable_iff_unused`, `declaring_under_a_posted_account_is_refused` |
 | G-O4 | A configuration key reads back as set; a key that names nothing is refused | I-C1, I-C2, I-C3, §5.2 | `a_key_set_reads_back`, `unknown_keys_are_refused` |
+| G-O5 | Every command does what its operation does in the model: taken exactly when the model takes it; then the files say the model's state, with every document and PDF beside them; refused, with the rules the model names, in JSON and in words, and nothing written; undo as §5.3. What the commands show is the model's | §5 | `the_cli_is_the_model`, `refusals_in_words_name_their_rules`, `what_abo_shows_is_the_models`, `lists_show_what_the_books_hold`, `reports_read_the_books_as_the_model_does`, `a_key_set_reads_back_through_the_cli`, `company_changes_only_what_it_is_told`, `payment_options_follow_add_edit_remove`, `pay_takes_what_is_open_from_money`, `record_all_clears_everything`, `a_document_filed_for_a_bill_names_it` |
+| G-O6 | Changes sent at once are each made, one after another | §5 | `changes_at_once_are_each_made` |
+| G-O7 | `abo init` opens books that read with no problem, configured as it was told; or it refuses and leaves nothing behind | §2.8 | `init_opens_valid_books_or_nothing` |
 
 ### Messages, and checks of this document
 
@@ -561,6 +565,7 @@ and the code have drifted apart; the books are as they were.
 | M-3 | Every rule this document defines is checked in the model's code | §4 | `every_rule_is_checked` |
 | M-4 | Every test a row of §3 names exists, and every test is named by a row | §3 | `every_guarantee_is_tested` |
 | M-5 | Refusing is not all the rules do: of the steps plans draw, a third or more are taken | §4 | `enough_is_taken` |
+| M-6 | Whatever abo is given, it answers: done, refused in words, or a usage message — never a panic | §5 | `no_argument_makes_abo_panic` |
 
 ### What the list leaves out
 
@@ -635,8 +640,8 @@ not reused: those missing below were rules about a value now derived.
 
 ### 4.4 Invoices
 
-- **I-I1** An invoice has a line or more, a total above nought, a customer
-  named on the first line,
+- **I-I1** An invoice has a line or more, each saying what it is for, a total
+  above nought, a customer named on the first line,
   and a due date on or after its own. It books output VAT only when it charges
   VAT; its receivable is an asset, its income an income account, its output VAT
   a liability. An exempt invoice says why. A home price is above nought and in
@@ -685,7 +690,7 @@ not reused: those missing below were rules about a value now derived.
 - **I-C1** The company has a name; no text in the configuration holds a hidden
   character.
 - **I-C2** Payment option ids are well formed; each option has what its kind
-  needs (DESIGN, A4) and an IBAN or BIC that is valid, in its canonical form,
+  needs (DESIGN, A4), and nothing another kind has — a cash option no IBAN — and an IBAN or BIC that is valid, in its canonical form,
   if given.
 - **I-C3** Every account the configuration names is of its kind: money arrives
   in an asset, the receivable is an asset, income is income, input VAT is an
@@ -743,6 +748,7 @@ are not — the debt paid is a debt, the statement removed exists — refuse as
 | `record(account, commodity, date, balance, postings)` | a `Statement` clearing those postings |
 | `unrecord(account, commodity)` | removes the latest statement of the account in the commodity; an earlier one cannot go, since later ones count what it cleared (I-S3) |
 | `config_set(key, value)`, `config_unset(key)` | `config` (§5.2) |
+| `configure(config)` | the whole of `config` at once: for what changes more than one key's table, such as a company renamed and the payment options held in its name |
 | `account_add(account)`, `account_remove(account)` | `accounts` |
 | `commodity_add(commodity, places)`, `commodity_remove(commodity)` | `commodities` |
 | `price_add(date, commodity, amount)`, `price_remove(date, commodity)` | `prices` |
@@ -1062,6 +1068,14 @@ are mostly what a person would enter, and now and then whatever `arbitrary`
 makes of a decimal, a date or a string. Failing plans proptest found are kept
 in `proptest-regressions/`, and run first every time. `PROPTEST_CASES` sets how
 many plans each property draws; 256 by default, and 48 for hledger's.
+
+The commands are tested the same way, through the binary
+(`src/cli_tests.rs`): the model tests' plans, run as `abo` commands in books
+`abo init` opened, beside `model::apply` on the same operations. After every
+step, abo and the model agree on whether it is taken; the files on disk are
+what `render` writes for the model's state; and a refusal names the model's
+rules and changes nothing. The other CLI properties are those §3 names under
+G-F5 and G-O5 to G-O7.
 
 What the properties found, each now a rule above:
 

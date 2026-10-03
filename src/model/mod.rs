@@ -14,13 +14,13 @@ mod check;
 mod ops;
 mod text;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use check::{check, Violation};
-pub use ops::{apply, Op};
+pub use ops::{apply, shape, InvoiceMore, Op, Shape};
 pub use text::{parse, read, render, Files};
 
-use jiff::civil::Date;
+pub use jiff::civil::Date;
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -124,6 +124,9 @@ pub struct Document {
 pub struct Content {
     /// Name, then address, newlines between lines. The name is not blank.
     pub customer: String,
+    /// Printed under the address, as cross-border invoices need it.
+    #[serde(default)]
+    pub customer_tax_id: String,
     pub commodity: Commodity,
     pub lines: Vec<Line>,
     pub vat: InvoiceVat,
@@ -239,6 +242,8 @@ pub struct PayOption {
     #[serde(default)]
     pub label: String,
     #[serde(default)]
+    pub holder: String,
+    #[serde(default)]
     pub iban: String,
     #[serde(default)]
     pub bic: String,
@@ -246,6 +251,9 @@ pub struct PayOption {
     pub network: String,
     #[serde(default)]
     pub address: String,
+    /// The bank's name and address, newlines between lines.
+    #[serde(default)]
+    pub bank: String,
     #[serde(default)]
     pub details: String,
     /// Where money paid this way arrives.
@@ -265,6 +273,28 @@ pub struct Report {
 pub struct VatBox {
     pub label: String,
     pub query: String,
+}
+
+impl PayOption {
+    /// What an invoice prints of it: its label, the kind's when it has none,
+    /// and a line each for what it says.
+    pub fn printed(&self) -> PayOut {
+        let label = match (self.label.is_empty(), self.kind) {
+            (false, _) => self.label.clone(),
+            (true, PayKind::Bank) => "Bank transfer".into(),
+            (true, PayKind::Cash) => "Cash".into(),
+            (true, PayKind::Crypto) => self.network.clone(),
+        };
+        let named = |n: &str, v: &str| (!v.is_empty()).then(|| format!("{n}: {v}"));
+        let lines = [named("Account holder", &self.holder), named("IBAN", &self.iban), named("BIC", &self.bic)]
+            .into_iter()
+            .flatten()
+            .chain(self.bank.lines().map(String::from))
+            .chain([named("Network", &self.network), named("Address", &self.address)].into_iter().flatten())
+            .chain(self.details.lines().map(String::from))
+            .collect();
+        PayOut { label, lines }
+    }
 }
 
 /// A debt's account, what it owes there, and the sign of its own posting

@@ -1,0 +1,13 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ce1f532edab9061cad7203cc354c755d9ecba5d1eb9362cf226a017d415c449c # shrinks to input = _TheCliIsTheModelArgs { plan: [Step { advance: 0, draw: Invoice { lines: [], rate: Configured, usd: false, customer: "Customer One\nStreet 1", pdf: "0aaaa00001bda3d4ecad0c39145e2cabeabb153106e17a79f8d1a100ff6244c8", when: Ago(3) } }] }
+cc b9688e9b49cff173ec0bb97863df21cb1e2bd0794c14b6b911ac1947fb01b545 # shrinks to input = _TheCliIsTheModelArgs { plan: [Step { advance: 0, draw: Pay { debt: Index(2182335760536), part: Half, from_receivable: false, when: Ago(0) } }] }
+cc 38b398a3a413847bcd3d60ac59bfba327979e860b2cbeda7bfaa07f132d518a4 # shrinks to input = _TheCliIsTheModelArgs { plan: [Step { advance: 0, draw: Undo }] }
+cc 8aa3d54b3cc59db8b253ff688fd913afb930997b105fe2a4d7718a8477e2f864 # shrinks to input = _TheCliIsTheModelArgs { plan: [Step { advance: 0, draw: Invoice { lines: [LineDraw { description: "", quantity: 5, unit_price: 522.44 }], rate: Configured, usd: false, customer: "Customer One\nStreet 1", pdf: "4428c0e3ece6ed113023e0ba8410931bfeafc4a76d6fa43829fe939645e72b0e", when: Long(26) } }] }
+cc af5236d02637142f82c642054b9635fdb25a9a79ed363bedd888340821baabdb # shrinks to input = _TheCliIsTheModelArgs { plan: [Step { advance: 0, draw: Config(ClosedThrough(Ago(3))) }, Step { advance: 1, draw: Post { from: Index(117740808026086), to: Index(15081199428194610870), q: 639.50, description: "E myers", when: Ago(3) } }, Step { advance: 2, draw: Undo }, Step { advance: 2, draw: Undo }] }
+cc 557ac1397dbc0fbb9410de9c961facb72c79e2c5be6c85ffdf24efbb580fe9c7 # shrinks to input = _InitOpensValidBooksOrNothingArgs { name: "Aa", currency: "EUR", method: Flat("\0*گ"), rate: "8.1", iban: "CH93 0076 2011 6238 5295 7" }
+cc c0479bc37b97ca283f8897a9c8b1a3d49b62988b43fccff41e1cb115a4c4940d # shrinks to input = _NoArgumentMakesAboPanicArgs { command: Post, given: ["--=\0"] }

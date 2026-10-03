@@ -727,6 +727,81 @@ fn entry(
     })
 }
 
+/// The PDF of invoice or credit note `id` as the model holds it, made with
+/// the books' template: its bytes, and the template's path when making it
+/// put the template in the books.
+pub fn pdf_of(ctx: &Ctx, m: &crate::model::Books, id: usize) -> Result<(Vec<u8>, Option<&'static str>, Vec<String>)> {
+    use crate::model::{InvoiceVat, Kind};
+    let e = m.entry(id).with_context(|| format!("there is no entry {id}"))?;
+    let number = m.number_text(id).with_context(|| format!("entry {id} is not an invoice or a credit note"))?;
+    let (invoice, note) = match &e.kind {
+        Kind::Invoice { content, .. } => (id, content.note.clone()),
+        Kind::CreditNote { of, note, .. } => (*of, note.clone()),
+        _ => bail!("entry {id} is not an invoice or a credit note"),
+    };
+    let credit = invoice != id;
+    let inv = m.entry(invoice).context("the invoice is not there")?;
+    let Kind::Invoice { content: c, .. } = &inv.kind else { bail!("entry {invoice} is not an invoice") };
+    let places = m.places(&c.commodity);
+    let sign = if credit { -Decimal::ONE } else { Decimal::ONE };
+    let fmt = |d: Decimal| round(d * sign, places).to_string();
+    let (net, vat, total) = m.totals(c);
+    let items = c
+        .lines
+        .iter()
+        .map(|l| ItemOut {
+            description: l.description.clone(),
+            quantity: (l.quantity * sign).normalize().to_string(),
+            unit: l.unit_price.to_string(),
+            amount: fmt(l.quantity * l.unit_price),
+        })
+        .collect();
+    let (rate, reason, home) = match &c.vat {
+        InvoiceVat::NotRegistered => (Decimal::ZERO, String::new(), None),
+        InvoiceVat::Exempt { reason } => (Decimal::ZERO, reason.clone(), None),
+        InvoiceVat::Charged { rate, home } => (*rate, String::new(), home.as_ref().filter(|_| !vat.is_zero())),
+    };
+    let currency = &ctx.cfg.company.currency;
+    let co = &ctx.cfg.company;
+    let pay: Vec<PayOut> = if credit { vec![] } else { c.pay_to.iter().map(|p| PayOut { label: p.label.clone(), details: p.lines.clone() }).collect() };
+    let data = Data {
+        company: CompanyOut {
+            name: co.name.clone(),
+            country: co.country.clone(),
+            address: co.address.clone(),
+            tax_id: co.tax_id.clone(),
+            payment: pay.iter().map(|p| std::iter::once(p.label.clone()).chain(p.details.clone()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(", ")).collect::<Vec<_>>().join("; or "),
+        },
+        customer: c.customer.clone(),
+        number: number.clone(),
+        date: e.date.to_string(),
+        due: if credit { String::new() } else { c.due.to_string() },
+        currency: c.commodity.clone(),
+        reference: c.reference.clone(),
+        items,
+        net: fmt(net),
+        vat_rate: rate.normalize().to_string(),
+        vat: fmt(vat),
+        total: fmt(total),
+        note,
+        payment: pay,
+        credits: if credit { m.number_text(invoice).unwrap_or_default() } else { String::new() },
+        credits_date: if credit { inv.date.to_string() } else { String::new() },
+        customer_tax_id: c.customer_tax_id.clone(),
+        vat_reason: reason,
+        vat_home: home.map(|h| (round(vat * h.price.quantity, m.places(currency)) * sign).to_string()).unwrap_or_default(),
+        vat_home_currency: home.map(|_| currency.clone()).unwrap_or_default(),
+        vat_home_price: home.map(|h| format!("1 {} = {} {}, {}", c.commodity, h.price.quantity, h.price.commodity, h.date)).unwrap_or_default(),
+        reconstructed: false,
+    };
+    let (rel, src, data_rel) = if credit { (CREDIT_TEMPLATE_REL, CREDIT_TEMPLATE, CREDIT_DATA_REL) } else { (TEMPLATE_REL, TEMPLATE, DATA_REL) };
+    let out = ctx.root.join(".abo/made.pdf");
+    let seeded = crate::statement::compile(ctx, rel, src, data_rel, &data, &out)?;
+    let bytes = std::fs::read(&out)?;
+    let _ = std::fs::remove_file(&out);
+    Ok((bytes, seeded.then_some(rel), unprinted(ctx, rel, &data)))
+}
+
 const TEMPLATE_REL: &str = "templates/invoice.typ";
 const DATA_REL: &str = ".abo/invoice.json";
 const CREDIT_TEMPLATE_REL: &str = "templates/credit-note.typ";

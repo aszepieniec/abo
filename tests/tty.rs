@@ -309,12 +309,11 @@ fn payment_options() {
     assert!(screen.contains("Assets:Crypto is not declared"), "{screen}");
 
     let c = done(&r);
-    let (bank, cash, wallet) = (&c["payment"][0], &c["payment"][1], &c["payment"][2]);
-    assert_eq!(cash["id"].as_str(), Some("cash"));
+    // A table of options, keyed by id.
+    let (bank, cash, wallet) = (&c["payment"]["postfinance"], &c["payment"]["cash"], &c["payment"]["crypto"]);
     assert_eq!(cash["label"].as_str(), Some("Cash"));
     assert_eq!(cash["details"].as_str(), Some("At our office"));
     assert_eq!(cash["account"].as_str(), Some("Assets:Cash"));
-    assert_eq!(bank["id"].as_str(), Some("postfinance"));
     assert_eq!(bank["kind"].as_str(), Some("bank"));
     assert_eq!(bank["label"].as_str(), Some("PostFinance"));
     assert_eq!(bank["holder"].as_str(), Some("Acme GmbH"));
@@ -322,7 +321,6 @@ fn payment_options() {
     assert_eq!(bank["bic"].as_str(), Some("POFICHBEXXX"));
     assert_eq!(bank["bank"].as_str(), Some("PostFinance AG\n3030 Bern"));
     assert_eq!(bank["account"].as_str(), Some("Assets:Bank"));
-    assert_eq!(wallet["id"].as_str(), Some("crypto"));
     assert_eq!(wallet["label"].as_str(), Some("Bitcoin"));
     assert_eq!(wallet["network"].as_str(), Some("Bitcoin"));
     assert_eq!(wallet["address"].as_str(), Some("bc1qexample"));

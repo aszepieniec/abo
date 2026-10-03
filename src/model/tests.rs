@@ -15,16 +15,16 @@ use proptest_arbitrary_interop::arb;
 use std::process::Command;
 use test_strategy::{proptest, Arbitrary};
 
-fn day(s: &str) -> Date {
+pub(crate) fn day(s: &str) -> Date {
     s.parse().unwrap()
 }
 
-const BANK: &str = "Assets:Bank";
-const RECEIVABLE: &str = "Assets:Receivable";
-const INPUT: &str = "Assets:VAT:Input";
-const OUTPUT: &str = "Liabilities:VAT:Output";
-const PAYABLE: &str = "Liabilities:Payable";
-const PLAIN: [&str; 5] = ["Assets:Bank", "Expenses:Hosting", "Expenses:Other", "Equity:Opening", "Income:Sales"];
+pub(crate) const BANK: &str = "Assets:Bank";
+pub(crate) const RECEIVABLE: &str = "Assets:Receivable";
+pub(crate) const INPUT: &str = "Assets:VAT:Input";
+pub(crate) const OUTPUT: &str = "Liabilities:VAT:Output";
+pub(crate) const PAYABLE: &str = "Liabilities:Payable";
+pub(crate) const PLAIN: [&str; 5] = ["Assets:Bank", "Expenses:Hosting", "Expenses:Other", "Equity:Opening", "Income:Sales"];
 
 fn fresh() -> Books {
     let config: Config = toml::from_str(&format!(
@@ -58,32 +58,32 @@ fn fresh() -> Books {
     m
 }
 
-fn eur(q: Decimal) -> Amount {
+pub(crate) fn eur(q: Decimal) -> Amount {
     Amount { quantity: q, commodity: "EUR".into() }
 }
 
-fn pick<T: Clone>(i: &Index, v: &[T]) -> Option<T> {
+pub(crate) fn pick<T: Clone>(i: &Index, v: &[T]) -> Option<T> {
     (!v.is_empty()).then(|| v[i.index(v.len())].clone())
 }
 
 /// 0.01 to 999.99, or any decimal at all.
-fn money() -> impl Strategy<Value = Decimal> {
+pub(crate) fn money() -> impl Strategy<Value = Decimal> {
     prop_oneof![19 => (1i64..100_000).prop_map(|c| Decimal::new(c, 2)), 1 => arb::<Decimal>()]
 }
 
 /// A few words, or any string at all.
-fn text() -> impl Strategy<Value = String> {
+pub(crate) fn text() -> impl Strategy<Value = String> {
     prop_oneof![9 => "[A-Z][a-z]{0,10}( [a-z]{1,8}){0,3}", 1 => arb::<String>()]
 }
 
 /// Now and then two share the first eight digits, which a path holds.
-fn hash() -> impl Strategy<Value = String> {
+pub(crate) fn hash() -> impl Strategy<Value = String> {
     prop_oneof![3 => "[0-9a-f]{64}", 1 => "0000000[01][0-9a-f]{56}"]
 }
 
 /// When a step is dated: a few days back, longer back, or any date at all.
 #[derive(Arbitrary, Debug, Clone)]
-enum When {
+pub(crate) enum When {
     #[weight(17)]
     Ago(#[strategy(0i64..4)] i64),
     #[weight(2)]
@@ -101,7 +101,7 @@ impl When {
 }
 
 #[derive(Arbitrary, Debug, Clone)]
-enum Part {
+pub(crate) enum Part {
     #[weight(6)]
     Open,
     #[weight(3)]
@@ -111,7 +111,7 @@ enum Part {
 }
 
 #[derive(Arbitrary, Debug, Clone)]
-enum Rate {
+pub(crate) enum Rate {
     #[weight(2)]
     Configured,
     Reduced,
@@ -120,7 +120,7 @@ enum Rate {
 }
 
 #[derive(Arbitrary, Debug, Clone)]
-struct LineDraw {
+pub(crate) struct LineDraw {
     #[strategy(text())]
     description: String,
     #[strategy(prop_oneof![9 => (1i64..6).prop_map(Decimal::from), 1 => arb::<Decimal>()])]
@@ -130,7 +130,7 @@ struct LineDraw {
 }
 
 #[derive(Arbitrary, Debug, Clone)]
-enum Key {
+pub(crate) enum Key {
     #[weight(3)]
     ClosedThrough(When),
     VatRate,
@@ -143,7 +143,7 @@ enum Key {
 }
 
 #[derive(Arbitrary, Debug, Clone)]
-enum Draw {
+pub(crate) enum Draw {
     #[weight(5)]
     Post { from: Index, to: Index, #[strategy(money())] q: Decimal, #[strategy(text())] description: String, when: When },
     #[weight(2)]
@@ -206,20 +206,20 @@ enum Draw {
 }
 
 #[derive(Arbitrary, Debug, Clone)]
-struct Step {
+pub(crate) struct Step {
     /// Days since the step before.
     #[strategy(0i64..4)]
-    advance: i64,
-    draw: Draw,
+    pub(crate) advance: i64,
+    pub(crate) draw: Draw,
 }
 
-fn plan() -> impl Strategy<Value = Vec<Step>> {
+pub(crate) fn plan() -> impl Strategy<Value = Vec<Step>> {
     vec(any::<Step>(), 1..60)
 }
 
 /// The operation a draw is in this state; none for undo. The test's own
 /// arithmetic is checked, so that only the model can panic.
-fn op(d: &Draw, m: &Books, today: Date) -> Option<Op> {
+pub(crate) fn op(d: &Draw, m: &Books, today: Date) -> Option<Op> {
     let standing = m.standing();
     let ids: Vec<EntryId> = (1..=m.entries.len() + 1).collect();
     let debts: Vec<EntryId> = (1..=m.entries.len()).filter(|&e| m.debt(e).is_some()).collect();
@@ -252,7 +252,7 @@ fn op(d: &Draw, m: &Books, today: Date) -> Option<Op> {
                 Rate::Any(r) => (Some(r), String::new()),
             };
             let lines = lines.into_iter().map(|l| Line { description: l.description, quantity: l.quantity, unit_price: l.unit_price }).collect();
-            Op::Invoice { date: when.at(today), customer, commodity: usd(u).into(), lines, rate, reason, reference: String::new(), note: String::new(), pdf }
+            Op::Invoice { date: when.at(today), customer, commodity: usd(u).into(), lines, rate, reason, reference: String::new(), note: String::new(), pdf, more: Default::default() }
         }
         Draw::Credit { invoice, pdf, when } => {
             let invoice = pick(&invoice, &kind(|k| matches!(k, Kind::Invoice { .. }))).unwrap_or(1);
@@ -456,7 +456,7 @@ fn open_debts_are_the_balances(#[strategy(plan())] plan: Vec<Step>) {
 }
 
 #[derive(Arbitrary, Debug, Clone)]
-enum Edit {
+pub(crate) enum Edit {
     Insert(Index, #[strategy(arb::<char>())] char),
     Space(Index),
     Delete(Index),
@@ -557,7 +557,7 @@ fn each_operation_changes_only_its_part(#[strategy(plan())] plan: Vec<Step>) {
             Op::Unfile { .. } => (&["documents"], -grows(m.documents.len(), n.documents.len())),
             Op::Record { .. } => (&["statements"], grows(m.statements.len(), n.statements.len())),
             Op::Unrecord { .. } => (&["statements"], -grows(m.statements.len(), n.statements.len())),
-            Op::ConfigSet { .. } | Op::ConfigUnset { .. } => (&["config"], 1),
+            Op::ConfigSet { .. } | Op::ConfigUnset { .. } | Op::Configure(_) => (&["config"], 1),
             Op::AccountAdd(_) => (&["accounts"], grows(m.accounts.len(), n.accounts.len())),
             Op::AccountRemove(_) => (&["accounts"], -grows(m.accounts.len(), n.accounts.len())),
             Op::CommodityAdd(..) => (&["commodities"], grows(m.commodities.len(), n.commodities.len())),
@@ -667,7 +667,7 @@ fn every_guarantee_is_tested() {
         .filter(|l| l.starts_with("| G-") || l.starts_with("| M-"))
         .flat_map(|l| l.rsplit('|').nth(1).unwrap().split('`').skip(1).step_by(2))
         .collect();
-    let code = include_str!("tests.rs");
+    let code = [include_str!("tests.rs"), include_str!("../cli_tests.rs")].concat();
     let mut tests = BTreeSet::new();
     // Spelled apart, so as not to find themselves.
     let (proptest, test) = (["#[", "proptest"].concat(), ["#[", "test]"].concat());
@@ -1345,6 +1345,7 @@ fn issuing_follows_the_configuration(#[strategy(plan())] plan: Vec<Step>, usd: b
         reference: String::new(),
         note: String::new(),
         pdf: "0".repeat(64),
+        more: Default::default(),
     };
     let Ok(n) = apply(&m, &issue, today) else { return Ok(()) };
     let Kind::Invoice { content: c, .. } = &n.entries.last().unwrap().kind else { unreachable!() };
@@ -1613,7 +1614,7 @@ fn problems_name_lines_that_are_there(#[strategy(plan())] plan: Vec<Step>, file:
 }
 
 /// The files of `m` with one edit made to one of them.
-fn edited(m: &Books, file: &Index, edit: &Edit) -> Files {
+pub(crate) fn edited(m: &Books, file: &Index, edit: &Edit) -> Files {
     let mut f = render(m);
     let name = pick(file, &f.keys().cloned().collect::<Vec<_>>()).unwrap();
     let mut chars: Vec<char> = f[&name].chars().collect();
@@ -1704,6 +1705,7 @@ fn any_text_the_rules_allow_survives(
             reference: description.clone(),
             note: lines.clone(),
             pdf: "0".repeat(64),
+            more: Default::default(),
         };
         match apply(&m, &invoice, today) {
             Ok(n) => m = n,
