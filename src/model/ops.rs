@@ -183,37 +183,49 @@ fn latest(m: &Books, account: &str, commodity: &str) -> Option<(Account, Commodi
     m.statements.range((a.clone(), c.clone(), Date::MIN)..=(a, c, Date::MAX)).next_back().map(|(k, _)| k.clone())
 }
 
-/// `git config` on abo.toml: a dotted key set to a value, or unset. A value
-/// is the first of these the key takes: a table — `{ ... }` sets a table's
-/// keys together, so that the VAT method and its accounts change at once — a
-/// string, a whole number. So an address that begins with `{` is still one.
+/// What a key of abo.toml holds, by its schema.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Shape {
+    /// Keys of its own, set together: `{ method = "flat", rate = "6.5", ... }`.
+    Table,
+    WholeNumber,
+    /// Text, which is also how dates, decimals, accounts and the like are
+    /// written there.
+    Text,
+}
+
+pub fn shape(key: &str) -> Shape {
+    match key.split('.').collect::<Vec<_>>()[..] {
+        ["company"] | ["vat"] | ["invoice"] | ["payment"] | ["payment", _] | ["report"] | ["report", "vat"] | ["report", "vat", _] => Shape::Table,
+        ["invoice", "terms_days"] => Shape::WholeNumber,
+        _ => Shape::Text,
+    }
+}
+
+/// `git config` on abo.toml: a dotted key set to a value, or unset. The
+/// value is read as the key's shape, and as nothing else: `vat` takes a
+/// table, `invoice.terms_days` a whole number, an address any text, `{`
+/// first or not.
 fn config_edit(c: &Config, key: &str, value: Option<&str>) -> Result<Config, String> {
-    let root = toml::Value::try_from(c).map_err(|e| e.to_string())?;
-    let with = |v: Option<toml::Value>| -> Result<Config, String> {
-        let mut root = root.clone();
-        let parts: Vec<&str> = key.split('.').collect();
-        let (last, path) = parts.split_last().unwrap();
-        let mut t = root.as_table_mut().unwrap();
-        for p in path {
-            t = t.entry(p.to_string()).or_insert_with(|| toml::Value::Table(Default::default())).as_table_mut().ok_or(format!("{key}: {p} holds a value, not keys"))?;
-        }
-        match v {
-            Some(v) => drop(t.insert(last.to_string(), v)),
-            None => drop(t.remove(*last).ok_or(format!("{key} is not set"))?),
-        }
-        root.try_into().map_err(|e: toml::de::Error| format!("{key}: {}", e.message()))
-    };
-    let Some(value) = value else { return with(None) };
-    let table = value.starts_with('{').then(|| toml::from_str::<toml::Table>(&format!("v = {value}")).ok()).flatten().and_then(|t| t.get("v").cloned());
-    let readings = table.into_iter().chain([toml::Value::String(value.into())]).chain(value.parse::<i64>().ok().map(toml::Value::Integer));
-    let mut first_error = None;
-    for v in readings {
-        match with(Some(v)) {
-            Ok(c) => return Ok(c),
-            Err(e) => drop(first_error.get_or_insert(e)),
+    let mut root = toml::Value::try_from(c).map_err(|e| e.to_string())?;
+    let parts: Vec<&str> = key.split('.').collect();
+    let (last, path) = parts.split_last().unwrap();
+    let mut t = root.as_table_mut().unwrap();
+    for p in path {
+        t = t.entry(p.to_string()).or_insert_with(|| toml::Value::Table(Default::default())).as_table_mut().ok_or(format!("{key}: {p} holds a value, not keys"))?;
+    }
+    match value {
+        None => drop(t.remove(*last).ok_or(format!("{key} is not set"))?),
+        Some(value) => {
+            let v = match shape(key) {
+                Shape::Table => toml::from_str::<toml::Table>(&format!("v = {value}")).ok().and_then(|t| t.get("v").cloned()).filter(toml::Value::is_table).ok_or(format!("{key} takes keys, such as {{ name = value, ... }}"))?,
+                Shape::WholeNumber => toml::Value::Integer(value.parse().map_err(|_| format!("{key} takes a whole number"))?),
+                Shape::Text => toml::Value::String(value.into()),
+            };
+            drop(t.insert(last.to_string(), v));
         }
     }
-    Err(first_error.unwrap())
+    root.try_into().map_err(|e: toml::de::Error| format!("{key}: {}", e.message()))
 }
 
 /// N1 to N6; N5 is now the invariant I-P3.

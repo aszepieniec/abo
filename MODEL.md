@@ -515,7 +515,7 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 |---|---|---|---|
 | G-P1 | Nothing dated on or before `closed_through` changes, and it never moves back | N2, N6 | `closed_periods_stay_closed`, `closed_dates_are_refused` |
 | G-P2 | Nothing is dated after the day it is added | N1 | `nothing_is_dated_after_today` |
-| G-P3 | VAT accounts are posted to only as the VAT method in force allows: input VAT by bills, output VAT by invoices and credit notes, a flat rate's account by neither; each also by plain entries and reversals; none by a payment or a write-off | N3, I-C3 | `vat_accounts_move_as_the_method_says` |
+| G-P3 | VAT accounts are posted to only as the VAT method in force allows: input VAT by bills, output VAT by invoices, a flat rate's account by neither; each also by plain entries, and by reversals and credit notes, which undo what was booked under the method of its day; none by a payment or a write-off | N3, I-C3 | `vat_accounts_move_as_the_method_says` |
 
 ### A bill's document
 
@@ -779,11 +779,12 @@ abo config unset <key>
 `company.closed_through` closes a period (N6); `vat.input`,
 `invoice.terms_days` and the like set what they name; each payment option and
 each box of the tax return is keys of its own, `payment.<id>.iban`,
-`report.vat.<code>.label` and `.query`. A value is read as the first of a
-table, a string or a whole number that the key takes, so a value `{ … }` sets
-a table's keys together — for what cannot change one key at a time, the VAT
-method and its accounts — and an address that begins with `{` is still an
-address:
+`report.vat.<code>.label` and `.query`. Each key has a shape, from
+`abo.toml`'s schema, and its value is read as that shape and nothing else: a
+key that names a table — `vat`, `payment.<id>`, `report.vat.<code>` — takes
+its keys together, `{ … }`, for what cannot change one key at a time, such as
+the VAT method and its accounts; `invoice.terms_days` takes a whole number;
+every other key takes text, an address beginning with `{` as well:
 
 ```
 abo config set vat '{ method = "flat", rate = "6.5", account = "Liabilities:VAT" }'
@@ -791,8 +792,9 @@ abo config set vat '{ method = "flat", rate = "6.5", account = "Liabilities:VAT"
 
 Every change is checked by I-C1 to I-C3 and the invariants they bear on, and
 refused with the number of the one it would break; a key that names nothing,
-or a value of the wrong kind, is refused as `abo.toml` would not read. `abo company` and `abo payment-options`
-stay, to ask what they need as questions; each answer is a `config_set`.
+or a value not of its key's shape, is refused. `abo company` and `abo
+payment-options` stay, to ask what they need as questions; each answer is a
+`config_set`.
 
 ### 5.3 Undo
 
@@ -1079,8 +1081,8 @@ What the properties found, each now a rule above:
   an amount with more places than declared, or in a commodity not declared:
   it pads, and never rounds.
 - `config set` read every value beginning with `{` as a table, so an address
-  beginning with one could not be set: a value is the first reading the key
-  takes (§5.2).
+  beginning with one could not be set: a value is read as its key's shape,
+  which the schema gives (§5.2).
 - A problem at a file's end — its last newline gone — named a line past it.
 
 The 172 regression tests stay; most become tests of one invariant each, once

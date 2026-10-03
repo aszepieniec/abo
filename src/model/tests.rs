@@ -613,9 +613,10 @@ fn nothing_is_dated_after_today(#[strategy(plan())] plan: Vec<Step>) {
 }
 
 /// G-P3: under the VAT method in force when an entry is added, input VAT is
-/// posted to by bills, output VAT by invoices and credit notes, a flat
-/// rate's account by neither; each also by plain entries, which settle with
-/// the tax office, and by reversals; and none by a payment or a write-off.
+/// posted to by bills, output VAT by invoices, a flat rate's account by
+/// neither; each also by plain entries, which settle with the tax office, and
+/// by reversals and credit notes, which undo what was booked under the method
+/// of its day; and none by a payment or a write-off.
 #[proptest]
 fn vat_accounts_move_as_the_method_says(#[strategy(plan())] plan: Vec<Step>) {
     walk(&plan, |m, op, n| {
@@ -624,11 +625,11 @@ fn vat_accounts_move_as_the_method_says(#[strategy(plan())] plan: Vec<Step>) {
         }
         let id = n.entries.len();
         let kind = &n.entries[id - 1].kind;
-        let by_hand = matches!(kind, Kind::Plain(_) | Kind::Reversal { .. });
+        let by_hand = matches!(kind, Kind::Plain(_) | Kind::Reversal { .. } | Kind::CreditNote { .. });
         let allowed = |a: &str| -> bool {
             match &m.config.vat {
                 Vat::Effective { input, .. } if a == input => by_hand || matches!(kind, Kind::Bill(_)),
-                Vat::Effective { output, .. } if a == output => by_hand || matches!(kind, Kind::Invoice { .. } | Kind::CreditNote { .. }),
+                Vat::Effective { output, .. } if a == output => by_hand || matches!(kind, Kind::Invoice { .. }),
                 Vat::Flat { account, .. } if a == account => by_hand,
                 _ => true,
             }
