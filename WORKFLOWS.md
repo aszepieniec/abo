@@ -103,7 +103,9 @@ no books, or a name that is no directory init would make, is "not found".
 Name, address, country and tax registration number: what invoices print about
 who sends them. The company page (the company's name in the sidebar) shows
 them as init's questions, filled in, and saving runs `abo company --name ...
---address ... --country ... --tax-id ...` with only the details that changed.
+--address ... --country ... --tax-id ...` with every detail as it now stands,
+an address line to each `--address`. Saved as it stood, nothing changes and
+nothing is said.
 `abo company` alone prints them. A bank option held in the company's old name
 is held in its new one, in the same commit. The directory keeps its name; currency and
 VAT method are shown there, not changed there. Payment options are below, see
@@ -133,9 +135,12 @@ kind drops the old kind's fields. `... remove <id>` removes one. Wherever an
 id is asked for, its start will do when it names one option. A taken id, a
 bad IBAN or BIC, a field of another kind, too little to pay by (a cash
 option without its lines among it), a control character, an undeclared
-account or one that is no asset, and an edit that changes nothing are refused; asked on the terminal,
-the question comes again. Each change is a commit to `abo.toml`, comments
-kept, logged and undoable like any other. The company page lists them, each
+account or one that is no asset are refused; asked on the terminal, the
+question comes again. An edit that changes nothing makes no commit. Each
+change is a commit to `abo.toml`, written as abo writes it (a comment there is
+a change no abo command made, and refused as one), logged and undoable like
+any other. Invoices print the options in the order of their ids, as the list
+shows them. The company page lists them, each
 with Edit and Remove, and a button to add one: the same questions as a form,
 each problem under its field, saving by the same commands.
 **Done when** the next invoice prints the options as they now stand.
@@ -146,7 +151,7 @@ each problem under its field, saving by the same commands.
 
 ### B1. Book an entry by hand — Supported (browser, CLI)
 Browser: **Entry**, fill in date, description and one posting per line
-(`account=amount`, one amount may be left off). CLI: `abo post`.
+(`account=amount`, every amount written). CLI: `abo post`.
 **Done when** the entry is in the year's journal file in date order, one commit
 holds it, and the front page says **Booked** with that commit. An entry that
 does not balance, names an undeclared account, posts to a VAT account the
@@ -169,8 +174,9 @@ document naming it in `bills/index`. In the browser a bill the rules refuse
 files nothing, and the form comes back filled in but for the document. A
 document filed and not booked is listed under the form as **Filed, not booked
 yet**; **Book it** opens the form with that document. A bill may be booked
-with no document, and its document filed later (**Upload** on the bill, or
-`abo file --for <bill>`).
+with no document, and its document filed later (**Upload** on the bill, which
+asks who issued it, or `abo file --for <bill>`). `abo bill --date`, given with
+a document, must be the document's date.
 
 ### B3. The same bill twice — Supported
 Filing a document already filed is refused; booking a document a standing
@@ -298,7 +304,8 @@ out.
 ### E4. Ask hledger anything — Supported (CLI)
 `abo bal …` and `abo reg …` pass their arguments to hledger: a query, and the
 options that choose what is reported and how — periods, depth, value,
-cleared or not, the output format. Any other option is refused, so that they
+the output format. (A statement clears postings in abo's own tags, not
+hledger's cleared mark, so `--cleared` says nothing of reconciling.) Any other option is refused, so that they
 read the books and no other file, write none, and take no `hledger.conf`;
 neither does any report abo makes.
 
@@ -318,7 +325,10 @@ again.
 ### F2. Undo something just done — Supported (browser, CLI)
 Every change that succeeds says so in a green notice that fades after ten
 seconds, with **Undo** on it while it is the last change; the **Log** offers
-**Undo** on the last change. CLI: `abo undo`.
+**Undo** on the last change. An Undo button takes back only the change it
+was shown with: one made since, in a terminal say, refuses it. CLI: `abo
+undo`. The Log shows each change as the command that makes it, quoted as a
+shell takes it, with every default it used written out.
 **Done when** the books are as they were before the last change, as a new
 commit, so git keeps both. Undo again, and the change is made again. Refused
 when the last commit is not abo's last change, or files hold changes abo did
@@ -329,8 +339,8 @@ not make. Anything older is reverted (F7).
 statement of the account, as only the latest can go (MODEL.md §5).
 
 ### F4. Take back a filed document — Supported (browser, CLI)
-**Delete** on a document not booked, or `abo unfile <path>`. One a standing
-bill has stays.
+**Delete** on a document not booked, or a reverted bill's, or `abo unfile
+<path>`. One a standing bill has stays; so does one dated in a closed period.
 
 ### F7. Revert a booking — Supported (browser, CLI)
 For a booking that stands and turns out wrong, the bookkeeping way: open its
@@ -354,8 +364,10 @@ one cancelled already, and a credit note.
 
 ### F6. Close a period — Supported (CLI)
 `abo config set company.closed_through 2026-06-30`. Nothing dated on or
-before it is added, and no statement or price there added or taken out; the
-date only moves forward (MODEL.md N2, N6).
+before it is added, no document there filed or taken out, and no statement
+or price there added or taken out; the date only moves forward (MODEL.md N2,
+N6). Setting it is a change like any other: while it is the last, Undo takes
+it back, for a date typed wrong.
 
 ---
 
@@ -380,7 +392,22 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 ---
 
-## Last verified: 2026-10-01
+## Last verified: 2026-10-04
+
+A fifth run, after the CLI and the web moved onto the model: four fresh agents,
+working from this file as before. Each fault found has a test in
+`tests/regressions.rs`, under "the workflow run of 2026-10-04".
+
+| Workflow | Fifth run |
+|---|---|
+| A3b, B1, B3, B4, B5, C2, C3, D1, D2, E1, E3, F3, F5, F7 | Verified |
+| A1, F1, F2 | Failed, fixed: the Log showed a command unquoted, and one typed in a terminal without the defaults it took, so neither typed back to the same change; it showed `bills/index` as binary; an Undo button left on screen took back a change made since in a terminal |
+| A2, A3, A4, F6 | Failed, fixed: a refused removal said "is not declared"; `abo demo --dir` was ignored, every demo sharing one directory; the help said an added option prints last. Written down: an unchanged option changes nothing, as the company form; a comment in `abo.toml` is a hand edit; Undo takes back a closing date while it is the last change |
+| B2, F4 | Failed, fixed: `abo bill` crashed on a document not filed, and took a date other than its document's; `abo file` filed into a closed period; a document uploaded later was named after the description; a reverted bill's document was offered for Delete, and Delete refused it |
+| C1, G1 | Failed, fixed: a VAT rate so small its VAT rounds to nought got past the reason 0% needs; I-I1 said only "not one abo could have issued"; a stray brace left most of the stylesheet to phone width alone, so notices never faded on a desktop |
+| E2, E4 | Failed, fixed: an exchange booked at cost left the balance sheet short of nil; a VAT box's query could be an hledger option writing a file; `--pdf` could write over a filed document |
+
+## Verified: 2026-10-01
 
 Run four times that day, by four fresh agents each time, each with its own copy of
 the demo books and its own server, typst installed, working from this file

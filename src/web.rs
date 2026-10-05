@@ -939,6 +939,7 @@ fn toast(s: &Store, n: usize) -> Option<Markup> {
             @if undoable(s, n) {
                 form.undo method="post" action="/undo" {
                     (token())
+                    @if let Some(c) = commit { input type="hidden" name="commit" value=(c); }
                     button.btn-danger type="submit" title="Undo" { (icon("undo")) " Undo" }
                 }
             }
@@ -957,7 +958,7 @@ async fn activity(Books(s): Books, Query(q): Query<Fields>) -> Response {
         // A document's bytes as binary, not as text.
         let attr = format!("core.attributesFile={}", s.root.join(".abo/binary").display());
         let _ = std::fs::create_dir_all(s.root.join(".abo"));
-        let _ = std::fs::write(s.root.join(".abo/binary"), "bills/** binary\ninvoices/**/*.pdf binary\n");
+        let _ = std::fs::write(s.root.join(".abo/binary"), "bills/*/** binary\ninvoices/**/*.pdf binary\n");
         Ok(html! {
             h1 { "Log" }
             @if lines.is_empty() {
@@ -978,7 +979,7 @@ async fn activity(Books(s): Books, Query(q): Query<Fields>) -> Response {
                                         details {
                                             summary { (l["what"].as_str().unwrap_or("")) }
                                             h2 { "Command" }
-                                            pre { "abo " (words.join(" ")) }
+                                            pre { (crate::repo::shell(&words)) }
                                             @if let Some(h) = commit {
                                                 h2 { "Commit " (h) }
                                                 pre { (crate::repo::git_in(&s.root, &["-c", &attr, "show", "--format=%s%n", "--stat", "--patch", h, "--"]).unwrap_or_else(|e| e.to_string())) }
@@ -990,6 +991,7 @@ async fn activity(Books(s): Books, Query(q): Query<Fields>) -> Response {
                                         @if undoable(&s, *n) {
                                             form method="post" action="/undo" {
                                                 (token())
+                                                @if let Some(h) = commit { input type="hidden" name="commit" value=(h); }
                                                 button.small.btn-danger type="submit" title="Undo" { (icon("undo")) " Undo" }
                                             }
                                         }
@@ -1019,10 +1021,18 @@ struct Once {
 
 /// Take back the last change, from its success notice or the Log, and go back
 /// to where that was, which then says so.
-async fn undo(Books(mut s): Books, Form(f): Form<Once>) -> Response {
+async fn undo(Books(mut s): Books, Form(f): Form<Fields>) -> Response {
     let back = BACK.try_with(Clone::clone).ok().flatten().unwrap_or_else(|| "/".into());
     let root = s.root.clone();
-    match once(Some(&root), &f.token, || s.undo(vec!["undo".into()]).map(|_| done(&s, &back))) {
+    let token = f.get("token").cloned().unwrap_or_default();
+    match once(Some(&root), &token, || {
+        // The button takes back the change it was shown with, and none made since.
+        let last = store::lines(&s.root).last().and_then(|l| l["commit"].as_str().map(String::from));
+        if let Some(c) = f.get("commit").filter(|c| last.as_ref() != Some(*c)) {
+            bail!("{c} is no longer the last change; the Log shows what is");
+        }
+        s.undo(vec!["undo".into()]).map(|_| done(&s, &back))
+    }) {
         Ok(to) => Redirect::to(&to).into_response(),
         Err(e) => or_error(&s, "Undo", || Err(e)),
     }
@@ -1177,6 +1187,10 @@ fn upload(id: &str, bill: usize, to: &str) -> Markup {
                     span.hint { "A PDF, or a photograph. On a phone: the camera, the photo library or a file." }
                     input type="file" name="document" accept="image/*,application/pdf" required;
                 }
+                label.field { "Issuer"
+                    span.hint { "Who sent the bill; the file is named after it. Left empty, the description's first words." }
+                    input type="text" name="issuer";
+                }
                 div.actions {
                     button.btn-primary type="submit" { (icon("check")) " File it" }
                     span.nav { button type="button" popovertarget=(id) popovertargetaction="hide" { "Cancel" } }
@@ -1220,8 +1234,8 @@ async fn entry_file(Books(mut s): Books, Path(id): Path<usize>, mp: Multipart) -
     let r = once(Some(&root), f.get("token").map_or("", String::as_str), || {
         let bytes = doc.context("no document in the upload")?;
         let e = s.books.entry(id).with_context(|| format!("there is no entry {id}"))?;
-        // Named for its bill: the issuer, as the description begins.
-        let issuer = e.description.split(',').next().unwrap_or_default().to_string();
+        // Named for its issuer; not given, as the description begins.
+        let issuer = f.get("issuer").map(|i| i.trim()).filter(|i| !i.is_empty()).map(String::from).unwrap_or_else(|| e.description.split(',').next().unwrap_or_default().to_string());
         let (op, path, file) = filing(bytes, e.date, &issuer, Some(id))?;
         let words = argv(&["file"], &[("date", &e.date.to_string()), ("issuer", &issuer), ("for", &id.to_string())]);
         change(&mut s, &op, words, &format!("File {path}"), &[file], &to)
@@ -2823,7 +2837,6 @@ label.row .date, label.row .amt { font-family: "IBM Plex Mono", ui-monospace, mo
 label.row .amt { text-align: right; color: var(--fg); }
 
 table.log td { vertical-align: top; white-space: nowrap; }
-}
 table.log td.what { width: 100%; max-width: 0; }
 table.log summary { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 table.log details[open] summary { white-space: normal; }
@@ -2838,6 +2851,7 @@ table.log pre { max-height: 360px; }
   table.list.log td, table.list.log td.date { display: block; padding: 0; width: auto; }
   table.list.log td.what { order: 9; flex-basis: 100%; width: auto; max-width: 100%; min-width: 0; }
   table.log pre { max-width: calc(100vw - 72px); }
+}
 .failed { color: var(--error); font-weight: 600; }
 
 /* a success notice: shown, then gone — no script. Hovering or tabbing into it

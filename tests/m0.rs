@@ -439,7 +439,7 @@ fn statements() {
     assert_eq!(line(1), "20.00");
 
     if Command::new("typst").arg("--version").output().is_ok() {
-        let pdf = dir.join("out.pdf");
+        let pdf = dir.parent().unwrap().join("out.pdf");
         let before = commits(&dir);
         let o = abo(&dir, &["vat", "--period", "2026", "--pdf", pdf.to_str().unwrap()], "");
         assert!(o.status.success(), "pdf failed: {}", err(&o));

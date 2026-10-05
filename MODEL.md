@@ -313,8 +313,9 @@ document come in either order, and the one that comes second records the link
 — on the document — so that no entry changes, as a statement names the
 postings it clears. What the set of documents says:
 
-- **Filed, not booked yet:** a document whose `of` is none. It may be taken
-  out again (`unfile`); one that names a bill may not.
+- **Filed, not booked yet:** a document whose `of` is none, or names a bill
+  that does not stand. It may be taken out again (`unfile`), or booked; one
+  that names a standing bill may not be taken out.
 - **Booked, document missing:** a `Bill` entry no document names. An ordinary
   state, not an error: filing the document later, for that booking, sets its
   `of`.
@@ -655,8 +656,9 @@ not reused: those missing below were rules about a value now derived.
 - **I-I1** An invoice has a line or more, each saying what it is for, a total
   above nought, a customer named on the first line,
   and a due date on or after its own. It books output VAT only when it charges
-  VAT; its receivable is an asset, its income an income account, its output VAT
-  a liability. An exempt invoice says why. A home price is above nought and in
+  VAT, and VAT it charges comes to more than nought once rounded to the
+  commodity's places; its receivable is an asset, its income an income account,
+  its output VAT a liability. An exempt invoice says why. A home price is above nought and in
   another commodity. A credit note's `of` is an invoice.
 - **I-I2** Within a year, invoices and credit notes are dated in the order of
   their ids, so their numbers follow their dates.
@@ -700,7 +702,7 @@ not reused: those missing below were rules about a value now derived.
 ### 4.8 Configuration
 
 - **I-C1** The company has a name; no text in the configuration holds a hidden
-  character.
+  character; no VAT box's query begins with `-`, as an hledger option does.
 - **I-C2** Payment option ids are well formed; each option has what its kind
   needs (DESIGN, A4), and nothing another kind has — a cash option no IBAN — and an IBAN or BIC that is valid, in its canonical form,
   if given.
@@ -715,9 +717,10 @@ These hold of each change when it is made, not of the state: they need the
 day it is made, or the configuration in force then, and the state remembers
 neither for an entry made long ago.
 
-- **N1** No entry or statement is dated after the day it is added.
+- **N1** No entry, statement or document is dated after the day it is added.
 - **N2** On or before `closed_through`, no entry is added, no statement
-  recorded or removed, and no price added or removed.
+  recorded or removed, no document filed or taken out, and no price added or
+  removed.
 - **N3** VAT accounts are posted to only as the VAT method allows (DESIGN §6):
   a bill posts nothing to output VAT, nor, under a flat rate, to the flat
   rate's account; a payment or a write-off posts nothing to any VAT account —
@@ -750,7 +753,7 @@ are not — the debt paid is a debt, the statement removed exists — refuse as
 |---|---|
 | `post(date, description, postings)` | a `Plain` entry |
 | `file(bytes, date, issuer, for)` | a `Document`, by the bytes' hash; `for`, when given, a `Bill` entry it is the document of |
-| `unfile(document)` | removes a `Document` that names no bill: one filed by mistake |
+| `unfile(document)` | removes a `Document` that names no standing bill: one filed by mistake, or a reverted bill's |
 | `bill(document, description, postings)` | a `Bill` entry; `document`, when given — filed already, naming no bill or a reversed one — now names it |
 | `invoice(customer, lines, rate, …)` | an `Invoice` entry with its content and its PDF's hash; the accounts, terms, payment options and, in another commodity, the price, as configured and declared now |
 | `credit(invoice, note)` | a `CreditNote` entry, reversing the invoice, and its PDF |

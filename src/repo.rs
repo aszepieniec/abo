@@ -213,6 +213,24 @@ pub fn flag(argv: &mut Vec<String>, name: &str, value: &str) {
     }
 }
 
+/// `abo` and `words` as a shell takes them back: a word with anything but
+/// letters, digits and `-_.,:/=@%+` in it single-quoted.
+pub fn shell(words: &[&str]) -> String {
+    let quote = |w: &&str| {
+        if !w.is_empty() && w.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.,:/=@%+".contains(&b)) {
+            w.to_string()
+        } else {
+            format!("'{}'", w.replace('\'', "'\\''"))
+        }
+    };
+    std::iter::once("abo".to_string()).chain(words.iter().map(quote)).collect::<Vec<_>>().join(" ")
+}
+
+#[test]
+fn a_command_is_shown_as_a_shell_takes_it() {
+    assert_eq!(shell(&["pay", "9", "--cost=11 USD", "--to=a'b", ""]), "abo pay 9 '--cost=11 USD' '--to=a'\\''b' ''");
+}
+
 /// A company's directory name: its name in ASCII, lower case, with every run
 /// of anything but letters and digits made one dash. ASCII so that it can be
 /// typed on any keyboard; letters outside it are spelled in it, not dropped.

@@ -83,6 +83,10 @@ fn add(into: &mut Bag, from: &Bag, sign: Decimal) {
 /// caller ask for period movement (a P&L) or a running balance (a sheet).
 pub fn balances(s: &Store, query: &str, extra: &[&str]) -> Result<Vec<(String, Bag)>> {
     let mut args = vec!["balance", "--flat", "-O", "json"];
+    // A query is terms, never an option hledger would act on, `-o` writing a file.
+    if query.starts_with('-') {
+        bail!("the query {query:?} begins with '-', as an option does; a query is terms such as acct:^Income");
+    }
     if !query.is_empty() {
         args.insert(1, query);
     }
@@ -161,7 +165,9 @@ pub fn balance_sheet(s: &Store, date: &str) -> Result<Statement> {
         .context("bad date")?
         .tomorrow()?
         .to_string();
-    let extra = vec!["-H", "-e", end.as_str()];
+    // An exchange, booked at its cost, is equity's conversion, or the sheet
+    // would not come out nil.
+    let extra = vec!["-H", "-e", end.as_str(), "--infer-equity"];
 
     let (assets, asset_total) = section(s, "Assets", "assets", &extra, false)?;
     let (liabilities, liability_total) = section(s, "Liabilities", "liabilities", &extra, true)?;

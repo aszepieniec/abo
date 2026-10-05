@@ -365,9 +365,14 @@ fn a_statement_is_recorded_once() {
 #[test]
 fn no_bill_is_booked_in_a_closed_period() {
     let dir = books("file-closed", &[]);
-    close(&dir, "2026-06-30");
     let path = file(&dir, "Acme", "2026-06-30");
+    close(&dir, "2026-06-30");
     refused(&dir, &["bill", "--desc", "Acme", "--document", &path, "Expenses:General=5.00", "Liabilities:Payable=-5.00"], "N2");
+    // Nor is its document filed, nor taken out.
+    refused(&dir, &["unfile", &path], "N2");
+    let late = dir.parent().unwrap().join("late.pdf");
+    std::fs::write(&late, b"%PDF-1.4\nlate").unwrap();
+    refused(&dir, &["file", late.to_str().unwrap(), "--date", "2026-06-01", "--issuer", "Late"], "N2");
     assert!(!read(&dir, "journal/2026.journal").contains("Acme"));
     clean(&dir);
 }
@@ -716,6 +721,8 @@ fn a_bill_is_booked_once() {
     let dir = books("bill-booked-once", &[]);
     let b = bill(&dir, "Acme", "2026-03-01", "40.00");
     refused(&dir, &["bill", "--date", "2026-03-02", "--desc", "Again", "--document", &b, "Expenses:General=60.00", "Liabilities:Payable=-60.00"],
+            "a bill is dated as its document");
+    refused(&dir, &["bill", "--desc", "Again", "--document", &b, "Expenses:General=60.00", "Liabilities:Payable=-60.00"],
             "names a bill that stands");
     clean(&dir);
 }
@@ -904,7 +911,7 @@ fn the_demo_books_take_commits_from_a_terminal() {
     std::fs::create_dir_all(&home).unwrap();
     // No git identity anywhere but what the demo sets itself.
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_abo"));
-    cmd.arg("demo").env("TMPDIR", &base).env("HOME", &home).env("XDG_CONFIG_HOME", &home);
+    cmd.args(["demo", "--dir"]).arg(base.join("abo-demo")).env("TMPDIR", &base).env("HOME", &home).env("XDG_CONFIG_HOME", &home);
     let _s = start(cmd);
     let o = Command::new(env!("CARGO_BIN_EXE_abo")).args(["post", "--date", "2026-09-30", "--desc", "T", "Expenses:General=1.00", "Assets:Bank=-1.00"])
         .current_dir(base.join("abo-demo")).env("HOME", &home).env("XDG_CONFIG_HOME", &home).env("GIT_CONFIG_NOSYSTEM", "1")
@@ -1437,4 +1444,97 @@ fn init_asks_again_for_an_account_of_no_class() {
     c.stdin.take().unwrap().write_all(b"\n\n\nskip\nEUR\nflat\n5.3\nliabilities:vat\nLiabilities:VAT\n0\n\n\n").unwrap();
     let o = c.wait_with_output().unwrap();
     assert!(o.status.success(), "{}", err(&o));
+}
+
+// ---- found by the workflow run of 2026-10-04 ----
+
+#[test]
+fn vat_charged_comes_to_more_than_nought() {
+    let dir = books("vat-nought", &[]);
+    refused(&dir, &["invoice", "--to", "R", "--date", "2026-03-01", "--item", "1|10|x", "--vat-rate", "0.0000001"], "VAT of nought");
+}
+
+#[test]
+fn a_vat_box_query_is_no_hledger_option() {
+    let dir = books("vat-query", &[]);
+    refused(&dir, &["config", "set", "report.vat.1", "{ label = \"Bad\", query = \"-o/tmp/x\", invert = true }"], "I-C1");
+}
+
+#[test]
+fn a_report_is_written_outside_the_books() {
+    let dir = books("pdf-outside", &[]);
+    let path = bill(&dir, "Acme", "2026-03-01", "10.00");
+    refused(&dir, &["pl", "--period", "2026", "--pdf", &path], "is in the books");
+    clean(&dir);
+}
+
+#[test]
+fn a_bill_of_a_document_not_filed_is_refused() {
+    let dir = books("bill-nodoc", &[]);
+    let o = abo(&dir, &["bill", "--desc", "zz", "--document", "deadbeef", "Expenses:General=6.00", "Liabilities:Payable=-6.00"]);
+    assert_eq!(o.status.code(), Some(1), "{}", err(&o));
+}
+
+#[test]
+fn a_reverted_bills_document_can_be_taken_out() {
+    let dir = books("unfile-reverted", &[]);
+    let (id, path) = bill_entry(&dir, "Acme", "2026-03-01", "10.00");
+    refused(&dir, &["unfile", &path], "a standing bill's");
+    ok(&dir, &["revert", &id, "--date", "2026-03-02"]);
+    ok(&dir, &["unfile", &path]);
+    assert!(!dir.join(&path).exists());
+}
+
+#[test]
+fn an_exchange_leaves_the_balance_sheet_nil() {
+    let dir = books("bs-exchange", &[]);
+    ok(&dir, &["commodity", "add", "BTC", "8"]);
+    ok(&dir, &["account", "add", "Assets:Wallet"]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "BTC", "Assets:Wallet=0.12345678 BTC @@ 7407.41 EUR", "Assets:Bank=-7407.41"]);
+    let bs = json(&dir, &["bs", "--date", "2026-12-31"]);
+    let nil = bs["bottom"]["amounts"].as_array().unwrap().iter().all(|a| a["quantity"].as_str().unwrap().trim_start_matches(['0', '.']).is_empty());
+    assert!(nil, "{bs}");
+}
+
+#[test]
+fn the_log_holds_what_types_back_to_the_same_change() {
+    let dir = books("log-defaults", &[]);
+    ok(&dir, &["post", "--desc", "Fees", "Expenses:General=10", "Assets:Bank=-10"]);
+    let line = read(&dir, ".abo/log.jsonl");
+    assert!(line.contains(&format!("\"--date={TODAY}\"")), "{line}");
+    ok(&dir, &["post", "--desc", "Two words", "Expenses:General=1", "Assets:Bank=-1"]);
+    let log = ok(&dir, &["log", "--last", "1"]);
+    assert!(log.contains("'--desc=Two words'") || log.contains("--desc 'Two words'"), "{log}");
+}
+
+#[test]
+fn a_demo_is_never_built_over_something() {
+    let dir = books("demo-over", &[]);
+    let o = abo(&dir, &["demo", "--dir", dir.to_str().unwrap(), "--port", "0"]);
+    assert!(!o.status.success() && err(&o).contains("is not empty"), "{}", err(&o));
+    assert!(dir.join("abo.toml").exists());
+}
+
+#[test]
+fn an_undo_button_takes_back_its_own_change_alone() {
+    let dir = books("undo-stale", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "First", "Expenses:General=1", "Assets:Bank=-1"]);
+    let shown = json(&dir, &["log"]).as_array().unwrap().last().unwrap()["commit"].as_str().unwrap().to_string();
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Second", "Expenses:General=2", "Assets:Bank=-2"]);
+    let s = serve(&dir);
+    let (_, _, page) = http(&s, "POST", "/undo", &[("token", "u"), ("commit", &shown)]);
+    assert!(page.contains("no longer the last change"), "{page}");
+    assert!(read(&dir, "journal/2026.journal").contains("Second"));
+}
+
+#[test]
+fn a_document_uploaded_later_is_named_for_its_issuer() {
+    let dir = books("upload-issuer", &[]);
+    let id = entry(&dir, &["bill", "--date", "2026-03-01", "--desc", "No document yet", "Expenses:General=5.00", "Liabilities:Payable=-5.00"]);
+    let s = serve(&dir);
+    let body = "--b\r\nContent-Disposition: form-data; name=\"token\"\r\n\r\nup\r\n--b\r\nContent-Disposition: form-data; name=\"issuer\"\r\n\r\nNodoc AG\r\n\
+         --b\r\nContent-Disposition: form-data; name=\"document\"; filename=\"x.pdf\"\r\nContent-Type: application/pdf\r\n\r\n%PDF-1.4\nlater\r\n--b--\r\n".to_string();
+    let (status, _, page) = send(&s, "POST", &format!("/entry/{id}/file"), "multipart/form-data; boundary=b", body.as_bytes());
+    assert_eq!(status, 303, "{page}");
+    assert!(read(&dir, "bills/index").contains("nodoc-ag"), "{}", read(&dir, "bills/index"));
 }

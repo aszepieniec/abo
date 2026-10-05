@@ -38,7 +38,7 @@ enum PaymentCmd {
     /// List the options in the order invoices print them. The same as no
     /// subcommand.
     List,
-    /// Add an option, printed last on invoices. Without flags: a list of
+    /// Add an option, printed on invoices in the order of the ids. Without flags: a list of
     /// kinds, then the questions for the kind chosen.
     Add {
         /// How commands will name it, such as postfinance.
@@ -724,7 +724,9 @@ async fn run(cli: Cli) -> Result<()> {
         Cmd::Post { date, description, postings } => {
             let mut s = Store::open(&here)?;
             let postings = postings.iter().map(|p| store::posting(&s.books, p)).collect::<Result<_>>()?;
-            let op = Op::Post { date: store::day(date.as_deref())?, description, postings };
+            let date = store::day(date.as_deref())?;
+            let argv = with_defaults(argv, &[("date", date.to_string())]);
+            let op = Op::Post { date, description, postings };
             changed(&mut s, &op, argv, "Post", &[], cli.json)
         }
         Cmd::File { date, issuer, bill, src } => {
@@ -750,11 +752,14 @@ async fn run(cli: Cli) -> Result<()> {
         Cmd::Bill { date, description, document, postings } => {
             let mut s = Store::open(&here)?;
             let document = document.map(|d| store::filed(&s.books, &d)).transpose()?;
-            let date = match (&date, &document) {
-                (None, Some(h)) => s.books.documents[h].date,
-                _ => store::day(date.as_deref())?,
+            // Dated as its document, unless said; the model refuses another
+            // date, and a document not filed.
+            let date = match (date.as_deref(), document.as_ref().and_then(|h| s.books.documents.get(h))) {
+                (None, Some(d)) => d.date,
+                (d, _) => store::day(d)?,
             };
             let postings = postings.iter().map(|p| store::posting(&s.books, p)).collect::<Result<_>>()?;
+            let argv = with_defaults(argv, &[("date", date.to_string())]);
             let op = Op::Bill { date, description, postings, document };
             changed(&mut s, &op, argv, "Book a bill", &[], cli.json)
         }
@@ -765,6 +770,7 @@ async fn run(cli: Cli) -> Result<()> {
             let more = model::InvoiceMore { customer_tax_id, due_days, pay_to };
             let date = store::day(date.as_deref())?;
             let customer = to.replace("\\n", "\n");
+            let argv = with_defaults(argv, &[("date", date.to_string()), ("currency", commodity.clone())]);
             let op = |pdf: String| Op::Invoice {
                 date,
                 customer: customer.clone(),
@@ -783,6 +789,7 @@ async fn run(cli: Cli) -> Result<()> {
             let mut s = Store::open(&here)?;
             let invoice = store::debt(&s.books, &number)?;
             let date = store::day(date.as_deref())?;
+            let argv = with_defaults(argv, &[("date", date.to_string())]);
             issue(&mut s, |pdf| Op::Credit { invoice, date, note: note.clone(), pdf }, argv, cli.json)
         }
         Cmd::Invoices { open } => {
@@ -805,17 +812,23 @@ async fn run(cli: Cli) -> Result<()> {
             let amount = amount.unwrap_or_else(|| s.books.open(id, &s.books.standing()));
             let from = from.or_else(|| s.books.config.payment.values().next().map(|o| o.account.clone())).unwrap_or_else(|| "Assets:Bank".into());
             let cost = cost.map(|c| store::amount(&s.books, &c)).transpose()?;
-            let op = Op::Pay { debt: id, date: store::day(date.as_deref())?, amount, from, cost };
+            let date = store::day(date.as_deref())?;
+            let argv = with_defaults(argv, &[("amount", amount.to_string()), ("from", from.clone()), ("date", date.to_string())]);
+            let op = Op::Pay { debt: id, date, amount, from, cost };
             changed(&mut s, &op, argv, &format!("Pay {amount} {commodity} of {d}"), &[], cli.json)
         }
         Cmd::WriteOff { debt: d, to, date } => {
             let mut s = Store::open(&here)?;
             let id = store::debt(&s.books, &d)?;
-            changed(&mut s, &Op::WriteOff { debt: id, date: store::day(date.as_deref())?, to }, argv, &format!("Write off {d}"), &[], cli.json)
+            let date = store::day(date.as_deref())?;
+            let argv = with_defaults(argv, &[("date", date.to_string())]);
+            changed(&mut s, &Op::WriteOff { debt: id, date, to }, argv, &format!("Write off {d}"), &[], cli.json)
         }
         Cmd::Revert { date, entry } => {
             let mut s = Store::open(&here)?;
-            changed(&mut s, &Op::Revert { entry, date: store::day(date.as_deref())? }, argv, &format!("Revert {entry}"), &[], cli.json)
+            let date = store::day(date.as_deref())?;
+            let argv = with_defaults(argv, &[("date", date.to_string())]);
+            changed(&mut s, &Op::Revert { entry, date }, argv, &format!("Revert {entry}"), &[], cli.json)
         }
         Cmd::Reconcile { account, commodity, date, balance } => {
             let s = Store::open(&here)?;
@@ -851,12 +864,14 @@ async fn run(cli: Cli) -> Result<()> {
                 let cleared: std::collections::BTreeSet<_> = s.books.statements.values().flat_map(|st| st.clears.iter().copied()).collect();
                 refs.extend(s.books.all_postings().into_iter().filter(|(r, d, p)| p.account == account && p.amount.commodity == commodity && *d <= date && !cleared.contains(r)).map(|(r, ..)| r));
             }
+            let argv = with_defaults(argv, &[("commodity", commodity.clone()), ("date", date.to_string())]);
             let op = Op::Record { account: account.clone(), commodity: commodity.clone(), date, balance, clears: refs };
             changed(&mut s, &op, argv, &format!("Record the statement of {account} on {date}"), &[], cli.json)
         }
         Cmd::Unrecord { account, commodity } => {
             let mut s = Store::open(&here)?;
             let commodity = commodity.unwrap_or_else(|| s.books.config.company.currency.clone());
+            let argv = with_defaults(argv, &[("commodity", commodity.clone())]);
             let op = Op::Unrecord { account: account.clone(), commodity };
             changed(&mut s, &op, argv, &format!("Take out the latest statement of {account}"), &[], cli.json)
         }
@@ -890,12 +905,12 @@ async fn run(cli: Cli) -> Result<()> {
                     .map(|l| {
                         let argv: Vec<&str> = l["argv"].as_array().into_iter().flatten().filter_map(|a| a.as_str()).collect();
                         format!(
-                            "{:>4}  {}  {:<9} {}\n      abo {}",
+                            "{:>4}  {}  {:<9} {}\n      {}",
                             l["line"],
                             l["at"].as_str().unwrap_or_default().get(..16).unwrap_or_default().replace('T', " "),
                             l["commit"].as_str().unwrap_or_default(),
                             l["what"].as_str().unwrap_or_default(),
-                            argv.join(" "),
+                            repo::shell(&argv),
                         )
                     })
                     .collect::<Vec<_>>()
@@ -1124,7 +1139,13 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Demo { port } => {
             logging(&missing);
-            let dir = std::env::temp_dir().join("abo-demo");
+            // Built afresh, so never where something is already: a directory
+            // given must be new or empty, and each demo has its own.
+            let dir = match cli.dir {
+                Some(d) if d.read_dir().is_ok_and(|mut r| r.next().is_some()) => bail!("{} is not empty; a demo is built in a new directory", d.display()),
+                Some(d) => d,
+                None => std::env::temp_dir().join(format!("abo-demo-{}", std::process::id())),
+            };
             tracing::info!(dir = %dir.display(), "building toy books");
             web::serve(store::demo(&dir)?, port).await
         }
@@ -1155,6 +1176,12 @@ fn statement(
     json: bool,
 ) -> Result<()> {
     if let Some(path) = &pdf {
+        // A report changes nothing in the books, so is written outside them.
+        let full = std::path::absolute(path)?;
+        let dir = full.parent().and_then(|d| d.canonicalize().ok()).unwrap_or_default();
+        if dir.starts_with(books.root.canonicalize()?) {
+            bail!("{} is in the books; a report is written outside them", path.display());
+        }
         statement::pdf(books, &s, path)?;
     }
     emit(json, &s, || {
@@ -1192,6 +1219,16 @@ fn changed(s: &mut Store, op: &Op, argv: Vec<String>, what: &str, also: &[(Strin
         (Some(c), Some(id), Some(d)) => format!("Entry {id}: {d}.\nCommitted {c}."),
         (Some(c), ..) => format!("{what}. Committed {c}."),
     })
+}
+
+/// `argv` with each default the command took written out, `--name=value`, so
+/// that run again another day it makes the same change.
+fn with_defaults(mut argv: Vec<String>, used: &[(&str, String)]) -> Vec<String> {
+    let at = argv.iter().position(|a| a == "--").unwrap_or(argv.len());
+    let given = |k: &str| argv[..at].iter().any(|a| *a == format!("--{k}") || a.starts_with(&format!("--{k}=")));
+    let add: Vec<String> = used.iter().filter(|(k, _)| !given(k)).map(|(k, v)| format!("--{k}={v}")).collect();
+    argv.splice(at..at, add);
+    argv
 }
 
 /// Issue an invoice or a credit note, and say so.

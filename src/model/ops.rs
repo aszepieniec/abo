@@ -70,14 +70,17 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
             n.documents.insert(sha256, Document { date, name, ext, of: bill });
         }
         Op::Unfile { sha256 } => match m.documents.get(&sha256) {
-            Some(d) if d.of.is_none() => drop(n.documents.remove(&sha256)),
-            _ => return Err("no document naming no bill has this hash".into()),
+            // As Bill: a reverted bill's document is booked by none.
+            Some(d) if d.of.is_none_or(|of| !m.standing()[of]) => drop(n.documents.remove(&sha256)),
+            Some(_) => return Err("the document is a standing bill's; revert the bill first".into()),
+            None => return Err("no document is filed with this hash".into()),
         },
         Op::Bill { date, description, postings, document } => {
             n.entries.push(entry(date, description, Kind::Bill(postings)));
             if let Some(h) = document {
                 let standing = m.standing();
                 match n.documents.get_mut(&h) {
+                    Some(d) if d.date != date => return Err(format!("the document is dated {}; a bill is dated as its document", d.date)),
                     Some(d) if d.of.is_none_or(|of| !standing[of]) => d.of = Some(next),
                     _ => return Err("the document is not filed, or names a bill that stands".into()),
                 }
@@ -273,6 +276,11 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
             dated.push(*date);
             touched.push(*date);
         }
+        Op::File { date, .. } => {
+            dated.push(*date);
+            touched.push(*date);
+        }
+        Op::Unfile { sha256 } => touched.extend(m.documents.get(sha256).map(|d| d.date)),
         Op::PriceAdd { date, .. } | Op::PriceRemove { date, .. } => touched.push(*date),
         Op::Unrecord { .. } => touched.extend(m.statements.keys().filter(|k| !n.statements.contains_key(*k)).map(|k| k.2)),
         _ => {}

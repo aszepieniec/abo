@@ -236,9 +236,9 @@ pub fn check(m: &Books) -> Vec<Violation> {
     posted.extend(configured.iter().map(String::as_str));
     for a in &posted {
         if !m.accounts.contains(*a) {
-            no!("I-A1", "{a} is not declared");
+            no!("I-A1", "{a} is not declared, and is in use: posted to, recorded or named in abo.toml");
         } else if !leaf(a) {
-            no!("I-A2", "{a} is posted to, and has accounts under it");
+            no!("I-A2", "{a} is in use (posted to, recorded or named in abo.toml), and has accounts under it");
         }
     }
     let mut amounts: Vec<&Amount> = vec![];
@@ -261,7 +261,7 @@ pub fn check(m: &Books) -> Vec<Violation> {
     }
     for c in used {
         if !m.commodities.contains_key(c) {
-            no!("I-A1", "{c} is not declared");
+            no!("I-A1", "{c} is not declared, and is in use");
         }
     }
     for (c, p) in &m.commodities {
@@ -345,7 +345,7 @@ pub fn check(m: &Books) -> Vec<Violation> {
         let id = i + 1;
         match &e.kind {
             Kind::Invoice { content: c, pdf } => {
-                let (_, _, total) = m.totals(c);
+                let (_, vat, total) = m.totals(c);
                 let charged = matches!(c.vat, InvoiceVat::Charged { .. });
                 let texts = c.lines.iter().map(|l| l.description.as_str()).chain([c.reference.as_str()]).chain(c.pay_to.iter().flat_map(|p| p.lines.iter().chain([&p.label]).map(String::as_str)));
                 let home_ok = match &c.vat {
@@ -356,10 +356,22 @@ pub fn check(m: &Books) -> Vec<Violation> {
                 let accounts_ok = class(&c.accounts.receivable) == "Assets"
                     && class(&c.accounts.income) == "Income"
                     && c.accounts.output.as_ref().is_none_or(|o| class(o) == "Liabilities" && charged);
-                if c.lines.is_empty() || c.lines.iter().any(|l| l.description.trim().is_empty()) || total <= Decimal::ZERO || c.due < e.date || !home_ok || !accounts_ok || !hash_ok(pdf)
-                    || !lines_ok(&c.customer) || c.customer.lines().next().is_none_or(|l| l.trim().is_empty()) || !text_ok(&c.customer_tax_id) || !lines_ok(&c.note) || !texts.into_iter().all(text_ok)
-                {
-                    no!("I-I1", "invoice {id} is not one abo could have issued");
+                // The first thing wrong, said as the form would say it.
+                let wrong = [
+                    (c.lines.is_empty(), "has no lines"),
+                    (c.lines.iter().any(|l| l.description.trim().is_empty()), "has a line without a description"),
+                    (total <= Decimal::ZERO, "totals nought or less"),
+                    // A rate so small its VAT rounds away is nought, which needs a reason.
+                    (charged && vat <= Decimal::ZERO, "charges a VAT of nought; at 0% say why no VAT"),
+                    (c.due < e.date, "is due before its date"),
+                    (!home_ok, "is at 0% without saying why, or converts at no price"),
+                    (!accounts_ok, "books to accounts of the wrong class"),
+                    (!hash_ok(pdf), "has a PDF hash that is not a SHA-256"),
+                    (!lines_ok(&c.customer) || c.customer.lines().next().is_none_or(|l| l.trim().is_empty()), "has no customer, or a hidden character in it"),
+                    (!text_ok(&c.customer_tax_id) || !lines_ok(&c.note) || !texts.into_iter().all(text_ok), "holds a hidden character"),
+                ];
+                if let Some((_, why)) = wrong.iter().find(|(bad, _)| *bad) {
+                    no!("I-I1", "invoice {id} {why}");
                 }
             }
             Kind::CreditNote { of, note, pdf } => {
@@ -475,6 +487,9 @@ pub fn check(m: &Books) -> Vec<Violation> {
         || !c.report.vat.iter().all(|(k, b)| text_ok(k) && text_ok(&b.label) && text_ok(&b.query))
     {
         no!("I-C1", "the company has a name, and no text in the configuration holds a hidden character");
+    }
+    if let Some((k, _)) = c.report.vat.iter().find(|(_, b)| b.query.starts_with('-')) {
+        no!("I-C1", "report.vat.{k}'s query begins with '-', as an hledger option does");
     }
     for (id, o) in &c.payment {
         if let Some(why) = option_problem(id, o) {
