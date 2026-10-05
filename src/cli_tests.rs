@@ -396,14 +396,14 @@ fn what_abo_shows_is_the_models(#[strategy(vec(any::<Step>(), 1..20))] plan: Vec
     for (row, id) in rows.iter().zip(numbered) {
         prop_assert_eq!(row["number"].as_str().unwrap(), m.number_text(id).unwrap());
         if let model::Kind::Invoice { content, .. } = &m.entries[id - 1].kind {
-            let open: Decimal = row["open"].as_str().unwrap().split(' ').next().unwrap().parse().unwrap();
+            let open: Decimal = row["open"]["quantity"].as_str().unwrap().parse().unwrap();
             prop_assert_eq!(open, m.open(id, &standing), "invoice {} in {}", id, content.commodity);
         }
     }
     let r = abo(&books, today, &args(&["reconcile", "--account", mt::BANK, "--commodity", "EUR"])).json.unwrap();
     let cleared: BTreeSet<model::PostingRef> = m.statements.iter().filter(|(k, _)| k.0 == mt::BANK && k.1 == "EUR" && k.2 <= today).flat_map(|(_, s)| s.clears.iter().copied()).collect();
     let sum: Decimal = m.all_postings().into_iter().filter(|(r, ..)| cleared.contains(r)).map(|(_, _, p)| p.amount.quantity).sum();
-    prop_assert_eq!(r["cleared"].as_str().unwrap().parse::<Decimal>().unwrap(), sum);
+    prop_assert_eq!(r["cleared"]["quantity"].as_str().unwrap().parse::<Decimal>().unwrap(), sum);
 }
 
 #[derive(Arbitrary, Debug, Clone)]
@@ -721,8 +721,8 @@ fn record_all_clears_everything(#[strategy(plan())] plan: Vec<Step>) {
     let (_parent, books, today) = after(&plan);
     let m = store::Store::open(&books).unwrap().books;
     let r = abo(&books, today, &args(&["reconcile", "--account", mt::BANK, "--commodity", "EUR"])).json.unwrap();
-    let cleared: Decimal = r["cleared"].as_str().unwrap().parse().unwrap();
-    let rest: Decimal = r["outstanding"].as_array().unwrap().iter().map(|i| i["amount"].as_str().unwrap().parse::<Decimal>().unwrap()).sum();
+    let cleared: Decimal = r["cleared"]["quantity"].as_str().unwrap().parse().unwrap();
+    let rest: Decimal = r["outstanding"].as_array().unwrap().iter().map(|i| i["amount"]["quantity"].as_str().unwrap().parse::<Decimal>().unwrap()).sum();
     let o = abo(&books, today, &args(&["record", "--all", "--account", mt::BANK, "--commodity", "EUR", &flag("balance", cleared + rest)]));
     let n = store::Store::open(&books).unwrap().books;
     if o.ok {
@@ -851,4 +851,82 @@ fn a_report_changes_nothing_in_the_books(#[strategy(plan())] plan: Vec<Step>, re
     };
     abo(&books, today, &argv);
     prop_assert_eq!((head(&books), snapshot()), before, "{:?} changed the books", argv);
+}
+
+/// Every amount a command's JSON holds is `{quantity, commodity}`: the
+/// number to its commodity's places, the commodity apart; never money run
+/// together in one string, nor any text of how to write it, which is the
+/// reader's to choose.
+#[proptest(cases(12))]
+fn amounts_in_json_are_quantity_and_commodity(#[strategy(plan())] plan: Vec<Step>) {
+    let (_parent, books, today) = after(&plan);
+    let m = store::Store::open(&books).unwrap().books;
+    let mut commands: Vec<Vec<String>> = [
+        &["invoices"][..], &["invoices", "--open"], &["price"], &["pl"], &["bs"], &["vat"], &["payment-options"],
+        &["config"], &["account"], &["commodity"], &["log"], &["check"],
+    ]
+    .iter()
+    .map(|a| args(a))
+    .collect();
+    for a in m.accounts.iter().filter(|a| a.starts_with("Assets:")) {
+        commands.push(args(&["reconcile", "--account", a, "--balance", "1"]));
+    }
+    // `1 760.00 EUR`: a number, its thousands apart or not, then a code.
+    let run_together = |s: &str| {
+        s.rsplit_once(' ').is_some_and(|(q, c)| c.len() >= 3 && c.bytes().all(|b| b.is_ascii_uppercase()) && q.replace([' ', '\''], "").parse::<Decimal>().is_ok())
+    };
+    fn walk(v: &serde_json::Value, key: &str, out: &mut Vec<(String, serde_json::Value)>) {
+        match v {
+            serde_json::Value::Object(o) => {
+                if o.contains_key("quantity") {
+                    out.push((key.into(), v.clone()));
+                }
+                for (k, x) in o {
+                    walk(x, k, out);
+                }
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|x| walk(x, key, out)),
+            _ => out.push((key.into(), v.clone())),
+        }
+    }
+    for a in &commands {
+        let o = abo(&books, today, a);
+        let Some(json) = o.json else { continue };
+        let mut found = vec![];
+        walk(&json, "", &mut found);
+        for (key, v) in found {
+            if let Some(o) = v.as_object() {
+                let keys: BTreeSet<&str> = o.keys().map(String::as_str).collect();
+                prop_assert_eq!(keys, BTreeSet::from(["commodity", "quantity"]), "{:?}: {}", a, v);
+                let commodity = o["commodity"].as_str().unwrap();
+                let q: Decimal = o["quantity"].as_str().unwrap().parse().unwrap();
+                prop_assert_eq!(q.scale(), m.places(commodity), "{:?}: {} is not to {}'s places", a, v, commodity);
+            } else if let Some(s) = v.as_str() {
+                prop_assert!(!run_together(s), "{:?}: {} holds {:?}, money run together", a, key, s);
+                // In what shows money, a bare number is a quantity, its
+                // commodity beside it; a posting's `ref`, ENTRY.N, looks like one.
+                let money = ["invoices", "price", "pl", "bs", "vat", "reconcile"].contains(&a[0].as_str());
+                prop_assert!(!money || s.parse::<Decimal>().is_err() || ["ref", "quantity"].contains(&key.as_str()), "{:?}: {} holds {:?}, a number with no commodity", a, key, s);
+            }
+        }
+    }
+}
+
+/// What cannot be read as a date ends abo with 2, as a flag it does not
+/// know: a usage error, not a refusal of a change never asked for.
+#[proptest(cases(16))]
+fn an_unreadable_date_exits_2(#[strategy("[a-z0-9 -]{0,10}")] junk: String, #[strategy(0usize..7)] which: usize) {
+    let (_parent, books) = opened();
+    let date = format!("x{junk}");
+    let argv = match which {
+        0 => args(&["post", "--desc", "d", "--date", &date, "Assets:Bank=1", "Equity:Opening=-1"]),
+        1 => args(&["pay", "1", "--date", &date]),
+        2 => args(&["revert", "1", "--date", &date]),
+        3 => args(&["write-off", "1", "--to", "Expenses:Other", "--date", &date]),
+        4 => args(&["credit", "1", "--date", &date]),
+        5 => args(&["record", "--account", "Assets:Bank", "--balance", "0", "--date", &date]),
+        _ => args(&["invoice", "--to", "C", "--item", "1|1|x", "--date", &date]),
+    };
+    let o = abo(&books, start(), &argv);
+    prop_assert_eq!(o.code, Some(2), "{:?}: {}", argv, o.stderr);
 }

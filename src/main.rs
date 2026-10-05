@@ -617,6 +617,8 @@ async fn main() -> std::process::ExitCode {
     match run(cli).await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
+            // 2 when what was typed cannot be read, as clap's own; 1 for the rest.
+            let code = if e.downcast_ref::<store::Unreadable>().is_some() { 2 } else { 1 };
             // Under --json a refusal is part of the API too, so it is JSON on
             // stdout like everything else; otherwise anyhow's usual report.
             if json {
@@ -629,7 +631,7 @@ async fn main() -> std::process::ExitCode {
                     None => eprintln!("Error: {e:#}"),
                 }
             }
-            std::process::ExitCode::FAILURE
+            std::process::ExitCode::from(code)
         }
     }
 }
@@ -818,7 +820,7 @@ async fn run(cli: Cli) -> Result<()> {
                 }
                 all.iter()
                     .rev()
-                    .map(|i| format!("{}  {}  {:<24}  {:>16}  {:<14}  {}", i.number, i.date, i.customer, store::shown(&s.books, &i.total), if i.due.is_empty() { String::new() } else { format!("due {}", i.due) }, i.status))
+                    .map(|i| format!("{}  {}  {:<24}  {:>16}  {:<14}  {}", i.number, i.date, i.customer, i.total.text(" "), if i.due.is_empty() { String::new() } else { format!("due {}", i.due) }, i.said(" ")))
                     .collect::<Vec<_>>()
                     .join("\n")
             })
@@ -864,9 +866,9 @@ async fn run(cli: Cli) -> Result<()> {
             let date = store::day(date.as_deref())?;
             let r = store::reconciled(&s.books, &account, &commodity, date, balance);
             emit(cli.json, &r, || {
-                let mut out = format!("{account} at {date} ({commodity})\n  cleared               {:>14}\n", r["cleared"].as_str().unwrap_or_default());
-                if let Some(d) = r["difference"].as_str() {
-                    out += &format!("  per the statement     {:>14}\n  to clear              {d:>14}\n", r["statement"].as_str().unwrap_or_default());
+                let mut out = format!("{account} at {date} ({commodity})\n  cleared               {:>14}\n", text(&r["cleared"]));
+                if !r["difference"].is_null() {
+                    out += &format!("  per the statement     {:>14}\n  to clear              {:>14}\n", text(&r["statement"]), text(&r["difference"]));
                 }
                 let rows = r["outstanding"].as_array().cloned().unwrap_or_default();
                 if rows.is_empty() {
@@ -874,7 +876,7 @@ async fn run(cli: Cli) -> Result<()> {
                 } else {
                     out += "\nNot yet cleared; `abo record` takes them by the first column:\n";
                     for i in rows {
-                        out += &format!("  {:<8} {} {:>14}  {}\n", i["ref"].as_str().unwrap_or_default(), i["date"].as_str().unwrap_or_default(), i["amount"].as_str().unwrap_or_default(), i["description"].as_str().unwrap_or_default());
+                        out += &format!("  {:<8} {} {:>14}  {}\n", i["ref"].as_str().unwrap_or_default(), i["date"].as_str().unwrap_or_default(), text(&i["amount"]), i["description"].as_str().unwrap_or_default());
                     }
                 }
                 out.trim_end().to_string()
@@ -1120,8 +1122,8 @@ async fn run(cli: Cli) -> Result<()> {
             let mut s = Store::open(&here)?;
             match change {
                 None | Some(PriceCmd::List) => {
-                    let all: Vec<_> = s.books.prices.iter().map(|((c, d), p)| serde_json::json!({ "date": d.to_string(), "of": c, "price": p.quantity.to_string(), "in": p.commodity })).collect();
-                    emit(cli.json, &all, || all.iter().map(|p| format!("{} {} {} {}", p["date"].as_str().unwrap_or_default(), p["of"].as_str().unwrap_or_default(), p["price"].as_str().unwrap_or_default(), p["in"].as_str().unwrap_or_default())).collect::<Vec<_>>().join("\n"))
+                    let all: Vec<_> = s.books.prices.iter().map(|((c, d), p)| serde_json::json!({ "date": d.to_string(), "of": c, "price": statement::Amount::new(&s.books, p.quantity, &p.commodity) })).collect();
+                    emit(cli.json, &all, || all.iter().map(|p| format!("{} {} {}", p["date"].as_str().unwrap_or_default(), p["of"].as_str().unwrap_or_default(), text(&p["price"]))).collect::<Vec<_>>().join("\n"))
                 }
                 Some(PriceCmd::Add { date, code, price }) => {
                     let price = store::amount(&s.books, &price.join(" "))?;
@@ -1252,6 +1254,11 @@ fn changed(s: &mut Store, op: &Op, argv: Vec<String>, what: &str, also: &[(Strin
     })
 }
 
+/// An amount of a command's JSON as a person reads it.
+fn text(a: &serde_json::Value) -> String {
+    serde_json::from_value::<statement::Amount>(a.clone()).map(|a| a.text(" ")).unwrap_or_default()
+}
+
 /// A change as done: `what`, which names it as a commit does, in the past.
 fn past(what: &str) -> String {
     const VERBS: [(&str, &str); 15] = [
@@ -1279,7 +1286,7 @@ fn issue(s: &mut Store, op: impl Fn(String) -> Op, argv: Vec<String>, json: bool
         eprintln!("Warning: {w}");
     }
     let what = if matches!(s.books.entries[r.entry - 1].kind, model::Kind::CreditNote { .. }) { "Credit note" } else { "Invoice" };
-    emit(json, &r, || format!("{what} {} for {}: {}\nCommitted {}.", r.number, r.total, r.pdf, r.commit))
+    emit(json, &r, || format!("{what} {} for {}: {}\nCommitted {}.", r.number, r.total.text(" "), r.pdf, r.commit))
 }
 
 /// Every key of a table, dotted, with its value.

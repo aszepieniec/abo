@@ -556,6 +556,7 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | G-O7 | `abo init`, and the form that asks its questions in the browser, open books that read with no problem, configured as told; or refuse and leave nothing behind | §2.8 | `init_opens_valid_books_or_nothing`, `a_new_company_opens_like_init` |
 | G-O8 | The log holds each change as the command that makes it again: every default the command took written out, so that run on the books as they were, on any later day, it makes the same change | §5 | `the_log_makes_each_change_again` |
 | G-O9 | A report changes nothing in the books, wherever it is told to write: a PDF, or hledger's output file, goes outside them or is refused | §5 | `a_report_changes_nothing_in_the_books` |
+| G-O11 | Every amount in a command's JSON is `{quantity, commodity}`: the number to its commodity's places, the commodity apart, and nothing of how to write it, which is the reader's to choose; what cannot be read as typed ends abo with 2, as a usage error | §5 | `amounts_in_json_are_quantity_and_commodity`, `an_unreadable_date_exits_2` |
 | G-O10 | A refusal says what is wrong with what the operation was given, of the books before it: it names no entry that is not there yet, an invoice or a credit note by its number and never by its id, and quotes nothing as Rust's debug format does | §5 | `refusals_speak_of_the_books_before` |
 
 ### Whoever uses the pages

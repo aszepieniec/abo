@@ -1529,10 +1529,10 @@ fn reconcile_page(s: &Store, f: &Fields, notice: Option<Markup>) -> Result<Marku
                 table.figures {
                     thead { tr { th { "Balance" } th.amt { (commodity) } } }
                     tbody {
-                        tr { td { "Cleared by the statements recorded" } td { (figure(&s.books, r["cleared"].as_str().unwrap_or_default(), &commodity)) } }
-                        @if let Some(b) = r["statement"].as_str() { tr { td { "Per the statement" } td { (figure(&s.books, b, &commodity)) } } }
+                        tr { td { "Cleared by the statements recorded" } td { (figure(&r["cleared"])) } }
+                        @if !r["statement"].is_null() { tr { td { "Per the statement" } td { (figure(&r["statement"])) } } }
                     }
-                    @if let Some(d) = r["difference"].as_str() { tfoot { tr.total { td { "To clear" } td { (figure(&s.books, d, &commodity)) } } } }
+                    @if !r["difference"].is_null() { tfoot { tr.total { td { "To clear" } td { (figure(&r["difference"])) } } } }
                 }
             }
             @if rows.is_empty() {
@@ -1547,7 +1547,7 @@ fn reconcile_page(s: &Store, f: &Fields, notice: Option<Markup>) -> Result<Marku
                                 label.row {
                                     input type="checkbox" name="ref" value=(i["ref"].as_str().unwrap_or_default());
                                     span.date { (i["date"].as_str().unwrap_or_default()) }
-                                    span.amt { (figure(&s.books, i["amount"].as_str().unwrap_or_default(), &commodity)) }
+                                    span.amt { (figure(&i["amount"])) }
                                     span { (i["description"].as_str().unwrap_or_default()) }
                                 }
                             }
@@ -1733,13 +1733,13 @@ async fn invoices(Books(s): Books, Query(q): Query<Fields>) -> Response {
                             @for i in &all {
                                 tr.row-link {
                                     td { a.stretch href={"/entry/" (i.entry)} { code.nowrap { (i.number) } }
-                                        div.narrow.small.muted { (i.date) " · " (store::shown(&s.books, &i.total)) @if !i.due.is_empty() { " · due " (i.due) } } }
+                                        div.narrow.small.muted { (i.date) " · " (money(std::slice::from_ref(&i.total))) @if !i.due.is_empty() { " · due " (i.due) } } }
                                     td.date.wide { (i.date) }
                                     td { (i.customer) }
-                                    td.amt.wide { (store::shown(&s.books, &i.total)) }
+                                    td.amt.wide { (money(std::slice::from_ref(&i.total))) }
                                     td.date.wide { (i.due) }
                                     td { div.pills {
-                                        span class=(if i.status.starts_with("settled") { "pill pill-ok" } else if i.status.starts_with("part paid") { "pill pill-warn" } else if i.status.starts_with("open") { "pill pill-info" } else { "pill" }) { (i.status) }
+                                        span class=(match i.status { "settled" => "pill pill-ok", "part paid" => "pill pill-warn", "open" => "pill pill-info", _ => "pill" }) { (i.said("\u{202f}")) }
                                         div.narrow { (row_actions(&s, i)) }
                                     } }
                                     td.wide { (row_actions(&s, i)) }
@@ -2199,13 +2199,12 @@ async fn declare(Books(mut s): Books, Form(f): Form<Fields>) -> Response {
 /// Amounts as a page writes them: each kept whole on its line, so a narrow
 /// screen breaks between amounts and never inside one.
 fn money(a: &[statement::Amount]) -> String {
-    a.iter().map(|m| m.shown.replace(' ', "\u{a0}")).collect::<Vec<_>>().join(", ")
+    a.iter().map(|m| m.text("\u{202f}").replace(' ', "\u{a0}")).collect::<Vec<_>>().join(", ")
 }
 
-/// A figure as `abo reconcile --json` gives it, as a page writes it, without
-/// its commodity, which heads its column.
-fn figure(b: &Model, text: &str, commodity: &str) -> String {
-    text.parse::<Decimal>().map_or_else(|_| text.to_string(), |q| model::grouped(q, b.places(commodity), commodity, "\u{202f}"))
+/// An amount as `abo reconcile --json` gives it, as a page writes it.
+fn figure(a: &serde_json::Value) -> String {
+    money(&[serde_json::from_value::<statement::Amount>(a.clone()).unwrap_or(statement::Amount { quantity: String::new(), commodity: String::new() })])
 }
 
 /// `q` of `commodity` as a page writes it: to its places, thousands apart by

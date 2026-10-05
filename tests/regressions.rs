@@ -533,7 +533,7 @@ fn an_invoice_takes_its_commoditys_places() {
     let dir = books("places", &["--vat", "none"]);
     ok(&dir, &["commodity", "add", "BTC", "8"]);
     let v = json(&dir, &["invoice", "--to", "C", "--item", "1|0.00123456|Tiny", "--currency", "BTC", "--date", "2026-03-01"]);
-    assert_eq!(v["total"], "0.00123456 BTC", "{v}");
+    assert_eq!((&v["total"]["quantity"], &v["total"]["commodity"]), (&"0.00123456".into(), &"BTC".into()), "{v}");
 }
 
 #[test]
@@ -629,7 +629,7 @@ fn a_reverted_invoice_payment_no_longer_counts() {
     let paid = entry(&dir, &["pay", "2026-0001", "--date", "2026-03-10"]);
     ok(&dir, &["revert", "--date", "2026-03-11", &paid]);
     let v = json(&dir, &["invoices"]);
-    assert_eq!(v[0]["open"], "110.00 EUR", "{v}");
+    assert_eq!((&v[0]["open"]["quantity"], &v[0]["open"]["commodity"]), (&"110.00".into(), &"EUR".into()), "{v}");
     assert!(v[0]["status"].as_str().unwrap().starts_with("open"), "{v}");
 }
 

@@ -6,6 +6,7 @@ use crate::model::{self, Books, Files, Op, Violation};
 use rust_decimal::Decimal;
 use crate::repo::{self, Stamp};
 use anyhow::{bail, Context as _, Result};
+use crate::statement::Amount;
 use sha2::{Digest as _, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -31,6 +32,24 @@ impl std::fmt::Display for Refused {
 }
 
 impl std::error::Error for Refused {}
+
+/// What was typed cannot be read: a date that is none, an amount that is no
+/// number. Not a refusal of the change, which was never asked; abo exits 2,
+/// as for a flag it does not know.
+#[derive(Debug)]
+pub struct Unreadable(pub String);
+
+impl std::fmt::Display for Unreadable {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Unreadable {}
+
+fn unreadable(what: String) -> anyhow::Error {
+    Unreadable(what).into()
+}
 
 /// The day a change is made: today, or ABO_TODAY, for tests and replays.
 pub fn today() -> Result<model::Date> {
@@ -316,8 +335,8 @@ pub fn init(dir: &Path, config: model::Config, author: Option<(String, String)>,
 pub fn day(s: Option<&str>) -> Result<model::Date> {
     match s {
         // Our words alone: the parser's say how it failed, not what to type.
-        Some(s) if s.trim().is_empty() => bail!("a date is needed, such as 2026-09-30"),
-        Some(s) => s.trim().parse().map_err(|_| anyhow::anyhow!("{} is not a date, such as 2026-09-30", s.trim())),
+        Some(s) if s.trim().is_empty() => Err(unreadable("a date is needed, such as 2026-09-30".into())),
+        Some(s) => s.trim().parse().map_err(|_| unreadable(format!("{} is not a date, such as 2026-09-30", s.trim()))),
         None => today(),
     }
 }
@@ -326,14 +345,14 @@ pub fn day(s: Option<&str>) -> Result<model::Date> {
 pub fn amount(b: &Books, text: &str) -> Result<model::Amount> {
     let text = text.trim();
     let (q, c) = text.split_once(' ').map(|(q, c)| (q, c.trim())).unwrap_or((text, b.config.company.currency.as_str()));
-    let quantity = Decimal::from_str_exact(q).map_err(|_| if q.is_empty() { anyhow::anyhow!("an amount is needed, such as 12.50") } else { anyhow::anyhow!("{q} is not an amount, such as 12.50") })?;
+    let quantity = Decimal::from_str_exact(q).map_err(|_| unreadable(if q.is_empty() { "an amount is needed, such as 12.50".into() } else { format!("{q} is not an amount, such as 12.50") }))?;
     Ok(model::Amount { quantity, commodity: c.to_string() })
 }
 
 /// `account=amount [COMMODITY]`, and `@@ cost COMMODITY` after one exchanged
 /// for another: the cost written unsigned, its sign the amount's.
 pub fn posting(b: &Books, text: &str) -> Result<model::Posting> {
-    let (account, rest) = text.split_once('=').with_context(|| format!("{text} is not account=amount, such as Expenses:General=12.50"))?;
+    let (account, rest) = text.split_once('=').ok_or_else(|| unreadable(format!("{text} is not account=amount, such as Expenses:General=12.50")))?;
     let (amount, cost) = match rest.split_once("@@") {
         Some((a, c)) => (a, Some(c)),
         None => (rest, None),
@@ -372,17 +391,9 @@ pub fn filed(b: &Books, text: &str) -> Result<String> {
 
 /// `ENTRY.N`: posting N of entry ENTRY, from 0, as `abo reconcile` gives it.
 pub fn posting_ref(text: &str) -> Result<model::PostingRef> {
-    let (e, n) = text.split_once('.').with_context(|| format!("{text:?} is not ENTRY.N, as abo reconcile gives it"))?;
-    let bad = || format!("{text:?} is not ENTRY.N, as abo reconcile gives it");
-    Ok(model::PostingRef { entry: e.parse().with_context(bad)?, n: n.parse().with_context(bad)? })
-}
-
-/// `1760.00 EUR`, as a program reads it, as a person does: `1 760.00 EUR`.
-pub fn shown(b: &Books, text: &str) -> String {
-    match text.split_once(' ').and_then(|(q, c)| Some((q.parse::<Decimal>().ok()?, c))) {
-        Some((q, c)) => format!("{} {c}", model::grouped(q, b.places(c), c, " ")),
-        None => text.to_string(),
-    }
+    let bad = || unreadable(format!("{text} is not ENTRY.N, as abo reconcile gives it"));
+    let (e, n) = text.split_once('.').ok_or_else(bad)?;
+    Ok(model::PostingRef { entry: e.parse().map_err(|_| bad())?, n: n.parse().map_err(|_| bad())? })
 }
 
 #[derive(serde::Serialize)]
@@ -391,11 +402,16 @@ pub struct InvoiceRow {
     pub number: String,
     pub date: String,
     pub customer: String,
-    pub total: String,
+    pub total: Amount,
     pub due: String,
     /// What is open, in the invoice's commodity; nothing for a credit note.
-    pub open: String,
-    pub status: String,
+    pub open: Option<Amount>,
+    /// open, part paid, settled, cancelled, or credit note.
+    pub status: &'static str,
+    /// Open past its due date.
+    pub overdue: bool,
+    /// For a credit note, the number of the invoice it cancels.
+    pub credits: Option<String>,
     #[serde(skip)]
     pub has_open: bool,
 }
@@ -414,25 +430,16 @@ pub fn invoices(b: &Books, today: model::Date) -> Vec<InvoiceRow> {
                 _ => return None,
             };
             let Kind::Invoice { content: c, .. } = &b.entry(inv)?.kind else { return None };
-            let places = b.places(&c.commodity);
-            // As a program reads it, and as a person does.
-            let money = |mut d: Decimal| {
-                d.rescale(places);
-                format!("{d} {}", c.commodity)
-            };
-            let shown = |d: Decimal| format!("{} {}", model::grouped(d, places, &c.commodity, " "), c.commodity);
+            let money = |d: Decimal| Amount::new(b, d, &c.commodity);
             let total = b.totals(c).2 * if credit { -Decimal::ONE } else { Decimal::ONE };
             let open = if credit { Decimal::ZERO } else { b.open(id, &standing) };
-            let mut status = match () {
-                _ if credit => format!("credits {}", b.number_text(inv).unwrap_or_default()),
-                _ if !standing[id] => "cancelled".to_string(),
-                _ if open.is_zero() => "settled".to_string(),
-                _ if open < total => format!("part paid, {} open", shown(open)),
-                _ => "open".to_string(),
+            let status = match () {
+                _ if credit => "credit note",
+                _ if !standing[id] => "cancelled",
+                _ if open.is_zero() => "settled",
+                _ if open < total => "part paid",
+                _ => "open",
             };
-            if !credit && standing[id] && !open.is_zero() && c.due < today {
-                status += ", overdue";
-            }
             Some(InvoiceRow {
                 entry: id,
                 number,
@@ -440,22 +447,35 @@ pub fn invoices(b: &Books, today: model::Date) -> Vec<InvoiceRow> {
                 customer: c.customer.lines().next().unwrap_or("").trim().to_string(),
                 total: money(total),
                 due: if credit { String::new() } else { c.due.to_string() },
-                open: if credit { String::new() } else { money(open) },
+                open: (!credit).then(|| money(open)),
                 status,
+                overdue: !credit && standing[id] && !open.is_zero() && c.due < today,
+                credits: credit.then(|| b.number_text(inv).unwrap_or_default()),
                 has_open: !open.is_zero(),
             })
         })
         .collect()
 }
 
+impl InvoiceRow {
+    /// Its status as a person reads it: `part paid, 700.00 EUR open, overdue`.
+    pub fn said(&self, space: &str) -> String {
+        let mut said = match (&self.credits, &self.open) {
+            (Some(n), _) => format!("credits {n}"),
+            (None, Some(o)) if self.status == "part paid" => format!("part paid, {} open", o.text(space)),
+            _ => self.status.to_string(),
+        };
+        if self.overdue {
+            said += ", overdue";
+        }
+        said
+    }
+}
+
 /// An account against a statement: what statements on or before `date`
 /// cleared, and the postings to it they did not.
 pub fn reconciled(b: &Books, account: &str, commodity: &str, date: model::Date, balance: Option<Decimal>) -> serde_json::Value {
-    let places = b.places(commodity);
-    let money = |mut d: Decimal| {
-        d.rescale(places);
-        d.to_string()
-    };
+    let money = |d: Decimal| Amount::new(b, d, commodity);
     let cleared: std::collections::BTreeSet<model::PostingRef> =
         b.statements.iter().filter(|(k, _)| k.0 == account && k.1 == commodity && k.2 <= date).flat_map(|(_, s)| s.clears.iter().copied()).collect();
     let ps: Vec<_> = b.all_postings().into_iter().filter(|(_, d, p)| p.account == account && p.amount.commodity == commodity && *d <= date).collect();
@@ -483,7 +503,7 @@ pub struct Issued {
     pub entry: usize,
     pub number: String,
     pub pdf: String,
-    pub total: String,
+    pub total: Amount,
     pub commit: String,
     /// What the books' own template left off the PDF.
     pub warnings: Vec<String>,
@@ -527,7 +547,7 @@ impl Store {
             }
         }
         let commit = r?.unwrap_or_default();
-        let total = invoices(&self.books, today()?).into_iter().find(|i| i.entry == id).map(|r| r.total).unwrap_or_default();
+        let total = invoices(&self.books, today()?).into_iter().find(|i| i.entry == id).map(|r| r.total).unwrap_or_else(|| Amount::new(&self.books, Decimal::ZERO, &self.books.config.company.currency));
         Ok(Issued { entry: id, number, pdf, total, commit, warnings })
     }
 }

@@ -733,6 +733,9 @@ fn refusals_speak_of_the_books_before(#[strategy(plan())] plan: Vec<Step>) {
                     prop_assert!(numbered, "{} names {}{} by its id: {:?}", x, word, t, op);
                 }
             }
+            // What was given, as given and as printed, its hidden characters `?`.
+            // A dotted key is quoted a segment at a time too.
+            let given: Vec<String> = given.iter().flat_map(|t| t.split('.').chain([t.as_str()]).flat_map(|t| [t.to_string(), super::explain::shown(t)]).collect::<Vec<_>>()).filter(|t| !t.is_empty()).collect();
             let mut rest = w.clone();
             for t in &given {
                 rest = rest.replace(t.as_str(), "");

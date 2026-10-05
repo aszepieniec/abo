@@ -163,7 +163,7 @@ fn invoices() {
                          "--item", "1|100.00|Hosting", "--date", "2026-09-20"]);
     assert_eq!(v["number"], "2026-0001", "{v}");
     // 1600 net + 10% = 1760
-    assert_eq!(v["total"], "1760.00 EUR", "{v}");
+    assert_eq!((&v["total"]["quantity"], &v["total"]["commodity"]), (&"1760.00".into(), &"EUR".into()), "{v}");
     assert!(dir.join("invoices/2026/2026-0001.pdf").is_file());
     // What typst was given: the bank option's name and each of its lines,
     // and the same as one line for templates older than [[payment]].
@@ -215,7 +215,7 @@ fn invoices() {
     // A correction: a credit note cancelling 2026-0001, numbered next, its
     // entry the invoice's negated, all in one commit.
     let v = json(&dir, &["credit", "--date", "2026-09-23", "2026-0001"]);
-    assert_eq!((v["number"].as_str(), v["total"].as_str()), (Some("2026-0004"), Some("-1760.00 EUR")), "{v}");
+    assert_eq!((v["number"].as_str(), v["total"]["quantity"].as_str()), (Some("2026-0004"), Some("-1760.00")), "{v}");
     let files = Command::new("git").args(["show", "--name-only", "--format=", "HEAD"]).current_dir(&dir).output().unwrap();
     let files = String::from_utf8_lossy(&files.stdout);
     for f in ["invoices/2026/2026-0004.pdf", "invoices/2026/2026-0004.json", "templates/credit-note.typ", "journal/2026.journal"] {
@@ -256,7 +256,7 @@ fn invoices() {
     assert_eq!(data["payment"][0]["details"][0], "Network: Bitcoin");
     // Its places are those BTC is declared with, unasked.
     let v = json(&dir, &["invoice", "--to", "Customer Ltd", "--item", "1|0.00123456|Tiny", "--currency", "BTC", "--date", "2026-09-25"]);
-    assert_eq!(v["total"], "0.00135802 BTC", "{v}");
+    assert_eq!((&v["total"]["quantity"], &v["total"]["commodity"]), (&"0.00135802".into(), &"BTC".into()), "{v}");
 
     // What no invoice may be.
     for (extra, says) in [
@@ -319,8 +319,8 @@ fn reconciliation() {
     };
 
     let r = reconcile("2026-03-31", Some("750.00"));
-    assert_eq!(r["cleared"], "0.00");
-    assert_eq!(r["difference"], "750.00");
+    assert_eq!(r["cleared"]["quantity"], "0.00");
+    assert_eq!(r["difference"]["quantity"], "750.00");
     let outstanding: Vec<String> = r["outstanding"].as_array().unwrap().iter().map(|i| i["ref"].as_str().unwrap().to_string()).collect();
     assert_eq!(outstanding, ["1.0", "2.0", "3.0"]);
 
@@ -336,7 +336,7 @@ fn reconciliation() {
     assert!(text.contains("statement: 750.00 EUR") && text.contains("clears: 1.0") && text.contains("clears: 2.0"), "{text}");
     assert!(!text.contains("= 750.00 EUR"), "asserted a balance that is not true:\n{text}");
     let r = reconcile("2026-03-31", Some("750.00"));
-    assert_eq!((r["cleared"].as_str(), r["difference"].as_str()), (Some("750.00"), Some("0.00")), "{r}");
+    assert_eq!((r["cleared"]["quantity"].as_str(), r["difference"]["quantity"].as_str()), (Some("750.00"), Some("0.00")), "{r}");
     assert_eq!(r["outstanding"].as_array().unwrap().len(), 1);
 
     // a posting that is not there, or that a statement clears already, is
@@ -730,7 +730,7 @@ fn paying_invoices() {
     }
     let open = || {
         let v = json(&dir, &["invoices"]);
-        v.as_array().unwrap().iter().map(|i| i["open"].as_str().unwrap().to_string()).collect::<Vec<_>>()
+        v.as_array().unwrap().iter().map(|i| format!("{} {}", i["open"]["quantity"].as_str().unwrap_or_default(), i["open"]["commodity"].as_str().unwrap_or_default()).trim().to_string()).collect::<Vec<_>>()
     };
     assert_eq!(open(), ["100.00 EUR"; 4]);
 
@@ -746,8 +746,11 @@ fn paying_invoices() {
     }
     assert_eq!(open(), ["0.00 EUR", "70.00 EUR", "0.00 EUR", "0.00 EUR", ""]);
     let v = json(&dir, &["invoices"]);
-    let status: Vec<&str> = v.as_array().unwrap().iter().map(|i| i["status"].as_str().unwrap()).collect();
-    assert_eq!(status, ["settled", "part paid, 70.00 EUR open, overdue", "settled", "cancelled", "credits 2026-0004"]);
+    let status: Vec<(&str, bool, &str)> = v.as_array().unwrap().iter().map(|i| (i["status"].as_str().unwrap(), i["overdue"].as_bool().unwrap(), i["credits"].as_str().unwrap_or(""))).collect();
+    assert_eq!(status, [("settled", false, ""), ("part paid", true, ""), ("settled", false, ""), ("cancelled", false, ""), ("credit note", false, "2026-0004")]);
+    // And as a person reads them.
+    let text = out(&abo(&dir, &["invoices"], ""));
+    assert!(text.contains("part paid, 70.00 EUR open, overdue") && text.contains("credits 2026-0004"), "{text}");
     let o = abo(&dir, &["invoices", "--open"], "");
     let listed = out(&o);
     assert!(listed.contains("2026-0002") && listed.lines().count() == 1, "{listed}");

@@ -4,8 +4,8 @@
 // arithmetic.
 
 #let d = json("/.abo/report.json")
-// Each amount as abo writes it ("1'234.50 CHF"), one per line, none broken
-// across lines; right-aligned in its column with the others.
+// Each amount as abo writes it for a page ("1'234.50 CHF", in `shown`), one
+// per line, none broken across lines; right-aligned in its column.
 #let shown(a) = a.at("shown", default: [#a.quantity #a.commodity])
 #let money(xs) = xs.map(a => box(shown(a))).join(linebreak())
 #let heading = d.title + if d.period != "" { ", " + d.period } else { "" }

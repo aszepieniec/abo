@@ -12,13 +12,11 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, serde::Deserialize, Clone)]
 pub struct Amount {
-    /// To the commodity's places, as a program reads it.
+    /// To the commodity's places.
     pub quantity: String,
     pub commodity: String,
-    /// As people read it: with its commodity, thousands set apart.
-    pub shown: String,
 }
 
 impl Amount {
@@ -26,7 +24,15 @@ impl Amount {
         let places = b.places(commodity);
         let mut v = crate::model::round(if q.is_zero() { Decimal::ZERO } else { q }, places);
         v.rescale(places);
-        Amount { quantity: v.to_string(), commodity: commodity.into(), shown: format!("{} {commodity}", crate::model::grouped(v, places, commodity, " ")) }
+        Amount { quantity: v.to_string(), commodity: commodity.into() }
+    }
+
+    /// As a person reads it: `1 760.00 EUR`, thousands apart by `space`, or
+    /// an apostrophe in CHF. How to write it is the reader's to say, so it
+    /// is no part of the data.
+    pub fn text(&self, space: &str) -> String {
+        let q: Decimal = self.quantity.parse().unwrap_or_default();
+        format!("{} {}", crate::model::grouped(q, q.scale(), &self.commodity, space), self.commodity)
     }
 }
 
@@ -74,7 +80,7 @@ pub fn amounts(b: &crate::model::Books, bag: &Bag) -> Vec<Amount> {
 }
 
 pub fn money(a: &[Amount]) -> String {
-    a.iter().map(|m| m.shown.as_str()).collect::<Vec<_>>().join(", ")
+    a.iter().map(|m| m.text(" ")).collect::<Vec<_>>().join(", ")
 }
 
 fn add(into: &mut Bag, from: &Bag, sign: Decimal) {
@@ -290,7 +296,28 @@ fn render(root: &Path, st: &Statement, out: &Path) -> Result<()> {
         std::fs::write(&builtin, TEMPLATE)?;
     }
     let template = if own { TEMPLATE_REL } else { BUILTIN_REL };
-    compile(root, template, TEMPLATE, DATA_REL, st, out).map(|_| ())
+    compile(root, template, TEMPLATE, DATA_REL, &for_typst(st), out).map(|_| ())
+}
+
+/// What the template reads: the statement, each amount with the text it
+/// prints beside its figures, as typst has no way of its own to write them.
+fn for_typst(st: &Statement) -> Value {
+    fn add(v: &mut Value) {
+        match v {
+            Value::Object(o) => {
+                if let (Some(q), Some(c)) = (o.get("quantity").and_then(Value::as_str), o.get("commodity").and_then(Value::as_str)) {
+                    let text = Amount { quantity: q.into(), commodity: c.into() }.text("\u{202f}");
+                    o.insert("shown".into(), text.into());
+                }
+                o.values_mut().for_each(add);
+            }
+            Value::Array(a) => a.iter_mut().for_each(add),
+            _ => {}
+        }
+    }
+    let mut v = serde_json::to_value(st).unwrap_or_default();
+    add(&mut v);
+    v
 }
 
 const BUILTIN_REL: &str = ".abo/report.typ";
