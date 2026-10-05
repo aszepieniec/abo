@@ -46,7 +46,7 @@ pub enum Q {
         item: &'static [Q],
         skip: &'static str,
         another: &'static str,
-        check: fn(&Env) -> Option<String>,
+        check: fn(&Env) -> Option<(&'static str, String)>,
     },
 }
 
@@ -117,9 +117,9 @@ pub trait Source {
     /// Whether the repeat at `key` has an item `n`; `skipped`, whether the
     /// one before was skipped.
     fn another(&mut self, key: &str, question: &str, n: usize, skipped: bool) -> Result<bool>;
-    /// Something wrong with the item under `prefix` as a whole, to be said
-    /// under its question `first`. True to ask the item again.
-    fn item_problem(&mut self, prefix: &str, first: &str, problem: String, answers: &Answers) -> Result<bool>;
+    /// Something wrong with the item under `prefix`, to be said under its
+    /// question `key`. True to ask the item again.
+    fn item_problem(&mut self, prefix: &str, key: &str, problem: String, answers: &Answers) -> Result<bool>;
     /// What a blank answer to `key` stands for: what the question offers,
     /// or, where answers are being changed, what is there now.
     fn offer(&self, _key: &str, offered: String) -> String {
@@ -209,7 +209,7 @@ pub fn ask_item(
     item: &[Q],
     prefix: &str,
     skip: &str,
-    check: fn(&Env) -> Option<String>,
+    check: fn(&Env) -> Option<(&'static str, String)>,
     out: &mut Answers,
     context: &Context,
     src: &mut dyn Source,
@@ -224,8 +224,8 @@ pub fn ask_item(
             out.retain(|k, _| !k.starts_with(prefix));
             return Ok(true);
         }
-        let Some(why) = check(&Env { answers: out, prefix, context }) else { return Ok(false) };
-        if !src.item_problem(prefix, &first, why, out)? {
+        let Some((field, why)) = check(&Env { answers: out, prefix, context }) else { return Ok(false) };
+        if !src.item_problem(prefix, &format!("{prefix}{field}"), why, out)? {
             return Ok(false);
         }
     }
@@ -258,7 +258,7 @@ pub static INIT: &[Q] = &[
         title: "Where invoices ask to be paid",
         icon: "inbox",
         note: "None, one or several options. Choose a kind for each and answer its questions, or skip. \
-               `abo payment-options` changes them later.",
+               They can be changed later, on the company page or with abo payment-options.",
         qs: &[Q::Repeat {
             key: "p",
             item: OPTION,
@@ -426,7 +426,7 @@ fn account_check(s: &str, env: &Env) -> Result<String, String> {
     let a = answer::account(s)?;
     match &env.context.declared {
         Some(d) if !d.contains(&a) => {
-            Err(format!("{a} is not declared; declare it with `abo account add`, or choose another."))
+            Err(format!("{a} is not declared; declare it first (under Declarations, or abo account add {a}), or choose another."))
         }
         _ => Ok(a),
     }
@@ -444,10 +444,11 @@ fn name(s: &str, env: &Env) -> Result<String, String> {
 
 /// What is wrong with the payment option under `env.prefix` as a whole: as
 /// the books would refuse it (I-C2), and money arriving in an asset.
-pub fn option_problem(env: &Env) -> Option<String> {
+/// What is wrong with the option answered, and the question it is wrong in.
+pub fn option_problem(env: &Env) -> Option<(&'static str, String)> {
     let (id, o) = option(env.answers, env.prefix);
-    let why = model::option_problem(&id, &o).or_else(|| (model::class(&o.account) != "Assets").then(|| format!("{} is not an account money arrives in; give an Assets account", o.account)))?;
-    Some(sentence(&why))
+    let (field, why) = model::option_problem(&id, &o).or_else(|| (model::class(&o.account) != "Assets").then(|| ("account", format!("{} is not an account money arrives in; give an Assets account", o.account))))?;
+    Some((field, sentence(&why)))
 }
 
 /// "a bank option needs ..." as a sentence.

@@ -8,6 +8,31 @@ use crate::repo::{answer, hidden};
 pub struct Violation {
     pub code: &'static str,
     pub what: String,
+    /// What it is of, as data, for whoever words it again: `what` is a
+    /// sentence, for a person, and nothing is read back out of it.
+    pub of: Subject,
+}
+
+/// What a violation is of, where something words it again from that.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub enum Subject {
+    #[default]
+    None,
+    Account(Account),
+    Commodity(Commodity),
+    /// A number past the bound.
+    Number(Decimal),
+    /// An invoice's total past the bound.
+    Total(EntryId),
+    /// A payment option, by its id, and the field of it that is wrong, as
+    /// its question names it.
+    Option(String, &'static str),
+}
+
+impl Violation {
+    pub fn new(code: &'static str, what: String) -> Violation {
+        Violation { code, what, of: Subject::None }
+    }
 }
 
 impl std::fmt::Display for Violation {
@@ -147,7 +172,9 @@ fn dates(m: &Books) -> Vec<Date> {
 }
 
 /// I-C2 of one payment option: what is wrong with it, if anything.
-pub fn option_problem(id: &str, o: &PayOption) -> Option<String> {
+/// What is wrong with a payment option, and the field it is wrong in, as
+/// the option's question names it.
+pub fn option_problem(id: &str, o: &PayOption) -> Option<(&'static str, String)> {
     let kind = match o.kind {
         PayKind::Bank => "bank",
         PayKind::Cash => "cash",
@@ -166,32 +193,41 @@ pub fn option_problem(id: &str, o: &PayOption) -> Option<String> {
         PayKind::Crypto if o.network.is_empty() || o.address.is_empty() => Some("a network and an address"),
         _ => None,
     };
-    let texts = [&o.label, &o.holder, &o.iban, &o.bic, &o.network, &o.address].iter().all(|t| text_ok(t)) && lines_ok(&o.details) && lines_ok(&o.bank);
+    // Where what is needed is missing: the first of them that is blank.
+    let needed_in = match o.kind {
+        PayKind::Bank => "iban",
+        PayKind::Cash => "details",
+        PayKind::Crypto if o.network.is_empty() => "network",
+        PayKind::Crypto => "address",
+    };
+    let hidden_in = [("label", &o.label), ("holder", &o.holder), ("iban", &o.iban), ("bic", &o.bic), ("network", &o.network), ("address", &o.address)]
+        .into_iter()
+        .find(|(_, t)| !text_ok(t))
+        .map(|(f, _)| f)
+        .or_else(|| [("details", &o.details), ("bank", &o.bank)].into_iter().find(|(_, t)| !lines_ok(t)).map(|(f, _)| f));
     if let Err(e) = answer::option_id(id) {
-        Some(e)
+        Some(("id", e))
     } else if let Some((field, _)) = fields.iter().find(|(f, v)| theirs.contains(f) && !v.is_empty()) {
-        Some(format!("a {kind} option has no {field}"))
+        Some((field, format!("a {kind} option has no {field}")))
     } else if let Some(n) = needs {
-        Some(format!("a {kind} option needs {n}"))
+        Some((needed_in, format!("a {kind} option needs {n}")))
     } else if !o.iban.is_empty() && answer::iban(&o.iban).as_ref() != Ok(&o.iban) {
-        Some(answer::iban(&o.iban).err().unwrap_or_else(|| format!("{:?} is an IBAN not written in groups of four", o.iban)))
+        Some(("iban", answer::iban(&o.iban).err().unwrap_or_else(|| format!("{} is an IBAN not written in groups of four", o.iban))))
     } else if !o.bic.is_empty() && answer::bic(&o.bic).as_ref() != Ok(&o.bic) {
-        Some(answer::bic(&o.bic).err().unwrap_or_else(|| format!("{:?} is a BIC not in capitals", o.bic)))
-    } else if !texts {
-        Some("it holds a hidden character".into())
+        Some(("bic", answer::bic(&o.bic).err().unwrap_or_else(|| format!("{} is a BIC not in capitals", o.bic))))
     } else {
-        None
+        hidden_in.map(|f| (f, "it holds a hidden character".to_string()))
     }
 }
 
 pub fn check(m: &Books) -> Vec<Violation> {
     // Four digits of year, as the files write it and hledger reads it.
     if let Some(d) = dates(m).into_iter().find(|d| !(1..=9999).contains(&d.year())) {
-        return vec![Violation { code: "I-D1", what: format!("{d} is not in the years 1 to 9999") }];
+        return vec![Violation::new("I-D1", format!("{d} is not in the years 1 to 9999"))];
     }
     // First, and alone: what follows computes with these.
     if let Some(q) = numbers(m).into_iter().find(|q| q.abs() >= Decimal::from(BOUND)) {
-        return vec![Violation { code: "I-K3", what: format!("{q} is not below {BOUND} in magnitude") }];
+        return vec![Violation { code: "I-K3", what: format!("{q} is not below {BOUND} in magnitude"), of: Subject::Number(q) }];
     }
     let mut rates = vec![m.config.invoice.vat_rate];
     if let Vat::Flat { rate, .. } = m.config.vat {
@@ -205,19 +241,20 @@ pub fn check(m: &Books) -> Vec<Violation> {
         }
     }
     if let Some(r) = rates.into_iter().find(|r| *r < Decimal::ZERO || *r > Decimal::ONE_HUNDRED) {
-        return vec![Violation { code: "I-K3", what: format!("a rate of {r} percent is not 0 to 100") }];
+        return vec![Violation::new("I-K3", format!("a rate of {r} percent is not 0 to 100"))];
     }
     // What is owed is paid in amounts, so it is bounded as they are.
     for (i, e) in m.entries.iter().enumerate() {
         if let Kind::Invoice { content, .. } = &e.kind {
             if m.checked_totals(content).is_none_or(|(net, _, total)| net.abs() >= Decimal::from(BOUND) || total.abs() >= Decimal::from(BOUND)) {
-                return vec![Violation { code: "I-K3", what: format!("invoice {}'s total is not below {BOUND} in magnitude", i + 1) }];
+                return vec![Violation { code: "I-K3", what: format!("invoice {}'s total is not below {BOUND} in magnitude", i + 1), of: Subject::Total(i + 1) }];
             }
         }
     }
     let mut v = vec![];
     macro_rules! no {
-        ($code:literal, $($t:tt)*) => { v.push(Violation { code: $code, what: format!($($t)*) }) };
+        (@of $of:expr, $code:literal, $($t:tt)*) => { v.push(Violation { code: $code, what: format!($($t)*), of: $of }) };
+        ($code:literal, $($t:tt)*) => { v.push(Violation::new($code, format!($($t)*))) };
     }
     let standing = m.standing();
     let postings = m.all_postings();
@@ -236,9 +273,9 @@ pub fn check(m: &Books) -> Vec<Violation> {
     posted.extend(configured.iter().map(String::as_str));
     for a in &posted {
         if !m.accounts.contains(*a) {
-            no!("I-A1", "{a} is not declared, and is in use: posted to, recorded or named in abo.toml");
+            no!(@of Subject::Account(a.to_string()), "I-A1", "{a} is not declared, and is in use: posted to, recorded or named in abo.toml");
         } else if !leaf(a) {
-            no!("I-A2", "{a} is in use (posted to, recorded or named in abo.toml), and has accounts under it");
+            no!(@of Subject::Account(a.to_string()), "I-A2", "{a} is in use (posted to, recorded or named in abo.toml), and has accounts under it");
         }
     }
     let mut amounts: Vec<&Amount> = vec![];
@@ -261,7 +298,7 @@ pub fn check(m: &Books) -> Vec<Violation> {
     }
     for c in used {
         if !m.commodities.contains_key(c) {
-            no!("I-A1", "{c} is not declared, and is in use");
+            no!(@of Subject::Commodity(c.to_string()), "I-A1", "{c} is not declared, and is in use");
         }
     }
     for (c, p) in &m.commodities {
@@ -495,8 +532,8 @@ pub fn check(m: &Books) -> Vec<Violation> {
         no!("I-C1", "report.vat.{k}'s query begins with '-', as an hledger option does");
     }
     for (id, o) in &c.payment {
-        if let Some(why) = option_problem(id, o) {
-            no!("I-C2", "payment option {id}: {why}");
+        if let Some((field, why)) = option_problem(id, o) {
+            no!(@of Subject::Option(id.clone(), field), "I-C2", "payment option {id}: {why}");
         }
     }
     let mut kinds = vec![(&c.invoice.receivable, "Assets"), (&c.invoice.income, "Income")];

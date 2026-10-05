@@ -759,12 +759,12 @@ fn a_credit_note_is_not_dated_before_its_invoice() {
 }
 
 #[test]
-fn the_log_shows_a_document_that_looks_like_text_as_binary() {
+fn the_log_names_a_document_that_looks_like_text_and_shows_none_of_it() {
     let dir = books("log-binary", &[]);
-    file(&dir, "Acme", "2026-03-01");
+    let path = file(&dir, "Acme", "2026-03-01");
     let s = serve(&dir);
     let (_, _, page) = http(&s, "GET", "/log", &[]);
-    assert!(page.contains("Bin 0 -&gt;") && !page.contains("% Acme 2026-03-01"), "{page}");
+    assert!(page.contains(&path) && !page.contains("% Acme 2026-03-01"), "{page}");
 }
 
 #[test]
@@ -1563,4 +1563,49 @@ fn invoices_print_the_options_in_the_order_of_their_ids() {
     let data = read(&dir, &v["pdf"].as_str().unwrap().replace(".pdf", ".json"));
     let (a, z) = (data.find("At the door").unwrap(), data.find("At the till").unwrap());
     assert!(a < z, "{data}");
+}
+
+// ---- found by reading the code for leaks across its boundaries, 2026-10-05 ----
+
+#[test]
+fn an_option_problem_is_said_under_its_field() {
+    let dir = books("option-field", &[]);
+    let s = serve(&dir);
+    let (_, _, page) = http(&s, "POST", "/company/payment", &[("token", "of1"), ("kind", "bank"), ("id", "giro"), ("label", ""), ("holder", ""), ("iban", ""), ("bic", ""), ("bank", ""), ("details", ""), ("account", "Assets:Bank")]);
+    // Said at the IBAN's question, right after its input, not at the kind's.
+    assert!(page.contains("name=\"iban\" value=\"\"><span class=\"problem\">A bank option needs an IBAN"), "{page}");
+}
+
+#[test]
+fn a_page_for_what_is_not_there_is_not_found_and_a_change_naming_it_is_refused() {
+    let dir = books("not-found", &[]);
+    let s = serve(&dir);
+    assert_eq!(http(&s, "GET", "/entry/99", &[]).0, 404);
+    assert_eq!(http(&s, "GET", "/company/payment?id=nope", &[]).0, 404);
+    assert_eq!(http(&s, "POST", "/entry/99/revert", &[("token", "nf1")]).0, 422);
+}
+
+#[test]
+fn a_page_that_looks_writes_nothing_and_serves_only_what_the_books_name() {
+    let dir = books("looks", &[]);
+    let path = bill(&dir, "Acme", "2026-03-01", "10.00");
+    let s = serve(&dir);
+    let (status, _, log) = http(&s, "GET", "/log", &[]);
+    assert_eq!(status, 200);
+    assert!(!dir.join(".abo/binary").exists(), "the Log wrote a file");
+    // The index's change is shown as text; the document's bytes are not.
+    assert!(log.contains("bills/index") && !log.contains("Binary files") && !log.contains("% Acme 2026-03-01"), "{log}");
+    assert_eq!(http(&s, "GET", &format!("/{path}"), &[]).0, 200);
+    assert_eq!(http(&s, "GET", "/bills/index", &[]).0, 404);
+}
+
+#[test]
+fn a_write_off_is_an_expense_or_income_and_moves_no_money() {
+    let dir = books("write-off-to", &[]);
+    invoice(&dir, "2026-0001", "2026-03-01", "110.00");
+    let (bill, _) = bill_entry(&dir, "Acme", "2026-03-01", "40.00");
+    refused(&dir, &["write-off", "2026-0001", "--to", "Assets:Bank", "--date", "2026-03-02"], "N4");
+    refused(&dir, &["write-off", &bill, "--to", "Expenses:General", "--date", "2026-03-02"], "N4");
+    ok(&dir, &["write-off", "2026-0001", "--to", "Expenses:General", "--date", "2026-03-02"]);
+    ok(&dir, &["write-off", &bill, "--to", "Income:Sales", "--date", "2026-03-02"]);
 }

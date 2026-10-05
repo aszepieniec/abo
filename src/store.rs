@@ -51,6 +51,23 @@ fn unreadable(what: String) -> anyhow::Error {
     Unreadable(what).into()
 }
 
+/// What was asked for is not there: an entry, an option, a page. Looked
+/// for, it is not found; named in a change, the change is refused.
+#[derive(Debug)]
+pub struct NotFound(pub String);
+
+impl std::fmt::Display for NotFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for NotFound {}
+
+pub fn not_found(what: String) -> anyhow::Error {
+    NotFound(what).into()
+}
+
 /// The day a change is made: today, or ABO_TODAY, for tests and replays.
 pub fn today() -> Result<model::Date> {
     match std::env::var("ABO_TODAY") {
@@ -112,7 +129,7 @@ impl Store {
         let mut binaries: Vec<(String, String)> = books.documents.iter().map(|(h, d)| (d.path(h), h.clone())).collect();
         for id in 1..=books.entries.len() {
             if let (Some(n), model::Kind::Invoice { pdf, .. } | model::Kind::CreditNote { pdf, .. }) = (books.number_text(id), &books.entries[id - 1].kind) {
-                binaries.push((format!("invoices/{}/{n}.pdf", &n[..4]), pdf.clone()));
+                binaries.push((model::invoice_path(&n, "pdf"), pdf.clone()));
             }
         }
         for (rel, hash) in binaries {
@@ -126,13 +143,23 @@ impl Store {
     }
 
     /// Apply `op`, write what changed, with `also` — documents and PDFs, by
-    /// their path — and commit, logged as `argv`. Refused, nothing is written.
+    /// their path — and commit, logged as the command that makes it.
+    /// Refused, nothing is written.
     /// ponytail: any problem refuses every change, where §8 refuses only one
     /// that would touch it; narrow it when books with problems are common.
     /// None where the change changes nothing: no commit, no line.
-    pub fn change(&mut self, op: &Op, argv: Vec<String>, what: &str, also: &[(String, Vec<u8>)]) -> Result<Option<String>> {
+    pub fn change(&mut self, op: &Op, also: &[(String, Vec<u8>)]) -> Result<Option<String>> {
+        self.change_from(op, None, also)
+    }
+
+    /// `change`, a document filed from `file`, which the log names for
+    /// `abo file` to read again.
+    pub fn change_from(&mut self, op: &Op, file: Option<&str>, also: &[(String, Vec<u8>)]) -> Result<Option<String>> {
         self.changeable()?;
         let n = model::apply(&self.books, op, today()?).map_err(Refused)?;
+        let argv = crate::command::argv(op, &self.books, file);
+        let what = crate::command::subject(op, &self.books, &n);
+        let what = what.as_str();
         let removed: Vec<String> = match op {
             Op::Unfile { sha256 } => self.books.documents.get(sha256).map(|d| d.path(sha256)).into_iter().collect(),
             _ => vec![],
@@ -145,25 +172,25 @@ impl Store {
     /// would sign as its own.
     pub fn changeable(&self) -> Result<()> {
         if !self.problems.is_empty() {
-            bail!("the books hold problems, so they are not changed until those are mended:\n  {}\n`abo check` lists them; `abo tidy` mends what is only not as abo writes it", self.problems.join("\n  "));
+            bail!("the books hold problems, so they are not changed until those are mended:\n  {}\nWhat is only not as abo writes it, tidying mends: on a terminal, abo tidy", self.problems.join("\n  "));
         }
         // The books' files alone: another file is not abo's to sign or to hold up.
         let ours = ["status", "--porcelain", "--untracked-files=no", "--", "abo.toml", "journal", "invoices", "bills", "templates"];
         let dirty = repo::git_in(&self.root, &ours)?;
         if let Some(l) = dirty.lines().next() {
-            bail!("{} has changes no abo command made; commit them, take them out, or `abo tidy` them, first", l.get(3..).unwrap_or(l));
+            bail!("{} has changes no abo command made; commit them, take them out, or tidy them (on a terminal, abo tidy), first", l.get(3..).unwrap_or(l));
         }
         Ok(())
     }
 
     /// Rewrite the files as `render` writes them: `abo tidy`.
-    pub fn tidy(&mut self, argv: Vec<String>) -> Result<Option<String>> {
+    pub fn tidy(&mut self) -> Result<Option<String>> {
         let ours = render_on_disk(&self.root, &self.books)?;
         if ours.is_empty() {
             return Ok(None);
         }
         let books = self.books.clone();
-        self.write(books, &[], &[], "Tidy the books", argv)
+        self.write(books, &[], &[], "Tidy the books", vec!["tidy".into()])
     }
 
     fn write(&mut self, n: Books, also: &[(String, Vec<u8>)], removed: &[String], what: &str, argv: Vec<String>) -> Result<Option<String>> {
@@ -222,35 +249,72 @@ impl Store {
                 return Err(e);
             }
         };
+        // The entry it added, if it added one, for whoever reads the log.
+        let entry = (n.entries.len() > self.books.entries.len()).then_some(n.entries.len());
         self.books = n;
         if commit.is_empty() {
             return Ok(None);
         }
-        log(&self.root, &stamp, &argv, what, &commit);
+        log(&self.root, &stamp, &argv, what, &commit, entry);
         Ok(Some(commit))
+    }
+
+    /// Why the last change cannot be taken back, if it cannot: `undo`
+    /// refuses for it, and a page offers Undo only where there is nothing.
+    pub fn undo_refused(&self) -> Result<Option<String>> {
+        let head = repo::git_in(&self.root, &["rev-parse", "--short", "HEAD"])?.trim().to_string();
+        let last = lines(&self.root).last().and_then(|l| l["commit"].as_str().map(String::from));
+        if last.as_deref() != Some(head.as_str()) {
+            return Ok(Some(format!("the last commit, {head}, is not a change abo logged; undo takes back only abo's last change")));
+        }
+        let dirty = repo::git_in(&self.root, &["status", "--porcelain"])?;
+        if let Some(l) = dirty.lines().next() {
+            return Ok(Some(format!("{} has changes no abo command made; commit them, or take them out, first", l.get(3..).unwrap_or(l))));
+        }
+        if repo::git_in(&self.root, &["rev-parse", "--verify", "-q", "HEAD~1"]).is_err() {
+            return Ok(Some("the last change opened the books; there is nothing before it to go back to".into()));
+        }
+        Ok(None)
+    }
+
+    /// An invoice's or credit note's PDF, by its number, if the books have it.
+    pub fn pdf(&self, number: &str) -> Option<Vec<u8>> {
+        std::fs::read(self.root.join(model::invoice_path(number, "pdf"))).ok()
+    }
+
+    /// Whether the books have that PDF, without reading it.
+    pub fn has_pdf(&self, number: &str) -> bool {
+        self.root.join(model::invoice_path(number, "pdf")).is_file()
+    }
+
+    /// A filed document's bytes, by the path it is filed at: only a document
+    /// the books name, never another file.
+    pub fn document(&self, path: &str) -> Option<Vec<u8>> {
+        self.books.documents.iter().any(|(h, d)| d.path(h) == path).then(|| std::fs::read(self.root.join(path)).ok()).flatten()
+    }
+
+    /// What a commit did: its subject, the files it changed, and how each
+    /// text changed; a document and a PDF named, their bytes not shown.
+    pub fn diff(&self, commit: &str) -> Result<String> {
+        let stat = repo::git_in(&self.root, &["show", "--format=%s%n", "--stat", commit, "--"])?;
+        let patch = repo::git_in(&self.root, &["show", "--format=", "--patch", commit, "--", ".", ":(exclude)bills/*/*", ":(exclude)invoices/*/*.pdf"])?;
+        Ok(format!("{stat}{patch}"))
     }
 
     /// Take back the last change: only while it is abo's last, and the files
     /// are as it left them. Undo of an undo is redo.
-    pub fn undo(&mut self, argv: Vec<String>) -> Result<String> {
+    pub fn undo(&mut self) -> Result<String> {
+        let argv = vec!["undo".to_string()];
+        if let Some(why) = self.undo_refused()? {
+            bail!(why);
+        }
         let head = repo::git_in(&self.root, &["rev-parse", "--short", "HEAD"])?.trim().to_string();
-        let last = lines(&self.root).last().and_then(|l| l["commit"].as_str().map(String::from));
-        if last.as_deref() != Some(head.as_str()) {
-            bail!("the last commit, {head}, is not a change abo logged; undo takes back only abo's last change");
-        }
-        let dirty = repo::git_in(&self.root, &["status", "--porcelain"])?;
-        if let Some(l) = dirty.lines().next() {
-            bail!("{} has changes no abo command made; commit them, or take them out, first", l.get(3..).unwrap_or(l));
-        }
-        if repo::git_in(&self.root, &["rev-parse", "--verify", "-q", "HEAD~1"]).is_err() {
-            bail!("the last change opened the books; there is nothing before it to go back to");
-        }
         let stamp = Stamp::now(&self.root)?;
         let what = format!("Undo {head}");
         repo::git_env(&self.root, &["revert", "--no-edit", "HEAD"], &stamp.env())?;
         repo::git_env(&self.root, &["commit", "-q", "--amend", "-m", &what], &stamp.env())?;
         let commit = repo::git_in(&self.root, &["rev-parse", "--short", "HEAD"])?.trim().to_string();
-        log(&self.root, &stamp, &argv, &what, &commit);
+        log(&self.root, &stamp, &argv, &what, &commit, None);
         *self = Store::open(&self.root)?;
         Ok(commit)
     }
@@ -271,9 +335,9 @@ fn put(root: &Path, rel: &str, bytes: &[u8]) -> Result<()> {
 
 /// `.abo/log.jsonl`, a line a change: who, when, the command, its commit.
 /// A record of what was done, not a source of the books (MODEL.md §5.4).
-fn log(root: &Path, s: &Stamp, argv: &[String], what: &str, commit: &str) {
+fn log(root: &Path, s: &Stamp, argv: &[String], what: &str, commit: &str, entry: Option<usize>) {
     use std::io::Write as _;
-    let line = serde_json::json!({ "at": s.at(), "who": s.name, "email": s.email, "argv": argv, "what": what, "commit": commit });
+    let line = serde_json::json!({ "at": s.at(), "who": s.name, "email": s.email, "argv": argv, "what": what, "commit": commit, "entry": entry });
     let r = std::fs::create_dir_all(root.join(".abo"))
         .and_then(|_| std::fs::OpenOptions::new().create(true).append(true).open(root.join(".abo/log.jsonl")))
         .and_then(|mut f| writeln!(f, "{line}"));
@@ -320,7 +384,7 @@ pub fn init(dir: &Path, config: model::Config, author: Option<(String, String)>,
         let what = format!("Open the books for {}", b.config.company.name);
         repo::git_env(dir, &["commit", "-q", "-m", &what], &stamp.env())?;
         let commit = repo::git_in(dir, &["rev-parse", "--short", "HEAD"])?.trim().to_string();
-        log(dir, &stamp, &argv, &what, &commit);
+        log(dir, &stamp, &argv, &what, &commit, None);
         Ok(commit)
     })();
     if r.is_err() {
@@ -380,7 +444,7 @@ pub fn debt(b: &Books, text: &str) -> Result<usize> {
     }
     (1..=b.entries.len())
         .find(|&id| b.number_text(id).as_deref() == Some(text))
-        .with_context(|| format!("there is no entry {text}: give an entry's id, or an invoice's number such as 2026-0017"))
+        .ok_or_else(|| not_found(format!("there is no entry {text}: give an entry's id, or an invoice's number such as 2026-0017")))
 }
 
 /// A filed document's hash, by its path or its hash: a text that is the
@@ -433,13 +497,7 @@ pub fn invoices(b: &Books, today: model::Date) -> Vec<InvoiceRow> {
             let money = |d: Decimal| Amount::new(b, d, &c.commodity);
             let total = b.totals(c).2 * if credit { -Decimal::ONE } else { Decimal::ONE };
             let open = if credit { Decimal::ZERO } else { b.open(id, &standing) };
-            let status = match () {
-                _ if credit => "credit note",
-                _ if !standing[id] => "cancelled",
-                _ if open.is_zero() => "settled",
-                _ if open < total => "part paid",
-                _ => "open",
-            };
+            let status = if credit { "credit note" } else { b.status(id, &standing).map_or("", model::Status::word) };
             Some(InvoiceRow {
                 entry: id,
                 number,
@@ -474,26 +532,49 @@ impl InvoiceRow {
 
 /// An account against a statement: what statements on or before `date`
 /// cleared, and the postings to it they did not.
-pub fn reconciled(b: &Books, account: &str, commodity: &str, date: model::Date, balance: Option<Decimal>) -> serde_json::Value {
+#[derive(serde::Serialize)]
+pub struct Reconciled {
+    pub account: String,
+    pub commodity: String,
+    pub date: String,
+    pub cleared: Amount,
+    /// The balance the statement gives, if one was given; and what is then
+    /// left to clear.
+    pub statement: Option<Amount>,
+    pub difference: Option<Amount>,
+    pub outstanding: Vec<Outstanding>,
+}
+
+/// A posting no statement has cleared, by `ENTRY.N`.
+#[derive(serde::Serialize)]
+pub struct Outstanding {
+    #[serde(rename = "ref")]
+    pub posting: String,
+    pub date: String,
+    pub amount: Amount,
+    pub description: String,
+}
+
+pub fn reconciled(b: &Books, account: &str, commodity: &str, date: model::Date, balance: Option<Decimal>) -> Reconciled {
     let money = |d: Decimal| Amount::new(b, d, commodity);
     let cleared: std::collections::BTreeSet<model::PostingRef> =
         b.statements.iter().filter(|(k, _)| k.0 == account && k.1 == commodity && k.2 <= date).flat_map(|(_, s)| s.clears.iter().copied()).collect();
     let ps: Vec<_> = b.all_postings().into_iter().filter(|(_, d, p)| p.account == account && p.amount.commodity == commodity && *d <= date).collect();
     let done: Decimal = ps.iter().filter(|(r, ..)| cleared.contains(r)).map(|(_, _, p)| p.amount.quantity).sum();
-    let outstanding: Vec<serde_json::Value> = ps
+    let outstanding = ps
         .iter()
         .filter(|(r, ..)| !cleared.contains(r))
-        .map(|(r, d, p)| serde_json::json!({ "ref": format!("{}.{}", r.entry, r.n), "date": d.to_string(), "amount": money(p.amount.quantity), "description": b.entries[r.entry - 1].description }))
+        .map(|(r, d, p)| Outstanding { posting: format!("{}.{}", r.entry, r.n), date: d.to_string(), amount: money(p.amount.quantity), description: b.entries[r.entry - 1].description.clone() })
         .collect();
-    serde_json::json!({
-        "account": account,
-        "commodity": commodity,
-        "date": date.to_string(),
-        "cleared": money(done),
-        "statement": balance.map(money),
-        "difference": balance.map(|s| money(s - done)),
-        "outstanding": outstanding,
-    })
+    Reconciled {
+        account: account.into(),
+        commodity: commodity.into(),
+        date: date.to_string(),
+        cleared: money(done),
+        statement: balance.map(money),
+        difference: balance.map(|s| money(s - done)),
+        outstanding,
+    }
 }
 
 
@@ -527,20 +608,18 @@ impl Store {
 
     /// Issue an invoice or a credit note: `op` with its PDF's hash. Tried
     /// first, for its number; its PDF made; then committed with it.
-    pub fn issue(&mut self, op: impl Fn(String) -> Op, argv: Vec<String>) -> Result<Issued> {
+    pub fn issue(&mut self, op: impl Fn(String) -> Op) -> Result<Issued> {
         self.changeable()?;
         let trial = model::apply(&self.books, &op("0".repeat(64)), today()?).map_err(Refused)?;
         let id = trial.entries.len();
         let number = trial.number_text(id).context("what was issued is not numbered")?;
         let (bytes, seeded, warnings) = crate::invoice::pdf_of(&self.root, &trial, id)?;
-        let pdf = format!("invoices/{}/{number}.pdf", &number[..4]);
+        let pdf = model::invoice_path(&number, "pdf");
         let mut also = vec![(pdf.clone(), bytes.clone())];
         if let Some(t) = seeded {
             also.push((t.to_string(), std::fs::read(self.root.join(t))?));
         }
-        let credit = matches!(trial.entries[id - 1].kind, model::Kind::CreditNote { .. });
-        let what = if credit { format!("Credit note {number}") } else { format!("Invoice {number}") };
-        let r = self.change(&op(sha256(&bytes)), argv, &what, &also);
+        let r = self.change(&op(sha256(&bytes)), &also);
         if r.is_err() {
             if let Some(t) = seeded {
                 let _ = std::fs::remove_file(self.root.join(t));
@@ -605,17 +684,16 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
     let mut s = Store::open(dir)?;
     let now = today()?;
     let ago = |days: i64| now.checked_sub(jiff::Span::new().days(days)).unwrap_or(now);
-    let argv = || vec!["demo".to_string()];
     let p = |a: &str, q: &str, c: &str| model::Posting::new(a, Decimal::from_str_exact(q).unwrap_or_default(), c);
     let d = |q: &str| Decimal::from_str_exact(q).unwrap_or_default();
     for a in ["Expenses:Hosting", "Expenses:Salary", "Assets:Wallet:BTC"] {
-        s.change(&Op::AccountAdd(a.into()), argv(), &format!("Declare {a}"), &[])?;
+        s.change(&Op::AccountAdd(a.into()), &[])?;
     }
-    s.change(&Op::CommodityAdd("BTC".into(), 8), argv(), "Declare BTC", &[])?;
-    s.change(&Op::CommodityAdd("USD".into(), 2), argv(), "Declare USD", &[])?;
-    s.change(&Op::PriceAdd { of: "BTC".into(), date: ago(150), price: model::Amount { quantity: d("60000.00"), commodity: "EUR".into() } }, argv(), "Price BTC", &[])?;
+    s.change(&Op::CommodityAdd("BTC".into(), 8), &[])?;
+    s.change(&Op::CommodityAdd("USD".into(), 2), &[])?;
+    s.change(&Op::PriceAdd { of: "BTC".into(), date: ago(150), price: model::Amount { quantity: d("60000.00"), commodity: "EUR".into() } }, &[])?;
     let post = |s: &mut Store, days: i64, description: &str, postings: Vec<model::Posting>| -> Result<usize> {
-        s.change(&Op::Post { date: ago(days), description: description.into(), postings }, argv(), description, &[])?;
+        s.change(&Op::Post { date: ago(days), description: description.into(), postings }, &[])?;
         Ok(s.books.entries.len())
     };
     // A bill and its document: a small PDF made with typst, or without typst,
@@ -626,7 +704,7 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
                 let sha256 = sha256(&bytes);
                 let doc = model::Document { date: ago(days), name: crate::repo::slug(issuer), ext: "pdf".into(), of: None };
                 let path = doc.path(&sha256);
-                s.change(&Op::File { sha256: sha256.clone(), date: doc.date, name: doc.name, ext: "pdf".into(), bill: None }, argv(), &format!("File {path}"), &[(path, bytes)])?;
+                s.change(&Op::File { sha256: sha256.clone(), date: doc.date, name: doc.name, ext: "pdf".into(), bill: None }, &[(path, bytes)])?;
                 Some(sha256)
             }
             Err(e) => {
@@ -634,11 +712,11 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
                 None
             }
         };
-        s.change(&Op::Bill { date: ago(days), description: description.into(), postings, document }, argv(), "Book a bill", &[])?;
+        s.change(&Op::Bill { date: ago(days), description: description.into(), postings, document }, &[])?;
         Ok(s.books.entries.len())
     };
     let pay = |s: &mut Store, days: i64, debt: usize, amount: &str| -> Result<()> {
-        s.change(&Op::Pay { debt, date: ago(days), amount: d(amount), from: "Assets:Bank".into(), cost: None }, argv(), &format!("Pay {amount} of {debt}"), &[])?;
+        s.change(&Op::Pay { debt, date: ago(days), amount: d(amount), from: "Assets:Bank".into(), cost: None }, &[])?;
         Ok(())
     };
     let invoice = |s: &mut Store, days: i64, customer: &str, lines: &[(&str, &str, &str)]| -> Result<Option<usize>> {
@@ -655,7 +733,7 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
             pdf,
             more: Default::default(),
         };
-        match s.issue(op, argv()) {
+        match s.issue(op) {
             Ok(i) => Ok(Some(i.entry)),
             Err(e) => {
                 tracing::warn!(%e, "the demo has no invoice to {customer}: typst is needed for its PDF");
@@ -688,7 +766,7 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
             let sha256 = sha256(&bytes);
             let doc = model::Document { date: ago(8), name: "telecom-gmbh".into(), ext: "pdf".into(), of: None };
             let path = doc.path(&sha256);
-            s.change(&Op::File { sha256, date: doc.date, name: doc.name, ext: "pdf".into(), bill: None }, argv(), &format!("File {path}"), &[(path, bytes)])?;
+            s.change(&Op::File { sha256, date: doc.date, name: doc.name, ext: "pdf".into(), bill: None }, &[(path, bytes)])?;
         }
         Err(e) => tracing::warn!(%e, "the demo has no bill waiting to be booked"),
     }
@@ -696,7 +774,7 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
     let at = ago(7);
     let cleared: std::collections::BTreeSet<model::PostingRef> = s.books.all_postings().into_iter().filter(|(_, d, p)| p.account == "Assets:Bank" && p.amount.commodity == "EUR" && *d <= at).map(|(r, ..)| r).collect();
     let balance = s.books.all_postings().into_iter().filter(|(r, ..)| cleared.contains(r)).map(|(_, _, p)| p.amount.quantity).sum();
-    s.change(&Op::Record { account: "Assets:Bank".into(), commodity: "EUR".into(), date: at, balance, clears: cleared }, argv(), "Record the statement of Assets:Bank", &[])?;
+    s.change(&Op::Record { account: "Assets:Bank".into(), commodity: "EUR".into(), date: at, balance, clears: cleared }, &[])?;
     Ok(dir.to_path_buf())
 }
 

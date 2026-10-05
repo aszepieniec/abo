@@ -111,22 +111,40 @@ pub mod answer {
     /// behind the rest and read as a number, letters as 10 to 35, it leaves 1
     /// when divided by 97.
     pub fn iban(s: &str) -> Result<String, String> {
+        match iban_read(s) {
+            Iban::Unshaped => Err(format!("{s} is not an IBAN, such as CH93 0076 2011 6238 5295 7.")),
+            Iban::Mistyped => Err(format!("{s} is not an IBAN: its check digits do not match. Is a character mistyped?")),
+            Iban::Ok(c) => Ok(c),
+        }
+    }
+
+    /// What `s` is, as an IBAN.
+    pub enum Iban {
+        /// Not letters and digits as an IBAN has them.
+        Unshaped,
+        /// Shaped as one, its check digits not matching.
+        Mistyped,
+        /// In groups of four.
+        Ok(String),
+    }
+
+    pub fn iban_read(s: &str) -> Iban {
         let c = s.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_ascii_uppercase();
         let shaped = (15..=34).contains(&c.len())
             && c.chars().all(|x| x.is_ascii_alphanumeric())
             && c[..2].chars().all(|x| x.is_ascii_alphabetic())
             && c[2..4].chars().all(|x| x.is_ascii_digit());
         if !shaped {
-            return Err(format!("{s:?} is not an IBAN, such as CH93 0076 2011 6238 5295 7."));
+            return Iban::Unshaped;
         }
         let rest = c[4..].chars().chain(c[..4].chars()).fold(0, |r, x| match x.to_digit(36).unwrap() {
             d @ 0..10 => (r * 10 + d) % 97,
             d => (r * 100 + d) % 97,
         });
         if rest != 1 {
-            return Err(format!("{s:?} is not an IBAN: its check digits do not match. Is a character mistyped?"));
+            return Iban::Mistyped;
         }
-        Ok(c.as_bytes().chunks(4).map(|g| std::str::from_utf8(g).unwrap()).collect::<Vec<_>>().join(" "))
+        Iban::Ok(c.as_bytes().chunks(4).map(|g| std::str::from_utf8(g).unwrap()).collect::<Vec<_>>().join(" "))
     }
 
     /// A BIC: four letters for the bank, two for the country, two letters or
@@ -137,7 +155,7 @@ pub mod answer {
             && c.chars().all(|x| x.is_ascii_alphanumeric())
             && c[..6].chars().all(|x| x.is_ascii_alphabetic());
         if !ok {
-            return Err(format!("{s:?} is not a BIC, such as POFICHBEXXX."));
+            return Err(format!("{s} is not a BIC, such as POFICHBEXXX."));
         }
         Ok(c)
     }
@@ -261,6 +279,12 @@ fn a_slug_is_sixty_characters_at_most() {
 pub fn books_root(dir: &Path) -> Result<Option<PathBuf>> {
     let dir = dir.canonicalize().with_context(|| format!("{}", dir.display()))?;
     Ok(dir.ancestors().find(|a| a.join("abo.toml").is_file()).map(Path::to_path_buf))
+}
+
+/// Whether a change is being made to the books at `root` just now, by
+/// whoever holds them through `lock`.
+pub fn busy(root: &Path) -> bool {
+    std::fs::File::open(root.join(".abo/lock")).is_ok_and(|f| f.try_lock_shared().is_err())
 }
 
 /// Hold the books for one change at a time, across processes: a terminal's

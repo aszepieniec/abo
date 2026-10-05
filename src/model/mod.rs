@@ -17,7 +17,7 @@ mod text;
 #[cfg(test)]
 pub(crate) mod tests;
 
-pub use check::{check, option_problem, Violation};
+pub use check::{check, option_problem, Subject, Violation};
 pub use explain::{explain, name};
 pub use ops::{apply, shape, InvoiceMore, Op, Shape};
 pub use text::{parse, read, render, Files};
@@ -306,6 +306,27 @@ impl PayOption {
 
 /// A debt's account, what it owes there, and the sign of its own posting
 /// there: +1 for an invoice's receivable, -1 for a bill's liability.
+/// What a debt has come to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Status {
+    Open,
+    PartPaid,
+    Settled,
+    Cancelled,
+}
+
+impl Status {
+    /// As a list says it, and the JSON.
+    pub fn word(self) -> &'static str {
+        match self {
+            Status::Open => "open",
+            Status::PartPaid => "part paid",
+            Status::Settled => "settled",
+            Status::Cancelled => "cancelled",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Debt {
     pub account: Account,
@@ -387,6 +408,12 @@ impl Kind {
     pub fn numbered(&self) -> bool {
         matches!(self, Kind::Invoice { .. } | Kind::CreditNote { .. })
     }
+}
+
+/// An invoice's or credit note's file, by its number: `invoices/2026/
+/// 2026-0001.pdf`, and its `.json` beside it.
+pub fn invoice_path(number: &str, ext: &str) -> String {
+    format!("invoices/{}/{number}.{ext}", number.get(..4).unwrap_or_default())
 }
 
 impl Document {
@@ -481,6 +508,55 @@ impl Books {
         self.number(id).map(|(y, n)| format!("{y:04}-{n:04}"))
     }
 
+    /// The number the next invoice or credit note of `year` takes.
+    pub fn next_number(&self, year: i16) -> String {
+        format!("{year:04}-{:04}", self.entries.iter().filter(|x| x.kind.numbered() && x.date.year() == year).count() + 1)
+    }
+
+    /// The VAT accounts the configuration names.
+    pub fn vat_accounts(&self) -> Vec<&Account> {
+        match &self.config.vat {
+            Vat::None => vec![],
+            Vat::Flat { account, .. } => vec![account],
+            Vat::Effective { input, output } => vec![input, output],
+        }
+    }
+
+    /// Whether money moves through `a`, so that a payment may come from it
+    /// or go into it (N4): an asset, and not where debts or input VAT are.
+    pub fn moves_money(&self, a: &str) -> bool {
+        let input = matches!(&self.config.vat, Vat::Effective { input, .. } if input == a);
+        class(a) == "Assets" && a != self.config.invoice.receivable && !input
+    }
+
+    /// The class of account debt `d` is written off to (N4): what a customer
+    /// never pays is an expense; what a supplier forgives, income.
+    pub fn written_off_to(&self, d: EntryId) -> Option<&'static str> {
+        match self.entry(d)?.kind {
+            Kind::Invoice { .. } => Some("Expenses"),
+            Kind::Bill(_) => Some("Income"),
+            _ => None,
+        }
+    }
+
+    /// Where a payment comes from unless said: the first payment option's
+    /// account, or the bank.
+    pub fn paid_from(&self) -> Account {
+        self.config.payment.values().next().map_or_else(|| "Assets:Bank".into(), |o| o.account.clone())
+    }
+
+    /// Debt `d`'s status: none but for a bill or an invoice.
+    pub fn status(&self, d: EntryId, standing: &[bool]) -> Option<Status> {
+        let owed = self.debt(d)?.owed.quantity;
+        let open = self.open(d, standing);
+        Some(match () {
+            _ if !standing[d] => Status::Cancelled,
+            _ if open.is_zero() => Status::Settled,
+            _ if open < owed => Status::PartPaid,
+            _ => Status::Open,
+        })
+    }
+
     /// `standing[id]`: no standing reversal or credit note names it. Each
     /// reverser has a greater id (I-E3), so from the last down each is known
     /// before what it reverses.
@@ -526,10 +602,22 @@ impl Books {
 
     pub fn paid(&self, d: EntryId, standing: &[bool]) -> Decimal {
         let Some(debt) = self.debt(d) else { return Decimal::ZERO };
-        (1..=self.entries.len())
-            .filter(|&id| standing[id] && matches!(self.entries[id - 1].kind, Kind::Payment { of, .. } if of == d))
-            .filter_map(|id| self.takes_off(id, &debt))
-            .sum()
+        self.payments(d, standing).into_iter().filter_map(|id| self.takes_off(id, &debt)).sum()
+    }
+
+    /// The standing payments and write-offs of debt `d`, by id.
+    pub fn payments(&self, d: EntryId, standing: &[bool]) -> Vec<EntryId> {
+        (1..=self.entries.len()).filter(|&id| standing[id] && matches!(self.entries[id - 1].kind, Kind::Payment { of, .. } if of == d)).collect()
+    }
+
+    /// The standing entry that reverses `id`, if one does.
+    pub fn reversed_by(&self, id: EntryId, standing: &[bool]) -> Option<EntryId> {
+        (id + 1..=self.entries.len()).find(|&r| standing[r] && self.entries[r - 1].kind.reverses() == Some(id))
+    }
+
+    /// The document bill `id` has, by its hash, if one names it.
+    pub fn document_of(&self, id: EntryId) -> Option<(&Hash, &Document)> {
+        self.documents.iter().find(|(_, d)| d.of == Some(id))
     }
 
     pub fn open(&self, d: EntryId, standing: &[bool]) -> Decimal {

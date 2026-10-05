@@ -93,7 +93,7 @@ pub fn render(m: &Books) -> Files {
 fn entry(m: &Books, id: EntryId, e: &Entry, f: &mut Files) -> String {
     let mut tags: Vec<(&str, String)> = vec![("id", id.to_string())];
     let number = m.number_text(id).unwrap_or_default();
-    let json = |n: &str| format!("invoices/{}/{n}.json", &n[..4]);
+    let json = |n: &str| invoice_path(n, "json");
     match &e.kind {
         Kind::Plain(_) => {}
         Kind::Bill(_) => tags.push(("bill", String::new())),
@@ -286,7 +286,7 @@ fn parse_block(
         return Ok(());
     }
     let read_json = |number: &str| -> Result<&String, String> {
-        let path = format!("invoices/{}/{number}.json", number.get(..4).ok_or("not an invoice number")?);
+        let path = invoice_path(number, "json");
         f.get(&path).ok_or(format!("{path} is missing"))
     };
     let kind = match tags.iter().map(|(k, _)| *k).collect::<Vec<_>>()[..] {

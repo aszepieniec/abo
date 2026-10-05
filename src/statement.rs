@@ -54,7 +54,11 @@ pub struct Section {
 #[derive(Serialize)]
 pub struct Statement {
     pub title: String,
+    /// The period as given, an hledger period such as `2026q3`; empty for
+    /// all time, and for a balance sheet.
     pub period: String,
+    /// A balance sheet's day.
+    pub date: Option<String>,
     pub company: String,
     pub sections: Vec<Section>,
     /// The number the whole thing exists to produce, where there is one: a
@@ -76,6 +80,16 @@ pub fn amounts(b: &crate::model::Books, bag: &Bag) -> Vec<Amount> {
         vec![Amount::new(b, Decimal::ZERO, &b.config.company.currency)]
     } else {
         out
+    }
+}
+
+/// When a statement is of, as a person reads it: `as at 2026-10-05`,
+/// `2026q3`, `all time`.
+pub fn when(st: &Statement) -> String {
+    match (&st.date, st.period.as_str()) {
+        (Some(d), _) => format!("as at {d}"),
+        (None, "") => "all time".into(),
+        (None, p) => p.to_string(),
     }
 }
 
@@ -162,7 +176,8 @@ pub fn profit_and_loss(s: &Store, period: &str) -> Result<Statement> {
 
     Ok(Statement {
         title: "Profit and loss".into(),
-        period: if period.is_empty() { "all time".into() } else { period.to_string() },
+        period: period.to_string(),
+        date: None,
         company: s.books.config.company.name.clone(),
         sections: vec![income, expenses],
         bottom: Some(Line { code: None, label: "Profit for the period".into(), amounts: amounts(&s.books, &profit) }),
@@ -209,7 +224,8 @@ pub fn balance_sheet(s: &Store, date: &str) -> Result<Statement> {
 
     Ok(Statement {
         title: "Balance sheet".into(),
-        period: format!("as at {date}"),
+        period: String::new(),
+        date: Some(date.to_string()),
         company: s.books.config.company.name.clone(),
         sections: vec![assets, liabilities, equity],
         bottom: Some(Line {
@@ -227,9 +243,9 @@ pub fn vat_return(s: &Store, period: &str) -> Result<Statement> {
     let spec = &s.books.config.report.vat;
     if spec.is_empty() {
         bail!(
-            "no tax return is configured. Add a box for each on the form: \
-             `abo config set report.vat.<code> '{{ label = \"...\", query = \"...\" }}'`, \
-             its figure the balance of the hledger query over the period."
+            "no tax return is configured: a box for each on the form is set as report.vat.<code>, \
+             with a label and an hledger query, its figure the query's balance over the period \
+             (on a terminal: abo config set report.vat.<code> '{{ label = \"...\", query = \"...\" }}')"
         );
     }
     checked_period(s, period)?;
@@ -252,8 +268,8 @@ pub fn vat_return(s: &Store, period: &str) -> Result<Statement> {
                     // plausible wrong number.
                     bail!(
                         "box {code} includes {x} {c} in {account}, and the books have no {c} price \
-                         in {currency} to value it with: `abo price add <date> {c} <price> {currency}`, \
-                         dated on or before each posting."
+                         in {currency} to value it with: declare one, dated on or before each posting \
+                         (under Declarations, or abo price add <date> {c} <price> {currency})"
                     );
                 }
             }
@@ -266,7 +282,8 @@ pub fn vat_return(s: &Store, period: &str) -> Result<Statement> {
     }
     Ok(Statement {
         title: "Tax return".into(),
-        period: if period.is_empty() { "all time".into() } else { period.to_string() },
+        period: period.to_string(),
+        date: None,
         company: s.books.config.company.name.clone(),
         sections: vec![Section { title: String::new(), lines, total: vec![] }],
         bottom: None,
@@ -281,6 +298,14 @@ const TEMPLATE: &str = include_str!("report.typ");
 /// logged.
 pub fn pdf(s: &Store, st: &Statement, out: &std::path::Path) -> Result<()> {
     render(&s.root, st, out)
+}
+
+/// The PDF's bytes, for a page to send: made in abo's own scratch
+/// directory, which the books do not hold.
+pub fn pdf_bytes(s: &Store, st: &Statement) -> Result<Vec<u8>> {
+    let out = s.root.join(".abo").join(format!("{}.pdf", st.title.to_lowercase().replace(' ', "-")));
+    render(&s.root, st, &out)?;
+    Ok(std::fs::read(&out)?)
 }
 
 /// The books' own `templates/report.typ` if they have one; otherwise abo's,
@@ -317,6 +342,8 @@ fn for_typst(st: &Statement) -> Value {
     }
     let mut v = serde_json::to_value(st).unwrap_or_default();
     add(&mut v);
+    // The period as the template prints it, beside its title.
+    v["period"] = when(st).into();
     v
 }
 

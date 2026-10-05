@@ -99,6 +99,7 @@ numbered chart of accounts, `Assets:1020:Bank` also sorts correctly.
 src/main.rs       clap dispatch, #[tokio::main]
 src/model/        the books as MODEL.md defines them: state, check, operations, text
 src/store.rs      the books on disk: read through the model, change by an Op, commit, log
+src/command.rs    an Op as the command that makes it, and as its commit's subject
 src/questions.rs  init's and a payment option's questions, for the terminal and the form
 src/repo.rs       finding the books, git, checking what a person types
 src/statement.rs  P&L, balance sheet, tax return; typst
@@ -278,7 +279,7 @@ ordereddates`. That applies to every write, not just this one.
 
 `abo pl`, `abo bs`, `abo vat`, each with `--json` and `--pdf <file>`, and each a
 page under `/report/`. Everything is computed by `hledger balance` over a query,
-read back through the one JSON shape `reconcile.rs` already parses — mantissa
+read back through the one JSON shape `statement.rs` parses — mantissa
 and scale, never the `floatingPoint` field beside them. A P&L is `balance
 income` and `balance expenses` over a period; a balance sheet is the same three
 queries with `-H` and an end date. There is no second report engine.

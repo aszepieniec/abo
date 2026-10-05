@@ -5,7 +5,7 @@
 //! the books before it, and leaves out those that only follow from another
 //! it keeps. Each it keeps has its code: only the words change.
 
-use super::check::{commodity_ok, description_ok, hash_ok, lines_ok, option_problem, other_space, slug_ok, text_ok, Violation, BOUND};
+use super::check::{commodity_ok, description_ok, hash_ok, lines_ok, option_problem, other_space, slug_ok, text_ok, Subject, Violation, BOUND};
 use super::ops::Op;
 use super::*;
 use crate::repo::{answer, hidden};
@@ -50,15 +50,10 @@ pub(crate) fn shown(s: &str) -> String {
     s.chars().map(|c| if hidden(c) { '?' } else { c }).collect()
 }
 
-/// The standing entry that reverses `id`, if one does.
-fn reversed_by(m: &Books, id: EntryId) -> Option<EntryId> {
-    let standing = m.standing();
-    (id + 1..=m.entries.len()).find(|&r| standing[r] && m.entries[r - 1].kind.reverses() == Some(id))
-}
 
 /// Why `id`, which does not stand, does not: what cancelled or reverted it.
 pub(crate) fn gone(m: &Books, id: EntryId) -> String {
-    match (reversed_by(m, id), &m.entries[id - 1].kind) {
+    match (m.reversed_by(id, &m.standing()), &m.entries[id - 1].kind) {
         (Some(r), Kind::Invoice { .. }) => format!("{} is cancelled by {}", name(m, id), name(m, r)),
         (Some(r), _) => format!("{} is reverted by {}", name(m, id), name(m, r)),
         (None, _) => format!("{} does not stand", name(m, id)),
@@ -166,29 +161,6 @@ fn given_postings(op: &Op) -> Option<&[Posting]> {
     }
 }
 
-/// `entry 17` of the entry the operation would add, said otherwise: only
-/// where nothing below says it better.
-fn generic(what: &str, next: EntryId) -> String {
-    let mut out = what.to_string();
-    for (word, instead) in [("invoice", "the invoice"), ("credit note", "the credit note"), ("payment", "the payment"), ("bill", "the bill"), ("entry", "the entry")] {
-        let from = format!("{word} {next}");
-        let mut s = String::new();
-        let mut rest = out.as_str();
-        while let Some(i) = rest.find(&from) {
-            let after = &rest[i + from.len()..];
-            s.push_str(&rest[..i]);
-            if after.starts_with(|c: char| c.is_ascii_digit()) {
-                s.push_str(&from);
-            } else {
-                s.push_str(instead);
-            }
-            rest = after;
-        }
-        s.push_str(rest);
-        out = s;
-    }
-    out
-}
 
 /// The violations `apply` found, said of `op` and of the books `m` before
 /// it; `n` is the state it would have made. Those `check` finds in `m`
@@ -231,13 +203,14 @@ pub fn explain(m: &Books, op: &Op, n: &Books, v: Vec<Violation>) -> Vec<Violatio
     });
     let mut out: Vec<Violation> = vec![];
     for code in codes {
-        let whats: Vec<&str> = new.iter().filter(|x| x.code == code).map(|x| x.what.as_str()).collect();
-        let mut said = say(m, n, op, code, &whats);
+        let these: Vec<&Violation> = new.iter().filter(|x| x.code == code).collect();
+        let mut said = say(m, n, op, code, &these);
+        // Nothing better to say than `check` did: its words, as they are.
         if said.is_empty() {
-            said = whats.iter().map(|w| generic(w, m.entries.len() + 1)).collect();
+            said = these.iter().map(|x| x.what.clone()).collect();
         }
         for what in said {
-            let x = Violation { code, what };
+            let x = Violation::new(code, what);
             if !out.contains(&x) {
                 out.push(x);
             }
@@ -253,7 +226,7 @@ pub fn explain(m: &Books, op: &Op, n: &Books, v: Vec<Violation>) -> Vec<Violatio
 
 /// The violations of one code, said of the operation; none where there is
 /// nothing better to say than `check` did.
-fn say(m: &Books, n: &Books, op: &Op, code: &str, whats: &[&str]) -> Vec<String> {
+fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<String> {
     let next = m.entries.len() + 1;
     let added = n.entries.len() > m.entries.len();
     let new_kind = n.entries.get(next - 1).map(|e| &e.kind).filter(|_| added);
@@ -262,11 +235,13 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, whats: &[&str]) -> Vec<String>
     match code {
         "I-K3" => {
             let big = grouped(Decimal::from(BOUND), 0, "", " ");
-            whats
+            these
                 .iter()
-                .map(|w| match w.strip_prefix(&format!("invoice {next}'s total")) {
-                    Some(_) => format!("the invoice's total is not below {big} in magnitude"),
-                    None => w.replace(&BOUND.to_string(), &big),
+                .map(|x| match &x.of {
+                    Subject::Total(id) if *id == next => format!("the invoice's total is not below {big} in magnitude"),
+                    Subject::Total(id) => format!("{}'s total is not below {big} in magnitude", name(m, *id)),
+                    Subject::Number(q) => format!("{q} is not below {big} in magnitude"),
+                    _ => x.what.clone(),
                 })
                 .collect()
         }
@@ -277,20 +252,20 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, whats: &[&str]) -> Vec<String>
         "I-A1" => match op {
             Op::AccountRemove(a) => vec![format!("{a} cannot be removed: {}", and(&uses_account(m, a)))],
             Op::CommodityRemove(c) => vec![format!("{c} cannot be removed: {}", and(&uses_commodity(m, c)))],
-            _ => whats
+            _ => these
                 .iter()
-                .map(|w| {
-                    let x = w
-                        .strip_suffix(" is not declared, and is in use: posted to, recorded or named in abo.toml")
-                        .or_else(|| w.strip_suffix(" is not declared, and is in use"))
-                        .unwrap_or(w);
-                    format!("{} is not declared", shown(x))
+                .filter_map(|x| match &x.of {
+                    Subject::Account(a) | Subject::Commodity(a) => Some(format!("{} is not declared", shown(a))),
+                    _ => None,
                 })
                 .collect(),
         },
-        "I-A2" => whats
+        "I-A2" => these
             .iter()
-            .filter_map(|w| w.strip_suffix(" is in use (posted to, recorded or named in abo.toml), and has accounts under it"))
+            .filter_map(|x| match &x.of {
+                Subject::Account(p) => Some(p.as_str()),
+                _ => None,
+            })
             .map(|p| match op {
                 Op::AccountAdd(a) => format!("{a} cannot be declared under {p}: {}", and(&uses_account(m, p))),
                 _ => format!("{p} has accounts under it; name one of them, which has none"),
@@ -425,7 +400,7 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, whats: &[&str]) -> Vec<String>
                         if bd != date {
                             v.push(format!("{} is dated {bd}; its document cannot be dated {date}", name(m, *b)));
                         }
-                        if let Some((h, d)) = m.documents.iter().find(|(_, d)| d.of == Some(*b)) {
+                        if let Some((h, d)) = m.document_of(*b) {
                             v.push(format!("{} has a document already: {}", name(m, *b), d.path(h)));
                         }
                     }
@@ -555,7 +530,7 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, whats: &[&str]) -> Vec<String>
                     continue;
                 }
                 let verb = if matches!(m.entries[t - 1].kind, Kind::Invoice { .. }) { "cancelled" } else { "reverted" };
-                match reversed_by(m, t) {
+                match m.reversed_by(t, &m.standing()) {
                     Some(r) if target == Some(t) => v.push(format!("{} is already {verb} by {}", name(m, t), name(m, r))),
                     _ => v.push(format!("{} would be {verb} by both {}", name(m, t), and(&by.iter().filter(|&&r| r < next).map(|&r| name(m, r)).collect::<Vec<_>>()))),
                 }
@@ -652,32 +627,24 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, whats: &[&str]) -> Vec<String>
             .config
             .payment
             .iter()
-            .filter(|(id, o)| option_problem(id, o).is_some() && m.config.payment.get(*id) != Some(o))
-            .map(|(id, o)| {
-                let kind = match o.kind {
-                    PayKind::Bank => "bank",
-                    PayKind::Cash => "cash",
-                    PayKind::Crypto => "crypto",
-                };
-                let why = option_problem(id, o).unwrap_or_default();
+            .filter(|(id, o)| m.config.payment.get(*id) != Some(*o))
+            .filter_map(|(id, o)| option_problem(id, o).map(|(field, why)| (id, o, field, why)))
+            .map(|(id, o, field, why)| {
                 let id = shown(id);
-                if answer::option_id(&id).is_err() {
-                    format!("{id} is not lower-case letters, digits and dashes, as a payment option's id is")
-                } else if why.contains(" is an IBAN") || why.contains(" is not an IBAN") {
-                    match answer::iban(&o.iban) {
-                        Ok(c) => format!("payment option {id}: the IBAN is written {c}"),
-                        Err(e) if e.contains("check digits") => format!("payment option {id}: {} is not an IBAN: its check digits do not match", shown(&o.iban)),
-                        Err(_) => format!("payment option {id}: {} is not an IBAN, such as CH93 0076 2011 6238 5295 7", shown(&o.iban)),
-                    }
-                } else if why.contains(" is a BIC") || why.contains(" is not a BIC") {
-                    match answer::bic(&o.bic) {
+                // By the field it is wrong in, never by the words that say so.
+                match field {
+                    "id" => format!("{id} is not lower-case letters, digits and dashes, as a payment option's id is"),
+                    // Its own kind's: a cash option's IBAN is another kind's field.
+                    "iban" if o.kind == PayKind::Bank && !o.iban.is_empty() => match answer::iban_read(&o.iban) {
+                        answer::Iban::Ok(c) => format!("payment option {id}: the IBAN is written {c}"),
+                        answer::Iban::Mistyped => format!("payment option {id}: {} is not an IBAN: its check digits do not match", shown(&o.iban)),
+                        answer::Iban::Unshaped => format!("payment option {id}: {} is not an IBAN, such as CH93 0076 2011 6238 5295 7", shown(&o.iban)),
+                    },
+                    "bic" if o.kind == PayKind::Bank => match answer::bic(&o.bic) {
                         Ok(c) => format!("payment option {id}: the BIC is written {c}"),
                         Err(_) => format!("payment option {id}: {} is not a BIC, such as POFICHBEXXX", shown(&o.bic)),
-                    }
-                } else if let Some(field) = why.strip_prefix(&format!("a {kind} option has no ")) {
-                    format!("payment option {id} is a {kind} option, and a {kind} option has no {field}")
-                } else {
-                    format!("payment option {id}: {why}")
+                    },
+                    _ => format!("payment option {id}: {why}"),
                 }
             })
             .collect(),

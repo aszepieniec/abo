@@ -81,7 +81,7 @@ fn m0() {
     assert_eq!(lines[0]["argv"][0], "init");
     assert_eq!(
         lines[1]["argv"],
-        serde_json::json!(["post", "--date", "2026-09-21", "--desc", "Acme Hosting", "Expenses:General=100.00", "Liabilities:Payable=-100.00"]),
+        serde_json::json!(["post", "--date=2026-09-21", "--desc=Acme Hosting", "--", "Expenses:General=100.00 EUR", "Liabilities:Payable=-100.00 EUR"]),
     );
     assert!(lines[1]["commit"].is_string(), "{log}");
 
@@ -586,9 +586,9 @@ fn payment_options() {
         (&["add", "iban", "--iban", "CH93 0076 2011 6238 5295 8"][..], "I-C2"),
         (&["add", "bank2", "--label", "Bank"][..], "I-C2"),
         (&["add", "--label", "No id"][..], "needs an id"),
-        (&["edit", "nope", "--label", "X"][..], "no payment option \"nope\""),
+        (&["edit", "nope", "--label", "X"][..], "no payment option nope"),
         (&["edit", "cash", "--id", "postfinance"][..], "there is a payment option \"postfinance\" already"),
-        (&["remove", "x"][..], "no payment option \"x\""),
+        (&["remove", "x"][..], "no payment option x"),
     ] {
         let o = po(args);
         assert!(!o.status.success() && err(&o).contains(says), "{args:?}: {}", err(&o));
@@ -700,7 +700,8 @@ fn company_details() {
     assert!(o.status.success(), "{}", err(&o));
     assert_eq!(show(), "Test & Co\n2 Road\n3000 City\n");
     let log = json(&dir, &["log"]);
-    assert_eq!(log.as_array().unwrap().last().unwrap()["argv"], serde_json::json!(change));
+    // As the change it made, every detail written out.
+    assert_eq!(log.as_array().unwrap().last().unwrap()["argv"], serde_json::json!(["company", "--name=Test & Co", "--address=2 Road", "--address=3000 City", "--country=", "--tax-id="]));
 
     let before = commits(&dir);
     let o = abo(&dir, &["company", "--name", "Test & Co"], "");

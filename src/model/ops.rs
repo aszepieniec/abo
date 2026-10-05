@@ -47,7 +47,7 @@ pub struct InvoiceMore {
 }
 
 pub fn apply(m: &Books, op: &Op, today: Date) -> Result<Books, Vec<Violation>> {
-    let n = build(m, op).map_err(|what| vec![Violation { code: "OP", what }])?;
+    let n = build(m, op).map_err(|what| vec![Violation::new("OP", what)])?;
     let mut v = check(&n);
     v.extend(conditions(m, &n, op, today));
     if v.is_empty() {
@@ -246,37 +246,119 @@ fn config_edit(c: &Config, key: &str, value: Option<&str>) -> Result<Config, Str
     config_edited(c, key, value).map_err(|e| e.replace('`', ""))
 }
 
-/// What serde and toml say of a value that is not of its key's type, said
-/// of the key and the value given.
-fn config_said(key: &str, value: Option<&str>, msg: &str) -> String {
+/// What a key of abo.toml holds, past its shape: the schema `Config` is
+/// read by, written out, so that what is wrong with a value is said from it
+/// and never from what serde or toml say.
+#[derive(Clone, Copy)]
+enum Holds {
+    Text,
+    Date,
+    Number,
+    WholeNumber,
+    Flag,
+    OneOf(&'static [&'static str]),
+    Keys,
+    /// Keys of one's choosing, each holding the same keys.
+    Any,
+}
+
+/// The keys of the table at `path` in `root`: each with its kind, and
+/// whether abo.toml needs it. None where any key may stand there.
+fn keys(root: &toml::Value, path: &[&str]) -> Option<Vec<(&'static str, Holds, bool)>> {
+    use Holds::*;
+    let method = root.get("vat").and_then(|v| v.get("method")).and_then(toml::Value::as_str).unwrap_or("");
+    Some(match path {
+        [] => vec![("company", Keys, true), ("vat", Keys, true), ("invoice", Keys, true), ("payment", Any, false), ("report", Keys, false)],
+        ["company"] => vec![("name", Text, true), ("currency", Text, true), ("address", Text, false), ("tax_id", Text, false), ("country", Text, false), ("closed_through", Date, false)],
+        ["vat"] => {
+            let mut k = vec![("method", OneOf(&["none", "flat", "effective"]), true)];
+            match method {
+                "flat" => k.extend([("rate", Number, true), ("account", Text, true)]),
+                "effective" => k.extend([("input", Text, true), ("output", Text, true)]),
+                _ => {}
+            }
+            k
+        }
+        ["invoice"] => vec![("receivable", Text, true), ("income", Text, true), ("terms_days", WholeNumber, true), ("vat_rate", Number, true)],
+        ["payment"] | ["report", "vat"] => return None,
+        ["payment", _] => {
+            let mut k = vec![("kind", OneOf(&["bank", "cash", "crypto"]), true), ("account", Text, true)];
+            k.extend(["label", "holder", "iban", "bic", "network", "address", "bank", "details"].map(|f| (f, Text, false)));
+            k
+        }
+        ["report"] => vec![("vat", Any, false)],
+        ["report", "vat", _] => vec![("label", Text, true), ("query", Text, true), ("invert", Flag, false)],
+        _ => vec![],
+    })
+}
+
+/// What is wrong with abo.toml as `root` holds it, said of `key`, set to
+/// `value` or unset: the first key it does not know, a key it needs and
+/// lacks, or a value not of its key's kind.
+fn config_problem(root: &toml::Value, key: &str, value: Option<&str>) -> Option<String> {
     let (key, value) = (shown(key), shown(value.unwrap_or_default()));
-    if let Some(field) = msg.strip_prefix("missing field `").and_then(|f| f.strip_suffix('`')) {
-        return match value.is_empty() {
-            true => format!("{key} cannot be unset: abo.toml needs {field}"),
-            false => format!("{key} needs {field}"),
+    fn walk(root: &toml::Value, at: &toml::Value, path: &mut Vec<String>, key: &str, value: &str) -> Option<String> {
+        let table = at.as_table()?;
+        let here: Vec<&str> = path.iter().map(String::as_str).collect();
+        let Some(known) = keys(root, &here) else {
+            // Keys of one's choosing: each its own table, of the same keys.
+            for (k, v) in table {
+                if !v.is_table() {
+                    return Some(format!("{key} takes keys, such as {{ name = value, ... }}"));
+                }
+                path.push(k.clone());
+                let p = walk(root, v, path, key, value);
+                path.pop();
+                p?;
+            }
+            return None;
         };
+        if let Some(k) = table.keys().find(|k| !known.iter().any(|(n, ..)| n == k)) {
+            let names: Vec<&str> = known.iter().map(|(n, ..)| *n).collect();
+            return Some(format!("{key} names no key of abo.toml: {} is not one of {}", shown(k), names.join(", ")));
+        }
+        for (name, kind, needed) in known {
+            let Some(v) = table.get(name) else {
+                if needed {
+                    return Some(if value.is_empty() { format!("{key} cannot be unset: abo.toml needs {name}") } else { format!("{key} needs {name}") });
+                }
+                continue;
+            };
+            let text = v.as_str();
+            let ok = match kind {
+                Holds::Text => text.is_some(),
+                Holds::Date => text.is_some_and(|t| t.parse::<Date>().is_ok()),
+                Holds::Number => text.is_some_and(|t| t.parse::<Decimal>().is_ok()),
+                Holds::WholeNumber => v.is_integer(),
+                Holds::Flag => v.is_bool(),
+                Holds::OneOf(these) => text.is_some_and(|t| these.contains(&t)),
+                Holds::Keys | Holds::Any => v.is_table(),
+            };
+            if !ok {
+                let at = if path.is_empty() { name.to_string() } else { format!("{}.{name}", path.join(".")) };
+                let given = text.map_or_else(|| v.to_string(), shown);
+                return Some(match kind {
+                    Holds::Date => format!("{at} takes a date, such as 2026-06-30; {given} is not one"),
+                    Holds::Number => format!("{at} takes a number, such as 8.1; {given} is not one"),
+                    Holds::WholeNumber => format!("{at} takes a whole number; {given} is not one"),
+                    Holds::Flag => format!("{at} takes true or false; {given} is not one"),
+                    Holds::OneOf(these) => format!("{at}: {given} is not {}", these.join(", ")),
+                    Holds::Text => format!("{at} takes text; {given} is not"),
+                    Holds::Keys | Holds::Any => format!("{at} takes keys, such as {{ name = value, ... }}"),
+                });
+            }
+            if matches!(kind, Holds::Keys | Holds::Any) {
+                path.push(name.to_string());
+                let p = walk(root, v, path, key, value);
+                path.pop();
+                if p.is_some() {
+                    return p;
+                }
+            }
+        }
+        None
     }
-    if let Some(rest) = msg.strip_prefix("unknown field `") {
-        let (field, expected) = rest.split_once("`, expected ").unwrap_or((rest, ""));
-        return format!("{key} names no key of abo.toml: {} is not {}", shown(field.trim_end_matches('`')), expected);
-    }
-    if let Some(rest) = msg.strip_prefix("unknown variant `") {
-        let (variant, expected) = rest.split_once("`, expected ").unwrap_or((rest, ""));
-        return format!("{key}: {} is not {expected}", shown(variant.trim_end_matches('`')));
-    }
-    if key.ends_with("closed_through") {
-        return format!("{key} takes a date, such as 2026-06-30; {value} is not one");
-    }
-    if msg.contains("Decimal") {
-        return format!("{key} takes a number, such as 8.1; {value} is not one");
-    }
-    if msg.contains("boolean") {
-        return format!("{key} takes true or false; {value} is not one");
-    }
-    match msg.find("expected ") {
-        Some(i) => format!("{key} takes {}; {value} is not one", msg[i + 9..].replace('"', "")),
-        None => format!("{key}: {}", msg.replace('"', "")),
-    }
+    walk(root, root, &mut vec![], &key, &value)
 }
 
 fn config_edited(c: &Config, key: &str, value: Option<&str>) -> Result<Config, String> {
@@ -299,7 +381,12 @@ fn config_edited(c: &Config, key: &str, value: Option<&str>) -> Result<Config, S
             drop(t.insert(last.to_string(), v));
         }
     }
-    root.try_into().map_err(|e: toml::de::Error| config_said(key, value, e.message()))
+    if let Some(why) = config_problem(&root, key, value) {
+        return Err(why);
+    }
+    // ponytail: the schema above is `Config`'s; were they to part, serde's
+    // refusal is said as no more than that.
+    root.try_into().map_err(|_: toml::de::Error| format!("{shown_key}: abo.toml would not be read with it"))
 }
 
 /// N1 to N6; N5 is now the invariant I-P3. Said of the operation already:
@@ -307,7 +394,7 @@ fn config_edited(c: &Config, key: &str, value: Option<&str>) -> Result<Config, S
 fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
     let mut v = vec![];
     macro_rules! no {
-        ($code:literal, $($t:tt)*) => { v.push(Violation { code: $code, what: format!($($t)*) }) };
+        ($code:literal, $($t:tt)*) => { v.push(Violation::new($code, format!($($t)*))) };
     }
     let closed_through = m.config.company.closed_through;
     let closed = |d: Date| closed_through.is_some_and(|c| d <= c);
@@ -351,19 +438,20 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
     }
     // What pays or writes off a debt moves no VAT: that was booked with it.
     if let Op::Pay { .. } | Op::WriteOff { .. } = op {
-        let vat: Vec<&Account> = match &m.config.vat {
-            Vat::None => vec![],
-            Vat::Flat { account, .. } => vec![account],
-            Vat::Effective { input, output } => vec![input, output],
-        };
+        let vat = m.vat_accounts();
         if let Some(a) = vat.into_iter().find(|a| posts(a)) {
             no!("N3", "a payment or a write-off posts nothing to {a}");
         }
     }
     if let Op::Pay { from, .. } = op {
-        let vat = matches!(&m.config.vat, Vat::Effective { input, .. } if input == from);
-        if class(from) != "Assets" || *from == m.config.invoice.receivable || vat {
+        if !m.moves_money(from) {
             no!("N4", "{from} is not an account money moves through");
+        }
+    }
+    // A write-off moves no money: it is an expense, or income.
+    if let Op::WriteOff { debt, to, .. } = op {
+        if let Some(want) = m.written_off_to(*debt).filter(|w| class(to) != *w) {
+            no!("N4", "{to} is not {}; {}", if want == "Expenses" { "an expense account" } else { "an income account" }, if want == "Expenses" { "what a customer never pays is written off to an expense" } else { "what a supplier forgives is written off to income" });
         }
     }
     if let Some(c) = closed_through {

@@ -554,7 +554,7 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | G-O5 | Every command does what its operation does in the model: taken exactly when the model takes it; then the files say the model's state, with every document and PDF beside them; refused, with the rules the model names, in JSON and in words, and nothing written; undo as §5.3. What the commands show is the model's | §5 | `the_cli_is_the_model`, `refusals_in_words_name_their_rules`, `what_abo_shows_is_the_models`, `lists_show_what_the_books_hold`, `reports_read_the_books_as_the_model_does`, `a_key_set_reads_back_through_the_cli`, `company_changes_only_what_it_is_told`, `payment_options_follow_add_edit_remove`, `pay_takes_what_is_open_from_money`, `record_all_clears_everything`, `a_document_filed_for_a_bill_names_it` |
 | G-O6 | Changes sent at once are each made, one after another | §5 | `changes_at_once_are_each_made` |
 | G-O7 | `abo init`, and the form that asks its questions in the browser, open books that read with no problem, configured as told; or refuse and leave nothing behind | §2.8 | `init_opens_valid_books_or_nothing`, `a_new_company_opens_like_init` |
-| G-O8 | The log holds each change as the command that makes it again: every default the command took written out, so that run on the books as they were, on any later day, it makes the same change | §5 | `the_log_makes_each_change_again` |
+| G-O8 | The log holds each change as the command that makes it again, whoever made it, a terminal or a form: every part of the operation written out, so that run on the books as they were, on any later day, it makes the same change. One function writes an operation as its command, another as its commit's subject | §5 | `the_log_makes_each_change_again`, `the_web_is_the_model` |
 | G-O9 | A report changes nothing in the books, wherever it is told to write: a PDF, or hledger's output file, goes outside them or is refused | §5 | `a_report_changes_nothing_in_the_books` |
 | G-O11 | Every amount in a command's JSON is `{quantity, commodity}`: the number to its commodity's places, the commodity apart, and nothing of how to write it, which is the reader's to choose; what cannot be read as typed ends abo with 2, as a usage error | §5 | `amounts_in_json_are_quantity_and_commodity`, `an_unreadable_date_exits_2` |
 | G-O10 | A refusal says what is wrong with what the operation was given, of the books before it: it names no entry that is not there yet, an invoice or a credit note by its number and never by its id, and quotes nothing as Rust's debug format does | §5 | `refusals_speak_of_the_books_before` |
@@ -734,8 +734,8 @@ neither for an entry made long ago.
   change what is reclaimed. An invoice books output VAT as the method in force
   says, which `invoice` does by construction.
 - **N4** `pay` moves the money through a money account: an asset, not the
-  receivable, not input VAT. (`write_off` names the account the rest goes
-  to.)
+  receivable, not input VAT. `write_off` moves none: it writes an invoice off
+  to an expense account, and a bill to an income account.
 - **N5** is now I-P3.
 - **N6** `closed_through` only moves forward: a period closed stays closed.
 

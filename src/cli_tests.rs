@@ -62,15 +62,15 @@ impl Drop for Dir {
     }
 }
 
-struct Out {
-    ok: bool,
-    code: Option<i32>,
-    json: Option<serde_json::Value>,
-    stderr: String,
+pub(crate) struct Out {
+    pub(crate) ok: bool,
+    pub(crate) code: Option<i32>,
+    pub(crate) json: Option<serde_json::Value>,
+    pub(crate) stderr: String,
 }
 
 /// `abo --json ARGS` in `dir`, on `today`.
-fn abo(dir: &Path, today: Date, args: &[String]) -> Out {
+pub(crate) fn abo(dir: &Path, today: Date, args: &[String]) -> Out {
     let o = Command::new(exe())
         .arg("--json")
         .args(args)
@@ -140,74 +140,21 @@ fn flag(name: &str, v: impl std::fmt::Display) -> String {
 /// the command refuses before the model is asked: an issuer with nothing to
 /// name a file after.
 fn command(op: &Op, m: &Books, src: &Path) -> (Vec<String>, Option<Op>) {
-    let s = |x: &str| x.to_string();
-    let mut a: Vec<String>;
-    let mut model_op = Some(op.clone());
     match op {
-        Op::Post { date, description, postings } => {
-            a = vec![s("post"), flag("date", date), flag("desc", description), s("--")];
-            a.extend(postings.iter().map(posting));
-        }
         Op::File { sha256, date, name, ext, bill } => {
-            // A PDF's header, then what makes it this one.
+            // A PDF's header, then what makes it this one; one file to each
+            // document, so a logged `file` reads its own again.
             let bytes = [b"%PDF-1.4\n".as_slice(), sha256.as_bytes()].concat();
-            // One file to each document, so a logged `file` reads its own again.
             let path = src.join(format!("doc-{}.{ext}", &store::sha256(sha256.as_bytes())[..16]));
             std::fs::write(&path, &bytes).unwrap();
-            a = vec![s("file"), flag("date", date), flag("issuer", name)];
-            if let Some(b) = bill {
-                a.push(flag("for", b));
-            }
-            a.extend([s("--"), path.display().to_string()]);
             let slug = crate::repo::slug(name);
-            model_op = (!slug.is_empty()).then(|| Op::File { sha256: store::sha256(&bytes), date: *date, name: slug, ext: ext.clone(), bill: *bill });
+            let model_op = (!slug.is_empty()).then(|| Op::File { sha256: store::sha256(&bytes), date: *date, name: slug, ext: ext.clone(), bill: *bill });
+            (crate::command::argv(op, m, Some(&path.display().to_string())), model_op)
         }
-        Op::Unfile { sha256 } => a = vec![s("unfile"), s("--"), sha256.clone()],
-        Op::Bill { date, description, postings, document } => {
-            a = vec![s("bill"), flag("date", date), flag("desc", description)];
-            if let Some(d) = document {
-                a.push(flag("document", d));
-            }
-            a.push(s("--"));
-            a.extend(postings.iter().map(posting));
-        }
-        Op::Invoice { date, customer, commodity, lines, rate, reason, reference, note, .. } => {
-            a = vec![s("invoice"), flag("date", date), flag("to", customer), flag("currency", commodity), flag("reference", reference), flag("note", note), flag("vat-reason", reason)];
-            if let Some(r) = rate {
-                a.push(flag("vat-rate", r));
-            }
-            a.extend(lines.iter().map(|l| flag("item", format!("{}|{}|{}", l.quantity, l.unit_price, l.description))));
-        }
-        Op::Credit { invoice, date, note, .. } => {
-            let number = m.number_text(*invoice).unwrap_or_else(|| invoice.to_string());
-            a = vec![s("credit"), flag("date", date), flag("note", note), s("--"), number];
-        }
-        Op::Pay { debt, date, amount: q, from, cost } => {
-            a = vec![s("pay"), flag("amount", q), flag("from", from), flag("date", date)];
-            if let Some(c) = cost {
-                a.push(flag("cost", amount(c)));
-            }
-            a.extend([s("--"), debt.to_string()]);
-        }
-        Op::WriteOff { debt, date, to } => a = vec![s("write-off"), flag("to", to), flag("date", date), s("--"), debt.to_string()],
-        Op::Revert { entry, date } => a = vec![s("revert"), flag("date", date), s("--"), entry.to_string()],
-        Op::Record { account, commodity, date, balance, clears } => {
-            a = vec![s("record"), flag("account", account), flag("commodity", commodity), flag("date", date), flag("balance", balance), s("--")];
-            a.extend(clears.iter().map(|r| format!("{}.{}", r.entry, r.n)));
-        }
-        Op::Unrecord { account, commodity } => a = vec![s("unrecord"), flag("account", account), flag("commodity", commodity)],
-        Op::ConfigSet { key, value } => a = vec![s("config"), s("set"), s("--"), key.clone(), value.clone()],
-        Op::ConfigUnset { key } => a = vec![s("config"), s("unset"), s("--"), key.clone()],
         // No command sets the whole configuration as it is; the plans draw none.
         Op::Configure(_) => unreachable!("the plans draw no Configure"),
-        Op::AccountAdd(x) => a = vec![s("account"), s("add"), s("--"), x.clone()],
-        Op::AccountRemove(x) => a = vec![s("account"), s("remove"), s("--"), x.clone()],
-        Op::CommodityAdd(c, p) => a = vec![s("commodity"), s("add"), s("--"), c.clone(), p.to_string()],
-        Op::CommodityRemove(c) => a = vec![s("commodity"), s("remove"), s("--"), c.clone()],
-        Op::PriceAdd { of, date, price } => a = vec![s("price"), s("add"), s("--"), date.to_string(), of.clone(), price.quantity.to_string(), price.commodity.clone()],
-        Op::PriceRemove { of, date } => a = vec![s("price"), s("remove"), s("--"), date.to_string(), of.clone()],
+        _ => (crate::command::argv(op, m, None), Some(op.clone())),
     }
-    (a, model_op)
 }
 
 pub(crate) fn head(dir: &Path) -> String {
@@ -776,7 +723,7 @@ fn refusals_in_words_name_their_rules(#[strategy(plan())] plan: Vec<Step>, next:
 
 /// The invoices' and credit notes' PDFs set aside: a PDF made again carries
 /// the moment it was made.
-fn without_pdfs(mut m: Books) -> Books {
+pub(crate) fn without_pdfs(mut m: Books) -> Books {
     for e in &mut m.entries {
         if let model::Kind::Invoice { pdf, .. } | model::Kind::CreditNote { pdf, .. } = &mut e.kind {
             pdf.clear();

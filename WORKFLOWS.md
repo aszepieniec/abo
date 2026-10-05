@@ -202,7 +202,9 @@ a document the books lack, **Book it** and **Delete** for one not booked.
 ### B5. Write off what will not be paid — Supported (browser, CLI)
 What a customer will never pay, or a supplier forgave. Browser: **Write off**
 on the Pay page, to an account chosen for it. CLI: `abo write-off <id>
---to <account>`.
+--to <account>`. An invoice is written off to an expense account, a bill to
+an income account; a write-off moves no money, so another account is refused
+(MODEL.md N4).
 **Done when** nothing is open, and what was open is in that account.
 
 ---

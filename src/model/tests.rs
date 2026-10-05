@@ -1468,15 +1468,12 @@ fn a_key_set_reads_back(#[strategy(plan())] plan: Vec<Step>, key: Key) {
     for part in key.split('.') {
         at = at.get(part).cloned().ok_or_else(|| TestCaseError::fail(format!("{key} is not there")))?;
     }
-    let expected = if value.starts_with('{') {
-        toml::from_str::<toml::Table>(&format!("v = {value}")).unwrap()["v"].clone()
-    } else {
-        at.clone()
-    };
     match &at {
         toml::Value::String(s) => prop_assert_eq!(s, &value),
         toml::Value::Integer(i) => prop_assert_eq!(i.to_string(), value),
-        _ => prop_assert_eq!(&at, &expected),
+        // A table, read as the table it was given as; text that begins with
+        // `{` is text, read back above.
+        _ => prop_assert_eq!(&at, &toml::from_str::<toml::Table>(&format!("v = {value}")).unwrap()["v"]),
     }
 }
 
