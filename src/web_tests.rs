@@ -3,7 +3,7 @@
 //! books once; a post from another site changes nothing; the data
 //! directory's form opens books as `abo init` does.
 
-use crate::cli_tests::{abo, after, exe, head, opened, plan, posting, without_pdfs, Dir};
+use crate::cli_tests::{abo, after, exe, head, offered, opened, plan, posting, without_pdfs, Dir};
 use crate::model::tests::{self as mt, Step};
 use crate::model::{self, Books, Date, Op};
 use crate::store;
@@ -125,6 +125,19 @@ struct Post {
     body: Vec<u8>,
 }
 
+/// The payment option form for `o`, its id `id`, editing `was` if given.
+fn option_form(was: Option<&str>, id: &str, o: &model::PayOption) -> Option<Post> {
+    let one = [id, &o.label, &o.holder, &o.iban, &o.bic, &o.network, &o.address, &o.account];
+    if one.iter().any(|v| v.contains(['\n', '\r', '\0'])) || o.bank.contains(['\r', '\0']) || o.details.contains(['\r', '\0']) {
+        return None;
+    }
+    let kind = serde_json::to_value(o.kind).ok()?.as_str()?.to_string();
+    let mut fields = vec![("kind", kind), ("id", id.to_string()), ("label", o.label.clone()), ("holder", o.holder.clone()), ("iban", o.iban.clone()), ("bic", o.bic.clone())];
+    fields.extend([("bank", o.bank.clone()), ("network", o.network.clone()), ("address", o.address.clone()), ("details", o.details.clone()), ("account", o.account.clone())]);
+    fields.push(("was", was.unwrap_or_default().to_string()));
+    Some(urlencoded("/company/payment", fields))
+}
+
 fn urlencoded(path: &str, mut fields: Vec<(&str, String)>) -> Post {
     fields.push(("token", token()));
     Post { path: path.into(), ctype: "application/x-www-form-urlencoded".into(), body: form(&fields) }
@@ -212,6 +225,25 @@ fn request(op: &Op, m: &Books, today: Date) -> Option<(Post, Op)> {
             let fields = vec![("action", "add-price".into()), ("value", of.clone()), ("date", date.to_string()), ("price", format!("{} {}", price.quantity, price.commodity))];
             (urlencoded("/declarations", fields), Op::PriceAdd { of: t(&of), date, price })
         }
+        // The company form, every field sent: what the op does not give, as
+        // it stands.
+        Op::Company { name, address, country, tax_id } => {
+            let c = &m.config.company;
+            let (name, address, country, tax_id) = (name.unwrap_or(c.name.clone()), address.unwrap_or(c.address.clone()), country.unwrap_or(c.country.clone()), tax_id.unwrap_or(c.tax_id.clone()));
+            if ![&name, &country, &tax_id].iter().all(|v| one_line(v)) || address.contains(['\r', '\0']) {
+                return None;
+            }
+            let p = urlencoded("/company", vec![("name", name.clone()), ("address", address.clone()), ("country", country.clone()), ("tax_id", tax_id.clone())]);
+            (p, Op::Company { name: Some(name), address: Some(address), country: Some(country), tax_id: Some(tax_id) })
+        }
+        // The option form, every field of the option as it is to be.
+        Op::OptionAdd { id, option } => (option_form(None, &id, &option)?, Op::OptionAdd { id, option: offered(m, option) }),
+        Op::OptionEdit { id, new_id, change } => {
+            let now = m.config.payment.get(&id)?.clone().changed(change);
+            let new = new_id.clone().unwrap_or(id.clone());
+            (option_form(Some(&id), &new, &now)?, Op::OptionEdit { id, new_id, change: model::OptionChange::all(&now) })
+        }
+        Op::OptionRemove { id } => (urlencoded("/company/payment/remove", vec![("id", id.clone())]), Op::OptionRemove { id }),
         Op::PriceRemove { of, date } if !of.contains(' ') && one_line(&of) => (urlencoded("/declarations", vec![("action", "remove-price".into()), ("value", format!("{date} {of}"))]), Op::PriceRemove { of, date }),
         _ => return None,
     })
@@ -264,6 +296,11 @@ fn the_web_is_the_model(#[strategy(vec(any::<Step>(), 1..25))] plan: Vec<Step>) 
                 if n != m {
                     previous = Some(std::mem::replace(&mut now, n));
                 }
+            }
+            // Refused by the form's own questions, a problem under a field,
+            // before the model was asked: the model refuses it too.
+            (200 | 422, Err(_)) if a.body.contains("class=\"problem\"") => {
+                prop_assert_eq!((head(&books), store::text_files(&books).unwrap()), before, "{} was refused and changed something", post.path);
             }
             (200 | 422, Err(v)) => {
                 prop_assert!(a.body.contains("Not done") || a.body.contains("did not go through"), "{}: refused without saying so", post.path);
@@ -384,7 +421,7 @@ fn a_new_company_opens_like_init(
         prop_assert_eq!(s.problems, Vec::<String>::new());
         prop_assert_eq!(&s.books.config.company.name, name.trim());
     } else {
-        prop_assert_eq!(a.status, 200);
+        prop_assert_eq!(a.status, 422);
         prop_assert!(made.is_empty(), "refused, and books were made");
     }
 }

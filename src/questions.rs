@@ -132,7 +132,7 @@ pub trait Source {
 impl Check {
     fn run(&self, s: &str, env: &Env) -> Result<String, String> {
         if s.chars().any(crate::model::hidden) {
-            return Err(format!("{s:?} holds a control character, such as a line break; type it on one line."));
+            return Err(format!("{} holds a control character, such as a line break; type it on one line.", answer::plain(s)));
         }
         match self {
             Check::Free => Ok(s.to_string()),
@@ -175,7 +175,7 @@ pub fn walk(qs: &[Q], prefix: &str, out: &mut Answers, context: &Context, src: &
                 let k = format!("{prefix}{key}");
                 let v = src.lines(&k, label, hint)?;
                 if v.chars().any(|c| crate::model::hidden(c) && c != '\n') {
-                    bail!("{label}: {v:?} holds a control character");
+                    bail!("{label}: {} holds a control character", answer::plain(&v));
                 }
                 out.insert(k, v);
             }
@@ -388,7 +388,7 @@ pub static OPTION: &[Q] = &[
                 hint: "",
                 offer: Offer::From("the kind: bank, cash or crypto, numbered if taken", |env| free_id(env.kind(), &env.taken())),
                 check: Check::By(|s, env| match s {
-                    s if env.taken().iter().any(|t| t == s) => Err(format!("{s:?} is already the id of a payment option.")),
+                    s if env.taken().iter().any(|t| t == s) => Err(format!("{s} is already the id of a payment option.")),
                     s => answer::option_id(s),
                 }),
             },
@@ -438,26 +438,40 @@ fn name(s: &str, env: &Env) -> Result<String, String> {
     let slug = crate::repo::slug(s);
     match env.context.root {
         _ if s.is_empty() => Err("A name is needed.".into()),
-        _ if slug.is_empty() => Err(format!("{s:?} has no letters or digits to name a directory after.")),
+        // The books' directory is named after it when they are opened alone.
+        Some(_) if slug.is_empty() => Err(format!("{} has no letters or digits to name a directory after.", answer::plain(s))),
         Some(root) if root.join(&slug).exists() => Err(format!("{slug} already exists here; choose another name.")),
         _ => Ok(s.to_string()),
     }
 }
 
-/// What is wrong with the payment option under `env.prefix` as a whole: as
-/// the books would refuse it (I-C2), and money arriving in an asset.
-/// What is wrong with the option answered, and the question it is wrong in.
+/// What is wrong with the payment option under `env.prefix` as a whole, as
+/// the books would refuse it (I-C2), and money arriving in an asset; and
+/// the question it is wrong in.
 pub fn option_problem(env: &Env) -> Option<(&'static str, String)> {
     let (id, o) = option(env.answers, env.prefix);
     let (field, why) = model::option_problem(&id, &o).or_else(|| (model::class(&o.account) != "Assets").then(|| ("account", format!("{} is not an account money arrives in; give an Assets account", o.account))))?;
     Some((field, sentence(&why)))
 }
 
-/// "a bank option needs ..." as a sentence.
+/// "a bank option needs ..." as a sentence: its first letter a capital,
+/// whatever letter it is, and a full stop.
 fn sentence(s: &str) -> String {
-    let mut s = format!("{s}.");
-    s[..1].make_ascii_uppercase();
-    s
+    let mut c = s.chars();
+    let stop = if s.ends_with('.') { "" } else { "." };
+    match c.next() {
+        Some(first) => format!("{}{}{stop}", first.to_uppercase(), c.as_str()),
+        None => String::new(),
+    }
+}
+
+#[test]
+fn a_sentence_begins_with_any_letter() {
+    assert_eq!(sentence("a bank option needs an IBAN"), "A bank option needs an IBAN.");
+    assert_eq!(sentence("Ұ is not an IBAN"), "Ұ is not an IBAN.");
+    assert_eq!(sentence("é"), "É.");
+    assert_eq!(sentence(""), "");
+    assert_eq!(sentence("x is not an IBAN, such as CH93."), "X is not an IBAN, such as CH93.");
 }
 
 // ---- kinds ----

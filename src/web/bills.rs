@@ -159,7 +159,7 @@ pub(super) fn bill_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>) ->
                             input type="file" name="document" accept="image/*,application/pdf";
                         }
                         label.field { "Date on the bill" input type="date" name="date" required value=(get("date")); }
-                        label.field { "Issuer" span.hint { "Who sent it. The document is filed under this name and the date." } input type="text" name="issuer" required value=(get("issuer")); }
+                        label.field { "Issuer" span.hint { "Who sent it. The document is filed under this name and the date; without a document, not needed." } input type="text" name="issuer" value=(get("issuer")); }
                     }
                     label.field { "Description" input type="text" name="description" required value=(get("description")); }
                     label.field { "Postings"
@@ -219,6 +219,6 @@ pub(super) async fn bill_submit(Books(mut s): Books, mp: Multipart) -> Response 
     });
     match r {
         Ok(to) => Redirect::to(&to).into_response(),
-        Err(e) => or_error(&s, "Book a bill", || Ok(bill_page(&s, &f, Some(&e)))),
+        Err(e) => again(&s, "Book a bill", || Ok(bill_page(&s, &f, Some(&e)))),
     }
 }

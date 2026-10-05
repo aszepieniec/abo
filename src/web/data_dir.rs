@@ -144,10 +144,10 @@ pub(super) async fn new_submit(axum::extract::State(root): axum::extract::State<
     });
     match opened {
         Ok(to) => Redirect::to(&to).into_response(),
-        Err(_) if !problems.is_empty() => data_page("A new company", new_page(&f, &problems, None)).into_response(),
+        Err(_) if !problems.is_empty() => (StatusCode::UNPROCESSABLE_ENTITY, data_page("A new company", new_page(&f, &problems, None))).into_response(),
         Err(e) => {
             error!(%e, "opening books failed");
-            data_page("A new company", new_page(&f, &problems, Some(&e))).into_response()
+            (StatusCode::UNPROCESSABLE_ENTITY, data_page("A new company", new_page(&f, &problems, Some(&e)))).into_response()
         }
     }
 }

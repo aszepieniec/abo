@@ -69,15 +69,16 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             match flags.answers()? {
                 Some(mut given) => {
                     given.insert("name".into(), name);
-                    questions::walk(questions::INIT, "", &mut answers, &context, &mut Flags(given.clone()))?;
+                    let mut flags = Flags::new(given.clone());
+                    questions::walk(questions::INIT, "", &mut answers, &context, &mut flags)?;
                     // A flag no question asked for would be dropped without
                     // a word: a network on a bank option, a rate under none.
-                    if let Some(k) = given.keys().find(|k| !answers.contains_key(*k)) {
-                        match k.split_once('.') {
+                    for k in given.keys().filter(|k| !answers.contains_key(*k)) {
+                        flags.problems.push(match k.split_once('.') {
                             Some((p, field)) => {
                                 let n: usize = p.trim_start_matches('p').parse().unwrap_or(0);
                                 let kind = answers.get(&format!("{p}.kind")).cloned().unwrap_or_default();
-                                bail!("--payment number {}: a {kind} option has no {field}", n + 1);
+                                format!("--payment number {}: a {kind} option has no {field}", n + 1)
                             }
                             None => {
                                 // As typed: the keys of the VAT method's own questions are not their flags.
@@ -86,10 +87,13 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                                     "input" | "output" => format!("vat-{k}"),
                                     _ => k.replace('_', "-"),
                                 };
-                                bail!("--{flag} does not apply with the other answers given")
+                                let method = answers.get("method").map_or("none", String::as_str);
+                                format!("--{flag} does not apply with the other answers given (the VAT method is {method})")
                             }
-                        }
+                        });
                     }
+                    // Every problem with the flags, said at once.
+                    flags.done()?;
                 }
                 None => {
                     let mut term = Terminal { given: questions::Answers::from([("name".into(), name)]), start: Default::default() };
@@ -333,10 +337,14 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             let others = |id: &str| options.keys().filter(|k| *k != id).cloned().collect::<Vec<_>>();
             let op = match change {
                 None | Some(PaymentCmd::List) => None,
+                // The flags answer the option's questions, as the terminal
+                // and the form do: what is not given is what they offer.
                 Some(PaymentCmd::Add { id, parts }) if parts.given() => {
                     let id = id.context("an option added with flags needs an id")?;
-                    let kind = parts.kind.as_deref().and_then(questions::kind).unwrap_or_default();
-                    Some(Op::OptionAdd { id, option: model::PayOption::new(kind).changed(parts.change()) })
+                    let mut answers = parts.answers();
+                    answers.insert("id".into(), id);
+                    let (id, option) = flagged_option(&s, answers, others(""))?;
+                    Some(Op::OptionAdd { id, option })
                 }
                 Some(PaymentCmd::Add { id, .. }) => {
                     let start = id.map(|id| questions::Answers::from([("id".into(), id)])).unwrap_or_default();
@@ -394,12 +402,24 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             match change {
                 None | Some(ConfigCmd::List) => {
                     let all = keys(&s);
-                    emit(cli.json, &all, || all.iter().map(|(k, v)| format!("{k} = {v}")).collect::<Vec<_>>().join("\n"))
+                    // A value of more than one line, such as an address, its lines
+                    // beneath its key; an empty one, the key alone.
+                    emit(cli.json, &all, || {
+                        all.iter()
+                            .map(|(k, v)| match v.as_str() {
+                                "" => format!("{k} ="),
+                                v if v.contains('\n') => format!("{k} =\n{}", v.lines().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n")),
+                                v => format!("{k} = {v}"),
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
                 }
                 Some(ConfigCmd::Get { key }) => {
                     let mut at = toml::Value::try_from(&s.books.config)?;
                     for part in key.split('.') {
-                        at = at.get(part).cloned().with_context(|| format!("{key} is not set"))?;
+                        // A key the schema has, not set; or one it has not.
+                        at = at.get(part).cloned().with_context(|| if model::key_known(&s.books.config, &key) { format!("{key} is not set") } else { format!("{key} names no key of abo.toml; abo config lists those set") })?;
                     }
                     let shown = match &at {
                         toml::Value::String(v) => v.clone(),

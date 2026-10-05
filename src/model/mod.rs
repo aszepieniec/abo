@@ -21,7 +21,7 @@ pub(crate) mod tests;
 pub use answer::hidden;
 pub use check::{check, option_problem, Subject, Violation};
 pub use explain::{explain, name};
-pub use ops::{apply, shape, InvoiceMore, Op, Shape};
+pub use ops::{apply, key_known, shape, InvoiceMore, Op, Shape};
 pub use text::{parse, read, render, Files};
 
 pub use jiff::civil::Date;

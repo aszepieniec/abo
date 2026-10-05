@@ -30,7 +30,9 @@ pub(super) fn owed_text(b: &Model, d: usize, standing: &[bool]) -> Option<(Strin
 
 /// One entry: as it stands in the journal, what it owes and what paid it,
 /// its document or PDF, and Revert or Correct.
-pub(super) async fn booking(Books(s): Books, Path(id): Path<usize>) -> Response {
+pub(super) async fn booking(Books(s): Books, Path(id): Path<String>) -> Response {
+    // An entry by its id; anything else names none.
+    let Ok(id) = id.parse::<usize>() else { return or_error(&s, "Not found", || Err(input::not_found(format!("there is no entry {id}")))) };
     or_error(&s, "Entry", || {
         let b = &s.books;
         let e = b.entry(id).ok_or_else(|| input::not_found(format!("there is no entry {id}")))?;
@@ -185,7 +187,9 @@ pub(super) fn filing(bytes: Vec<u8>, date: model::Date, issuer: &str, bill: Opti
     Ok((Op::File { sha256, date, name, ext: ext.into(), bill }, path.clone(), (path, bytes)))
 }
 
-pub(super) async fn entry_file(Books(mut s): Books, Path(id): Path<usize>, mp: Multipart) -> Response {
+pub(super) async fn entry_file(Books(mut s): Books, Path(id): Path<String>, mp: Multipart) -> Response {
+    // An entry by its id; anything else names none.
+    let Ok(id) = id.parse::<usize>() else { return or_error(&s, "Not found", || Err(input::not_found(format!("there is no entry {id}")))) };
     let (f, doc) = fields(mp).await;
     let to = f.get("to").filter(|t| t.starts_with('/') && !t.starts_with("//")).cloned().unwrap_or(format!("/entry/{id}"));
     let root = s.root.clone();
@@ -251,7 +255,9 @@ pub(super) async fn register(Books(s): Books, Query(q): Query<Fields>) -> Respon
     })
 }
 
-pub(super) async fn revert(Books(mut s): Books, Path(id): Path<usize>, Form(f): Form<Once>) -> Response {
+pub(super) async fn revert(Books(mut s): Books, Path(id): Path<String>, Form(f): Form<Once>) -> Response {
+    // An entry by its id; anything else names none.
+    let Ok(id) = id.parse::<usize>() else { return or_error(&s, "Not found", || Err(input::not_found(format!("there is no entry {id}")))) };
     let root = s.root.clone();
     let r = once(Some(&root), &f.token, || {
         let today = store::today()?;
@@ -283,7 +289,7 @@ pub(super) async fn post_submit(Books(mut s): Books, Form(f): Form<Fields>) -> R
     match r {
         Ok(to) => Redirect::to(&to).into_response(),
         // The form comes back filled in with the reason. Nothing is lost.
-        Err(e) => or_error(&s, "Book an entry", || Ok(form(&s, &f, Some(&e)))),
+        Err(e) => again(&s, "Book an entry", || Ok(form(&s, &f, Some(&e)))),
     }
 }
 

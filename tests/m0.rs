@@ -574,17 +574,19 @@ fn payment_options() {
         assert!(o.status.success(), "{args:?}: {}", err(&o));
     }
     // By id, as invoices print them.
+    // The holder as its question offers it: the company.
     let postfinance = "postfinance (bank): PostFinance -> Assets:Bank\n\
+                       \x20   Account holder: Test Ltd\n\
                        \x20   IBAN: CH93 0076 2011 6238 5295 7\n    BIC: POFICHBEXXX\n\
                        \x20   PostFinance AG\n    3030 Bern\n";
     assert_eq!(list(), format!("cash (cash): Cash -> Assets:Cash\n    At our office\n{postfinance}"));
     for (args, says) in [
-        (&["add", "cash", "--kind", "cash", "--label", "Cash"][..], "there is a payment option cash already"),
-        (&["add", "Wallet", "--kind", "cash", "--label", "Wallet", "--detail", "x"][..], "I-C2"),
-        (&["add", "wallet", "--kind", "crypto", "--network", "Bitcoin", "--address", "bc1q"][..], "I-A1: Assets:Crypto is not declared"),
-        (&["add", "wallet", "--kind", "crypto", "--network", "Bitcoin", "--account", "Assets:Bank"][..], "I-C2"),
-        (&["add", "iban", "--iban", "CH93 0076 2011 6238 5295 8"][..], "I-C2"),
-        (&["add", "bank2", "--label", "Bank"][..], "I-C2"),
+        (&["add", "cash", "--kind", "cash", "--label", "Cash"][..], "cash is already the id of a payment option"),
+        (&["add", "Wallet", "--kind", "cash", "--label", "Wallet", "--detail", "x"][..], "Wallet is not an id"),
+        (&["add", "wallet", "--kind", "crypto", "--network", "Bitcoin", "--address", "bc1q"][..], "Assets:Crypto is not declared"),
+        (&["add", "wallet", "--kind", "crypto", "--network", "Bitcoin", "--account", "Assets:Bank"][..], "An address is needed"),
+        (&["add", "iban", "--iban", "CH93 0076 2011 6238 5295 8"][..], "its check digits do not match"),
+        (&["add", "bank2", "--label", "Bank"][..], "needs an IBAN, or details"),
         (&["add", "--label", "No id"][..], "needs an id"),
         (&["edit", "nope", "--label", "X"][..], "no payment option nope"),
         (&["edit", "cash", "--id", "postfinance"][..], "there is a payment option postfinance already"),

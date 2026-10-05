@@ -82,6 +82,6 @@ pub(super) async fn declare(Books(mut s): Books, Form(f): Form<Fields>) -> Respo
     });
     match r {
         Ok(to) => Redirect::to(&to).into_response(),
-        Err(e) => or_error(&s, "Declarations", || Ok(declarations_page(&s, Some(&e)))),
+        Err(e) => again(&s, "Declarations", || Ok(declarations_page(&s, Some(&e)))),
     }
 }

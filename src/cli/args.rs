@@ -158,6 +158,23 @@ impl OptionParts {
         one.iter().any(|v| v.is_some()) || !self.bank.is_empty() || !self.details.is_empty()
     }
 
+    /// The flags as answers to the option's questions, by their keys.
+    pub(crate) fn answers(&self) -> questions::Answers {
+        let mut a = questions::Answers::new();
+        let one = [("kind", &self.kind), ("label", &self.label), ("holder", &self.holder), ("iban", &self.iban), ("bic", &self.bic), ("network", &self.network), ("address", &self.address), ("account", &self.account)];
+        for (k, v) in one {
+            if let Some(v) = v {
+                a.insert(k.into(), v.clone());
+            }
+        }
+        for (k, v) in [("bank", &self.bank), ("details", &self.details)] {
+            if !v.is_empty() {
+                a.insert(k.into(), v.join("\n"));
+            }
+        }
+        a
+    }
+
     /// What the flags give an option, as the model takes it.
     pub(crate) fn change(self) -> model::OptionChange {
         let lines = |v: Vec<String>| (!v.is_empty()).then(|| v.join("\n"));
@@ -301,8 +318,9 @@ pub(crate) enum Cmd {
         /// Customer name and address. Use \n between lines.
         #[arg(long)]
         to: String,
-        /// `quantity|unit price|description`, repeatable.
-        #[arg(long = "item")]
+        /// `quantity|unit price|description`, repeatable; a negative quantity,
+        /// such as a discount's, as it is: `--item -1|20|Discount`.
+        #[arg(long = "item", allow_hyphen_values = true)]
         items: Vec<String>,
         /// Invoice date. Defaults to today.
         #[arg(long)]
@@ -422,7 +440,8 @@ pub(crate) enum Cmd {
         #[arg(long)]
         date: Option<String>,
     },
-    /// The latest changes from the log.
+    /// The latest changes from the log, oldest first, the last change at the
+    /// foot, as a terminal shows the end.
     Log {
         #[arg(long, default_value_t = 20)]
         last: usize,
@@ -459,7 +478,8 @@ pub(crate) enum Cmd {
         /// The invoice's number, such as 2026-0017.
         number: String,
     },
-    /// Every invoice and credit note: total, due date, what is open.
+    /// Every invoice and credit note: total, due date, what is open. Newest
+    /// first; with --json, in the order of their numbers.
     Invoices {
         /// Only those with something open.
         #[arg(long)]

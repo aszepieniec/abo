@@ -32,6 +32,15 @@ pub(super) fn pay_page(s: &Store, id: usize, f: &Fields, error: Option<&anyhow::
     let chosen = f.get("from").cloned().unwrap_or(first);
     let today = store::today()?.to_string();
     let invoice = matches!(e.kind, Kind::Invoice { .. });
+    // Settled or cancelled: nothing is open to pay or write off.
+    if let Some(st @ (model::Status::Settled | model::Status::Cancelled)) = b.status(id, &standing) {
+        return Ok(html! {
+            h1 { (e.description.replace(" | ", ", ")) }
+            @if let Some(e) = error { (refused(e)) }
+            div.flash.flash-info { (icon("info")) div { strong { "Nothing is open" } "It is " (st.word()) "; there is nothing to pay or write off. " a href={"/entry/" (id)} { "Its entry" } "." } }
+            div.actions { span.nav { a.btn href=(back_to("/")) { (icon("left")) " Back" } } }
+        });
+    }
     Ok(html! {
         h1 { @if invoice { "A payment of " } @else { "Pay " } (e.description.replace(" | ", ", ")) }
         p.muted { (e.date) " · " (total) " · " (open) " open" " · " a href={"/entry/" (id)} { "entry " (id) } }
@@ -90,7 +99,7 @@ pub(super) async fn pay_submit(Books(mut s): Books, Form(f): Form<Fields>) -> Re
     });
     match r {
         Ok(to) => Redirect::to(&to).into_response(),
-        Err(e) => or_error(&s, "Pay", || pay_page(&s, id, &f, Some(&e))),
+        Err(e) => again(&s, "Pay", || pay_page(&s, id, &f, Some(&e))),
     }
 }
 

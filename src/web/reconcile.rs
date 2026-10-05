@@ -41,7 +41,7 @@ pub(super) async fn reconcile_act(Books(mut s): Books, Form(pairs): Form<Vec<(St
     });
     match r {
         Ok(to) => Redirect::to(&to).into_response(),
-        Err(e) => or_error(&s, "Reconcile", || reconcile_page(&s, &f, Some(refused(&e)))),
+        Err(e) => again(&s, "Reconcile", || reconcile_page(&s, &f, Some(refused(&e)))),
     }
 }
 

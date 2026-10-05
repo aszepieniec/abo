@@ -32,7 +32,7 @@ pub(super) async fn company_submit(Books(mut s): Books, Form(f): Form<Fields>) -
         Ok(to) => Redirect::to(&to).into_response(),
         Err(e) => {
             let refused = problems.is_empty().then_some(&e);
-            or_error(&s, "The company", || Ok(company_page(&s, &f, &problems, refused)))
+            again(&s, "The company", || Ok(company_page(&s, &f, &problems, refused)))
         }
     }
 }
@@ -81,7 +81,7 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
         }
         div.box {
             div.box-header { (icon("inbox")) "Where invoices ask to be paid" }
-            table.list {
+            table.list.options {
                 tbody {
                     @for (id, o) in &cfg.payment {
                         @let p = o.printed();
@@ -167,7 +167,7 @@ pub(super) async fn option_submit(Books(mut s): Books, Form(f): Form<Fields>) ->
         Ok(to) => Redirect::to(&to).into_response(),
         Err(e) => {
             let refused = problems.is_empty().then_some(&e);
-            or_error(&s, "Payment option", || Ok(option_page(&s, &f, &problems, refused)))
+            again(&s, "Payment option", || Ok(option_page(&s, &f, &problems, refused)))
         }
     }
 }

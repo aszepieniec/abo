@@ -434,7 +434,7 @@ fn the_pay_page_takes_only_money_received() {
                                 ("5", "Income:Sales", "N4: Income:Sales is not an account money moves through"),
                                 ("5", "Liabilities:Payable", "N4: Liabilities:Payable is not an account money moves through")] {
         let (status, _, page) = http(&s, "POST", "/pay", &[("debt", &id), ("date", "2026-03-05"), ("amount", amount), ("from", from)]);
-        assert!(status == 200 && page.contains(says), "{amount} into {from}: {page}");
+        assert!(status == 422 && page.contains(says), "{amount} into {from}: {page}");
     }
     assert_eq!(log_len(&dir), before);
     assert!(!read(&dir, "journal/2026.journal").contains("pays:"));
@@ -858,20 +858,20 @@ fn an_invoice_is_not_paid_before_its_date() {
 fn options_and_the_company_take_no_control_character() {
     let dir = books("ctrl-cli", &[]);
     refused(&dir, &["company", "--name", "A\u{1}B"], "I-C1");
-    refused(&dir, &["payment-options", "add", "x", "--iban", "CH93 0076 2011 6238 5295 7", "--label", "a\u{1}b"], "I-C2");
-    refused(&dir, &["payment-options", "add", "y", "--kind", "cash", "--detail", "a\tb"], "I-C2");
+    refused(&dir, &["payment-options", "add", "x", "--iban", "CH93 0076 2011 6238 5295 7", "--label", "a\u{1}b"], "holds a control character");
+    refused(&dir, &["payment-options", "add", "y", "--kind", "cash", "--detail", "a\tb"], "holds a control character");
 }
 
 #[test]
 fn money_paid_by_an_option_arrives_in_an_asset() {
     let dir = books("option-account", &[]);
-    refused(&dir, &["payment-options", "add", "x", "--iban", "CH93 0076 2011 6238 5295 7", "--account", "Expenses:General"], "I-C3");
+    refused(&dir, &["payment-options", "add", "x", "--iban", "CH93 0076 2011 6238 5295 7", "--account", "Expenses:General"], "not an account money arrives in");
 }
 
 #[test]
 fn a_cash_option_says_where_and_when() {
     let dir = books("cash-lines", &[]);
-    refused(&dir, &["payment-options", "add", "till", "--kind", "cash"], "I-C2");
+    refused(&dir, &["payment-options", "add", "till", "--kind", "cash"], "needs lines saying where and when");
 }
 
 #[test]
@@ -1198,9 +1198,9 @@ fn an_invoice_due_date_shows_at_phone_width() {
 fn an_answer_of_spaces_is_no_answer() {
     let dir = books("spaces", &[]);
     ok(&dir, &["account", "add", "Assets:Crypto"]);
-    refused(&dir, &["payment-options", "add", "w", "--kind", "crypto", "--network", " ", "--address", "bc1q"], "I-C2");
-    refused(&dir, &["payment-options", "add", "v", "--kind", "crypto", "--network", "BTC", "--address", " "], "I-C2");
-    refused(&dir, &["payment-options", "add", "t", "--kind", "cash", "--detail", " "], "I-C2");
+    refused(&dir, &["payment-options", "add", "w", "--kind", "crypto", "--network", " ", "--address", "bc1q"], "A network is needed");
+    refused(&dir, &["payment-options", "add", "v", "--kind", "crypto", "--network", "BTC", "--address", " "], "An address is needed");
+    refused(&dir, &["payment-options", "add", "t", "--kind", "cash", "--detail", " "], "needs lines saying where and when");
 }
 
 #[test]
@@ -1217,8 +1217,8 @@ fn a_bad_line_in_an_address_is_said_under_it_with_the_rest() {
 #[test]
 fn an_edit_answered_as_it_stands_changes_nothing() {
     let dir = books("edit-unchanged", &[]);
-    // Added with flags: no account holder.
     ok(&dir, &["payment-options", "add", "bank", "--iban", "CH93 0076 2011 6238 5295 7"]);
+    let toml = read(&dir, "abo.toml");
     let before = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&dir).output().unwrap().stdout;
     let mut c = Command::new(env!("CARGO_BIN_EXE_abo")).args(["payment-options", "edit", "bank"]).current_dir(&dir)
         .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
@@ -1226,7 +1226,7 @@ fn an_edit_answered_as_it_stands_changes_nothing() {
     let o = c.wait_with_output().unwrap();
     assert!(o.status.success(), "{}", err(&o));
     assert_eq!(Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&dir).output().unwrap().stdout, before, "an edit that changed nothing made a commit");
-    assert!(!read(&dir, "abo.toml").contains("holder = \"Test Ltd\""));
+    assert_eq!(read(&dir, "abo.toml"), toml);
 }
 
 #[test]
@@ -1353,11 +1353,11 @@ fn an_option_saved_as_it_stands_in_the_browser_changes_nothing() {
     ok(&dir, &["payment-options", "add", "bank", "--iban", "CH9300762011623852957"]);
     let (toml, before) = (read(&dir, "abo.toml"), log_len(&dir));
     let s = serve(&dir);
-    // As the form shows it: the label blank, for the kind's own.
+    // As the form shows it: the label and holder its questions offered.
     let (_, _, page) = http(&s, "GET", "/company/payment?id=bank", &[]);
-    assert!(page.contains("name=\"label\" value=\"\""), "{page}");
-    let (status, to, page) = http(&s, "POST", "/company/payment", &[("token", "e1"), ("was", "bank"), ("kind", "bank"), ("id", "bank"), ("label", ""),
-        ("holder", ""), ("iban", "CH93 0076 2011 6238 5295 7"), ("bic", ""), ("bank", ""), ("details", ""), ("account", "Assets:Bank")]);
+    assert!(page.contains("name=\"label\" value=\"Bank transfer\""), "{page}");
+    let (status, to, page) = http(&s, "POST", "/company/payment", &[("token", "e1"), ("was", "bank"), ("kind", "bank"), ("id", "bank"), ("label", "Bank transfer"),
+        ("holder", "Test Ltd"), ("iban", "CH93 0076 2011 6238 5295 7"), ("bic", ""), ("bank", ""), ("details", ""), ("account", "Assets:Bank")]);
     assert_eq!(status, 303, "{page}");
     assert_eq!(read(&dir, "abo.toml"), toml);
     assert_eq!(log_len(&dir), before);
@@ -1608,4 +1608,23 @@ fn a_write_off_is_an_expense_or_income_and_moves_no_money() {
     refused(&dir, &["write-off", &bill, "--to", "Expenses:General", "--date", "2026-03-02"], "N4");
     ok(&dir, &["write-off", "2026-0001", "--to", "Expenses:General", "--date", "2026-03-02"]);
     ok(&dir, &["write-off", &bill, "--to", "Income:Sales", "--date", "2026-03-02"]);
+}
+
+// ---- known faults, fixed 2026-10-05 ----
+
+#[test]
+fn a_document_is_named_by_the_start_of_its_hash() {
+    let dir = books("hash-start", &[]);
+    let path = file(&dir, "Acme", "2026-03-01");
+    let start = path.rsplit('-').next().unwrap().trim_end_matches(".pdf").to_string();
+    assert_eq!(start.len(), 8, "{path}");
+    ok(&dir, &["bill", "--desc", "Acme", "--document", &start, "Expenses:General=5.00", "Liabilities:Payable=-5.00"]);
+}
+
+#[test]
+fn an_entry_that_is_no_number_is_not_found() {
+    let dir = books("entry-abc", &[]);
+    let s = serve(&dir);
+    let (status, _, page) = http(&s, "GET", "/entry/abc", &[]);
+    assert!(status == 404 && page.contains("Not found") && !page.contains("u64"), "{page}");
 }

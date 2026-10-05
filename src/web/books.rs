@@ -258,7 +258,7 @@ pub(super) async fn undo(Books(mut s): Books, Form(f): Form<Fields>) -> Response
     match once(Some(&root), &token, || {
         // The button takes back the change it was shown with, and none made since.
         let last = store::lines(&s.root).last().and_then(|l| l["commit"].as_str().map(String::from));
-        if let Some(c) = f.get("commit").filter(|c| last.as_ref() != Some(*c)) {
+        if let Some(c) = f.get("commit").filter(|c| !c.is_empty() && last.as_ref() != Some(*c)) {
             bail!("{c} is no longer the last change; the Log shows what is");
         }
         s.undo().map(|_| done(&s, &back))

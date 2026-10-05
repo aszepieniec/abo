@@ -86,7 +86,7 @@ pub(super) async fn invoice_submit(Books(mut s): Books, Form(f): Form<Fields>) -
     });
     match r {
         Ok(to) => Redirect::to(&to).into_response(),
-        Err(e) => or_error(&s, "Issue an invoice", || Ok(invoice_page(&s, &f, Some(&e)))),
+        Err(e) => again(&s, "Issue an invoice", || Ok(invoice_page(&s, &f, Some(&e)))),
     }
 }
 

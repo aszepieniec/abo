@@ -292,7 +292,28 @@ impl questions::Source for Terminal {
 /// Answers given as flags: nothing is asked. What is not given is what the
 /// question offers, as a blank answer is on the terminal; what is given is
 /// checked as a typed answer is, and refused rather than asked again.
-pub(crate) struct Flags(pub(crate) questions::Answers);
+pub(crate) struct Flags {
+    pub(crate) given: questions::Answers,
+    /// What is wrong with the flags, each said, so that all are said at once.
+    pub(crate) problems: Vec<String>,
+    /// The items, by prefix, a field of which has a problem: the item's own
+    /// problem would say it again.
+    said: std::collections::BTreeSet<String>,
+}
+
+impl Flags {
+    pub(crate) fn new(given: questions::Answers) -> Flags {
+        Flags { given, problems: vec![], said: Default::default() }
+    }
+
+    /// Every problem the flags had, or none.
+    pub(crate) fn done(self) -> Result<()> {
+        if self.problems.is_empty() {
+            return Ok(());
+        }
+        bail!("{}", self.problems.join("\n"))
+    }
+}
 
 impl questions::Source for Flags {
     fn note(&mut self, _: &str, _: &str) -> Result<()> {
@@ -302,31 +323,59 @@ impl questions::Source for Flags {
     // Trimmed, as the terminal and the form take them: the same answers
     // open the same books, however given.
     fn text(&mut self, key: &str, label: &str, _: &str, _: &str, check: &dyn Fn(&str) -> Result<String, String>) -> Result<String> {
-        let v = self.0.get(key).map_or("", String::as_str).trim();
-        check(v).map_err(|e| anyhow::anyhow!("{label}: {e}"))
+        let v = self.given.get(key).map_or("", String::as_str).trim().to_string();
+        Ok(check(&v).unwrap_or_else(|e| {
+            self.problems.push(format!("{label}: {e}"));
+            self.said.insert(key.rsplit_once('.').map_or(String::new(), |(p, _)| format!("{p}.")));
+            v
+        }))
     }
 
     fn lines(&mut self, key: &str, _: &str, _: &str) -> Result<String> {
-        let v = self.0.get(key).cloned().unwrap_or_default();
+        let v = self.given.get(key).cloned().unwrap_or_default();
         Ok(v.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n"))
     }
 
     fn choice(&mut self, key: &str, label: &str, noun: &str, options: &[&'static str], offer: &str) -> Result<String> {
-        match self.0.get(key) {
+        match self.given.get(key) {
             None => Ok(offer.to_string()),
-            Some(v) => Ok(answer::one_of(v, options, noun).map_err(|e| anyhow::anyhow!("{label}: {e}"))?.to_string()),
+            Some(v) => Ok(answer::one_of(v, options, noun).map(str::to_string).unwrap_or_else(|e| {
+                self.problems.push(format!("{label}: {e}"));
+                offer.to_string()
+            })),
         }
     }
 
     fn another(&mut self, key: &str, _: &str, n: usize, _: bool) -> Result<bool> {
         let prefix = format!("{key}{n}.");
-        Ok(self.0.keys().any(|k| k.starts_with(&prefix)))
+        Ok(self.given.keys().any(|k| k.starts_with(&prefix)))
     }
 
     fn item_problem(&mut self, prefix: &str, _: &str, problem: String, _: &questions::Answers) -> Result<bool> {
+        if self.said.contains(prefix) {
+            return Ok(false);
+        }
         let n: usize = prefix.trim_start_matches('p').trim_end_matches('.').parse().unwrap_or(0);
-        bail!("--payment number {}: {problem}", n + 1)
+        self.problems.push(if prefix.is_empty() { problem } else { format!("--payment number {}: {problem}", n + 1) });
+        Ok(false)
     }
+}
+
+/// A payment option's questions, answered by flags: what is not given is
+/// what each offers.
+pub(crate) fn flagged_option(s: &Store, given: questions::Answers, others: Vec<String>) -> Result<(String, model::PayOption)> {
+    let context = questions::Context { root: None, ids: others, declared: Some(s.books.accounts.iter().cloned().collect()), ..Default::default() };
+    let mut answers = questions::Answers::from([("name".into(), s.books.config.company.name.clone())]);
+    let keys: Vec<String> = given.keys().cloned().collect();
+    let mut flags = Flags::new(given);
+    questions::ask_item(questions::OPTION, "", "skip", questions::option_problem, &mut answers, &context, &mut flags)?;
+    // A flag no question of this kind asked is another kind's: refused, not
+    // let go unsaid.
+    if let Some(k) = keys.iter().find(|k| !answers.contains_key(*k)) {
+        flags.problems.push(format!("a {} option has no {k}", answers.get("kind").map_or("", String::as_str)));
+    }
+    flags.done()?;
+    Ok(questions::option(&answers, ""))
 }
 
 /// A payment option's questions, starting from `start`; `None` if skipped.

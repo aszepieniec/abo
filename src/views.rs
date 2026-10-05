@@ -129,7 +129,9 @@ pub fn reconciled(b: &Books, account: &str, commodity: &str, date: model::Date, 
     let money = |d: Decimal| Amount::new(b, d, commodity);
     let cleared: std::collections::BTreeSet<model::PostingRef> =
         b.statements.iter().filter(|(k, _)| k.0 == account && k.1 == commodity && k.2 <= date).flat_map(|(_, s)| s.clears.iter().copied()).collect();
-    let ps: Vec<_> = b.all_postings().into_iter().filter(|(_, d, p)| p.account == account && p.amount.commodity == commodity && *d <= date).collect();
+    let mut ps: Vec<_> = b.all_postings().into_iter().filter(|(_, d, p)| p.account == account && p.amount.commodity == commodity && *d <= date).collect();
+    // By date, as a statement lists them.
+    ps.sort_by_key(|(r, d, _)| (*d, r.entry, r.n));
     let done: Decimal = ps.iter().filter(|(r, ..)| cleared.contains(r)).map(|(_, _, p)| p.amount.quantity).sum();
     let outstanding = ps
         .iter()

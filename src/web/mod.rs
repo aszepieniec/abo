@@ -146,6 +146,16 @@ fn refused(e: &anyhow::Error) -> Markup {
     html! { div.flash.flash-error { (icon("error")) div { strong { "Not done" } pre { (format!("{e:#}")) } } } }
 }
 
+/// A form shown again after it was refused, its problems said: 422, as the
+/// change was not made.
+fn again(s: &Store, title: &str, body: impl FnOnce() -> Result<Markup>) -> Response {
+    let mut r = or_error(s, title, body);
+    if r.status() == StatusCode::OK {
+        *r.status_mut() = StatusCode::UNPROCESSABLE_ENTITY;
+    }
+    r
+}
+
 fn or_error(s: &Store, title: &str, body: impl FnOnce() -> Result<Markup>) -> Response {
     match body() {
         Ok(m) => page(s, title, m).into_response(),
@@ -183,6 +193,7 @@ fn page(s: &Store, title: &str, body: Markup) -> Html<String> {
         ("/reconcile", "checks", "Reconcile", "/reconcile"),
         ("/report/pl", "chart", "Reports", "/report"),
         ("/post", "plus", "Entry", "/post"),
+        ("/declarations", "coins", "Declarations", "/declarations"),
         ("/log", "clock", "Log", "/log"),
     ];
     let here = PATH.try_with(String::clone).unwrap_or_default();

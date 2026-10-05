@@ -279,4 +279,9 @@ ul.accounts li { padding: 2px 0; }
   ul.items li.cols { display: none; }
   label.row > span { grid-column: 2; text-align: left; white-space: normal; }
   ul.accounts { columns: 1; }
+  /* an option's details the width of the screen, its account and buttons beneath */
+  table.list.options tr { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 8px 0; }
+  table.list.options td { display: block; padding: 0 12px; }
+  table.list.options td:first-child { flex-basis: 100%; }
+  table.list.options .btn, table.list.options button { min-height: 32px; padding: 0 10px; font-size: 13px; }
 }

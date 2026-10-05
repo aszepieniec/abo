@@ -97,10 +97,22 @@ pub fn debt(b: &Books, text: &str) -> Result<usize> {
         .ok_or_else(|| not_found(format!("there is no entry {text}: give an entry's id, or an invoice's number such as 2026-0017")))
 }
 
-/// A filed document's hash, by its path or its hash: a text that is the
+/// A filed document's hash, by its path, its hash, or eight or more of
+/// the hash's first characters: a text that is the
 /// path of none is taken as a hash, for the model to say whether one is filed.
 pub fn filed(b: &Books, text: &str) -> Result<String> {
-    Ok(b.documents.iter().find(|(h, d)| d.path(h) == text).map(|(h, _)| h.clone()).unwrap_or_else(|| text.to_string()))
+    if let Some((h, _)) = b.documents.iter().find(|(h, d)| d.path(h) == text) {
+        return Ok(h.clone());
+    }
+    // The start of a hash, as a document's file name shows its first eight.
+    if text.len() >= 8 && text.len() < 64 {
+        match b.documents.keys().filter(|h| h.starts_with(text)).collect::<Vec<_>>()[..] {
+            [h] => return Ok(h.clone()),
+            [] => {}
+            _ => return Err(unreadable(format!("{text} is the start of more than one document's hash; give more of it, or the path"))),
+        }
+    }
+    Ok(text.to_string())
 }
 
 /// `ENTRY.N`: posting N of entry ENTRY, from 0, as `abo reconcile` gives it.

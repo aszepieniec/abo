@@ -122,7 +122,7 @@ fn new_company() {
             ("sales_rate", "150"),
         ],
     );
-    assert_eq!(status, 200);
+    assert_eq!(status, 422);
     for says in [
         "has no letters or digits",
         "check digits do not match",
@@ -193,7 +193,7 @@ fn new_company() {
     // The same name again is refused, under the name.
     let again: Vec<_> = good.iter().map(|&(k, v)| if k == "token" { (k, "again") } else { (k, v) }).collect();
     let (status, _, page) = http(&s, "POST", "/new", &again);
-    assert_eq!(status, 200);
+    assert_eq!(status, 422);
     assert!(page.contains("test-sons-ltd already exists here"), "{page}");
 
     drop(s);
@@ -322,7 +322,7 @@ fn company_page() {
 
     // Refused answers say why under their fields, and nothing is added.
     let (status, _, page) = http(&s, "POST", "/company/payment", &[("token", "p0"), ("was", ""), ("kind", "crypto"), ("account", "Assets:Nope")]);
-    assert_eq!(status, 200);
+    assert_eq!(status, 422);
     assert!(page.contains("A network is needed") && page.contains("Assets:Nope is not declared"), "{page}");
 
     let add = [("token", "p1"), ("was", ""), ("kind", "cash"), ("details", "At our office")];

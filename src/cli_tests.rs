@@ -151,8 +151,22 @@ fn command(op: &Op, m: &Books, src: &Path) -> (Vec<String>, Option<Op>) {
             let model_op = (!slug.is_empty()).then(|| Op::File { sha256: store::sha256(&bytes), date: *date, name: slug, ext: ext.clone(), bill: *bill });
             (crate::command::argv(op, m, Some(&path.display().to_string())), model_op)
         }
+        // Added through its questions: what is blank is what they offer.
+        Op::OptionAdd { id, option } => (crate::command::argv(op, m, None), Some(Op::OptionAdd { id: id.clone(), option: offered(m, option.clone()) })),
         _ => (crate::command::argv(op, m, None), Some(op.clone())),
     }
+}
+
+/// An option as its questions make it: a blank label is the kind's own,
+/// and a bank's blank holder the company.
+pub(crate) fn offered(m: &Books, mut o: model::PayOption) -> model::PayOption {
+    if o.label.trim().is_empty() {
+        o.label = model::PayOption { kind: o.kind, network: o.network.clone(), ..Default::default() }.printed().label;
+    }
+    if o.kind == model::PayKind::Bank && o.holder.trim().is_empty() {
+        o.holder = m.config.company.name.clone();
+    }
+    o
 }
 
 pub(crate) fn head(dir: &Path) -> String {
@@ -226,7 +240,10 @@ fn the_cli_is_the_model(#[strategy(vec(any::<Step>(), 1..30))] plan: Vec<Step>) 
             (false, Some(Err(v))) => {
                 let theirs: BTreeSet<String> = o.json.as_ref().unwrap()["rules"].as_array().into_iter().flatten().filter_map(|r| r.as_str().map(String::from)).collect();
                 let ours: BTreeSet<String> = v.iter().map(|v| v.code.to_string()).collect();
-                prop_assert_eq!(theirs, ours, "{:?}: {}", argv, o.stderr);
+                // An option's questions may refuse an answer before the model
+                // is asked, in their own words: the model refuses it too.
+                let asked = matches!(op, Op::OptionAdd { .. }) && theirs.is_empty();
+                prop_assert!(asked || theirs == ours, "{:?}: rules {:?} where the model {:?}: {}", argv, theirs, ours, o.stderr);
                 prop_assert_eq!((head(&books), store::text_files(&books).unwrap()), before, "{:?} was refused and changed something", argv);
             }
             (false, None) => prop_assert_eq!((head(&books), store::text_files(&books).unwrap()), before),
@@ -344,6 +361,10 @@ fn what_abo_shows_is_the_models(#[strategy(vec(any::<Step>(), 1..20))] plan: Vec
             let open: Decimal = row["open"]["quantity"].as_str().unwrap().parse().unwrap();
             prop_assert_eq!(open, m.open(id, &standing), "invoice {} in {}", id, content.commodity);
         }
+    }
+    // A plan may take the bank out once nothing names it.
+    if !m.accounts.contains(mt::BANK) {
+        return Ok(());
     }
     let r = abo(&books, today, &args(&["reconcile", "--account", mt::BANK, "--commodity", "EUR"])).json.unwrap();
     let cleared: BTreeSet<model::PostingRef> = m.statements.iter().filter(|(k, _)| k.0 == mt::BANK && k.1 == "EUR" && k.2 <= today).flat_map(|(_, s)| s.clears.iter().copied()).collect();
@@ -511,12 +532,13 @@ enum OptionStep {
 fn payment_options_follow_add_edit_remove(#[strategy(vec(any::<OptionStep>(), 1..8))] steps: Vec<OptionStep>) {
     let (_parent, books) = opened();
     for step in &steps {
-        let before = store::Store::open(&books).unwrap().books.config.payment;
+        let m = store::Store::open(&books).unwrap().books;
+        let before = m.config.payment.clone();
         let (a, expected): (Vec<String>, Option<std::collections::BTreeMap<String, model::PayOption>>) = match step {
             OptionStep::Add(id, iban) => {
                 let mut e = before.clone();
-                // No label: invoices print the kind's.
-                let o = model::PayOption { kind: model::PayKind::Bank, label: String::new(), holder: String::new(), iban: iban.clone(), bic: String::new(), network: String::new(), address: String::new(), bank: String::new(), details: String::new(), account: "Assets:Bank".into() };
+                // The label and holder its questions offer.
+                let o = offered(&m, model::PayOption { iban: iban.clone(), ..model::PayOption::new(model::PayKind::Bank) });
                 let fresh = !e.contains_key(id);
                 e.insert(id.clone(), o);
                 (args(&["payment-options", "add", id, "--iban", iban]), fresh.then_some(e))
@@ -646,7 +668,8 @@ fn pay_takes_what_is_open_from_money(#[strategy(plan())] plan: Vec<Step>, debt: 
     if o.ok {
         prop_assert_eq!(n.open(d, &n.standing()), Decimal::ZERO);
         let Some(model::Kind::Payment { postings, .. }) = n.entries.last().map(|e| &e.kind) else { panic!("no payment") };
-        prop_assert!(postings.iter().any(|p| p.account == mt::BANK));
+        // From where a payment comes unless said, as the model says.
+        prop_assert!(postings.iter().any(|p| p.account == m.paid_from()));
     } else {
         prop_assert_eq!(n, m);
     }
@@ -658,6 +681,10 @@ fn pay_takes_what_is_open_from_money(#[strategy(plan())] plan: Vec<Step>, debt: 
 fn record_all_clears_everything(#[strategy(plan())] plan: Vec<Step>) {
     let (_parent, books, today) = after(&plan);
     let m = store::Store::open(&books).unwrap().books;
+    // A plan may take the bank out once nothing names it: no statement then.
+    if !m.accounts.contains(mt::BANK) {
+        return Ok(());
+    }
     let r = abo(&books, today, &args(&["reconcile", "--account", mt::BANK, "--commodity", "EUR"])).json.unwrap();
     let cleared: Decimal = r["cleared"]["quantity"].as_str().unwrap().parse().unwrap();
     let rest: Decimal = r["outstanding"].as_array().unwrap().iter().map(|i| i["amount"]["quantity"].as_str().unwrap().parse::<Decimal>().unwrap()).sum();
@@ -707,6 +734,15 @@ fn refusals_in_words_name_their_rules(#[strategy(plan())] plan: Vec<Step>, next:
     let o = Command::new(exe()).args(&argv).current_dir(&books).env("ABO_TODAY", today.to_string()).output().unwrap();
     prop_assert!(!o.status.success());
     let words = String::from_utf8_lossy(&o.stderr);
+    // An option's questions may refuse first, in their own words: those
+    // are said once each, as sentences.
+    if matches!(op, Op::OptionAdd { .. }) && !v.iter().any(|v| words.contains(&format!("{}: ", v.code))) {
+        let lines: Vec<&str> = words.lines().filter(|l| !l.trim().is_empty()).collect();
+        let unique: BTreeSet<&str> = lines.iter().copied().collect();
+        prop_assert_eq!(unique.len(), lines.len(), "{:?} says a problem twice: {}", argv, words);
+        prop_assert!(!words.contains(".."), "{:?}: {}", argv, words);
+        return Ok(());
+    }
     for code in v.iter().map(|v| v.code) {
         prop_assert!(words.contains(&format!("{code}: ")), "{:?}: {} is not said in {}", argv, code, words);
     }

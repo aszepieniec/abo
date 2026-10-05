@@ -14,7 +14,7 @@ pub fn currency(s: &str) -> Result<String, String> {
         return Err("A currency is needed, such as USD.".into());
     }
     if s.len() < 3 || !s.chars().all(|c| c.is_ascii_alphabetic()) {
-        return Err(format!("{s:?} is not a currency code: three letters or more, such as USD."));
+        return Err(format!("{} is not a currency code: three letters or more, such as USD.", plain(s)));
     }
     Ok(s.to_ascii_uppercase())
 }
@@ -24,7 +24,7 @@ pub fn one_of(s: &str, options: &[&'static str], what: &str) -> Result<&'static 
     let s = s.to_ascii_lowercase();
     match options.iter().filter(|m| !s.is_empty() && m.starts_with(&s)).collect::<Vec<_>>()[..] {
         [m] => Ok(m),
-        _ => Err(format!("{s:?} is not {what}: {}.", options.join(", "))),
+        _ => Err(format!("{} is not {what}: {}.", plain(&s), options.join(", "))),
     }
 }
 
@@ -87,7 +87,7 @@ pub fn option_id(s: &str) -> Result<String, String> {
     let ok = s.starts_with(|c: char| c.is_ascii_alphanumeric())
         && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
     if !ok {
-        return Err(format!("{s:?} is not an id: lower-case letters, digits and dashes, such as postfinance."));
+        return Err(format!("{} is not an id: lower-case letters, digits and dashes, such as postfinance.", plain(s)));
     }
     Ok(s.to_string())
 }
@@ -99,11 +99,11 @@ pub fn account(s: &str) -> Result<String, String> {
     if s.is_empty() || s.contains(';') || s.contains("  ") || s.chars().any(char::is_control)
         || s.split(':').any(|part| part.trim().is_empty() || part.trim() != part)
     {
-        return Err(format!("{s:?} is not an account name, such as Assets:Bank:PostFinance."));
+        return Err(format!("{} is not an account name, such as Assets:Bank:PostFinance.", plain(s)));
     }
     // As the books take it (I-A0): the class as written, not in another case.
     if !super::CLASSES.contains(&s.split(':').next().unwrap_or_default()) {
-        return Err(format!("{s:?} does not begin with its class: one of {}.", super::CLASSES.join(", ")));
+        return Err(format!("{} does not begin with its class: one of {}.", plain(s), super::CLASSES.join(", ")));
     }
     Ok(s.to_string())
 }
@@ -112,11 +112,17 @@ pub fn account(s: &str) -> Result<String, String> {
 /// is allowed.
 pub fn percent(s: &str) -> Result<Decimal, String> {
     let r = Decimal::from_str(s.strip_suffix('%').unwrap_or(s).trim())
-        .map_err(|_| format!("{s:?} is not a number, such as 21 or 5.5."))?;
+        .map_err(|_| format!("{} is not a number, such as 21 or 5.5.", plain(s)))?;
     if r < Decimal::ZERO || r > Decimal::ONE_HUNDRED {
         return Err(format!("{s} is not a percentage from 0 up to 100."));
     }
     Ok(r)
+}
+
+/// What was typed as an answer says it: a hidden character as `?`, so the
+/// words around it are not turned or hidden.
+pub fn plain(s: &str) -> String {
+    s.chars().map(|c| if hidden(c) { '?' } else { c }).collect()
 }
 
 /// A character no text abo keeps may hold: a control character, or one

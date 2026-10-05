@@ -129,7 +129,9 @@ method is; then the questions for the kind chosen, each answer starting on the
 line as most would give it (the company as holder, "Bank transfer" as the
 name, the kind as the id). `... add <id> --kind ... --iban ... --bic ...
 --bank ... --network ... --address ... --detail ... --label ... --account ...`
-takes the parts as given. `... edit <id>` asks again, each answer on the line
+answers the same questions from its flags: what is not given is what they
+offer, as a blank answer is (the company as holder, "Bank transfer" as the
+name), a flag of another kind is refused, and every problem is said at once. `... edit <id>` asks again, each answer on the line
 as it stands, or changes just the parts given as flags (and `--id`); another
 kind drops the old kind's fields. `... remove <id>` removes one. Wherever an
 id is asked for, its start will do when it names one option. A taken id, a

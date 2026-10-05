@@ -326,6 +326,23 @@ fn keys(root: &toml::Value, path: &[&str]) -> Option<Vec<(&'static str, Holds, b
     })
 }
 
+/// Whether `key` names a key abo.toml may hold, set or not, by its schema
+/// and the configuration `c`: `vat.rate` under a flat rate, any id under
+/// `payment`.
+pub fn key_known(c: &Config, key: &str) -> bool {
+    let Ok(root) = toml::Value::try_from(c) else { return false };
+    let mut path: Vec<&str> = vec![];
+    for part in key.split('.') {
+        match keys(&root, &path) {
+            None => {}
+            Some(known) if known.iter().any(|(n, ..)| *n == part) => {}
+            Some(_) => return false,
+        }
+        path.push(part);
+    }
+    !key.is_empty()
+}
+
 /// What is wrong with abo.toml as `root` holds it, said of `key`, set to
 /// `value` or unset: the first key it does not know, a key it needs and
 /// lacks, or a value not of its key's kind.
