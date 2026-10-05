@@ -151,8 +151,6 @@ fn command(op: &Op, m: &Books, src: &Path) -> (Vec<String>, Option<Op>) {
             let model_op = (!slug.is_empty()).then(|| Op::File { sha256: store::sha256(&bytes), date: *date, name: slug, ext: ext.clone(), bill: *bill });
             (crate::command::argv(op, m, Some(&path.display().to_string())), model_op)
         }
-        // No command sets the whole configuration as it is; the plans draw none.
-        Op::Configure(_) => unreachable!("the plans draw no Configure"),
         _ => (crate::command::argv(op, m, None), Some(op.clone())),
     }
 }
@@ -492,18 +490,11 @@ fn company_changes_only_what_it_is_told(flags: CompanyFlags) {
         prop_assert_eq!(was, now);
         return Ok(());
     }
-    let mut c = was.clone();
-    c.name = flags.name.clone().unwrap_or(c.name);
-    if !flags.address.is_empty() {
-        c.address = flags.address.join("\n").trim_matches('\n').to_string();
-    }
-    c.country = flags.country.clone().unwrap_or(c.country);
-    c.tax_id = flags.tax_id.clone().unwrap_or(c.tax_id);
-    let mut expected = m.clone();
-    expected.config.company = c;
-    let taken = model::check(&expected).is_empty();
-    prop_assert_eq!(o.ok, taken, "{:?}: {}", a, o.stderr);
-    prop_assert_eq!(now, if taken { &expected.config.company } else { was });
+    // What the model makes of what was told: the CLI is to do just that.
+    let address = (!flags.address.is_empty()).then(|| flags.address.join("\n"));
+    let expected = model::apply(&m, &Op::Company { name: flags.name.clone(), address, country: flags.country.clone(), tax_id: flags.tax_id.clone() }, start());
+    prop_assert_eq!(o.ok, expected.is_ok(), "{:?}: {}", a, o.stderr);
+    prop_assert_eq!(now, expected.as_ref().map_or(was, |e| &e.config.company));
 }
 
 #[derive(Arbitrary, Debug, Clone)]
@@ -853,7 +844,9 @@ fn amounts_in_json_are_quantity_and_commodity(#[strategy(plan())] plan: Vec<Step
                 // In what shows money, a bare number is a quantity, its
                 // commodity beside it; a posting's `ref`, ENTRY.N, looks like one.
                 let money = ["invoices", "price", "pl", "bs", "vat", "reconcile"].contains(&a[0].as_str());
-                prop_assert!(!money || s.parse::<Decimal>().is_err() || ["ref", "quantity"].contains(&key.as_str()), "{:?}: {} holds {:?}, a number with no commodity", a, key, s);
+                // Names are text, whatever they say: a company called 6.
+                let text = ["ref", "quantity", "company", "customer", "description", "label", "title"];
+                prop_assert!(!money || s.parse::<Decimal>().is_err() || text.contains(&key.as_str()), "{:?}: {} holds {:?}, a number with no commodity", a, key, s);
             }
         }
     }

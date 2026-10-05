@@ -10,6 +10,7 @@
 //! Not yet what the commands use: that is the next step.
 #![allow(dead_code, unused_imports)]
 
+pub mod answer;
 mod check;
 mod explain;
 mod ops;
@@ -17,6 +18,7 @@ mod text;
 #[cfg(test)]
 pub(crate) mod tests;
 
+pub use answer::hidden;
 pub use check::{check, option_problem, Subject, Violation};
 pub use explain::{explain, name};
 pub use ops::{apply, shape, InvoiceMore, Op, Shape};
@@ -282,7 +284,112 @@ pub struct VatBox {
     pub invert: bool,
 }
 
+/// What an edit gives an option: each field given, or not.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OptionChange {
+    pub kind: Option<PayKind>,
+    pub label: Option<String>,
+    pub holder: Option<String>,
+    pub iban: Option<String>,
+    pub bic: Option<String>,
+    pub bank: Option<String>,
+    pub network: Option<String>,
+    pub address: Option<String>,
+    pub details: Option<String>,
+    pub account: Option<String>,
+}
+
+impl OptionChange {
+    /// Every field of `o`: the change that makes an option it.
+    pub fn all(o: &PayOption) -> OptionChange {
+        let s = |v: &String| Some(v.clone());
+        OptionChange {
+            kind: Some(o.kind),
+            label: s(&o.label),
+            holder: s(&o.holder),
+            iban: s(&o.iban),
+            bic: s(&o.bic),
+            bank: s(&o.bank),
+            network: s(&o.network),
+            address: s(&o.address),
+            details: s(&o.details),
+            account: s(&o.account),
+        }
+    }
+}
+
+impl PayKind {
+    /// Where money paid this way arrives, unless said.
+    pub fn account(self) -> &'static str {
+        match self {
+            PayKind::Bank => "Assets:Bank",
+            PayKind::Cash => "Assets:Cash",
+            PayKind::Crypto => "Assets:Crypto",
+        }
+    }
+}
+
 impl PayOption {
+    /// An option of `kind`, its money arriving where that kind's does.
+    pub fn new(kind: PayKind) -> PayOption {
+        PayOption { kind, account: kind.account().into(), ..Default::default() }
+    }
+
+    /// `self` with what `c` gives put over it. Another kind starts with
+    /// only what every kind has: name, further lines, account; a name or an
+    /// account that was the old kind's default becomes the new one's.
+    pub fn changed(self, c: OptionChange) -> PayOption {
+        let mut o = match c.kind {
+            Some(kind) if kind != self.kind => PayOption {
+                kind,
+                label: if self.label == (PayOption { kind: self.kind, network: self.network.clone(), ..Default::default() }).printed().label { String::new() } else { self.label },
+                details: self.details,
+                account: if self.account == self.kind.account() { kind.account().to_string() } else { self.account },
+                ..Default::default()
+            },
+            _ => self,
+        };
+        let given = [
+            (c.label, &mut o.label),
+            (c.holder, &mut o.holder),
+            (c.iban, &mut o.iban),
+            (c.bic, &mut o.bic),
+            (c.bank, &mut o.bank),
+            (c.network, &mut o.network),
+            (c.address, &mut o.address),
+            (c.details, &mut o.details),
+            (c.account, &mut o.account),
+        ];
+        for (v, field) in given {
+            if let Some(v) = v {
+                *field = v;
+            }
+        }
+        o
+    }
+
+    /// As abo.toml keeps it: trimmed, an IBAN in groups of four, a BIC in
+    /// capitals, lines without blank ones; what is not an IBAN or a BIC is
+    /// left for I-C2 to refuse.
+    pub fn canonical(self) -> PayOption {
+        let one = |s: &str| s.trim().to_string();
+        let lines = |s: &str| s.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
+        let iban = if self.iban.trim().is_empty() { String::new() } else { answer::iban(&self.iban).unwrap_or_else(|_| one(&self.iban)) };
+        let bic = if self.bic.trim().is_empty() { String::new() } else { answer::bic(&self.bic).unwrap_or_else(|_| one(&self.bic)) };
+        PayOption {
+            kind: self.kind,
+            label: one(&self.label),
+            holder: one(&self.holder),
+            iban,
+            bic,
+            network: one(&self.network),
+            address: one(&self.address),
+            bank: lines(&self.bank),
+            details: lines(&self.details),
+            account: one(&self.account),
+        }
+    }
+
     /// What an invoice prints of it: its label, the kind's when it has none,
     /// and a line each for what it says.
     pub fn printed(&self) -> PayOut {
@@ -537,6 +644,16 @@ impl Books {
             Kind::Bill(_) => Some("Income"),
             _ => None,
         }
+    }
+
+    /// What a payment of debt `d` takes unless said: what is open, to its
+    /// commodity's places.
+    pub fn to_pay(&self, d: EntryId) -> Decimal {
+        let mut open = self.open(d, &self.standing());
+        if let Some(debt) = self.debt(d) {
+            open.rescale(self.places(&debt.owed.commodity));
+        }
+        open
     }
 
     /// Where a payment comes from unless said: the first payment option's

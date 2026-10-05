@@ -3,7 +3,7 @@
 //! the log, whoever made the change: a terminal or a form. One function each,
 //! so that what is logged and what is done cannot say different things.
 
-use crate::model::{self, Books, Config, Op, PayOption};
+use crate::model::{self, Books, Op, OptionChange};
 
 /// `abo <argv>` that makes `op` on `m`, every part written out, so that it
 /// makes the same change on any later day. `file` is where a document came
@@ -75,7 +75,28 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
         Op::Unrecord { account, commodity } => a = vec![s("unrecord"), flag("account", account), flag("commodity", commodity)],
         Op::ConfigSet { key, value } => a = vec![s("config"), s("set"), s("--"), key.clone(), value.clone()],
         Op::ConfigUnset { key } => a = vec![s("config"), s("unset"), s("--"), key.clone()],
-        Op::Configure(c) => a = configure(&m.config, c),
+        Op::Company { name, address, country, tax_id } => {
+            a = vec![s("company")];
+            a.extend(name.iter().map(|v| flag("name", v)));
+            // A line of the address each; given empty, cleared.
+            if let Some(ad) = address {
+                a.extend(ad.lines().map(|l| flag("address", &l)));
+                if ad.is_empty() {
+                    a.push(s("--address="));
+                }
+            }
+            a.extend(country.iter().map(|v| flag("country", v)));
+            a.extend(tax_id.iter().map(|v| flag("tax-id", v)));
+        }
+        Op::OptionAdd { id, option } => a = option_flags(&["payment-options", "add", id], &OptionChange::all(option), false),
+        Op::OptionEdit { id, new_id, change } => {
+            let mut words = vec!["payment-options", "edit", id.as_str()];
+            // Given nothing, its id: an edit without flags asks its questions.
+            let rename = new_id.as_ref().map(|n| format!("--id={n}")).or_else(|| (*change == OptionChange::default()).then(|| format!("--id={id}")));
+            words.extend(rename.as_deref());
+            a = option_flags(&words, change, true);
+        }
+        Op::OptionRemove { id } => a = vec![s("payment-options"), s("remove"), id.clone()],
         Op::AccountAdd(x) => a = vec![s("account"), s("add"), s("--"), x.clone()],
         Op::AccountRemove(x) => a = vec![s("account"), s("remove"), s("--"), x.clone()],
         Op::CommodityAdd(c, p) => a = vec![s("commodity"), s("add"), s("--"), c.clone(), p.to_string()],
@@ -106,11 +127,10 @@ pub fn subject(op: &Op, m: &Books, n: &Books) -> String {
         Op::Unrecord { account, .. } => format!("Take out the latest statement of {account}"),
         Op::ConfigSet { key, .. } => format!("Set {key}"),
         Op::ConfigUnset { key } => format!("Unset {key}"),
-        Op::Configure(c) => match (configure(&m.config, c).as_slice(), &m.config) {
-            ([company, ..], _) if company == "company" => "Change the company's details".into(),
-            ([_, verb, id, ..], _) => format!("{} the payment option {id}", match verb.as_str() { "add" => "Add", "remove" => "Remove", _ => "Change" }),
-            _ => "Change the configuration".into(),
-        },
+        Op::Company { .. } => "Change the company's details".into(),
+        Op::OptionAdd { id, .. } => format!("Add the payment option {id}"),
+        Op::OptionEdit { id, .. } => format!("Change the payment option {id}"),
+        Op::OptionRemove { id } => format!("Remove the payment option {id}"),
         Op::AccountAdd(x) | Op::CommodityAdd(x, _) => format!("Declare {x}"),
         Op::AccountRemove(x) | Op::CommodityRemove(x) => format!("Take out {x}"),
         Op::PriceAdd { of, date, .. } => format!("Add the price of {of} on {date}"),
@@ -141,54 +161,98 @@ fn posting(p: &model::Posting) -> String {
     s
 }
 
-/// The configuration `was` made `now`, as the command that makes it: the
-/// company's details, or one payment option added, changed or removed, as
-/// `abo company` and `abo payment-options` make them, the only commands
-/// that set the configuration whole.
-fn configure(was: &Config, now: &Config) -> Vec<String> {
-    let s = |x: &str| x.to_string();
-    if was.company != now.company {
-        let c = &now.company;
-        // Every detail, a line of the address each, an empty one cleared.
-        let mut a = vec![s("company"), format!("--name={}", c.name)];
-        a.extend(c.address.lines().map(|l| format!("--address={l}")));
-        if c.address.is_empty() {
-            a.push(s("--address="));
-        }
-        a.extend([format!("--country={}", c.country), format!("--tax-id={}", c.tax_id)]);
-        return a;
-    }
-    let gone: Vec<&String> = was.payment.keys().filter(|k| !now.payment.contains_key(*k)).collect();
-    let new: Vec<&String> = now.payment.keys().filter(|k| !was.payment.contains_key(*k)).collect();
-    let changed: Vec<&String> = now.payment.iter().filter(|(k, o)| was.payment.get(*k).is_some_and(|w| w != *o)).map(|(k, _)| k).collect();
-    match (gone.as_slice(), new.as_slice(), changed.as_slice()) {
-        ([], [id], []) => option(&["payment-options", "add", id], &now.payment[*id], false),
-        ([id], [], []) => vec![s("payment-options"), s("remove"), (*id).clone()],
-        ([was], [id], []) => option(&["payment-options", "edit", was, &format!("--id={id}")], &now.payment[*id], true),
-        ([], [], [id]) => option(&["payment-options", "edit", id], &now.payment[*id], true),
-        // ponytail: no command makes more than one change to the options at
-        // once; were one to, its log line would name the first.
-        _ => vec![s("payment-options")],
-    }
-}
-
-/// The command that makes an option `o`: every field, or, `all`, the empty
-/// ones too, as an edit clears them.
-fn option(words: &[&str], o: &PayOption, all: bool) -> Vec<String> {
-    let kind = serde_json::to_value(o.kind).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
-    let mut flags = vec![("kind", kind), ("label", o.label.clone()), ("holder", o.holder.clone()), ("iban", o.iban.clone()), ("bic", o.bic.clone())];
+/// The flags of what `c` gives an option: each field given, a line of
+/// the bank's or of the details each; `all`, those given empty too, as an
+/// edit clears them.
+fn option_flags(words: &[&str], c: &OptionChange, all: bool) -> Vec<String> {
+    let kind = c.kind.and_then(|k| serde_json::to_value(k).ok()).and_then(|v| v.as_str().map(String::from));
+    let mut flags: Vec<(&str, String)> = vec![];
+    let one = [("kind", &kind), ("label", &c.label), ("holder", &c.holder), ("iban", &c.iban), ("bic", &c.bic), ("network", &c.network), ("address", &c.address), ("account", &c.account)];
+    flags.extend(one.into_iter().filter_map(|(k, v)| v.clone().map(|v| (k, v))));
     // Repeatable: a line each, and given empty, none.
-    flags.extend(o.bank.lines().map(|l| ("bank", l.to_string())));
-    if o.bank.is_empty() {
-        flags.push(("bank", String::new()));
+    for (k, v) in [("bank", &c.bank), ("detail", &c.details)] {
+        if let Some(v) = v {
+            flags.extend(v.lines().map(|l| (k, l.to_string())));
+            if v.is_empty() {
+                flags.push((k, String::new()));
+            }
+        }
     }
-    flags.extend([("network", o.network.clone()), ("address", o.address.clone())]);
-    flags.extend(o.details.lines().map(|l| ("detail", l.to_string())));
-    if o.details.is_empty() {
-        flags.push(("detail", String::new()));
-    }
-    flags.push(("account", o.account.clone()));
     let mut a: Vec<String> = words.iter().map(|w| w.to_string()).collect();
     a.extend(flags.into_iter().filter(|(_, v)| all || !v.is_empty()).map(|(k, v)| format!("--{k}={v}")));
     a
+}
+
+/// The `abo init` that opens books `b` without asking anything.
+pub fn init(b: &crate::questions::NewBooks) -> Vec<String> {
+    let c = &b.config.company;
+    let mut a = vec!["init".to_string(), c.name.clone()];
+    let mut flag = |f: &str, v: &str| flag(&mut a, f, v);
+    for line in c.address.lines() {
+        flag("--address", line);
+    }
+    for (f, v) in [("--country", &c.country), ("--tax-id", &c.tax_id)] {
+        if !v.is_empty() {
+            flag(f, v);
+        }
+    }
+    flag("--currency", &c.currency);
+    match &b.config.vat {
+        model::Vat::None => flag("--vat", "none"),
+        model::Vat::Flat { rate, account } => {
+            flag("--vat", "flat");
+            flag("--flat-rate", &rate.to_string());
+            flag("--flat-account", account);
+        }
+        model::Vat::Effective { input, output } => {
+            flag("--vat", "effective");
+            flag("--vat-input", input);
+            flag("--vat-output", output);
+        }
+    }
+    if !matches!(b.config.vat, model::Vat::None) {
+        flag("--sales-rate", &b.config.invoice.vat_rate.to_string());
+    }
+    if let Some((name, email)) = &b.author {
+        flag("--git-name", name);
+        flag("--git-email", email);
+    }
+    for (id, o) in &b.config.payment {
+        let mut t = toml::Value::try_from(o).unwrap_or(toml::Value::Table(Default::default()));
+        if let Some(t) = t.as_table_mut() {
+            t.retain(|_, v| v.as_str() != Some(""));
+            t.insert("id".into(), toml::Value::from(id.as_str()));
+        }
+        flag("--payment", &t.to_string());
+    }
+    a
+}
+
+/// Push `--name value`, or `--name=value` when the value starts with a dash
+/// and would otherwise read as a flag.
+fn flag(argv: &mut Vec<String>, name: &str, value: &str) {
+    if value.starts_with('-') {
+        argv.push(format!("{name}={value}"));
+    } else {
+        argv.push(name.to_string());
+        argv.push(value.to_string());
+    }
+}
+
+/// `abo` and `words` as a shell takes them back: a word with anything but
+/// letters, digits and `-_.,:/=@%+` in it single-quoted.
+pub fn shell(words: &[&str]) -> String {
+    let quote = |w: &&str| {
+        if !w.is_empty() && w.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.,:/=@%+".contains(&b)) {
+            w.to_string()
+        } else {
+            format!("'{}'", w.replace('\'', "'\\''"))
+        }
+    };
+    std::iter::once("abo".to_string()).chain(words.iter().map(quote)).collect::<Vec<_>>().join(" ")
+}
+
+#[test]
+fn a_command_is_shown_as_a_shell_takes_it() {
+    assert_eq!(shell(&["pay", "9", "--cost=11 USD", "--to=a'b", ""]), "abo pay 9 '--cost=11 USD' '--to=a'\\''b' ''");
 }

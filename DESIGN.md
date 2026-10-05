@@ -96,16 +96,23 @@ numbered chart of accounts, `Assets:1020:Bank` also sorts correctly.
 ## 3. Source layout
 
 ```
-src/main.rs       clap dispatch, #[tokio::main]
-src/model/        the books as MODEL.md defines them: state, check, operations, text
+src/main.rs       main: the programs abo runs, logging, then the CLI
+src/cli/          the command line: clap's args, each command run, the terminal's questions
+src/model/        the books as MODEL.md defines them: state, check, operations, text,
+                  what a person may type (answer.rs), refusals said of the operation
 src/store.rs      the books on disk: read through the model, change by an Op, commit, log
 src/command.rs    an Op as the command that makes it, and as its commit's subject
+src/input.rs      what a person types, read: dates, amounts, postings, entries by number
+src/views.rs      what the books show, as data: invoice rows, reconciling, money
 src/questions.rs  init's and a payment option's questions, for the terminal and the form
-src/repo.rs       finding the books, git, checking what a person types
-src/statement.rs  P&L, balance sheet, tax return; typst
+src/repo.rs       finding the books, git, the lock, slugs
+src/statement.rs  P&L, balance sheet, tax return, from hledger
+src/invoice.rs    issuing an invoice or credit note, and its PDF's data
+src/pdf.rs        typst: a template and its data made a PDF
 src/report.rs     hledger passthrough (-O json / -O csv)
-src/invoice.rs    an invoice's PDF, from what the model holds of it
-src/web.rs        axum + maud
+src/demo.rs       the demo's toy books
+src/web/          axum + maud: a module per page's area, the forms, the data
+                  directory, and style.css
 ```
 
 No `lib.rs`/`bin/` split, no workspace, no crate-per-module.
@@ -460,7 +467,7 @@ looking like itself offline and quietly tells someone else when the books are
 opened, and vendoring means carrying and upgrading a framework for a grid and
 some buttons.
 
-Icons are inline SVG, drawn in `web.rs` on a 16-unit grid with one stroke
+Icons are inline SVG, drawn in `web/mod.rs` on a 16-unit grid with one stroke
 weight. That means no icon font, no extra request, no third-party licence to
 track, and they take their colour from the text around them.
 

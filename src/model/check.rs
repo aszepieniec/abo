@@ -2,7 +2,7 @@
 //! its number.
 
 use super::*;
-use crate::repo::{answer, hidden};
+use super::answer::{self, hidden};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Violation {

@@ -579,7 +579,7 @@ fn payment_options() {
                        \x20   PostFinance AG\n    3030 Bern\n";
     assert_eq!(list(), format!("cash (cash): Cash -> Assets:Cash\n    At our office\n{postfinance}"));
     for (args, says) in [
-        (&["add", "cash", "--kind", "cash", "--label", "Cash"][..], "there is a payment option \"cash\" already"),
+        (&["add", "cash", "--kind", "cash", "--label", "Cash"][..], "there is a payment option cash already"),
         (&["add", "Wallet", "--kind", "cash", "--label", "Wallet", "--detail", "x"][..], "I-C2"),
         (&["add", "wallet", "--kind", "crypto", "--network", "Bitcoin", "--address", "bc1q"][..], "I-A1: Assets:Crypto is not declared"),
         (&["add", "wallet", "--kind", "crypto", "--network", "Bitcoin", "--account", "Assets:Bank"][..], "I-C2"),
@@ -587,7 +587,7 @@ fn payment_options() {
         (&["add", "bank2", "--label", "Bank"][..], "I-C2"),
         (&["add", "--label", "No id"][..], "needs an id"),
         (&["edit", "nope", "--label", "X"][..], "no payment option nope"),
-        (&["edit", "cash", "--id", "postfinance"][..], "there is a payment option \"postfinance\" already"),
+        (&["edit", "cash", "--id", "postfinance"][..], "there is a payment option postfinance already"),
         (&["remove", "x"][..], "no payment option x"),
     ] {
         let o = po(args);
@@ -701,7 +701,7 @@ fn company_details() {
     assert_eq!(show(), "Test & Co\n2 Road\n3000 City\n");
     let log = json(&dir, &["log"]);
     // As the change it made, every detail written out.
-    assert_eq!(log.as_array().unwrap().last().unwrap()["argv"], serde_json::json!(["company", "--name=Test & Co", "--address=2 Road", "--address=3000 City", "--country=", "--tax-id="]));
+    assert_eq!(log.as_array().unwrap().last().unwrap()["argv"], serde_json::json!(["company", "--name=Test & Co", "--address=2 Road", "--address=3000 City", "--tax-id="]));
 
     let before = commits(&dir);
     let o = abo(&dir, &["company", "--name", "Test & Co"], "");

@@ -192,6 +192,35 @@ pub(crate) enum Draw {
     Record { clears: u64, #[strategy(proptest::bool::weighted(0.1))] off: bool },
     Unrecord,
     Config(Key),
+    /// The company's details, those given.
+    Company {
+        #[strategy(proptest::option::of(text()))]
+        name: Option<String>,
+        #[strategy(proptest::option::of(prop_oneof![Just("1 Main St\n8000 Zurich".to_string()), Just(String::new()), text()]))]
+        address: Option<String>,
+        #[strategy(proptest::option::of(text()))]
+        country: Option<String>,
+    },
+    /// An option of each kind, well formed or not.
+    OptionAdd {
+        #[strategy(prop_oneof![4 => "[a-z][a-z0-9-]{0,8}", 1 => Just("Bad Id".to_string())])]
+        id: String,
+        #[strategy(0u8..3)]
+        kind: u8,
+        #[strategy(proptest::bool::weighted(0.8))]
+        well_formed: bool,
+    },
+    /// An option changed: renamed, of another kind, or a field given.
+    OptionEdit {
+        which: Index,
+        #[strategy(proptest::option::of("[a-z][a-z0-9-]{0,8}"))]
+        rename: Option<String>,
+        #[strategy(proptest::option::of(0u8..3))]
+        kind: Option<u8>,
+        #[strategy(proptest::option::of(text()))]
+        label: Option<String>,
+    },
+    OptionRemove(Index),
     AccountAdd(
         #[strategy(prop_oneof![Just("Assets:Bank:Sub".to_string()), Just("Foo:Bar".to_string()), "(Assets|Expenses|Income)(:[A-Z][a-z]{1,6}){1,2}", arb::<String>()])]
         String,
@@ -219,6 +248,10 @@ pub(crate) fn plan() -> impl Strategy<Value = Vec<Step>> {
 
 /// The operation a draw is in this state; none for undo. The test's own
 /// arithmetic is checked, so that only the model can panic.
+fn pay_kind(k: u8) -> PayKind {
+    [PayKind::Bank, PayKind::Cash, PayKind::Crypto][k as usize % 3]
+}
+
 pub(crate) fn op(d: &Draw, m: &Books, today: Date) -> Option<Op> {
     let standing = m.standing();
     let ids: Vec<EntryId> = (1..=m.entries.len() + 1).collect();
@@ -297,6 +330,28 @@ pub(crate) fn op(d: &Draw, m: &Books, today: Date) -> Option<Op> {
             Op::Record { account: key.0, commodity: key.1, date: key.2, balance, clears }
         }
         Draw::Unrecord => Op::Unrecord { account: BANK.into(), commodity: "EUR".into() },
+        Draw::Company { name, address, country } => Op::Company { name, address, country, tax_id: None },
+        Draw::OptionAdd { id, kind, well_formed } => {
+            let mut option = PayOption::new(pay_kind(kind));
+            match option.kind {
+                PayKind::Bank => option.iban = if well_formed { "CH93 0076 2011 6238 5295 7" } else { "CH00 1234" }.into(),
+                PayKind::Cash => option.details = if well_formed { "At the till, Mondays" } else { "" }.into(),
+                PayKind::Crypto => {
+                    option.network = "Bitcoin".into();
+                    option.address = if well_formed { "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq" } else { "" }.into();
+                }
+            }
+            Op::OptionAdd { id, option }
+        }
+        Draw::OptionEdit { which, rename, kind, label } => {
+            let ids: Vec<String> = m.config.payment.keys().cloned().collect();
+            let id = pick(&which, &ids).unwrap_or_else(|| "zz-none".into());
+            Op::OptionEdit { id, new_id: rename, change: OptionChange { kind: kind.map(pay_kind), label, ..Default::default() } }
+        }
+        Draw::OptionRemove(which) => {
+            let ids: Vec<String> = m.config.payment.keys().cloned().collect();
+            Op::OptionRemove { id: pick(&which, &ids).unwrap_or_else(|| "zz-none".into()) }
+        }
         Draw::Config(k) => match k {
             Key::ClosedThrough(w) => set("company.closed_through", w.at(today).to_string()),
             Key::VatRate => set("invoice.vat_rate", "7.7".into()),
@@ -557,7 +612,7 @@ fn each_operation_changes_only_its_part(#[strategy(plan())] plan: Vec<Step>) {
             Op::Unfile { .. } => (&["documents"], -grows(m.documents.len(), n.documents.len())),
             Op::Record { .. } => (&["statements"], grows(m.statements.len(), n.statements.len())),
             Op::Unrecord { .. } => (&["statements"], -grows(m.statements.len(), n.statements.len())),
-            Op::ConfigSet { .. } | Op::ConfigUnset { .. } | Op::Configure(_) => (&["config"], 1),
+            Op::ConfigSet { .. } | Op::ConfigUnset { .. } | Op::Company { .. } | Op::OptionAdd { .. } | Op::OptionEdit { .. } | Op::OptionRemove { .. } => (&["config"], 1),
             Op::AccountAdd(_) => (&["accounts"], grows(m.accounts.len(), n.accounts.len())),
             Op::AccountRemove(_) => (&["accounts"], -grows(m.accounts.len(), n.accounts.len())),
             Op::CommodityAdd(..) => (&["commodities"], grows(m.commodities.len(), n.commodities.len())),
@@ -684,7 +739,7 @@ fn given_texts(m: &Books, op: &Op) -> Vec<String> {
         Op::Record { account, commodity, .. } | Op::Unrecord { account, commodity } => v.extend([account.clone(), commodity.clone()]),
         Op::ConfigSet { key, value } => v.extend([key.clone(), value.clone()]),
         Op::ConfigUnset { key } => v.push(key.clone()),
-        Op::Configure(_) | Op::Revert { .. } => {}
+        Op::Company { .. } | Op::OptionAdd { .. } | Op::OptionEdit { .. } | Op::OptionRemove { .. } | Op::Revert { .. } => {}
         Op::AccountAdd(a) | Op::AccountRemove(a) | Op::CommodityAdd(a, _) | Op::CommodityRemove(a) => v.push(a.clone()),
         Op::PriceAdd { of, price, .. } => v.extend([of.clone(), price.commodity.clone()]),
         Op::PriceRemove { of, .. } => v.push(of.clone()),
@@ -1579,6 +1634,8 @@ fn rename_op(op: &Op, f: &dyn Fn(&str) -> String) -> Op {
         Op::Unrecord { account, commodity } => Op::Unrecord { account: f(&account), commodity },
         Op::AccountAdd(a) => Op::AccountAdd(f(&a)),
         Op::AccountRemove(a) => Op::AccountRemove(f(&a)),
+        Op::OptionAdd { id, option } => Op::OptionAdd { id, option: PayOption { account: f(&option.account), ..option } },
+        Op::OptionEdit { id, new_id, change } => Op::OptionEdit { id, new_id, change: OptionChange { account: change.account.as_deref().map(f), ..change } },
         other => other,
     }
 }
@@ -1595,8 +1652,10 @@ fn codes(r: &Outcome) -> Result<(), BTreeSet<&'static str>> {
 fn names_mean_nothing(
     #[strategy(plan())] plan: Vec<Step>,
     // A setting may name accounts in its value: those are left to the
-    // properties of the configuration.
-    #[strategy(any::<Draw>().prop_map(|d| if let Draw::Config(_) = d { Draw::Unrecord } else { d }))] next: Draw,
+    // properties of the configuration. An option of another kind takes that
+    // kind's own account, by its name (WORKFLOWS A4): a name that means
+    // something, by design.
+    #[strategy(any::<Draw>().prop_map(|d| if let Draw::Config(_) | Draw::OptionEdit { kind: Some(_), .. } = d { Draw::Unrecord } else { d }))] next: Draw,
 ) {
     let (m, today) = end(&plan);
     let mut segments: BTreeSet<String> = BTreeSet::new();
@@ -1918,7 +1977,7 @@ fn runs(cs: &BTreeSet<char>) -> String {
 #[test]
 #[ignore]
 fn hledger_reads_these_characters() {
-    let chars: Vec<char> = (' '..=char::MAX).filter(|c| !crate::repo::hidden(*c)).collect();
+    let chars: Vec<char> = (' '..=char::MAX).filter(|c| !super::hidden(*c)).collect();
     let asked: Vec<(char, &'static str, &'static str)> =
         chars.iter().flat_map(|c| PLACES.into_iter().flat_map(move |p| ["DESCRIPTION", "SEGMENT"].map(|f| (*c, p, f)))).collect();
     let mut out = vec![];

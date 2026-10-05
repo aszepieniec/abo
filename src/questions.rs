@@ -9,7 +9,7 @@
 //! and within the n-th payment option `p<n>.iban`.
 
 use crate::model::{self, PayKind, PayOption, Vat};
-use crate::repo::answer;
+use crate::model::answer;
 use anyhow::{bail, Result};
 use rust_decimal::Decimal;
 use std::collections::BTreeMap;
@@ -75,6 +75,8 @@ pub struct Context<'a> {
     pub ids: Vec<String>,
     /// The accounts an option's account must be one of, once there are books.
     pub declared: Option<Vec<String>>,
+    /// The git identity to offer the books' commits: whoever asks finds it.
+    pub identity: (String, String),
 }
 
 /// A question's view of the answers so far: within its payment option first.
@@ -129,7 +131,7 @@ pub trait Source {
 
 impl Check {
     fn run(&self, s: &str, env: &Env) -> Result<String, String> {
-        if s.chars().any(crate::repo::hidden) {
+        if s.chars().any(crate::model::hidden) {
             return Err(format!("{s:?} holds a control character, such as a line break; type it on one line."));
         }
         match self {
@@ -172,7 +174,7 @@ pub fn walk(qs: &[Q], prefix: &str, out: &mut Answers, context: &Context, src: &
             Q::Lines { key, label, hint } => {
                 let k = format!("{prefix}{key}");
                 let v = src.lines(&k, label, hint)?;
-                if v.chars().any(|c| crate::repo::hidden(c) && c != '\n') {
+                if v.chars().any(|c| crate::model::hidden(c) && c != '\n') {
                     bail!("{label}: {v:?} holds a control character");
                 }
                 out.insert(k, v);
@@ -309,14 +311,14 @@ pub static INIT: &[Q] = &[
                 key: "git_name",
                 label: "git user.name",
                 hint: "",
-                offer: Offer::From("your global git user.name", |_| crate::repo::git_global("user.name").unwrap_or_default()),
+                offer: Offer::From("your global git user.name", |env| env.context.identity.0.clone()),
                 check: Check::Free,
             },
             Q::Text {
                 key: "git_email",
                 label: "git user.email",
                 hint: "",
-                offer: Offer::From("your global git user.email", |_| crate::repo::git_global("user.email").unwrap_or_default()),
+                offer: Offer::From("your global git user.email", |env| env.context.identity.1.clone()),
                 check: Check::Free,
             },
         ],
@@ -394,7 +396,7 @@ pub static OPTION: &[Q] = &[
                 key: "account",
                 label: "Account the money arrives in",
                 hint: "",
-                offer: Offer::From("Assets:Bank, Assets:Cash or Assets:Crypto, by kind", |env| kind_account(env.kind()).to_string()),
+                offer: Offer::From("Assets:Bank, Assets:Cash or Assets:Crypto, by kind", |env| env.kind().account().to_string()),
                 check: Check::By(account_check),
             },
         ],
@@ -479,14 +481,6 @@ pub fn kind_name(k: PayKind) -> &'static str {
     }
 }
 
-/// Where money paid this way arrives, unless said otherwise.
-pub fn kind_account(k: PayKind) -> &'static str {
-    match k {
-        PayKind::Bank => "Assets:Bank",
-        PayKind::Cash => "Assets:Cash",
-        PayKind::Crypto => "Assets:Crypto",
-    }
-}
 
 /// An id free to take: the kind's name, numbered if that is taken.
 pub fn free_id(k: PayKind, taken: &[String]) -> String {
@@ -576,68 +570,4 @@ pub fn books(a: &Answers) -> NewBooks {
     }
 }
 
-impl NewBooks {
-    /// The `abo init` that opens these books without asking anything.
-    pub fn argv(&self) -> Vec<String> {
-        let c = &self.config.company;
-        let mut a = vec!["init".to_string(), c.name.clone()];
-        let mut flag = |f: &str, v: &str| crate::repo::flag(&mut a, f, v);
-        for line in c.address.lines() {
-            flag("--address", line);
-        }
-        for (f, v) in [("--country", &c.country), ("--tax-id", &c.tax_id)] {
-            if !v.is_empty() {
-                flag(f, v);
-            }
-        }
-        flag("--currency", &c.currency);
-        match &self.config.vat {
-            Vat::None => flag("--vat", "none"),
-            Vat::Flat { rate, account } => {
-                flag("--vat", "flat");
-                flag("--flat-rate", &rate.to_string());
-                flag("--flat-account", account);
-            }
-            Vat::Effective { input, output } => {
-                flag("--vat", "effective");
-                flag("--vat-input", input);
-                flag("--vat-output", output);
-            }
-        }
-        if !matches!(self.config.vat, Vat::None) {
-            flag("--sales-rate", &self.config.invoice.vat_rate.to_string());
-        }
-        if let Some((name, email)) = &self.author {
-            flag("--git-name", name);
-            flag("--git-email", email);
-        }
-        for (id, o) in &self.config.payment {
-            let mut t = toml::Value::try_from(o).unwrap_or(toml::Value::Table(Default::default()));
-            if let Some(t) = t.as_table_mut() {
-                t.retain(|_, v| v.as_str() != Some(""));
-                t.insert("id".into(), toml::Value::from(id.as_str()));
-            }
-            flag("--payment", &t.to_string());
-        }
-        a
-    }
-}
 
-/// `--payment`'s value, a TOML inline table of a payment option's answers,
-/// such as `{ kind = "bank", iban = "CH93 0076 2011 6238 5295 7" }`, as the
-/// answers under `prefix`. What it leaves out is what the question offers.
-pub fn payment_flag(s: &str, prefix: &str) -> Result<Answers> {
-    use anyhow::Context as _;
-    let t: toml::Table = toml::from_str(&format!("p = {s}")).with_context(|| format!("--payment {s}: not a TOML inline table"))?;
-    let t = t.get("p").and_then(toml::Value::as_table).with_context(|| format!("--payment {s}: not a TOML inline table"))?;
-    let fields = ["kind", "id", "label", "holder", "iban", "bic", "bank", "network", "address", "details", "account"];
-    t.iter()
-        .map(|(k, v)| {
-            if !fields.contains(&k.as_str()) {
-                anyhow::bail!("--payment {s}: {k:?} is not one of {}", fields.join(", "));
-            }
-            let v = v.as_str().with_context(|| format!("--payment {s}: {k} is not a string"))?;
-            Ok((format!("{prefix}{k}"), v.to_string()))
-        })
-        .collect()
-}

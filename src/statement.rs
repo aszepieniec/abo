@@ -4,37 +4,13 @@
 //! because it differs everywhere — see §6.
 
 use crate::store::Store;
+pub use crate::views::Amount;
 use anyhow::{bail, Context as _, Result};
 use rust_decimal::Decimal;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::process::Command;
-
-#[derive(Serialize, serde::Deserialize, Clone)]
-pub struct Amount {
-    /// To the commodity's places.
-    pub quantity: String,
-    pub commodity: String,
-}
-
-impl Amount {
-    pub fn new(b: &crate::model::Books, q: Decimal, commodity: &str) -> Amount {
-        let places = b.places(commodity);
-        let mut v = crate::model::round(if q.is_zero() { Decimal::ZERO } else { q }, places);
-        v.rescale(places);
-        Amount { quantity: v.to_string(), commodity: commodity.into() }
-    }
-
-    /// As a person reads it: `1 760.00 EUR`, thousands apart by `space`, or
-    /// an apostrophe in CHF. How to write it is the reader's to say, so it
-    /// is no part of the data.
-    pub fn text(&self, space: &str) -> String {
-        let q: Decimal = self.quantity.parse().unwrap_or_default();
-        format!("{} {}", crate::model::grouped(q, q.scale(), &self.commodity, space), self.commodity)
-    }
-}
 
 #[derive(Serialize, Clone)]
 pub struct Line {
@@ -321,7 +297,7 @@ fn render(root: &Path, st: &Statement, out: &Path) -> Result<()> {
         std::fs::write(&builtin, TEMPLATE)?;
     }
     let template = if own { TEMPLATE_REL } else { BUILTIN_REL };
-    compile(root, template, TEMPLATE, DATA_REL, &for_typst(st), out).map(|_| ())
+    crate::pdf::compile(root, template, TEMPLATE, DATA_REL, &for_typst(st), out).map(|_| ())
 }
 
 /// What the template reads: the statement, each amount with the text it
@@ -348,74 +324,6 @@ fn for_typst(st: &Statement) -> Value {
 }
 
 const BUILTIN_REL: &str = ".abo/report.typ";
-
-/// Write `data` where the template reads it and compile the template to `out`,
-/// seeding the template into the books first if it is not there yet. Returns
-/// whether it was seeded, for the caller to commit. A failure takes back what
-/// this call created — the seeded template, the folders made for it and for
-/// `out` — so a missing typst leaves the books as they were.
-pub fn compile(
-    root: &Path,
-    template_rel: &str,
-    template_src: &str,
-    data_rel: &str,
-    data: &impl Serialize,
-    out: &std::path::Path,
-) -> Result<bool> {
-    let template = root.join(template_rel);
-    let seeded = !template.exists();
-    let mut made = vec![];
-    let mut dir = |d: &std::path::Path| -> Result<()> {
-        if !d.exists() {
-            std::fs::create_dir_all(d)?;
-            made.push(d.to_path_buf());
-        }
-        Ok(())
-    };
-    dir(template.parent().unwrap())?;
-    if let Some(parent) = out.parent() {
-        dir(parent)?;
-    }
-    let result = (|| {
-        if seeded {
-            std::fs::write(&template, template_src)?;
-        }
-        let json = root.join(data_rel);
-        std::fs::create_dir_all(json.parent().unwrap())?;
-        std::fs::write(&json, serde_json::to_vec_pretty(data)?)?;
-        typst(root, &template, out)
-    })();
-    if result.is_err() {
-        if seeded {
-            let _ = std::fs::remove_file(&template);
-        }
-        for d in made.iter().rev() {
-            let _ = std::fs::remove_dir(d); // only if empty
-        }
-    }
-    result.map(|()| seeded)
-}
-
-/// Compile a template to PDF. The one place abo runs typst.
-pub fn typst(root: &Path, template: &Path, out: &Path) -> Result<()> {
-    let mut typst = Command::new("typst");
-    typst.arg("compile").arg("--root").arg(root);
-    // Dated by the operation's stamp, as its commit is.
-    if let Ok(s) = crate::repo::Stamp::now(root) {
-        typst.arg("--creation-timestamp").arg(s.time.to_string());
-    }
-    let result = typst.arg(template).arg(out).output();
-    let result = match result {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            bail!("typst is not installed; see https://github.com/typst/typst#installation")
-        }
-        other => other.context("running typst")?,
-    };
-    if !result.status.success() {
-        bail!("typst: {}", String::from_utf8_lossy(&result.stderr).trim());
-    }
-    Ok(())
-}
 
 /// An amount as hledger's JSON gives it: a mantissa and its places.
 fn decimal(q: &Value) -> Result<Decimal> {

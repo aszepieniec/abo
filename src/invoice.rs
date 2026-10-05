@@ -2,7 +2,9 @@
 //! with the books' template and typst. The layout lives in the template, not
 //! here: typst lays out, and every figure is formatted here, once.
 
-use crate::model::grouped;
+use crate::model::{self, grouped, Op};
+use crate::store::{sha256, today, Refused, Store};
+use crate::views::{invoices, Amount, Issued};
 use anyhow::{bail, Context as _, Result};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -140,7 +142,7 @@ pub fn pdf_of(root: &Path, m: &crate::model::Books, id: usize) -> Result<(Vec<u8
     };
     let (rel, src, data_rel) = if credit { (CREDIT_TEMPLATE_REL, CREDIT_TEMPLATE, CREDIT_DATA_REL) } else { (TEMPLATE_REL, TEMPLATE, DATA_REL) };
     let out = root.join(".abo/made.pdf");
-    let seeded = crate::statement::compile(root, rel, src, data_rel, &data, &out)?;
+    let seeded = crate::pdf::compile(root, rel, src, data_rel, &data, &out)?;
     let bytes = std::fs::read(&out)?;
     let _ = std::fs::remove_file(&out);
     Ok((bytes, seeded.then_some(rel), unprinted(root, rel, &data)))
@@ -183,3 +185,27 @@ const CREDIT_TEMPLATE_REL: &str = "templates/credit-note.typ";
 const CREDIT_DATA_REL: &str = ".abo/credit-note.json";
 const CREDIT_TEMPLATE: &str = include_str!("credit-note.typ");
 const TEMPLATE: &str = include_str!("invoice.typ");
+
+/// Issue an invoice or a credit note: `op` with its PDF's hash. Tried
+/// first, for its number; its PDF made; then committed with it.
+pub fn issue(s: &mut Store, op: impl Fn(String) -> Op) -> Result<Issued> {
+    s.changeable()?;
+    let trial = model::apply(&s.books, &op("0".repeat(64)), today()?).map_err(Refused)?;
+    let id = trial.entries.len();
+    let number = trial.number_text(id).context("what was issued is not numbered")?;
+    let (bytes, seeded, warnings) = pdf_of(&s.root, &trial, id)?;
+    let pdf = model::invoice_path(&number, "pdf");
+    let mut also = vec![(pdf.clone(), bytes.clone())];
+    if let Some(t) = seeded {
+        also.push((t.to_string(), std::fs::read(s.root.join(t))?));
+    }
+    let r = s.change(&op(sha256(&bytes)), &also);
+    if r.is_err() {
+        if let Some(t) = seeded {
+            let _ = std::fs::remove_file(s.root.join(t));
+        }
+    }
+    let commit = r?.unwrap_or_default();
+    let total = invoices(&s.books, today()?).into_iter().find(|i| i.entry == id).map(|r| r.total).unwrap_or_else(|| Amount::new(&s.books, Decimal::ZERO, &s.books.config.company.currency));
+    Ok(Issued { entry: id, number, pdf, total, commit, warnings })
+}

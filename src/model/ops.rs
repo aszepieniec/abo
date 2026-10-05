@@ -24,9 +24,13 @@ pub enum Op {
     Record { account: Account, commodity: Commodity, date: Date, balance: Decimal, clears: BTreeSet<PostingRef> },
     Unrecord { account: Account, commodity: Commodity },
     ConfigSet { key: String, value: String },
-    /// The whole configuration at once: for what changes more than one key's
-    /// table, such as a company renamed and the options held in its name.
-    Configure(Box<Config>),
+    /// The company's details, those given; an option held in its old name
+    /// is held in its new one.
+    Company { name: Option<String>, address: Option<String>, country: Option<String>, tax_id: Option<String> },
+    OptionAdd { id: String, option: PayOption },
+    /// The option `id`, renamed `new_id` if given, with what `change` gives.
+    OptionEdit { id: String, new_id: Option<String>, change: OptionChange },
+    OptionRemove { id: String },
     ConfigUnset { key: String },
     AccountAdd(Account),
     AccountRemove(Account),
@@ -162,7 +166,37 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
             n.statements.remove(&key);
         }
         Op::ConfigSet { key, value } => n.config = config_edit(&m.config, &key, Some(&value))?,
-        Op::Configure(c) => n.config = *c,
+        Op::Company { name, address, country, tax_id } => {
+            let c = &mut n.config.company;
+            let was = c.name.clone();
+            for (given, field) in [(name, &mut c.name), (country, &mut c.country), (tax_id, &mut c.tax_id)] {
+                if let Some(v) = given {
+                    *field = v.trim().to_string();
+                }
+            }
+            if let Some(a) = address {
+                c.address = a.lines().map(str::trim).collect::<Vec<_>>().join("\n").trim_matches('\n').to_string();
+            }
+            let now = c.name.clone();
+            for o in n.config.payment.values_mut().filter(|o| o.holder == was) {
+                o.holder = now.clone();
+            }
+        }
+        Op::OptionAdd { id, option } => {
+            if n.config.payment.contains_key(&id) {
+                return Err(format!("there is a payment option {} already", shown(&id)));
+            }
+            n.config.payment.insert(id, option.canonical());
+        }
+        Op::OptionEdit { id, new_id, change } => {
+            let now = n.config.payment.remove(&id).ok_or(format!("there is no payment option {}", shown(&id)))?;
+            let new = new_id.unwrap_or(id);
+            if n.config.payment.contains_key(&new) {
+                return Err(format!("there is a payment option {} already", shown(&new)));
+            }
+            n.config.payment.insert(new, now.changed(change).canonical());
+        }
+        Op::OptionRemove { id } => drop(n.config.payment.remove(&id).ok_or(format!("there is no payment option {}", shown(&id)))?),
         Op::ConfigUnset { key } => n.config = config_edit(&m.config, &key, None)?,
         Op::AccountAdd(a) => {
             if !n.accounts.insert(a.clone()) {

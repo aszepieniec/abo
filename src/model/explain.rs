@@ -8,7 +8,7 @@
 use super::check::{commodity_ok, description_ok, hash_ok, lines_ok, option_problem, other_space, slug_ok, text_ok, Subject, Violation, BOUND};
 use super::ops::Op;
 use super::*;
-use crate::repo::{answer, hidden};
+use super::answer::{self, hidden};
 
 /// An entry as a person names it: an invoice or a credit note by its number,
 /// a bill by its id and description, anything else by its id.
