@@ -70,7 +70,7 @@ fn m0() {
     // balanced: commits
     let o = abo(&dir, &["post", "--date", "2026-09-21", "--desc", "Acme Hosting", "Expenses:General=100.00", "Liabilities:Payable=-100.00"], "");
     assert!(o.status.success(), "balanced entry rejected: {}", err(&o));
-    assert!(out(&o).contains("Entry 1: Acme Hosting"), "{}", out(&o));
+    assert!(out(&o).contains("Booked entry 1: Acme Hosting"), "{}", out(&o));
     assert_eq!(commits(&dir), 2);
 
     // the log holds the changes, each as the command that made it: init,
@@ -226,7 +226,7 @@ fn invoices() {
     // 161 - 160 of output tax; 1760 + 11 + 500 - 1760 receivable
     assert!(bal.contains("-1.00") && bal.contains("511.00"), "{bal}");
     // Once only; never a credit note; never a number the books lack.
-    for (n, why) in [("2026-0001", "I-R1"), ("2026-0004", "is not of an invoice"), ("2026-0099", "there is no entry")] {
+    for (n, why) in [("2026-0001", "I-R1"), ("2026-0004", "is not an invoice"), ("2026-0099", "there is no entry")] {
         let o = abo(&dir, &["credit", "--date", "2026-09-23", n], "");
         assert!(!o.status.success() && err(&o).contains(why), "{n}: {}", err(&o));
     }

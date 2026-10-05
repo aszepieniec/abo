@@ -235,7 +235,25 @@ fn a_command_is_shown_as_a_shell_takes_it() {
 /// of anything but letters and digits made one dash. ASCII so that it can be
 /// typed on any keyboard; letters outside it are spelled in it, not dropped.
 pub fn slug(name: &str) -> String {
-    deunicode::deunicode(name).to_ascii_lowercase().split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join("-")
+    let mut slug = String::new();
+    // Whole words up to 60 characters: a file name stays one a system takes.
+    for w in deunicode::deunicode(name).to_ascii_lowercase().split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()) {
+        if !slug.is_empty() && slug.len() + 1 + w.len() > 60 {
+            break;
+        }
+        if !slug.is_empty() {
+            slug.push('-');
+        }
+        slug.push_str(&w[..w.len().min(60)]);
+    }
+    slug
+}
+
+#[test]
+fn a_slug_is_sixty_characters_at_most() {
+    assert_eq!(slug("Smith & Sons, LLC"), "smith-sons-llc");
+    assert!(slug(&"Swisscom Schweiz AG ".repeat(20)).len() <= 60);
+    assert_eq!(slug(&"x".repeat(300)).len(), 60);
 }
 
 /// The books `dir` is in, if any: the nearest of it and its parents that

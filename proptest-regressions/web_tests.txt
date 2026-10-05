@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 75406cfaefda06be7f508a4ae4426de4038a51b8b7f6f641882634d587f6943b # shrinks to input = _EveryPageAnswersArgs { plan: [Step { advance: 0, draw: File { sha256: "0aaa00a000a0a00a0a00aa006a44b846a3823b7e526edff73a7caa4f8d21debc", name: "acme-ag", bill: Some(Index(9943729386522712235)), when: Ago(2) } }] }
+cc 3d2919edf308bc8917ce4761fc5b3998f5ae8bf1b32a73b3d133f20f217cfea1 # shrinks to input = _TheWebIsTheModelArgs { plan: [Step { advance: 0, draw: Pay { debt: Index(388), part: Half, from_receivable: true, when: Ago(0) } }] }

@@ -234,6 +234,8 @@ fn send(s: &Server, method: &str, path: &str, content_type: &str, body: &[u8]) -
     c.write_all(body).unwrap();
     let mut out = String::new();
     c.read_to_string(&mut out).unwrap();
+    // Read as text: the spaces a page keeps from breaking are spaces.
+    let out = out.replace(['\u{a0}', '\u{202f}'], " ");
     let status = out[9..12].parse().unwrap();
     let location = out
         .lines()
@@ -357,7 +359,7 @@ fn a_statement_is_recorded_once() {
     ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
     let record = ["record", "--account", "Assets:Bank", "--date", "2026-03-31", "--balance", "0"];
     ok(&dir, &record);
-    refused(&dir, &record, "there is a statement of that account, commodity and date");
+    refused(&dir, &record, "there is a statement of Assets:Bank in EUR on 2026-03-31 already");
 }
 
 /// A bill's document is filed in a closed period, since filing adds no
@@ -641,7 +643,7 @@ fn a_document_filed_for_a_booking_is_not_booked_again() {
     std::fs::write(&found, b"%PDF-1.4\n% found\n").unwrap();
     let path = filed(&dir, &["file", "--date", "2026-03-01", "--issuer", "Lost", "--for", &lost, &found.to_string_lossy()]);
     assert!(read(&dir, "bills/index").contains(&format!("{path} {lost}")), "{}", read(&dir, "bills/index"));
-    refused(&dir, &["bill", "--desc", "Twice", "--document", &path, "Expenses:General=9.00", "Liabilities:Payable=-9.00"], "names a bill that stands");
+    refused(&dir, &["bill", "--desc", "Twice", "--document", &path, "Expenses:General=9.00", "Liabilities:Payable=-9.00"], "which stands");
     clean(&dir);
 }
 
@@ -723,7 +725,7 @@ fn a_bill_is_booked_once() {
     refused(&dir, &["bill", "--date", "2026-03-02", "--desc", "Again", "--document", &b, "Expenses:General=60.00", "Liabilities:Payable=-60.00"],
             "a bill is dated as its document");
     refused(&dir, &["bill", "--desc", "Again", "--document", &b, "Expenses:General=60.00", "Liabilities:Payable=-60.00"],
-            "names a bill that stands");
+            "which stands");
     clean(&dir);
 }
 
@@ -825,7 +827,7 @@ fn a_credit_note_is_not_paid() {
     let dir = books("pay-credit", &[]);
     invoice(&dir, "2026-0001", "2026-03-01", "110.00");
     ok(&dir, &["credit", "2026-0001", "--date", "2026-03-02"]);
-    refused(&dir, &["pay", "2026-0002", "--date", "2026-03-06"], "is not a debt");
+    refused(&dir, &["pay", "2026-0002", "--date", "2026-03-06"], "is not a bill or an invoice");
 }
 
 #[test]
@@ -970,7 +972,7 @@ fn a_commit_takes_only_what_its_operation_wrote() {
 fn no_text_hides_or_turns_its_letters() {
     let dir = books("bidi", &[]);
     refused(&dir, &["company", "--name", "Acme \u{202E}dtL"], "I-C1");
-    refused(&dir, &["post", "--date", "2026-03-01", "--desc", "Fee\u{200B}s", "Expenses:General=5.00", "Assets:Bank=-5.00"], "\\u{200b}");
+    refused(&dir, &["post", "--date", "2026-03-01", "--desc", "Fee\u{200B}s", "Expenses:General=5.00", "Assets:Bank=-5.00"], "U+200B");
     refused(&dir, &["invoice", "--to", "C", "--item", "1|10|Con\u{202E}sulting", "--date", "2026-03-01"], "I-I1");
     // An issuer is a name in a path, of a-z, 0-9 and '-': what turns letters is left out.
     let scan = dir.parent().unwrap().join("scan.pdf");
@@ -1451,7 +1453,7 @@ fn init_asks_again_for_an_account_of_no_class() {
 #[test]
 fn vat_charged_comes_to_more_than_nought() {
     let dir = books("vat-nought", &[]);
-    refused(&dir, &["invoice", "--to", "R", "--date", "2026-03-01", "--item", "1|10|x", "--vat-rate", "0.0000001"], "VAT of nought");
+    refused(&dir, &["invoice", "--to", "R", "--date", "2026-03-01", "--item", "1|10|x", "--vat-rate", "0.0000001"], "rounds to nought");
 }
 
 #[test]
@@ -1479,7 +1481,7 @@ fn a_bill_of_a_document_not_filed_is_refused() {
 fn a_reverted_bills_document_can_be_taken_out() {
     let dir = books("unfile-reverted", &[]);
     let (id, path) = bill_entry(&dir, "Acme", "2026-03-01", "10.00");
-    refused(&dir, &["unfile", &path], "a standing bill's");
+    refused(&dir, &["unfile", &path], "revert the bill first");
     ok(&dir, &["revert", &id, "--date", "2026-03-02"]);
     ok(&dir, &["unfile", &path]);
     assert!(!dir.join(&path).exists());

@@ -2,7 +2,7 @@
 //! with the books' template and typst. The layout lives in the template, not
 //! here: typst lays out, and every figure is formatted here, once.
 
-use crate::model::round;
+use crate::model::grouped;
 use anyhow::{bail, Context as _, Result};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -88,7 +88,8 @@ pub fn pdf_of(root: &Path, m: &crate::model::Books, id: usize) -> Result<(Vec<u8
     let Kind::Invoice { content: c, .. } = &inv.kind else { bail!("entry {invoice} is not an invoice") };
     let places = m.places(&c.commodity);
     let sign = if credit { -Decimal::ONE } else { Decimal::ONE };
-    let fmt = |d: Decimal| stated(d * sign, places);
+    let cur = c.commodity.as_str();
+    let fmt = |d: Decimal| stated(d * sign, places, cur);
     let (net, vat, total) = m.totals(c);
     let items = c
         .lines
@@ -96,7 +97,7 @@ pub fn pdf_of(root: &Path, m: &crate::model::Books, id: usize) -> Result<(Vec<u8
         .map(|l| ItemOut {
             description: l.description.clone(),
             quantity: (l.quantity * sign).normalize().to_string(),
-            unit: l.unit_price.to_string(),
+            unit: price(l.unit_price, places, cur),
             amount: fmt(l.quantity * l.unit_price),
         })
         .collect();
@@ -133,9 +134,9 @@ pub fn pdf_of(root: &Path, m: &crate::model::Books, id: usize) -> Result<(Vec<u8
         credits_date: if credit { inv.date.to_string() } else { String::new() },
         customer_tax_id: c.customer_tax_id.clone(),
         vat_reason: reason,
-        vat_home: home.map(|h| stated(vat * h.price.quantity * sign, m.places(currency))).unwrap_or_default(),
+        vat_home: home.map(|h| stated(vat * h.price.quantity * sign, m.places(currency), currency)).unwrap_or_default(),
         vat_home_currency: home.map(|_| currency.clone()).unwrap_or_default(),
-        vat_home_price: home.map(|h| format!("1 {} = {} {}, {}", c.commodity, h.price.quantity, h.price.commodity, h.date)).unwrap_or_default(),
+        vat_home_price: home.map(|h| format!("1 {} = {} {}, {}", c.commodity, price(h.price.quantity, m.places(&h.price.commodity), &h.price.commodity), h.price.commodity, h.date)).unwrap_or_default(),
     };
     let (rel, src, data_rel) = if credit { (CREDIT_TEMPLATE_REL, CREDIT_TEMPLATE, CREDIT_DATA_REL) } else { (TEMPLATE_REL, TEMPLATE, DATA_REL) };
     let out = root.join(".abo/made.pdf");
@@ -163,12 +164,17 @@ fn unprinted(root: &Path, template: &str, data: &Data) -> Vec<String> {
     .collect()
 }
 
-/// Rounded commercially, and stated to exactly `places`: 0.0005 BTC is
-/// 0.00050000 on the invoice, and nothing is "EUR 0".
-fn stated(d: Decimal, places: u32) -> String {
-    let mut r = round(d, places);
-    r.rescale(places);
-    r.to_string()
+/// Rounded commercially, stated to exactly `places` and thousands set apart:
+/// 0.0005 BTC is 0.00050000 on the invoice, nothing is "EUR 0", and 52000 CHF
+/// is 52'000.00. The same on an invoice and on the credit note that cancels it.
+fn stated(d: Decimal, places: u32, commodity: &str) -> String {
+    grouped(d, places, commodity, "\u{202F}")
+}
+
+/// A price per unit: to the commodity's places, or to its own where it has
+/// more, so nothing is rounded away (1234.567 stays 1234.567).
+fn price(d: Decimal, places: u32, commodity: &str) -> String {
+    stated(d, places.max(d.normalize().scale()), commodity)
 }
 
 const TEMPLATE_REL: &str = "templates/invoice.typ";

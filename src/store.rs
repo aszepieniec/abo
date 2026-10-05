@@ -22,7 +22,7 @@ pub struct Refused(pub Vec<Violation>);
 
 impl std::fmt::Display for Refused {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "refused:")?;
+        write!(f, "Refused:")?;
         for v in &self.0 {
             write!(f, "\n  {v}")?;
         }
@@ -315,7 +315,9 @@ pub fn init(dir: &Path, config: model::Config, author: Option<(String, String)>,
 /// A date as written, or today.
 pub fn day(s: Option<&str>) -> Result<model::Date> {
     match s {
-        Some(s) => s.trim().parse().with_context(|| format!("{s:?} is not a date, such as 2026-09-30")),
+        // Our words alone: the parser's say how it failed, not what to type.
+        Some(s) if s.trim().is_empty() => bail!("a date is needed, such as 2026-09-30"),
+        Some(s) => s.trim().parse().map_err(|_| anyhow::anyhow!("{} is not a date, such as 2026-09-30", s.trim())),
         None => today(),
     }
 }
@@ -324,14 +326,14 @@ pub fn day(s: Option<&str>) -> Result<model::Date> {
 pub fn amount(b: &Books, text: &str) -> Result<model::Amount> {
     let text = text.trim();
     let (q, c) = text.split_once(' ').map(|(q, c)| (q, c.trim())).unwrap_or((text, b.config.company.currency.as_str()));
-    let quantity = Decimal::from_str_exact(q).with_context(|| format!("{q:?} is not a number"))?;
+    let quantity = Decimal::from_str_exact(q).map_err(|_| if q.is_empty() { anyhow::anyhow!("an amount is needed, such as 12.50") } else { anyhow::anyhow!("{q} is not an amount, such as 12.50") })?;
     Ok(model::Amount { quantity, commodity: c.to_string() })
 }
 
 /// `account=amount [COMMODITY]`, and `@@ cost COMMODITY` after one exchanged
 /// for another: the cost written unsigned, its sign the amount's.
 pub fn posting(b: &Books, text: &str) -> Result<model::Posting> {
-    let (account, rest) = text.split_once('=').with_context(|| format!("{text:?} is not account=amount"))?;
+    let (account, rest) = text.split_once('=').with_context(|| format!("{text} is not account=amount, such as Expenses:General=12.50"))?;
     let (amount, cost) = match rest.split_once("@@") {
         Some((a, c)) => (a, Some(c)),
         None => (rest, None),
@@ -359,7 +361,7 @@ pub fn debt(b: &Books, text: &str) -> Result<usize> {
     }
     (1..=b.entries.len())
         .find(|&id| b.number_text(id).as_deref() == Some(text))
-        .with_context(|| format!("there is no entry {text:?}: give an entry's id, or an invoice's number such as 2026-0017"))
+        .with_context(|| format!("there is no entry {text}: give an entry's id, or an invoice's number such as 2026-0017"))
 }
 
 /// A filed document's hash, by its path or its hash: a text that is the
@@ -373,6 +375,14 @@ pub fn posting_ref(text: &str) -> Result<model::PostingRef> {
     let (e, n) = text.split_once('.').with_context(|| format!("{text:?} is not ENTRY.N, as abo reconcile gives it"))?;
     let bad = || format!("{text:?} is not ENTRY.N, as abo reconcile gives it");
     Ok(model::PostingRef { entry: e.parse().with_context(bad)?, n: n.parse().with_context(bad)? })
+}
+
+/// `1760.00 EUR`, as a program reads it, as a person does: `1 760.00 EUR`.
+pub fn shown(b: &Books, text: &str) -> String {
+    match text.split_once(' ').and_then(|(q, c)| Some((q.parse::<Decimal>().ok()?, c))) {
+        Some((q, c)) => format!("{} {c}", model::grouped(q, b.places(c), c, " ")),
+        None => text.to_string(),
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -405,17 +415,19 @@ pub fn invoices(b: &Books, today: model::Date) -> Vec<InvoiceRow> {
             };
             let Kind::Invoice { content: c, .. } = &b.entry(inv)?.kind else { return None };
             let places = b.places(&c.commodity);
+            // As a program reads it, and as a person does.
             let money = |mut d: Decimal| {
                 d.rescale(places);
                 format!("{d} {}", c.commodity)
             };
+            let shown = |d: Decimal| format!("{} {}", model::grouped(d, places, &c.commodity, " "), c.commodity);
             let total = b.totals(c).2 * if credit { -Decimal::ONE } else { Decimal::ONE };
             let open = if credit { Decimal::ZERO } else { b.open(id, &standing) };
             let mut status = match () {
                 _ if credit => format!("credits {}", b.number_text(inv).unwrap_or_default()),
                 _ if !standing[id] => "cancelled".to_string(),
                 _ if open.is_zero() => "settled".to_string(),
-                _ if open < total => format!("part paid, {} open", money(open)),
+                _ if open < total => format!("part paid, {} open", shown(open)),
                 _ => "open".to_string(),
             };
             if !credit && standing[id] && !open.is_zero() && c.due < today {

@@ -274,7 +274,7 @@ Entries are inserted in date order rather than appended, which is what makes a
 late-arriving bill ordinary rather than a failure of `hledger check
 ordereddates`. That applies to every write, not just this one.
 
-### Statements
+### Reports
 
 `abo pl`, `abo bs`, `abo vat`, each with `--json` and `--pdf <file>`, and each a
 page under `/report/`. Everything is computed by `hledger balance` over a query,
@@ -327,13 +327,12 @@ Everything else is configuration, which means changing it is not a rebuild:
   not in the code. `--vat-rate` overrides it per invoice, which is how an export,
   a reduced rate or an exempt supply is issued.
 - **`[company] country`** — printed on invoices.
-- **`[[report.vat]]`** — the tax return, one entry per box on the form. Each
-  has a `code` and a `label`, and is one of three things: a `query` (any hledger
-  query; its balance over the period is the figure, with `invert` for the
-  credit side), `of` + `rate` (this box is a percentage of an earlier box), or
-  `sum` of earlier codes where a leading `-` subtracts. Three forms cover
-  every return shape seen so far; if a fourth is needed, it is a small
-  evaluator in `statement.rs` and still not a rate in the code.
+- **`[report.vat.<code>]`** — the tax return, one table per box on the form,
+  in the order of their codes. Each has a `label` and a `query` (any hledger
+  query; its balance over the period is the figure), with `invert` for a box
+  on the credit side. A box that is a percentage of another, or a sum of
+  others (a net figure), is not built: when a form needs one, it is a small
+  evaluator in `statement.rs`, and still not a rate in the code.
 
 `abo vat` with nothing configured is an error that says what to write, rather
 than a plausible wrong answer. The same rule covers other commodities: a return

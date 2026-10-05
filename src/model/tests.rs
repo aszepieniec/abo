@@ -607,6 +607,7 @@ fn nothing_is_dated_after_today(#[strategy(plan())] plan: Vec<Step>) {
         if let (Some(_), Ok(n)) = (op, outcome) {
             prop_assert!(n.entries[m.entries.len()..].iter().all(|e| e.date <= today));
             prop_assert!(n.statements.keys().filter(|k| !m.statements.contains_key(*k)).all(|k| k.2 <= today));
+            prop_assert!(n.prices.keys().filter(|k| !m.prices.contains_key(*k)).all(|k| k.1 <= today));
         }
         Ok(())
     })?;
@@ -652,6 +653,92 @@ fn refusals_name_a_rule(#[strategy(plan())] plan: Vec<Step>) {
             for v in v {
                 prop_assert!(v.code == "OP" || rules.contains(v.code), "{} is not a rule MODEL.md defines", v.code);
             }
+        }
+        Ok(())
+    })?;
+}
+
+/// Every text an operation was given, and every text the books hold that a
+/// message may repeat: these may hold anything, a quote or a backslash too.
+fn given_texts(m: &Books, op: &Op) -> Vec<String> {
+    let mut v: Vec<String> = m.entries.iter().map(|e| e.description.clone()).collect();
+    v.extend(m.accounts.iter().cloned());
+    v.extend(m.commodities.keys().cloned());
+    v.extend(m.documents.iter().map(|(h, d)| d.path(h)));
+    v.extend(m.config.payment.iter().flat_map(|(id, o)| [id.clone(), o.iban.clone(), o.bic.clone(), o.account.clone()]));
+    v.extend([m.config.company.name.clone(), m.config.invoice.receivable.clone(), m.config.invoice.income.clone()]);
+    let postings = |ps: &[Posting]| ps.iter().flat_map(|p| [p.account.clone(), p.amount.commodity.clone()]).collect::<Vec<_>>();
+    match op {
+        Op::Post { description, postings: ps, .. } => v.extend([vec![description.clone()], postings(ps)].concat()),
+        Op::File { sha256, name, ext, .. } => v.extend([sha256.clone(), name.clone(), ext.clone()]),
+        Op::Unfile { sha256 } => v.push(sha256.clone()),
+        Op::Bill { description, postings: ps, document, .. } => v.extend([vec![description.clone()], postings(ps), document.iter().cloned().collect()].concat()),
+        Op::Invoice { customer, commodity, lines, reason, reference, note, pdf, more, .. } => {
+            v.extend([customer.clone(), commodity.clone(), reason.clone(), reference.clone(), note.clone(), pdf.clone(), more.customer_tax_id.clone()]);
+            v.extend(lines.iter().map(|l| l.description.clone()));
+            v.extend(more.pay_to.iter().cloned());
+        }
+        Op::Credit { note, pdf, .. } => v.extend([note.clone(), pdf.clone()]),
+        Op::Pay { from, cost, .. } => v.extend([from.clone()].into_iter().chain(cost.iter().map(|c| c.commodity.clone()))),
+        Op::WriteOff { to, .. } => v.push(to.clone()),
+        Op::Record { account, commodity, .. } | Op::Unrecord { account, commodity } => v.extend([account.clone(), commodity.clone()]),
+        Op::ConfigSet { key, value } => v.extend([key.clone(), value.clone()]),
+        Op::ConfigUnset { key } => v.push(key.clone()),
+        Op::Configure(_) | Op::Revert { .. } => {}
+        Op::AccountAdd(a) | Op::AccountRemove(a) | Op::CommodityAdd(a, _) | Op::CommodityRemove(a) => v.push(a.clone()),
+        Op::PriceAdd { of, price, .. } => v.extend([of.clone(), price.commodity.clone()]),
+        Op::PriceRemove { of, .. } => v.push(of.clone()),
+    }
+    let shown: Vec<String> = v.iter().map(|t| super::explain::shown(t)).collect();
+    v.extend(shown);
+    v.retain(|t| !t.is_empty());
+    v.sort_by_key(|t| std::cmp::Reverse(t.len()));
+    v
+}
+
+/// The number written after `word` wherever it stands in `what`, and the
+/// text it is written as: digits, and dashes between them.
+fn numbers_after<'a>(what: &'a str, word: &str) -> Vec<&'a str> {
+    what.match_indices(word)
+        .filter(|(i, _)| !what[..*i].ends_with(|c: char| c.is_alphanumeric()))
+        .map(|(i, _)| {
+            let rest = &what[i + word.len()..];
+            &rest[..rest.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(rest.len())]
+        })
+        .filter(|t| t.starts_with(|c: char| c.is_ascii_digit()))
+        .collect()
+}
+
+/// G-O10: a refusal speaks of what the operation was given and of the books
+/// before it. It names no entry that is not there yet — the entry refused is
+/// not; an invoice or a credit note by its number, never by its id; and it
+/// quotes nothing as Rust's debug format does, with quotes and backslashes,
+/// but where the text given holds them.
+#[proptest]
+fn refusals_speak_of_the_books_before(#[strategy(plan())] plan: Vec<Step>) {
+    run(&plan, |m, op, outcome, _| {
+        let (Some(op), Err(v)) = (op, outcome) else { return Ok(()) };
+        let given = given_texts(m, op);
+        for x in v {
+            let w = &x.what;
+            for word in ["entry ", "entries ", "bill ", "payment "] {
+                for t in numbers_after(w, word) {
+                    let id: usize = t.parse().unwrap_or(0);
+                    prop_assert!((1..=m.entries.len()).contains(&id), "{} names {}{}, and there are {} entries: {:?}", x, word, t, m.entries.len(), op);
+                }
+            }
+            for word in ["invoice ", "credit note "] {
+                for t in numbers_after(w, word) {
+                    let numbered = t.len() == 9 && t.as_bytes()[4] == b'-' && !t[5..].contains('-');
+                    prop_assert!(numbered, "{} names {}{} by its id: {:?}", x, word, t, op);
+                }
+            }
+            let mut rest = w.clone();
+            for t in &given {
+                rest = rest.replace(t.as_str(), "");
+            }
+            prop_assert!(!rest.contains('"') && !rest.contains('\\'), "{} quotes as Rust does: {:?}", x, op);
+            prop_assert!(!w.ends_with('.') || given.iter().any(|t| w.ends_with(t.as_str())), "{} ends in a full stop", x);
         }
         Ok(())
     })?;

@@ -5,7 +5,7 @@ use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 struct Server {
     child: Child,
@@ -20,22 +20,30 @@ impl Drop for Server {
 }
 
 fn serve(data: &Path, home: &Path) -> Server {
-    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-    let child = Command::new(env!("CARGO_BIN_EXE_abo"))
-        .args(["serve", "--port", &port.to_string(), "--dir"])
+    use std::io::BufRead as _;
+    // Port 0, and the one the server bound read from what it says: a port
+    // picked here and let go could be another test's by the time it starts.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_abo"))
+        .args(["serve", "--port", "0", "--dir"])
         .arg(data)
         // No global git identity to offer.
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home)
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let start = Instant::now();
-    while TcpStream::connect(("127.0.0.1", port)).is_err() {
-        assert!(start.elapsed() < Duration::from_secs(10), "abo serve did not start");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let out = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    // Read on to the end, so the server never waits on a full pipe.
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+            if let Some(port) = line.split("http://127.0.0.1:").nth(1).and_then(|r| r.split(|c: char| !c.is_ascii_digit()).next()?.parse::<u16>().ok()) {
+                let _ = tx.send(port);
+            }
+        }
+    });
+    let port = rx.recv_timeout(Duration::from_secs(60)).expect("abo serve did not say where it listens");
     Server { child, port }
 }
 
@@ -58,6 +66,8 @@ fn send(s: &Server, method: &str, path: &str, content_type: &str, body: &[u8]) -
     c.write_all(body).unwrap();
     let mut out = String::new();
     c.read_to_string(&mut out).unwrap();
+    // Read as text: the spaces a page keeps from breaking are spaces.
+    let out = out.replace(['\u{a0}', '\u{202f}'], " ");
     let status = out[9..12].parse().unwrap();
     let location = out
         .lines()
@@ -403,7 +413,7 @@ fn bills_page() {
     let hosting = abo(&books, &["bill", "--desc", "Hosting", "--document", &file, "Expenses:General=110.00", "Liabilities:Payable=-110.00"])["entry"].to_string();
     let (_, _, page) = http(&s, "GET", "/bills", &[]);
     assert!(!page.contains("action=\"/bill/unfile\""), "a booked bill is not deleted: {page}");
-    assert!(page.contains("unpaid") && page.contains("110.00 EUR") && page.contains(&format!("/pay?debt={hosting}")), "{page}");
+    assert!(page.contains("open") && page.contains("110.00 EUR") && page.contains(&format!("/pay?debt={hosting}")), "{page}");
 
     // A part, then the rest: Open follows, as an invoice's does.
     let part = [("token", "b1"), ("debt", hosting.as_str()), ("date", "2026-03-05"), ("amount", "40.00"), ("from", "Assets:Bank")];

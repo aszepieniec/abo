@@ -14,8 +14,20 @@ use std::process::Command;
 
 #[derive(Serialize, Clone)]
 pub struct Amount {
+    /// To the commodity's places, as a program reads it.
     pub quantity: String,
     pub commodity: String,
+    /// As people read it: with its commodity, thousands set apart.
+    pub shown: String,
+}
+
+impl Amount {
+    pub fn new(b: &crate::model::Books, q: Decimal, commodity: &str) -> Amount {
+        let places = b.places(commodity);
+        let mut v = crate::model::round(if q.is_zero() { Decimal::ZERO } else { q }, places);
+        v.rescale(places);
+        Amount { quantity: v.to_string(), commodity: commodity.into(), shown: format!("{} {commodity}", crate::model::grouped(v, places, commodity, " ")) }
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -39,38 +51,30 @@ pub struct Statement {
     pub period: String,
     pub company: String,
     pub sections: Vec<Section>,
-    /// The number the whole thing exists to produce.
-    pub bottom: Line,
+    /// The number the whole thing exists to produce, where there is one: a
+    /// tax return's figures are its boxes.
+    pub bottom: Option<Line>,
 }
 
 /// One commodity-keyed bag of money. Everything is summed in here rather than
 /// in strings, so nothing is ever added as text or as a float.
 pub type Bag = BTreeMap<String, Decimal>;
 
-/// The non-zero amounts; if all are zero, the zeros, so a settled account
-/// reads `0.00 EUR`; a bare `0` only for an empty bag.
-pub fn amounts(bag: &Bag) -> Vec<Amount> {
+/// The non-zero amounts, each to its commodity's places; if all are zero,
+/// the zeros, so a settled account reads `0.00 EUR`, and an empty bag nought
+/// in the company's currency.
+pub fn amounts(b: &crate::model::Books, bag: &Bag) -> Vec<Amount> {
     let all_zero = bag.values().all(|v| v.is_zero());
-    let out: Vec<Amount> = bag
-        .iter()
-        .filter(|(_, v)| all_zero || !v.is_zero())
-        .map(|(c, v)| {
-            let v = if v.is_zero() { v.abs() } else { *v }; // never "-0.00"
-            Amount { quantity: v.to_string(), commodity: c.clone() }
-        })
-        .collect();
+    let out: Vec<Amount> = bag.iter().filter(|(_, v)| all_zero || !v.is_zero()).map(|(c, v)| Amount::new(b, *v, c)).collect();
     if out.is_empty() {
-        vec![Amount { quantity: "0".into(), commodity: String::new() }]
+        vec![Amount::new(b, Decimal::ZERO, &b.config.company.currency)]
     } else {
         out
     }
 }
 
 pub fn money(a: &[Amount]) -> String {
-    a.iter()
-        .map(|m| format!("{} {}", m.quantity, m.commodity).trim().to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
+    a.iter().map(|m| m.shown.as_str()).collect::<Vec<_>>().join(", ")
 }
 
 fn add(into: &mut Bag, from: &Bag, sign: Decimal) {
@@ -122,9 +126,9 @@ fn section(s: &Store, title: &str, account: &str, extra: &[&str], invert: bool) 
         let mut shown = Bag::new();
         add(&mut shown, &bag, sign);
         add(&mut total, &bag, sign);
-        lines.push(Line { code: None, label: name, amounts: amounts(&shown) });
+        lines.push(Line { code: None, label: name, amounts: amounts(&s.books, &shown) });
     }
-    let t = amounts(&total);
+    let t = amounts(&s.books, &total);
     Ok((Section { title: title.into(), lines, total: t }, total))
 }
 
@@ -152,17 +156,17 @@ pub fn profit_and_loss(s: &Store, period: &str) -> Result<Statement> {
 
     Ok(Statement {
         title: "Profit and loss".into(),
-        period: if period.is_empty() { "All time".into() } else { period.to_string() },
+        period: if period.is_empty() { "all time".into() } else { period.to_string() },
         company: s.books.config.company.name.clone(),
         sections: vec![income, expenses],
-        bottom: Line { code: None, label: "Profit for the period".into(), amounts: amounts(&profit) },
+        bottom: Some(Line { code: None, label: "Profit for the period".into(), amounts: amounts(&s.books, &profit) }),
     })
 }
 
 pub fn balance_sheet(s: &Store, date: &str) -> Result<Statement> {
     // -H gives the running balance, and -e is exclusive, so ask for the day after.
     let end = jiff::civil::Date::strptime("%Y-%m-%d", date)
-        .context("bad date")?
+        .map_err(|_| anyhow::anyhow!("{date} is not a date, such as 2026-09-30"))?
         .tomorrow()?
         .to_string();
     // An exchange, booked at its cost, is equity's conversion, or the sheet
@@ -186,10 +190,10 @@ pub fn balance_sheet(s: &Store, date: &str) -> Result<Statement> {
         equity.lines.push(Line {
             code: None,
             label: "Retained earnings, not yet closed".into(),
-            amounts: amounts(&retained),
+            amounts: amounts(&s.books, &retained),
         });
         add(&mut equity_total, &retained, Decimal::ONE);
-        equity.total = amounts(&equity_total);
+        equity.total = amounts(&s.books, &equity_total);
     }
 
     let mut difference = Bag::new();
@@ -199,14 +203,14 @@ pub fn balance_sheet(s: &Store, date: &str) -> Result<Statement> {
 
     Ok(Statement {
         title: "Balance sheet".into(),
-        period: format!("As at {date}"),
+        period: format!("as at {date}"),
         company: s.books.config.company.name.clone(),
         sections: vec![assets, liabilities, equity],
-        bottom: Line {
+        bottom: Some(Line {
             code: None,
             label: "Assets less liabilities and equity (should be nil)".into(),
-            amounts: amounts(&difference),
-        },
+            amounts: amounts(&s.books, &difference),
+        }),
     })
 }
 
@@ -252,15 +256,14 @@ pub fn vat_return(s: &Store, period: &str) -> Result<Statement> {
         // every box to the currency's places, and never "-0"
         let mut v = crate::model::round(if v.is_zero() { Decimal::ZERO } else { v }, places);
         v.rescale(places);
-        lines.push(Line { code: Some(code.clone()), label: b.label.clone(), amounts: vec![Amount { quantity: v.to_string(), commodity: currency.clone() }] });
+        lines.push(Line { code: Some(code.clone()), label: b.label.clone(), amounts: vec![Amount::new(&s.books, v, &currency)] });
     }
-    let bottom = lines.last().cloned().context("no lines")?;
     Ok(Statement {
         title: "Tax return".into(),
-        period: if period.is_empty() { "All time".into() } else { period.to_string() },
+        period: if period.is_empty() { "all time".into() } else { period.to_string() },
         company: s.books.config.company.name.clone(),
         sections: vec![Section { title: String::new(), lines, total: vec![] }],
-        bottom: Line { code: None, label: format!("{} ({})", bottom.label, bottom.code.unwrap_or_default()), amounts: bottom.amounts },
+        bottom: None,
     })
 }
 

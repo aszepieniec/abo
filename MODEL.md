@@ -556,6 +556,7 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | G-O7 | `abo init`, and the form that asks its questions in the browser, open books that read with no problem, configured as told; or refuse and leave nothing behind | §2.8 | `init_opens_valid_books_or_nothing`, `a_new_company_opens_like_init` |
 | G-O8 | The log holds each change as the command that makes it again: every default the command took written out, so that run on the books as they were, on any later day, it makes the same change | §5 | `the_log_makes_each_change_again` |
 | G-O9 | A report changes nothing in the books, wherever it is told to write: a PDF, or hledger's output file, goes outside them or is refused | §5 | `a_report_changes_nothing_in_the_books` |
+| G-O10 | A refusal says what is wrong with what the operation was given, of the books before it: it names no entry that is not there yet, an invoice or a credit note by its number and never by its id, and quotes nothing as Rust's debug format does | §5 | `refusals_speak_of_the_books_before` |
 
 ### Whoever uses the pages
 
@@ -720,7 +721,8 @@ These hold of each change when it is made, not of the state: they need the
 day it is made, or the configuration in force then, and the state remembers
 neither for an entry made long ago.
 
-- **N1** No entry, statement or document is dated after the day it is added.
+- **N1** No entry, statement, document or price is dated after the day it is
+  added.
 - **N2** On or before `closed_through`, no entry is added, no statement
   recorded or removed, no document filed or taken out, and no price added or
   removed.
@@ -751,6 +753,17 @@ operation is refused with its number and nothing is written. Most
 preconditions are therefore not listed: they are the invariants. The few that
 are not — the debt paid is a debt, the statement removed exists — refuse as
 `OP`.
+
+A refusal is said of the operation. `check` says what is wrong with a state,
+which is what is wanted of books read from disk; of an operation, it would
+speak of the books after it, of an entry not yet there. So `apply` passes the
+violations through `explain`, which keeps each one's number and says it of
+what the operation was given and of the books before it — `the postings sum
+to 1.00 EUR, not nought`, not `entry 17 does not balance`; `only 100.00 EUR
+is open on bill 19 (Hosting)`, not `19 is paid more than it owes` — and leaves
+out those that only follow from another it keeps: a commodity removed while
+in use is not also said to have too few places for every amount in it.
+Violations the books held before the operation are kept as `check` says them.
 
 | Operation | Adds or changes |
 |---|---|

@@ -280,7 +280,7 @@ Any asset account and any commodity.
 ## E. Reports
 
 ### E1. Profit and loss for a period — Supported (browser, CLI)
-**Statements**, Profit and loss, a period (`2026`, `2026q1`, `last month`).
+**Reports**, Profit and loss, a period (`2026`, `2026q1`, `last month`).
 CLI: `abo pl --period …`, with `--json` or `--pdf`.
 **Done when** income and expenses are listed with totals and the profit for
 the period, matching `hledger balance` over the same period. Downloading a PDF

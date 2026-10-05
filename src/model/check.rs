@@ -28,7 +28,7 @@ pub fn lines_ok(s: &str) -> bool {
 
 /// Every Unicode space but U+0020, which hledger reads in an account's name
 /// as U+0020.
-fn other_space(c: char) -> bool {
+pub(crate) fn other_space(c: char) -> bool {
     matches!(c, '\u{a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}' | '\u{202f}' | '\u{205f}' | '\u{3000}')
 }
 
@@ -88,7 +88,7 @@ pub fn hash_ok(h: &str) -> bool {
 }
 
 /// Words of lower-case letters and digits, one dash between them.
-fn slug_ok(s: &str) -> bool {
+pub(crate) fn slug_ok(s: &str) -> bool {
     s.split('-').all(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
 }
 

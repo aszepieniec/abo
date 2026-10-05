@@ -5,7 +5,7 @@
 
 use crate::model::{self, Books as Model, Kind, Op};
 use crate::questions::{self, Q};
-use crate::statement::{self, money};
+use crate::statement;
 use crate::store::{self, Store};
 use anyhow::{bail, Context as _, Result};
 use axum::extract::{DefaultBodyLimit, Form, Multipart, Path, Query};
@@ -84,6 +84,7 @@ fn company_app(root: PathBuf) -> Router {
         .route("/company/payment", get(option_view).post(option_submit))
         .route("/company/payment/remove", post(option_remove))
         .route("/bills/{*rest}", get(bill_doc))
+        .fallback(not_found)
         // A scanned bill is much bigger than a form post.
         .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
         .layer(axum::middleware::from_fn(scope))
@@ -812,7 +813,7 @@ async fn index(Books(s): Books) -> Response {
                 for p in b.postings(id).into_iter().filter(|p| p.amount.quantity > Decimal::ZERO) {
                     *debits.entry(p.amount.commodity).or_default() += p.amount.quantity;
                 }
-                (id, &b.entries[id - 1], money(&statement::amounts(&debits)))
+                (id, &b.entries[id - 1], money(&statement::amounts(b, &debits)))
             })
             .collect();
         Ok(html! {
@@ -836,7 +837,7 @@ async fn index(Books(s): Books) -> Response {
                     @for (label, bag) in &tiles {
                         div.tile {
                             span.muted.small { (label) }
-                            @for a in statement::amounts(bag) {
+                            @for a in statement::amounts(b, bag) {
                                 span.figure { (a.quantity) " " span.muted.small { (a.commodity) } }
                             }
                         }
@@ -852,14 +853,14 @@ async fn index(Books(s): Books) -> Response {
                             @for (account, bag) in &accounts {
                                 tr {
                                     td { a href=(account_href(account)) { code { (account) } } }
-                                    td.amt { (money(&statement::amounts(bag))) }
+                                    td.amt { (money(&statement::amounts(b, bag))) }
                                 }
                             }
                         }
                     }
                 }
                 div.box {
-                    div.box-header { "Recent entries" span.spacer { a.small href="/report/pl" { "Profit and loss" } } }
+                    div.box-header { "Last booked" span.spacer { a.small href="/report/pl" { "Profit and loss" } } }
                     table.list {
                         thead { tr { th { "Date" } th { "Description" } th.amt { "Debits" } } }
                         tbody {
@@ -907,13 +908,13 @@ fn toast(s: &Store, n: usize) -> Option<Markup> {
     let title = match line["argv"][0].as_str().unwrap_or_default() {
         "post" => "Booked",
         "file" => "Filed",
-        "unfile" => "Taken out",
+        "unfile" => "Deleted",
         "bill" => "Bill booked",
         "invoice" => "Invoice issued",
         "credit" => "Credit note issued",
         "pay" => "Payment booked",
         "write-off" => "Written off",
-        "revert" => "Reversed",
+        "revert" => "Reverted",
         "record" => "Statement recorded",
         "unrecord" => "Statement taken out",
         "company" => "Details saved",
@@ -1069,7 +1070,7 @@ fn owed_text(b: &Model, d: usize, standing: &[bool]) -> Option<(String, String)>
     open.rescale(places);
     let mut owed = debt.owed.quantity;
     owed.rescale(places);
-    Some((format!("{owed} {}", debt.owed.commodity), format!("{open} {}", debt.owed.commodity)))
+    Some((money_of(b, owed, &debt.owed.commodity), money_of(b, open, &debt.owed.commodity)))
 }
 
 /// One entry: as it stands in the journal, what it owes and what paid it,
@@ -1097,7 +1098,7 @@ async fn booking(Books(s): Books, Path(id): Path<usize>) -> Response {
                 @if let Some(n) = &number { " · " @if credit_note { "credit note " } @else { "invoice " } (n) }
             }
             @if let Some(r) = reversed {
-                div.flash.flash-info { (icon("info")) div { strong { "Reversed" } " by " a href={"/entry/" (r)} { (b.entries[r - 1].description) } } }
+                div.flash.flash-info { (icon("info")) div { strong { "Reverted" } " by " a href={"/entry/" (r)} { (b.entries[r - 1].description) } } }
             }
             @if let Some((total, open)) = &owed {
                 div.box {
@@ -1155,12 +1156,14 @@ async fn booking(Books(s): Books, Path(id): Path<usize>) -> Response {
                         @else { "Cancels it with a credit note dated today, then opens a new invoice filled in as this one was." }
                     }
                 } @else if !credit_note {
-                    form method="post" action={"/entry/" (id) "/revert"} {
-                        (token())
-                        button.btn-danger type="submit" disabled[reversed.is_some() || !paid_by.is_empty()] { (icon("undo")) " Revert" }
+                    @if reversed.is_none() {
+                        form method="post" action={"/entry/" (id) "/revert"} {
+                            (token())
+                            button.btn-danger type="submit" disabled[!paid_by.is_empty()] { (icon("undo")) " Revert" }
+                        }
                     }
                     span.muted.small {
-                        @if reversed.is_some() { "Already reversed." }
+                        @if reversed.is_some() { "Already reverted." }
                         @else if !paid_by.is_empty() { "Paid in part or in full: revert its payments first." }
                         @else { "Books the opposite amounts as a new entry, dated today. This one stays." }
                     }
@@ -1275,10 +1278,10 @@ async fn register(Books(s): Books, Query(q): Query<Fields>) -> Response {
             let mut change = statement::Bag::new();
             *change.entry(p.amount.commodity.clone()).or_default() += p.amount.quantity;
             *balance.entry(p.amount.commodity).or_default() += p.amount.quantity;
-            rows.push((d, r.entry, b.entries[r.entry - 1].description.clone(), money(&statement::amounts(&change)), money(&statement::amounts(&balance))));
+            rows.push((d, r.entry, b.entries[r.entry - 1].description.clone(), money(&statement::amounts(b, &change)), money(&statement::amounts(b, &balance))));
         }
         Ok(html! {
-            h1 { code { (name) } }
+            h1 { (name) }
             div.box {
                 table.list {
                     thead { tr { th { "Date" } th { "Description" } th.amt { "Amount" } th.amt { "Balance" } } }
@@ -1329,7 +1332,7 @@ async fn post_submit(Books(mut s): Books, Form(f): Form<Fields>) -> Response {
         let lines = postings(&s.books, &get("postings"))?;
         let mut words = argv(&["post"], &[("date", &get("date")), ("desc", &get("description"))]);
         words.extend(get("postings").lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()));
-        change(&mut s, &Op::Post { date, description: get("description"), postings: lines }, words, "Post", &[], "/")
+        change(&mut s, &Op::Post { date, description: get("description"), postings: lines }, words, &format!("Book {}", get("description")), &[], "/")
     });
     match r {
         Ok(to) => Redirect::to(&to).into_response(),
@@ -1388,13 +1391,13 @@ async fn report(Books(s): Books, Path(kind): Path<String>, Query(q): Query<Field
     };
     let st = match built {
         Ok(st) => st,
-        Err(e) => return or_error(&s, "Statements", || Err(e)),
+        Err(e) => return or_error(&s, "Reports", || Err(e)),
     };
     if q.contains_key("pdf") {
         let out = s.root.join(format!(".abo/{kind}.pdf"));
         return match statement::pdf(&s, &st, &out).and_then(|()| Ok(std::fs::read(&out)?)) {
             Ok(bytes) => ([("content-type", "application/pdf"), ("x-content-type-options", "nosniff")], bytes).into_response(),
-            Err(e) => or_error(&s, "Statements", || Err(e)),
+            Err(e) => or_error(&s, "Reports", || Err(e)),
         };
     }
     let here = |k: &str| if k == kind { "current" } else { "" };
@@ -1413,7 +1416,7 @@ async fn report(Books(s): Books, Path(kind): Path<String>, Query(q): Query<Field
                             label.field { "As at" input type="date" name="date" value=(date); }
                         } @else {
                             label.field { "Period"
-                                span.hint { "Any hledger period expression: " code { "2026" } ", " code { "2026q1" } ", " code { "last month" } }
+                                span.hint { "A year, a quarter or a month: " code { "2026" } ", " code { "2026q1" } ", " code { "2026-08" } ", " code { "last month" } "." }
                                 input type="text" name="period" value=(period);
                             }
                         }
@@ -1445,7 +1448,9 @@ async fn report(Books(s): Books, Path(kind): Path<String>, Query(q): Query<Field
                         }
                     }
                 }
-                table.figures { tfoot { tr.grand { td { (st.bottom.label) } td { (money(&st.bottom.amounts)) } } } }
+                @if let Some(b) = &st.bottom {
+                    table.figures { tfoot { tr.grand { td { (b.label) } td { (money(&b.amounts)) } } } }
+                }
             }
         })
     })
@@ -1514,7 +1519,7 @@ fn reconcile_page(s: &Store, f: &Fields, notice: Option<Markup>) -> Result<Marku
                 div.box-header { (icon("checks")) "Against the statement" }
                 div.box-body {
                     label.field { "Account" input type="text" name="account" value=(account); }
-                    label.field { "Commodity" input type="text" name="commodity" value=(commodity); }
+                    label.field { "Currency" input type="text" name="commodity" value=(commodity); }
                     label.field { "Statement date" input type="date" name="date" value=(date); }
                     label.field { "Closing balance on the statement" input type="text" name="balance" value=(raw); }
                     // A plain GET: it only looks. First in the form, so Enter
@@ -1524,10 +1529,10 @@ fn reconcile_page(s: &Store, f: &Fields, notice: Option<Markup>) -> Result<Marku
                 table.figures {
                     thead { tr { th { "Balance" } th.amt { (commodity) } } }
                     tbody {
-                        tr { td { "Cleared by the statements recorded" } td { (r["cleared"].as_str().unwrap_or_default()) } }
-                        @if let Some(b) = r["statement"].as_str() { tr { td { "Per the statement" } td { (b) } } }
+                        tr { td { "Cleared by the statements recorded" } td { (figure(&s.books, r["cleared"].as_str().unwrap_or_default(), &commodity)) } }
+                        @if let Some(b) = r["statement"].as_str() { tr { td { "Per the statement" } td { (figure(&s.books, b, &commodity)) } } }
                     }
-                    @if let Some(d) = r["difference"].as_str() { tfoot { tr.total { td { "To clear" } td { (d) } } } }
+                    @if let Some(d) = r["difference"].as_str() { tfoot { tr.total { td { "To clear" } td { (figure(&s.books, d, &commodity)) } } } }
                 }
             }
             @if rows.is_empty() {
@@ -1542,7 +1547,7 @@ fn reconcile_page(s: &Store, f: &Fields, notice: Option<Markup>) -> Result<Marku
                                 label.row {
                                     input type="checkbox" name="ref" value=(i["ref"].as_str().unwrap_or_default());
                                     span.date { (i["date"].as_str().unwrap_or_default()) }
-                                    span.amt { (i["amount"].as_str().unwrap_or_default()) }
+                                    span.amt { (figure(&s.books, i["amount"].as_str().unwrap_or_default(), &commodity)) }
                                     span { (i["description"].as_str().unwrap_or_default()) }
                                 }
                             }
@@ -1683,7 +1688,7 @@ fn invoice_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>) -> Markup 
                     }
                     label.field { "Date" span.hint { "Blank for today." } input type="date" name="date" value=(get("date")); }
                     label.field { "VAT rate" span.hint { "Percent. Blank for the configured rate; 0 for an export or an exempt supply." } input type="text" name="vat_rate" value=(get("vat_rate")); }
-                    label.field { "Commodity" span.hint { "Blank for " (s.books.config.company.currency) "." } input type="text" name="currency" value=(get("currency")); }
+                    label.field { "Currency" span.hint { "Blank for " (s.books.config.company.currency) "." } input type="text" name="currency" value=(get("currency")); }
                     label.field { "Their tax number" span.hint { "Printed under their address; cross-border invoices to businesses usually need it." } input type="text" name="customer_tax_id" value=(get("customer_tax_id")); }
                     label.field { "Why no VAT" span.hint { "Needed at 0%: an export, an exempt supply, reverse charge. Printed on the invoice." } input type="text" name="vat_reason" value=(get("vat_reason")); }
                     @if !s.books.config.payment.is_empty() {
@@ -1692,7 +1697,7 @@ fn invoice_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>) -> Markup 
                             span.hint { "None ticked: all of them." }
                             @for (id, o) in &s.books.config.payment {
                                 @let k = format!("pay-{id}");
-                                label.choice { input type="checkbox" name=(k) checked[f.contains_key(&k)]; " " (o.printed().label) span.muted.small { " " (id) } }
+                                label.choice { input type="checkbox" name=(k) checked[f.contains_key(&k)]; " " (o.printed().label) span.muted.small { " (" (id) ")" } }
                             }
                         }
                     }
@@ -1727,11 +1732,11 @@ async fn invoices(Books(s): Books, Query(q): Query<Fields>) -> Response {
                         tbody {
                             @for i in &all {
                                 tr.row-link {
-                                    td.nowrap { a.stretch href={"/entry/" (i.entry)} { code { (i.number) } }
-                                        div.narrow.small.muted { (i.date) " · " (i.total) @if !i.due.is_empty() { " · due " (i.due) } } }
+                                    td { a.stretch href={"/entry/" (i.entry)} { code.nowrap { (i.number) } }
+                                        div.narrow.small.muted { (i.date) " · " (store::shown(&s.books, &i.total)) @if !i.due.is_empty() { " · due " (i.due) } } }
                                     td.date.wide { (i.date) }
                                     td { (i.customer) }
-                                    td.amt.wide { (i.total) }
+                                    td.amt.wide { (store::shown(&s.books, &i.total)) }
                                     td.date.wide { (i.due) }
                                     td { div.pills {
                                         span class=(if i.status.starts_with("settled") { "pill pill-ok" } else if i.status.starts_with("part paid") { "pill pill-warn" } else if i.status.starts_with("open") { "pill pill-info" } else { "pill" }) { (i.status) }
@@ -1798,7 +1803,7 @@ fn pay_page(s: &Store, id: usize, f: &Fields, error: Option<&anyhow::Error>) -> 
     let today = store::today()?.to_string();
     let invoice = matches!(e.kind, Kind::Invoice { .. });
     Ok(html! {
-        h1 { "Pay " (e.description) }
+        h1 { @if invoice { "A payment of " } @else { "Pay " } (e.description.replace(" | ", ", ")) }
         p.muted { (e.date) " · " (total) " · " (open) " open" " · " a href={"/entry/" (id)} { "entry " (id) } }
         @if let Some(e) = error { (refused(e)) }
         form method="post" action="/pay" {
@@ -1811,7 +1816,7 @@ fn pay_page(s: &Store, id: usize, f: &Fields, error: Option<&anyhow::Error>) -> 
                 label.field { @if invoice { "Received into" } @else { "Paid from" }
                     select name="from" { @for a in &from { option value=(a) selected[a == &chosen] { (a) } } }
                 }
-                label.field { "Paid in another commodity" span.hint { "Blank when paid in " (debt.owed.commodity) "; else what was paid, such as " code { "230.00 EUR" } "." }
+                label.field { "Paid in another currency" span.hint { "Blank when paid in " (debt.owed.commodity) "; else what was paid, such as " code { (if debt.owed.commodity == "BTC" { "230.00 EUR" } else { "0.004 BTC" }) } "." }
                     input type="text" name="cost" value=(get("cost")); }
             } }
             div.actions {
@@ -1827,7 +1832,14 @@ fn pay_page(s: &Store, id: usize, f: &Fields, error: Option<&anyhow::Error>) -> 
                 div.box-body {
                     p.muted.small { "What " @if invoice { "the customer will never pay" } @else { "the supplier forgave" } ", moved to an account for it." }
                     label.field { "Date" input type="date" name="date" required value=(today); }
-                    label.field { "To" select name="to" { @for a in &b.accounts { option value=(a) { (a) } } } }
+                    // What a customer never pays is an expense; what a supplier forgives, income.
+                    @let class = if invoice { "Expenses:" } else { "Income:" };
+                    label.field { "To" span.hint { @if invoice { "An expense, such as Expenses:Bad debts." } @else { "Income, such as Income:Forgiven." } }
+                        select name="to" required {
+                            option value="" { "Choose an account" }
+                            @for a in b.accounts.iter().filter(|a| a.starts_with(class)) { option value=(a) { (a) } }
+                        }
+                    }
                     div.actions { button.btn-danger type="submit" { (icon("check")) " Write off " (open) } }
                 }
             }
@@ -1890,9 +1902,9 @@ fn bills(b: &Model) -> Vec<BillRow> {
             let left = b.open(id, &standing);
             let status = match () {
                 _ if !standing[id] => "cancelled",
-                _ if left.is_zero() => "paid",
+                _ if left.is_zero() => "settled",
                 _ if !payments(b, id, &standing).is_empty() => "part paid",
-                _ => "unpaid",
+                _ => "open",
             };
             BillRow { entry: Some(id), date: e.date, name: e.description.clone(), document: document_of(b, id).map(|(_, p)| p), total, open, status, has_open: !left.is_zero() }
         })
@@ -1941,7 +1953,7 @@ async fn bills_list(Books(s): Books, Query(q): Query<Fields>) -> Response {
                                     td.amt.wide { (b.total) }
                                     td.amt.wide { @if b.has_open { (b.open) } }
                                     td { div.pills {
-                                        span class=(match b.status { "not booked" => "pill pill-warn", "unpaid" => "pill pill-info", "part paid" => "pill pill-warn", "paid" => "pill pill-ok", _ => "pill" }) { (b.status) }
+                                        span class=(match b.status { "not booked" => "pill pill-warn", "open" => "pill pill-info", "part paid" => "pill pill-warn", "settled" => "pill pill-ok", _ => "pill" }) { (b.status) }
                                         div.narrow { (bill_actions(b)) }
                                     } }
                                     td.wide { (bill_actions(b)) }
@@ -2016,9 +2028,12 @@ fn bill_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>) -> Markup {
             (token())
             div.box {
                 div.box-body {
-                    @if !filed.is_empty() {
+                    @if !filed.is_empty() && !waiting.contains(&filed) {
+                        div.flash.flash-error { (icon("error")) div { strong { "No such document" } "No document waiting to be booked is filed as " code { (filed) } "." } }
+                    } @else if !filed.is_empty() {
+                        @let date = s.books.documents.iter().find(|(h, d)| d.path(h) == filed).map(|(_, d)| d.date.to_string()).unwrap_or_default();
                         input type="hidden" name="file" value=(filed);
-                        div.field { "The bill" span.hint { "Filed already; the booking is dated as it is." } a href={"/" (filed)} { (icon("doc")) " " (filed) } }
+                        div.field { "The bill" span.hint { "Filed already; the booking is dated " (date) ", as the document." } a href={"/" (filed)} { (icon("doc")) " " (filed) } }
                     } @else {
                         label.field { "The bill"
                             span.hint { "A PDF, or a photograph. On a phone: the camera, the photo library or a file. Blank for a bill with no document yet." }
@@ -2140,8 +2155,8 @@ fn declarations_page(s: &Store, error: Option<&anyhow::Error>) -> Markup {
             div.box-body { form method="post" action="/declarations" {
                 (token()) input type="hidden" name="action" value="add-price";
                 label.field { "Date" input type="date" name="date" required; }
-                label.field { "Commodity" input type="text" name="value" required; }
-                label.field { "Worth" span.hint { "In another commodity, such as " code { "60000.00 EUR" } "." } input type="text" name="price" required; }
+                label.field { "Currency" span.hint { "Its code in capitals: EUR, BTC." } input type="text" name="value" required; }
+                label.field { "Worth" span.hint { "In another currency, such as " code { "60000.00 EUR" } "." } input type="text" name="price" required; }
                 div.actions { button type="submit" { (icon("plus")) " Add it" } }
             } }
         }
@@ -2157,7 +2172,7 @@ async fn declare(Books(mut s): Books, Form(f): Form<Fields>) -> Response {
             "add-account" => (Op::AccountAdd(v.clone()), argv(&["account", "add", &v], &[]), format!("Declare {v}")),
             "remove-account" => (Op::AccountRemove(v.clone()), argv(&["account", "remove", &v], &[]), format!("Take out {v}")),
             "add-commodity" => {
-                let places: u32 = get("places").parse().with_context(|| format!("{:?} is not a number of places", get("places")))?;
+                let places: u32 = get("places").trim().parse().map_err(|_| anyhow::anyhow!("{} is not a number of places, such as 2", get("places")))?;
                 (Op::CommodityAdd(v.clone(), places), argv(&["commodity", "add", &v, &places.to_string()], &[]), format!("Declare {v}"))
             }
             "remove-commodity" => (Op::CommodityRemove(v.clone()), argv(&["commodity", "remove", &v], &[]), format!("Take out {v}")),
@@ -2181,6 +2196,29 @@ async fn declare(Books(mut s): Books, Form(f): Form<Fields>) -> Response {
     }
 }
 
+/// Amounts as a page writes them: each kept whole on its line, so a narrow
+/// screen breaks between amounts and never inside one.
+fn money(a: &[statement::Amount]) -> String {
+    a.iter().map(|m| m.shown.replace(' ', "\u{a0}")).collect::<Vec<_>>().join(", ")
+}
+
+/// A figure as `abo reconcile --json` gives it, as a page writes it, without
+/// its commodity, which heads its column.
+fn figure(b: &Model, text: &str, commodity: &str) -> String {
+    text.parse::<Decimal>().map_or_else(|_| text.to_string(), |q| model::grouped(q, b.places(commodity), commodity, "\u{202f}"))
+}
+
+/// `q` of `commodity` as a page writes it: to its places, thousands apart by
+/// a space that does not break, or an apostrophe in CHF.
+fn money_of(b: &Model, q: Decimal, commodity: &str) -> String {
+    format!("{}\u{a0}{commodity}", model::grouped(q, b.places(commodity), commodity, "\u{202f}"))
+}
+
+/// A page no route serves: said as a page, with the way back.
+async fn not_found(Books(s): Books) -> Response {
+    or_error(&s, "Not found", || bail!("there is no such page"))
+}
+
 fn refused(e: &anyhow::Error) -> Markup {
     html! { div.flash.flash-error { (icon("error")) div { strong { "Not done" } pre { (format!("{e:#}")) } } } }
 }
@@ -2191,11 +2229,15 @@ fn or_error(s: &Store, title: &str, body: impl FnOnce() -> Result<Markup>) -> Re
         Err(e) => {
             error!(%e, "request failed");
             let back = BACK.try_with(Clone::clone).ok().flatten();
-            page(
+            // What is not there is not found; anything else was refused.
+            let text = format!("{e:#}");
+            let missing = LOOKS.try_with(|l| *l).unwrap_or(false) && (text.starts_with("there is no") || text.starts_with("no such"));
+            let (status, heading) = if missing { (StatusCode::NOT_FOUND, "Not found") } else { (StatusCode::UNPROCESSABLE_ENTITY, "That did not go through") };
+            (status, page(
                 s,
-                "Not done",
+                heading,
                 html! {
-                    h1 { "That did not go through" }
+                    h1 { (heading) }
                     div.flash.flash-error { (icon("error")) pre { (format!("{e:#}")) } }
                     div.actions {
                         span.nav {
@@ -2204,7 +2246,7 @@ fn or_error(s: &Store, title: &str, body: impl FnOnce() -> Result<Markup>) -> Re
                         }
                     }
                 },
-            )
+            ))
             .into_response()
         }
     }
@@ -2217,7 +2259,7 @@ fn page(s: &Store, title: &str, body: Markup) -> Html<String> {
         ("/bills", "inbox", "Bills", "/bill"),
         ("/invoices", "outbox", "Invoices", "/invoice"),
         ("/reconcile", "checks", "Reconcile", "/reconcile"),
-        ("/report/pl", "chart", "Statements", "/report"),
+        ("/report/pl", "chart", "Reports", "/report"),
         ("/post", "plus", "Entry", "/post"),
         ("/log", "clock", "Log", "/log"),
     ];
@@ -2287,6 +2329,9 @@ tokio::task_local! {
     static QUERY: String;
     /// `/c/<dir>` when the company is served from a data directory.
     static PREFIX: Option<String>;
+    /// Whether the request only looks: what it asks for is then not found,
+    /// where a change naming it is refused.
+    static LOOKS: bool;
 }
 
 const PREFIX_HEADER: &str = "x-abo-prefix";
@@ -2409,7 +2454,8 @@ async fn scope(req: axum::extract::Request, next: axum::middleware::Next) -> Res
     let back = referer_path(req.headers());
     let query = req.uri().query().unwrap_or_default().to_string();
     let prefix = req.headers().get(PREFIX_HEADER).and_then(|v| v.to_str().ok()).map(str::to_string);
-    PATH.scope(path, BACK.scope(back, QUERY.scope(query, PREFIX.scope(prefix, next.run(req))))).await
+    let looks = req.method() == axum::http::Method::GET;
+    PATH.scope(path, BACK.scope(back, QUERY.scope(query, PREFIX.scope(prefix, LOOKS.scope(looks, next.run(req)))))).await
 }
 
 async fn log(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
@@ -2777,7 +2823,8 @@ input:focus, textarea:focus { outline: none; border-color: var(--link); box-shad
   border-radius: 12px; margin: 0 0 16px; color: var(--notice-text); }
 .flash > .icon { margin-top: 2px; }
 .flash strong { display: block; }
-.flash pre { background: none; border: 0; padding: 0; white-space: pre-wrap; }
+.flash pre { background: none; border: 0; padding: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.flash > div { min-width: 0; }
 .flash ul { margin: 4px 0 0; padding-left: 18px; }
 .flash ul.plain { list-style: none; padding: 0; }
 .flash-error { background: var(--error-bg); border-color: var(--error-border); }
@@ -2866,7 +2913,10 @@ form.undo button, button.small, .btn.small { min-height: 32px; padding: 0 10px; 
 ol.said { margin: 0; padding-left: 20px; }
 code.reverted { text-decoration: line-through; }
 
-ul.accounts { columns: 2; list-style: none; padding: 0; margin: 0; font-size: 12px; }
+ul.accounts { columns: 2; list-style: none; padding: 0; margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+/* what follows a form stands apart from its buttons */
+form + .box, form + details, .actions + p { margin-top: 16px; }
+table.figures td:last-child .btn { font-family: inherit; }
 ul.accounts li { padding: 2px 0; }
 
 /* statement tabs */
@@ -2894,10 +2944,11 @@ ul.accounts li { padding: 2px 0; }
   .figure { font-size: 18px; }
   table.list td, table.list th, table.figures td, table.figures th { padding: 8px 12px; }
   .box-header { padding: 12px 12px 6px; }
-  table.list td.amt { white-space: normal; }
+  table.list td.amt, table.figures td:last-child { white-space: normal; }
   label.row { grid-template-columns: auto 1fr; }
   ul.items li.cols { display: none; }
-  label.row .date, label.row .amt { grid-column: 2; text-align: left; }
+  label.row > span { grid-column: 2; text-align: left; white-space: normal; }
+  ul.accounts { columns: 1; }
 }
 "#;
 

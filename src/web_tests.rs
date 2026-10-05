@@ -242,7 +242,7 @@ fn the_web_is_the_model(#[strategy(vec(any::<Step>(), 1..25))] plan: Vec<Step>) 
         };
         let Some((post, model_op)) = request(&op, &m, today) else { continue };
         let a = send(server.port, "POST", &post.path, &post.ctype, &post.body, None);
-        prop_assert!(a.status == 303 || a.status == 200, "{} answered {}: {}", post.path, a.status, a.body);
+        prop_assert!(matches!(a.status, 200 | 303 | 422), "{} answered {}: {}", post.path, a.status, a.body);
         // An invoice or credit note issued: its PDF's hash, from the books.
         let model_op = match model_op {
             Op::Invoice { date, customer, commodity, lines, rate, reason, reference, note, more, .. } if a.status == 303 => {
@@ -265,7 +265,7 @@ fn the_web_is_the_model(#[strategy(vec(any::<Step>(), 1..25))] plan: Vec<Step>) 
                     previous = Some(std::mem::replace(&mut now, n));
                 }
             }
-            (200, Err(v)) => {
+            (200 | 422, Err(v)) => {
                 prop_assert!(a.body.contains("Not done") || a.body.contains("did not go through"), "{}: refused without saying so", post.path);
                 for code in v.iter().map(|v| v.code).filter(|c| *c != "OP") {
                     prop_assert!(a.body.contains(&format!("{code}: ")), "{}: the page does not name {}", post.path, code);

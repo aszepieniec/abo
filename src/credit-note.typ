@@ -7,8 +7,20 @@
 #let amount(x) = [#d.currency #x]
 // Fields newer than some invoices' data: blank where they are missing.
 #let at(k) = d.at(k, default: "")
+// Text in a narrow cell: as wide as it is, up to `max`, and wrapped beyond.
+#let capped(body, max) = context box(width: calc.min(measure(body).width, max), body)
 
-#set page(paper: "a4", margin: (x: 2.2cm, top: 2cm, bottom: 2.2cm))
+#set document(title: "Credit note " + d.number, author: d.company.name)
+#set page(
+  paper: "a4",
+  margin: (x: 2.2cm, top: 2cm, bottom: 2.2cm),
+  // On every page: which document it is, and where in it.
+  footer: context text(size: 8.5pt, grid(
+    columns: (1fr, auto),
+    [Credit note #d.number],
+    [Page #counter(page).display("1 of 1", both: true)],
+  )),
+)
 #set text(size: 10pt)
 
 #grid(
@@ -30,9 +42,8 @@
       row-gutter: 0.45em,
       align: (left, right),
       [Date], d.date,
-      [Cancels invoice], d.credits,
-      [of], d.credits_date,
-      ..if d.reference != "" { ([Your reference], d.reference) } else { () },
+      [Cancels], [invoice #d.credits of #d.credits_date],
+      ..if d.reference != "" { ([Your reference], capped(d.reference, 5cm)) } else { () },
     )
   ],
 )
@@ -62,17 +73,16 @@
   column-gutter: 1.4em,
   inset: (x: 0pt, y: 4pt),
   [Net], amount(d.net),
-  ..if d.vat != "0.00" { ([VAT #d.vat_rate%], amount(d.vat)) } else { () },
+  // At 0%, why there is no VAT stands where the VAT would. Books not VAT
+  // registered say nothing of it.
+  ..if at("vat_reason") != "" { (capped(at("vat_reason"), 7cm), amount(d.vat)) }
+    else if d.vat_rate != "0" { ([VAT #d.vat_rate%], amount(d.vat)) } else { () },
   ..if at("vat_home") != "" { ([VAT in #at("vat_home_currency")], [#at("vat_home_currency") #at("vat_home")]) } else { () },
   table.hline(stroke: 0.5pt),
   [*Total*], [*#amount(d.total)*],
 ))
 #if at("vat_home_price") != "" [
   #align(right, text(size: 8.5pt)[VAT converted at #at("vat_home_price")])
-]
-#if at("vat_reason") != "" [
-  #v(0.3cm)
-  #at("vat_reason")
 ]
 
 #v(1.4cm)

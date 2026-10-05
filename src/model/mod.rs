@@ -11,12 +11,14 @@
 #![allow(dead_code, unused_imports)]
 
 mod check;
+mod explain;
 mod ops;
 mod text;
 #[cfg(test)]
 pub(crate) mod tests;
 
 pub use check::{check, option_problem, Violation};
+pub use explain::{explain, name};
 pub use ops::{apply, shape, InvoiceMore, Op, Shape};
 pub use text::{parse, read, render, Files};
 
@@ -318,6 +320,39 @@ pub fn class(a: &str) -> &str {
 /// Commercial rounding: half away from nought.
 pub fn round(d: Decimal, places: u32) -> Decimal {
     d.round_dp_with_strategy(places, RoundingStrategy::MidpointAwayFromZero)
+}
+
+/// `q` as people read it: rounded to `places` and written to them, its
+/// thousands set apart by an apostrophe in CHF, as the Swiss write it, and
+/// otherwise by `space` — a page passes one that does not break. Never a
+/// comma or a point, which mean the decimal mark somewhere.
+pub fn grouped(q: Decimal, places: u32, commodity: &str, space: &str) -> String {
+    let mut q = round(q, places);
+    q.rescale(places);
+    let text = q.abs().to_string();
+    let (whole, part) = text.split_once('.').map_or((text.as_str(), None), |(w, p)| (w, Some(p)));
+    let apart = if commodity == "CHF" { "'" } else { space };
+    let mut out = String::from(if q.is_sign_negative() && !q.is_zero() { "-" } else { "" });
+    for (i, c) in whole.chars().enumerate() {
+        if i > 0 && (whole.len() - i) % 3 == 0 {
+            out.push_str(apart);
+        }
+        out.push(c);
+    }
+    if let Some(p) = part {
+        out = format!("{out}.{p}");
+    }
+    out
+}
+
+#[test]
+fn thousands_are_set_apart_by_an_apostrophe_in_chf_and_a_space_else() {
+    let d = |s: &str| s.parse::<Decimal>().unwrap();
+    assert_eq!(grouped(d("1234567.891"), 2, "CHF", " "), "1'234'567.89");
+    assert_eq!(grouped(d("-1234567.5"), 2, "EUR", " "), "-1 234 567.50");
+    assert_eq!(grouped(d("999"), 0, "EUR", " "), "999");
+    assert_eq!(grouped(d("-0.001"), 2, "EUR", " "), "0.00");
+    assert_eq!(grouped(d("0.12345678"), 8, "BTC", " "), "0.12345678");
 }
 
 impl Posting {
