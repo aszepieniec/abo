@@ -154,8 +154,9 @@ Browser: **Entry**, fill in date, description and one posting per line
 (`account=amount`, every amount written). CLI: `abo post`.
 **Done when** the entry is in the year's journal file in date order, one commit
 holds it, and the front page says **Booked** with that commit. An entry that
-does not balance, names an undeclared account, posts to a VAT account the
-method forbids, or falls in a closed period is refused with the reason, and the
+does not balance, names an undeclared account, or falls in a closed period is
+refused (a VAT account may be posted to by hand: an entry by hand is how a
+correction is made) with the reason, and the
 form comes back filled in; so is one in an undeclared commodity or with more
 places than its commodity has (A2), and one carrying a tag abo writes itself
 — `reverses`, `takes-back`, `cancels`, `invoice`, `credits`, `bill`, `sha256`

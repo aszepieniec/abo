@@ -326,9 +326,12 @@ pub fn check(m: &Books) -> Vec<Violation> {
             no!("I-B1", "{} is not a document's path", d.path(h));
         }
         if let Some(of) = d.of {
-            if !matches!(m.entry(of), Some(Entry { kind: Kind::Bill(_), .. })) {
-                no!("I-B1", "{} names {of}, which is not a bill", d.path(h));
-            } else if !documented.insert(of) {
+            match m.entry(of) {
+                Some(Entry { kind: Kind::Bill(_), date, .. }) if *date != d.date => no!("I-B1", "{} is dated {}, and names bill {of}, dated {date}; a bill is dated as its document", d.path(h), d.date),
+                Some(Entry { kind: Kind::Bill(_), .. }) => {}
+                _ => no!("I-B1", "{} names {of}, which is not a bill", d.path(h)),
+            }
+            if !documented.insert(of) {
                 no!("I-B1", "two documents name bill {of}");
             }
         }

@@ -490,6 +490,7 @@ not in the books.
 | G-H2 | hledger reads every entry, account, commodity and price exactly as abo holds it: date, description, tags, account, amount, cost | I-A0, I-K0, I-K3, I-D1, I-E0, §7 | `hledger_reads_entries_as_written`, `hledger_reads_declarations`, `hledger_reads_these_characters`, `any_text_the_rules_allow_survives`, `extremes_survive_hledger` |
 | G-H3 | hledger's balance of every account, in every commodity, through any date, at any depth and at cost, is the model's | I-A2, I-E1, I-E2 | `hledger_agrees`, `hledger_agrees_through_any_date`, `hledger_rolls_parents_up`, `at_cost_everything_sums_to_nought` |
 | G-H4 | hledger checks every whole statement, every entry's balance and every account's declaration on its own, so that a fault in `check` shows as a disagreement | I-S3, §7.3 | `hledger_catches_what_check_catches` |
+| G-H5 | The balance sheet comes out nil, whatever the books hold: an exchange at a cost is equity's conversion | I-E1, I-E2 | `the_balance_sheet_comes_out_nil` |
 
 ### The files
 
@@ -553,6 +554,8 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | G-O5 | Every command does what its operation does in the model: taken exactly when the model takes it; then the files say the model's state, with every document and PDF beside them; refused, with the rules the model names, in JSON and in words, and nothing written; undo as §5.3. What the commands show is the model's | §5 | `the_cli_is_the_model`, `refusals_in_words_name_their_rules`, `what_abo_shows_is_the_models`, `lists_show_what_the_books_hold`, `reports_read_the_books_as_the_model_does`, `a_key_set_reads_back_through_the_cli`, `company_changes_only_what_it_is_told`, `payment_options_follow_add_edit_remove`, `pay_takes_what_is_open_from_money`, `record_all_clears_everything`, `a_document_filed_for_a_bill_names_it` |
 | G-O6 | Changes sent at once are each made, one after another | §5 | `changes_at_once_are_each_made` |
 | G-O7 | `abo init`, and the form that asks its questions in the browser, open books that read with no problem, configured as told; or refuse and leave nothing behind | §2.8 | `init_opens_valid_books_or_nothing`, `a_new_company_opens_like_init` |
+| G-O8 | The log holds each change as the command that makes it again: every default the command took written out, so that run on the books as they were, on any later day, it makes the same change | §5 | `the_log_makes_each_change_again` |
+| G-O9 | A report changes nothing in the books, wherever it is told to write: a PDF, or hledger's output file, goes outside them or is refused | §5 | `a_report_changes_nothing_in_the_books` |
 
 ### Whoever uses the pages
 
@@ -647,8 +650,8 @@ not reused: those missing below were rules about a value now derived.
 
 - **I-B1** A document's name and extension are well formed, and no two
   documents have one path — which takes two of one issuer and day whose hashes
-  share their first 32 bits; its `of` names a `Bill` entry, and no two
-  documents name the same one.
+  share their first 32 bits; its `of` names a `Bill` entry dated as the
+  document, and no two documents name the same one.
 - **I-B2** A bill's booking credits exactly one liability account.
 
 ### 4.4 Invoices
@@ -1014,8 +1017,8 @@ in their canonical forms (an IBAN in groups of four, a BIC in capitals). In
 `abo.toml` and the `.json` files a number is written in its shortest form,
 `8.1`, not `8.10`, so that one value is one text. Only
 abo writes it: every change goes through `abo config`, `abo company` and `abo
-payment-options`, a comment written in it by hand is not kept, and any other
-hand edit is a problem `parse` reports (§8).
+payment-options`; a comment written in it by hand, like any other hand edit,
+is a problem `parse` reports (§8), and holds every change up until mended.
 
 ---
 

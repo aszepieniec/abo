@@ -1538,3 +1538,27 @@ fn a_document_uploaded_later_is_named_for_its_issuer() {
     assert_eq!(status, 303, "{page}");
     assert!(read(&dir, "bills/index").contains("nodoc-ag"), "{}", read(&dir, "bills/index"));
 }
+
+// ---- found by reading WORKFLOWS.md against the model, 2026-10-05 ----
+
+#[test]
+fn a_document_filed_for_a_bill_is_dated_as_the_bill() {
+    let dir = books("for-dated", &[]);
+    let id = entry(&dir, &["bill", "--date", "2026-03-01", "--desc", "Acme", "Expenses:General=5.00", "Liabilities:Payable=-5.00"]);
+    close(&dir, "2026-06-30");
+    let scan = dir.parent().unwrap().join("late-scan.pdf");
+    std::fs::write(&scan, b"%PDF-1.4\nlate scan").unwrap();
+    refused(&dir, &["file", scan.to_str().unwrap(), "--date", "2026-10-01", "--issuer", "Acme", "--for", &id], "I-B1");
+    refused(&dir, &["file", scan.to_str().unwrap(), "--date", "2026-03-01", "--issuer", "Acme", "--for", &id], "N2");
+}
+
+#[test]
+fn invoices_print_the_options_in_the_order_of_their_ids() {
+    let dir = books("pay-to-order", &[]);
+    ok(&dir, &["payment-options", "add", "zeta", "--kind", "cash", "--detail", "At the till"]);
+    ok(&dir, &["payment-options", "add", "alpha", "--kind", "cash", "--detail", "At the door"]);
+    let v = json(&dir, &["invoice", "--to", "C", "--date", "2026-03-01", "--item", "1|10|x", "--vat-rate", "0", "--vat-reason", "Export", "--pay-to", "zet", "--pay-to", "alpha"]);
+    let data = read(&dir, &v["pdf"].as_str().unwrap().replace(".pdf", ".json"));
+    let (a, z) = (data.find("At the door").unwrap(), data.find("At the till").unwrap());
+    assert!(a < z, "{data}");
+}

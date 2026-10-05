@@ -117,16 +117,11 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
                 return Err(format!("an invoice is due on its date or after, not {} days before", -days));
             }
             let due = jiff::Span::new().try_days(days).and_then(|s| date.checked_add(s)).map_err(|_| format!("{days} days from {date} is no date abo can write"))?;
-            let mut ids: Vec<&String> = vec![];
-            for id in &more.pay_to {
-                let id = c.payment.keys().find(|k| *k == id).ok_or(format!("there is no payment option {id:?}"))?;
-                if !ids.contains(&id) {
-                    ids.push(id);
-                }
+            if let Some(id) = more.pay_to.iter().find(|id| !c.payment.contains_key(*id)) {
+                return Err(format!("there is no payment option {id:?}"));
             }
-            if more.pay_to.is_empty() {
-                ids = c.payment.keys().collect();
-            }
+            // In the order of their ids, as the list shows them, however given.
+            let ids: Vec<&String> = c.payment.keys().filter(|k| more.pay_to.is_empty() || more.pay_to.contains(k)).collect();
             let pay_to = ids.into_iter().map(|id| c.payment[id].printed()).collect();
             let accounts = InvoiceAccounts { receivable: c.invoice.receivable.clone(), income: c.invoice.income.clone(), output };
             let first = customer.lines().next().unwrap_or("").trim().to_string();

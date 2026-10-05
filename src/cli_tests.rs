@@ -151,7 +151,8 @@ fn command(op: &Op, m: &Books, src: &Path) -> (Vec<String>, Option<Op>) {
         Op::File { sha256, date, name, ext, bill } => {
             // A PDF's header, then what makes it this one.
             let bytes = [b"%PDF-1.4\n".as_slice(), sha256.as_bytes()].concat();
-            let path = src.join(format!("doc.{ext}"));
+            // One file to each document, so a logged `file` reads its own again.
+            let path = src.join(format!("doc-{}.{ext}", &store::sha256(sha256.as_bytes())[..16]));
             std::fs::write(&path, &bytes).unwrap();
             a = vec![s("file"), flag("date", date), flag("issuer", name)];
             if let Some(b) = bill {
@@ -478,16 +479,29 @@ fn a_key_set_reads_back_through_the_cli(key: mt::Key) {
 
 /// Books after a plan run as commands, and the day it ended.
 pub(crate) fn after(plan: &[Step]) -> (Dir, PathBuf, Date) {
+    run(plan, false)
+}
+
+/// `after`, the commands `terse`: a date that is today's, and a commodity
+/// that is the company's, left to abo, as a person typing them would.
+fn run(plan: &[Step], terse: bool) -> (Dir, PathBuf, Date) {
     let (parent, books) = opened();
-    let src = Dir::new();
+    // Beside the books, so what the log names stays while they do.
+    let src = parent.0.join("scans");
+    std::fs::create_dir_all(&src).unwrap();
     let mut today = start();
     for step in plan {
         today = today.checked_add(jiff::Span::new().days(step.advance)).unwrap();
         let m = store::Store::open(&books).unwrap().books;
-        let argv = match mt::op(&step.draw, &m, today) {
-            Some(op) => command(&op, &m, &src.0).0,
+        let mut argv = match mt::op(&step.draw, &m, today) {
+            Some(op) => command(&op, &m, &src).0,
             None => args(&["undo"]),
         };
+        if terse && argv[0] != "file" {
+            let currency = &m.config.company.currency;
+            let defaults = [flag("date", today), flag("currency", currency), flag("commodity", currency)];
+            argv.retain(|a| !defaults.contains(a));
+        }
         if !argv.iter().any(|a| a.contains('\0')) {
             abo(&books, today, &argv);
         }
@@ -758,4 +772,83 @@ fn refusals_in_words_name_their_rules(#[strategy(plan())] plan: Vec<Step>, next:
     for code in v.iter().map(|v| v.code) {
         prop_assert!(words.contains(&format!("{code}: ")), "{:?}: {} is not said in {}", argv, code, words);
     }
+}
+
+/// The invoices' and credit notes' PDFs set aside: a PDF made again carries
+/// the moment it was made.
+fn without_pdfs(mut m: Books) -> Books {
+    for e in &mut m.entries {
+        if let model::Kind::Invoice { pdf, .. } | model::Kind::CreditNote { pdf, .. } = &mut e.kind {
+            pdf.clear();
+        }
+    }
+    m
+}
+
+/// The log holds each change as the command that makes it again: a plan run
+/// as a person would type it, defaults left to abo, then its log run on
+/// books opened alike, a year and more later, gives the same books.
+#[proptest(cases(12))]
+fn the_log_makes_each_change_again(#[strategy(plan())] plan: Vec<Step>) {
+    let (_parent, books, today) = run(&plan, true);
+    let (_again_parent, again) = opened();
+    let later = today.checked_add(jiff::Span::new().days(400)).unwrap();
+    let setup = store::lines(&again).len();
+    for l in &store::lines(&books)[setup..] {
+        let argv: Vec<String> = l["argv"].as_array().unwrap().iter().filter_map(|a| a.as_str()).filter(|a| *a != "--json").map(String::from).collect();
+        let o = abo(&again, later, &argv);
+        prop_assert!(o.ok, "{:?}, logged, did not run again: {}", argv, o.stderr);
+    }
+    let theirs = store::Store::open(&books).unwrap().books;
+    let ours = store::Store::open(&again).unwrap().books;
+    prop_assert_eq!(without_pdfs(ours), without_pdfs(theirs));
+}
+
+/// The balance sheet comes out nil, whatever the books hold: exchanges at a
+/// cost, VAT, payments in another commodity.
+#[proptest(cases(12))]
+fn the_balance_sheet_comes_out_nil(#[strategy(plan())] plan: Vec<Step>) {
+    let (_parent, books, today) = after(&plan);
+    let o = abo(&books, today, &args(&["bs"]));
+    prop_assert!(o.ok, "{}", o.stderr);
+    let bottom = o.json.unwrap()["bottom"]["amounts"].clone();
+    let nil = bottom.as_array().unwrap().iter().all(|a| a["quantity"].as_str().unwrap().parse::<Decimal>().unwrap().is_zero());
+    prop_assert!(nil, "{}", bottom);
+}
+
+#[derive(Arbitrary, Debug, Clone)]
+enum Report {
+    Pl,
+    Bs,
+    Vat,
+    Bal,
+    Reg,
+}
+
+/// A report changes nothing in the books, wherever it is told to write: a
+/// PDF over a filed document or a journal, into the books' directories, or
+/// hledger's own output file.
+#[proptest(cases(16))]
+fn a_report_changes_nothing_in_the_books(#[strategy(plan())] plan: Vec<Step>, report: Report, pick: proptest::sample::Index, #[strategy(0usize..4)] at: usize) {
+    let (parent, books, today) = after(&plan);
+    let mine = |p: &Path| !p.starts_with(books.join(".git")) && !p.starts_with(books.join(".abo"));
+    let files: Vec<PathBuf> = walk(&books).into_iter().filter(|p| mine(p)).collect();
+    let snapshot = || -> Vec<(PathBuf, Vec<u8>)> { walk(&books).into_iter().filter(|p| mine(p)).map(|p| { let b = std::fs::read(&p).unwrap(); (p, b) }).collect() };
+    let before = (head(&books), snapshot());
+    let path = match at {
+        0 => pick.get(&files).clone(),
+        1 => books.join("new.pdf"),
+        2 => books.join("journal"),
+        _ => parent.0.join("out.pdf"),
+    };
+    let path = path.display().to_string();
+    let argv = match report {
+        Report::Pl => args(&["pl", "--period", "2026", "--pdf", &path]),
+        Report::Bs => args(&["bs", "--pdf", &path]),
+        Report::Vat => args(&["vat", "--period", "2026", "--pdf", &path]),
+        Report::Bal => args(&["bal", &format!("--output-file={path}")]),
+        Report::Reg => args(&["reg", "-o", &path]),
+    };
+    abo(&books, today, &argv);
+    prop_assert_eq!((head(&books), snapshot()), before, "{:?} changed the books", argv);
 }

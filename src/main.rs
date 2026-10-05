@@ -767,6 +767,14 @@ async fn run(cli: Cli) -> Result<()> {
             let mut s = Store::open(&here)?;
             let lines: Vec<model::Line> = items.iter().enumerate().map(|(n, raw)| store::line(n + 1, raw)).collect::<Result<_>>()?;
             let commodity = currency.unwrap_or_else(|| s.books.config.company.currency.clone());
+            // An option's id, or the start of one alone; anything else the model refuses.
+            let pay_to = pay_to
+                .into_iter()
+                .map(|id| match s.books.config.payment.keys().filter(|k| k.starts_with(&id)).collect::<Vec<_>>()[..] {
+                    [k] if !s.books.config.payment.contains_key(&id) => k.clone(),
+                    _ => id,
+                })
+                .collect();
             let more = model::InvoiceMore { customer_tax_id, due_days, pay_to };
             let date = store::day(date.as_deref())?;
             let customer = to.replace("\\n", "\n");
