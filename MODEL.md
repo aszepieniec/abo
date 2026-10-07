@@ -348,7 +348,8 @@ struct Line { description: Text, quantity: Decimal, unit_price: Decimal }
 
 struct PayOut { label: Text, lines: Vec<Text> }
 
-/// As configured when it was issued.
+/// As configured when it was issued; income as the operation named it, the
+/// configured one unless it named another (an export's, a reverse charge's).
 struct InvoiceAccounts { receivable: Account, income: Account, output: Option<Account> }
 
 enum InvoiceVat {
