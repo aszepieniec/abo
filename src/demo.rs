@@ -20,7 +20,9 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
         currency = "EUR"
         address = "1 Example Street\n10000 Example City"
         country = "Exampleland"
-        tax_id = "TAX-123456789"
+        # A Swiss UID, as the bank is Swiss: it names a country, so the VAT
+        # default can tell a customer abroad by theirs.
+        tax_id = "CHE-123.456.789"
         [vat]
         method = "effective"
         input = "Assets:VAT:Input"
