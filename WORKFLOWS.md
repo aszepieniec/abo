@@ -480,6 +480,32 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 ---
 
+## Second web run of 2026-10-07: found and fixed
+
+Agents again worked in the browser alone. Fixed, each with a test
+(tests/web.rs `second_web_run`, tests/regressions.rs):
+
+- A change made outside abo, or books that break a rule (F8), showed only on
+  Books: every page of the company now says so at the top, says that its
+  figures may be wrong, and says whether a report can still be made. A
+  report that cannot be made says so in words, not hledger's.
+- Forms dropped what was entered. A refused bill keeps its document, so it
+  need not be chosen again, and names every problem at once. An account or
+  currency not yet declared can be declared from the entry or bill form,
+  which comes back as it was left (A2, B1). Reconcile keeps what was ticked.
+- Reconcile (D1, F3): the take-out button names the statement's account, and the
+  currency too when it is not the company's. Account and Currency are lists.
+- Words: notices and the Log say what was done in a sentence, an Undo with
+  what it took back; a bill is "bill N" and the supplier's number is "their
+  number"; a write-off is not called a payment, and its hints say where
+  to declare the account first; each VAT method has a single name, given
+  with the word the terminal uses; the VAT hint on an invoice states the
+  default in full; a payment option's id is its **Short name**.
+- Payment terms can be changed from the company page (A3b).
+- A company whose books cannot be read is listed by its name, with a link.
+- An account's months: every month of the period is listed, nil ones too.
+- Books' tiles group their figures by thousands, as the tables do.
+
 ## First web run of 2026-10-07: found and fixed
 
 Agents worked through the workflows in the browser alone. Fixed, each with
