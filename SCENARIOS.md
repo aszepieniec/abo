@@ -150,7 +150,8 @@ month by month?
 
 **S25. Taking things back** (F1, F2, F7). Book a 50.00 EUR taxi fare paid in
 cash, then take it back at once: it was a mistake. Then find the salary
-payment of some months ago and reverse it: it was booked in the wrong period.
+payment of some months ago and reverse it: it was booked in the wrong period;
+it belongs to April.
 Afterwards, list what was done to the books today, in order.
 
 ---
