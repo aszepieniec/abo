@@ -450,6 +450,14 @@ pub struct Debt {
     pub sign: Decimal,
 }
 
+/// The country a tax number names by its first two letters, capitals, as
+/// an EU VAT number does: `IE` of `IE6388047V`.
+pub fn country(tax_id: &str) -> Option<&str> {
+    let t = tax_id.trim();
+    let two = t.get(..2)?;
+    two.bytes().all(|b| b.is_ascii_uppercase()).then_some(two)
+}
+
 pub fn class(a: &str) -> &str {
     a.split(':').next().unwrap_or("")
 }
@@ -665,6 +673,22 @@ impl Books {
         format!("{year:04}-{:04}", self.entries.iter().filter(|x| x.kind.numbered() && x.date.year() == year).count() + 1)
     }
 
+    /// Why an invoice charges no VAT unless given a rate, if it does not:
+    /// it is in another commodity than the company's, or its customer is
+    /// known to be in another country — their tax number and the company's
+    /// each begin with a country's two letters, as EU VAT numbers do, and
+    /// the two differ.
+    pub fn untaxed(&self, commodity: &str, customer_tax_id: &str) -> Option<String> {
+        let home = &self.config.company.currency;
+        if commodity != home {
+            return Some(format!("the invoice is in {commodity}, not {home}"));
+        }
+        match (country(customer_tax_id), country(&self.config.company.tax_id)) {
+            (Some(theirs), Some(ours)) if theirs != ours => Some(format!("the customer's tax number is of {theirs}, the company's of {ours}")),
+            _ => None,
+        }
+    }
+
     /// The VAT accounts the configuration names.
     pub fn vat_accounts(&self) -> Vec<&Account> {
         match &self.config.vat {
@@ -681,12 +705,13 @@ impl Books {
         class(a) == "Assets" && a != self.config.invoice.receivable && !input
     }
 
-    /// The class of account debt `d` is written off to (N4): what a customer
-    /// never pays is an expense; what a supplier forgives, income.
-    pub fn written_off_to(&self, d: EntryId) -> Option<&'static str> {
+    /// The classes of account debt `d` may be written off to (N4): what a
+    /// customer never pays is an expense; what a supplier forgives is income,
+    /// or takes back the expense it was booked to.
+    pub fn written_off_to(&self, d: EntryId) -> Option<&'static [&'static str]> {
         match self.entry(d)?.kind {
-            Kind::Invoice { .. } => Some("Expenses"),
-            Kind::Bill(_) => Some("Income"),
+            Kind::Invoice { .. } => Some(&["Expenses"]),
+            Kind::Bill(_) => Some(&["Income", "Expenses"]),
             _ => None,
         }
     }

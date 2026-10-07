@@ -241,7 +241,8 @@ fn invoices() {
         let o = abo(&dir, args, "");
         assert!(o.status.success(), "{args:?}: {}", err(&o));
     }
-    let btc = ["invoice", "--to", "Customer Ltd", "--item", "1|0.01|Consulting", "--currency", "BTC", "--date", "2026-09-25", "--pay-to", "btc"];
+    // In another currency VAT is charged only when a rate is given.
+    let btc = ["invoice", "--to", "Customer Ltd", "--item", "1|0.01|Consulting", "--currency", "BTC", "--date", "2026-09-25", "--pay-to", "btc", "--vat-rate", "10"];
     let o = abo(&dir, &btc, "");
     assert!(!o.status.success() && err(&o).contains("no price of BTC in EUR"), "{}", err(&o));
     let o = abo(&dir, &["price", "add", "2026-09-21", "BTC", "60000.00", "EUR"], "");
@@ -255,7 +256,7 @@ fn invoices() {
     assert_eq!(data["payment"].as_array().unwrap().len(), 1, "{}", data["payment"]);
     assert_eq!(data["payment"][0]["details"][0], "Network: Bitcoin");
     // Its places are those BTC is declared with, unasked.
-    let v = json(&dir, &["invoice", "--to", "Customer Ltd", "--item", "1|0.00123456|Tiny", "--currency", "BTC", "--date", "2026-09-25"]);
+    let v = json(&dir, &["invoice", "--to", "Customer Ltd", "--item", "1|0.00123456|Tiny", "--currency", "BTC", "--date", "2026-09-25", "--vat-rate", "10"]);
     assert_eq!((&v["total"]["quantity"], &v["total"]["commodity"]), (&"0.00135802".into(), &"BTC".into()), "{v}");
 
     // What no invoice may be.

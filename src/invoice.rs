@@ -46,6 +46,9 @@ pub struct Data {
     vat_home_currency: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     vat_home_price: String,
+    /// On a preview alone: what it says at its head, that it is no invoice.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    preview: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -73,10 +76,9 @@ pub struct ItemOut {
     amount: String,
 }
 
-/// The PDF of invoice or credit note `id` as the model holds it, made with
-/// the books' template: its bytes, and the template's path when making it
-/// put the template in the books.
-pub fn pdf_of(root: &Path, m: &crate::model::Books, id: usize) -> Result<(Vec<u8>, Option<&'static str>, Vec<String>)> {
+/// What the template of invoice or credit note `id` reads, and whether it
+/// is a credit note.
+fn data_of(m: &crate::model::Books, id: usize) -> Result<(Data, bool)> {
     use crate::model::{InvoiceVat, Kind};
     let e = m.entry(id).with_context(|| format!("there is no entry {id}"))?;
     let number = m.number_text(id).with_context(|| format!("entry {id} is not an invoice or a credit note"))?;
@@ -139,7 +141,16 @@ pub fn pdf_of(root: &Path, m: &crate::model::Books, id: usize) -> Result<(Vec<u8
         vat_home: home.map(|_| stated(m.home_totals(c).1 * sign, m.places(currency), currency)).unwrap_or_default(),
         vat_home_currency: home.map(|_| currency.clone()).unwrap_or_default(),
         vat_home_price: home.map(|h| format!("1 {} = {} {}, {}", c.commodity, price(h.price.quantity, m.places(&h.price.commodity), &h.price.commodity), h.price.commodity, h.date)).unwrap_or_default(),
+        preview: String::new(),
     };
+    Ok((data, credit))
+}
+
+/// The PDF of invoice or credit note `id` as the model holds it, made with
+/// the books' template: its bytes, and the template's path when making it
+/// put the template in the books.
+pub fn pdf_of(root: &Path, m: &crate::model::Books, id: usize) -> Result<(Vec<u8>, Option<&'static str>, Vec<String>)> {
+    let (data, credit) = data_of(m, id)?;
     let (rel, src, data_rel) = if credit { (CREDIT_TEMPLATE_REL, CREDIT_TEMPLATE, CREDIT_DATA_REL) } else { (TEMPLATE_REL, TEMPLATE, DATA_REL) };
     let out = root.join(".abo/made.pdf");
     let seeded = crate::pdf::compile(root, rel, src, data_rel, &data, &out)?;
@@ -185,6 +196,37 @@ const CREDIT_TEMPLATE_REL: &str = "templates/credit-note.typ";
 const CREDIT_DATA_REL: &str = ".abo/credit-note.json";
 const CREDIT_TEMPLATE: &str = include_str!("credit-note.typ");
 const TEMPLATE: &str = include_str!("invoice.typ");
+
+/// The PDF invoice `op` would have, with the number it would take, written
+/// to `out` and nothing else: nothing booked, numbered or committed, and
+/// nothing left in the books. Across every page, PREVIEW, whatever template
+/// the books hold; abo's own says at its head that it is no invoice.
+pub fn preview(s: &Store, op: &Op, out: &Path) -> Result<String> {
+    let trial = model::apply(&s.books, op, today()?).map_err(Refused)?;
+    let id = trial.entries.len();
+    let number = trial.number_text(id).context("what would be issued is not numbered")?;
+    let (mut data, _) = data_of(&trial, id)?;
+    data.preview = "PREVIEW - not an invoice".into();
+    let root = &s.root;
+    std::fs::create_dir_all(root.join(".abo"))?;
+    // The books' template if they hold one; abo's own otherwise, kept in
+    // .abo/, which git ignores, so that a preview seeds nothing.
+    let template = match root.join(TEMPLATE_REL).exists() {
+        true => format!("/{TEMPLATE_REL}"),
+        false => {
+            std::fs::write(root.join(".abo/preview-invoice.typ"), TEMPLATE)?;
+            "/.abo/preview-invoice.typ".to_string()
+        }
+    };
+    std::fs::write(root.join(DATA_REL), serde_json::to_vec_pretty(&data)?)?;
+    let wrapper = root.join(".abo/preview.typ");
+    std::fs::write(
+        &wrapper,
+        format!("#set page(background: rotate(-40deg, text(size: 120pt, weight: \"bold\", fill: rgb(200, 0, 0, 60))[PREVIEW]))\n#include \"{template}\"\n"),
+    )?;
+    crate::pdf::typst(root, &wrapper, out)?;
+    Ok(number)
+}
 
 /// Issue an invoice or a credit note: `op` with its PDF's hash. Tried
 /// first, for its number; its PDF made; then committed with it.

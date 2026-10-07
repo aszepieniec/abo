@@ -585,3 +585,43 @@ pub fn books(a: &Answers) -> NewBooks {
 }
 
 
+
+/// The questions of `qs`, in the order asked, as `--help` lists them: what
+/// each asks, a choice's options, and what follows from each answer; those
+/// of `given`, answered on the command line, left out.
+pub fn outline(qs: &[Q], given: &[&str]) -> String {
+    fn lines(qs: &[Q], depth: usize, given: &[&str], out: &mut Vec<String>) {
+        let pad = "  ".repeat(depth);
+        for q in qs {
+            match q {
+                Q::Group { title, qs, .. } => {
+                    out.push(format!("{pad}{title}:"));
+                    lines(qs, depth + 1, given, out);
+                }
+                Q::Text { key, .. } if given.contains(key) => {}
+                Q::Text { label, .. } => out.push(format!("{pad}{label}")),
+                Q::Lines { label, .. } => out.push(format!("{pad}{label}, a line at a time; an empty line ends it")),
+                Q::Choice { label, options, .. } => {
+                    let names: Vec<&str> = options.iter().map(|(n, _)| *n).collect();
+                    out.push(format!("{pad}{label} ({})", names.join(" / ")));
+                    for (n, follow) in options.iter().filter(|(_, f)| !f.is_empty()) {
+                        out.push(format!("{pad}  for {n}:"));
+                        lines(follow, depth + 2, given, out);
+                    }
+                }
+                Q::When { key, is, qs } => {
+                    out.push(format!("{pad}when {key} is {}:", is.join(" or ")));
+                    lines(qs, depth + 1, given, out);
+                }
+                Q::Repeat { item, skip, another, .. } => {
+                    out.push(format!("{pad}for each, or {skip}:"));
+                    lines(item, depth + 1, given, out);
+                    out.push(format!("{pad}{another} (yes / no)"));
+                }
+            }
+        }
+    }
+    let mut out = vec![];
+    lines(qs, 0, given, &mut out);
+    out.join("\n")
+}

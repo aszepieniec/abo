@@ -102,7 +102,9 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
         }
         Op::Invoice { date, customer, commodity, lines, rate, reason, reference, note, pdf, more } => {
             let c = &m.config;
-            let vat = match (&c.vat, rate.unwrap_or(c.invoice.vat_rate)) {
+            // Unless given: none where the sale is known to be taxed elsewhere.
+            let rate = rate.unwrap_or_else(|| if m.untaxed(&commodity, &more.customer_tax_id).is_some() { Decimal::ZERO } else { c.invoice.vat_rate });
+            let vat = match (&c.vat, rate) {
                 (Vat::None, r) if r.is_zero() => InvoiceVat::NotRegistered,
                 (Vat::None, _) => return Err("the company is not VAT registered, so an invoice charges none".into()),
                 (_, r) if r.is_zero() => InvoiceVat::Exempt { reason },
@@ -514,7 +516,8 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
     }
     for d in touched {
         if closed(d) {
-            no!("N2", "{d} is in a closed period (the books are closed through {})", closed_through.unwrap());
+            let c = closed_through.unwrap();
+            no!("N2", "{d} is in a closed period (the books are closed through {c}); the first open day is {}", c.tomorrow().unwrap_or(c));
         }
     }
     let posts = |a: &str| added.is_some() && (n.postings(n.entries.len()).iter().any(|p| p.account == a));
@@ -538,8 +541,11 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
     }
     // A write-off moves no money: it is an expense, or income.
     if let Op::WriteOff { debt, to, .. } = op {
-        if let Some(want) = m.written_off_to(*debt).filter(|w| class(to) != *w) {
-            no!("N4", "{to} is not {}; {}", if want == "Expenses" { "an expense account" } else { "an income account" }, if want == "Expenses" { "what a customer never pays is written off to an expense" } else { "what a supplier forgives is written off to income" });
+        if let Some(want) = m.written_off_to(*debt).filter(|w| !w.contains(&class(to))) {
+            match want {
+                ["Expenses"] => no!("N4", "{to} is not an expense account; what a customer never pays is written off to an expense"),
+                _ => no!("N4", "{to} is not an income or an expense account; what a supplier forgives is written off to income, or against the expense it was booked to"),
+            }
         }
     }
     if let Some(c) = closed_through {

@@ -24,6 +24,11 @@
 // Change the typeface here, e.g. #set text(font: "EB Garamond", size: 10.5pt)
 #set text(size: 10pt)
 
+// A preview's alone: that it is no invoice.
+#if at("preview") != "" [
+  #align(center, block(fill: rgb(200, 0, 0), inset: 8pt, radius: 2pt, text(fill: white, weight: "bold", size: 16pt)[#at("preview")]))
+]
+
 #grid(
   columns: (1fr, auto),
   column-gutter: 1cm,

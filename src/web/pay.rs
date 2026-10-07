@@ -72,11 +72,11 @@ pub(super) fn pay_page(s: &Store, id: usize, f: &Fields, error: Option<&anyhow::
                     p.muted.small { "What " @if invoice { "the customer will never pay" } @else { "the supplier forgave" } ", moved to an account for it." }
                     label.field { "Date" input type="date" name="date" required value=(today); }
                     // What a customer never pays is an expense; what a supplier forgives, income.
-                    @let class = format!("{}:", b.written_off_to(id).unwrap_or_default());
-                    label.field { "To" span.hint { @if invoice { "An expense, such as Expenses:Bad debts." } @else { "Income, such as Income:Forgiven." } }
+                    @let classes = b.written_off_to(id).unwrap_or_default();
+                    label.field { "To" span.hint { @if invoice { "An expense, such as Expenses:Bad debts." } @else { "Income, such as Income:Forgiven; or the expense it was booked to, which it takes back." } }
                         select name="to" required {
                             option value="" { "Choose an account" }
-                            @for a in b.accounts.iter().filter(|a| a.starts_with(&class)) { option value=(a) { (a) } }
+                            @for a in b.accounts.iter().filter(|a| classes.contains(&crate::model::class(a))) { option value=(a) { (a) } }
                         }
                     }
                     div.actions { button.btn-danger type="submit" { (icon("check")) " Write off " (open) } }

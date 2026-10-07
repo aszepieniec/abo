@@ -48,6 +48,13 @@ pub(crate) enum PaymentCmd {
     Remove { id: String },
 }
 
+/// The command line, with what clap cannot be told at compile time: init's
+/// questions, listed from their one description, so the help cannot drift.
+pub(crate) fn command() -> clap::Command {
+    use clap::CommandFactory as _;
+    Cli::command().mut_subcommand("init", |c| c.after_help(format!("Questions, in the order asked:\n{}", questions::outline(questions::INIT, &["name"]))))
+}
+
 /// `abo init`'s answers as flags, named as its questions' keys are.
 #[derive(clap::Args)]
 pub(crate) struct InitFlags {
@@ -358,7 +365,10 @@ pub(crate) enum Cmd {
         /// Payment terms. Defaults to invoice.terms_days.
         #[arg(long, allow_hyphen_values = true)]
         due_days: Option<i64>,
-        /// Percent. Defaults to invoice.vat_rate.
+        /// Percent. Defaults to none for an invoice in another currency than
+        /// the company's, or to a customer whose tax number begins with another
+        /// country's two letters than the company's; to invoice.vat_rate
+        /// otherwise. Given, it is the rate whatever the currency or customer.
         #[arg(long, allow_hyphen_values = true)]
         vat_rate: Option<Decimal>,
         /// Commodity to invoice in. Defaults to the company currency.
@@ -381,6 +391,10 @@ pub(crate) enum Cmd {
         /// invoice.income.
         #[arg(long)]
         income: Option<String>,
+        /// Write the PDF this invoice would have to this file, outside the
+        /// books, marked PREVIEW on every page; nothing is booked or numbered.
+        #[arg(long, value_name = "FILE.pdf")]
+        preview: Option<PathBuf>,
         /// Why no VAT is charged: needed at 0% unless the company is not VAT
         /// registered.
         #[arg(long, default_value = "")]
@@ -464,6 +478,8 @@ pub(crate) enum Cmd {
     /// Pay a bill or an invoice, in part or in full. DEBT is its id, or an
     /// invoice's number.
     Pay {
+        /// A bill's id, as `abo bills` shows it, or an invoice's number, as
+        /// `abo invoices` shows it, such as 2026-0003.
         debt: String,
         /// Defaults to what it has open.
         #[arg(long, allow_hyphen_values = true)]
@@ -481,12 +497,16 @@ pub(crate) enum Cmd {
         date: Option<String>,
     },
     /// Write off what a debt has open, to an account for it: what a customer
-    /// never pays, to an expense; what a supplier forgives, to income.
+    /// never pays, to an expense; what a supplier forgives, to income, or
+    /// against the expense the bill was booked to, which it takes back.
     WriteOff {
-        /// A bill's id, or an invoice's number.
+        /// A bill's id, as `abo bills` shows it, or an invoice's number, as
+        /// `abo invoices` shows it.
         debt: String,
         /// The account it is written off to: an expense account for an
-        /// invoice, an income account for a bill.
+        /// invoice; for a bill, an income account (forgiven, as other income),
+        /// or the expense account it was booked to (the cost taken back).
+        /// Choose one a VAT box does not count as turnover.
         #[arg(long)]
         to: String,
         /// Defaults to today.
@@ -533,7 +553,7 @@ pub(crate) enum Cmd {
         /// Printed at the foot, such as why it is cancelled.
         #[arg(long, default_value = "")]
         note: String,
-        /// The invoice's number, such as 2026-0017.
+        /// The invoice's number, as `abo invoices` shows it, such as 2026-0017.
         number: String,
     },
     /// Every invoice and credit note: total, due date, what is open. Newest
@@ -567,11 +587,13 @@ pub(crate) enum Cmd {
         /// Defaults to today.
         #[arg(long)]
         date: Option<String>,
+        /// The entry's id, as `abo entries` shows it.
         entry: String,
     },
     /// The configuration, read and changed by keys named as in abo.toml:
     /// company.closed_through closes a period, invoice.terms_days sets the
-    /// payment terms, report.vat.<code> a box of the tax return.
+    /// payment terms, report.vat.<code> a box of the tax return. One key is
+    /// read with `abo config get company.name`.
     Config {
         #[command(subcommand)]
         change: Option<ConfigCmd>,

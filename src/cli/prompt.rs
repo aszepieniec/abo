@@ -300,7 +300,11 @@ impl questions::Source for Terminal {
         Ok(match (n, skipped) {
             (0, _) => true,
             (_, true) => false,
-            _ => prompt_until(question, "no", |s| answer::one_of(s, &["yes", "no"], "yes or no"))? == "yes",
+            // `skip`, as the kind's question offers it, is no another.
+            _ => prompt_until(question, "no", |s| match s.trim().eq_ignore_ascii_case("skip") {
+                true => Ok("no"),
+                false => answer::one_of(s, &["yes", "no"], "yes or no"),
+            })? == "yes",
         })
     }
 

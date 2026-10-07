@@ -213,9 +213,10 @@ CLI: `abo bills [--open] [--json]`, each bill with its id, which `pay`,
 ### B5. Write off what will not be paid — Supported (browser, CLI)
 What a customer will never pay, or a supplier forgave. Browser: **Write off**
 on the Pay page, to an account chosen for it. CLI: `abo write-off <id>
---to <account>`. An invoice is written off to an expense account, a bill to
-an income account; a write-off moves no money, so another account is refused
-(MODEL.md N4).
+--to <account>`. An invoice is written off to an expense account; a bill to
+an income account, or against the expense account it was booked to, which
+takes the cost back (one a tax return's turnover box does not count). A
+write-off moves no money, so another account is refused (MODEL.md N4).
 **Done when** nothing is open, what was open is in that account, and the
 debt shows as written off, not settled.
 
@@ -238,14 +239,24 @@ income account is refused. With no option chosen it prints them all. With
 none it says only when to pay; with one or more, "to the following" or "to
 any of the following" and each option's name and details, side by side.
 An invoice is stated to the places its commodity is declared with (A2).
+Its VAT rate, unless given: none for an invoice in another commodity than the
+company's, or to a customer known to be in another country — their tax
+number and the company's each begin with a country's two letters, as EU VAT
+numbers do, and the two differ; the configured `invoice.vat_rate` otherwise.
+`--vat-rate` (the form's VAT rate) is always the rate. At none, a
+VAT-registered company says why, and the refusal says the rate defaulted
+and why. The log writes out the rate taken. `--preview <file.pdf>` (the
+form's **Preview**) writes the PDF it would have, with the number it would
+take, outside the books, PREVIEW across every page, and books, numbers and
+commits nothing.
 **Done when** the invoice is numbered next in its year (its place among the
 year's invoices and credit notes), its PDF is under `invoices/<year>/`, the receivable, income and (under
 the effective method) output VAT are booked, and the PDF and entry are in one
 commit. VAT follows the configured method: none charged when not registered,
 the gross booked to income under a flat scheme. Sending the form twice issues
 one invoice. A failure — typst missing, say — leaves no commit, no files and
-the number unused. Refused: an invoice at 0% VAT, from a company that is VAT
-registered, that does not say why; one dated before the invoice numbered
+the number unused. Refused: an invoice at 0% VAT, given or by default, from a
+company that is VAT registered, that does not say why; one dated before the invoice numbered
 ahead of it (numbers follow dates), or after today (dated ahead by mistake,
 it would hold every later one back); and one in another commodity charging VAT
 when the books have no price for it in the company currency on or before its
@@ -289,7 +300,9 @@ the statement. Tick every posting the statement shows and **Record the
 statement**; **Take out the statement** takes out the latest. CLI: `abo
 reconcile` to see, `abo record --balance <b> <ENTRY.N…>` (or `--all`), `abo
 unrecord`. **Show** updates the figures without changing anything.
-`abo reconcile` shows the balance in the books beside what is cleared.
+`abo reconcile` shows the balance in the books beside what is cleared;
+`abo record` says, once it has recorded, whether the books agree, or what is
+not yet cleared.
 **Done when** the statement is recorded with the postings it clears, as one
 commit, and its balance is what they and the earlier statements clear (MODEL.md
 I-S3); when every posting to it on or before its date is cleared, the journal
@@ -369,6 +382,20 @@ last commit is not abo's last change, or files hold changes abo did not
 make; and when the last change issued an invoice or a credit note, which may
 be with the customer: it is cancelled by a credit note (F5), and the refusal
 names the command. Anything older is reverted (F7).
+
+### F8. Changes not made by abo — Supported (CLI, browser)
+abo commits every change it makes. A change to the books' files not
+committed is someone else's: while there is one, abo changes nothing, `abo
+tidy` included, and asks for it to be settled first — committed by whoever
+made it (`git commit -m '...' -- <files>`), or taken out (`git checkout --
+<files>`) — naming the files, and what the change breaks against the last
+commit, for information. It offers no abo command as a way out. Reports
+still read. Committed, a change that breaks the books is listed by `abo
+check` at its file and line, with how to mend it; changes go ahead on such
+books, each saying that problems remain, and refused only for a problem of
+their own.
+**Done when** nothing is changed while files hold changes abo did not make,
+and the refusal names both git commands.
 
 ### F3. Take out a statement recorded by mistake — Supported (browser, CLI)
 **Take out the statement** on Reconcile, or `abo unrecord`: the latest

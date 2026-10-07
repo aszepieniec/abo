@@ -103,7 +103,13 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             let b = questions::books(&answers);
             let commit = store::init(&dir, b.config.clone(), b.author.clone(), crate::command::init(&b))?;
             let r = serde_json::json!({ "root": dir.display().to_string(), "commit": commit });
-            emit(cli.json, &r, || format!("Books opened in {} ({commit}).\nNext: cd {slug}, then `abo account add` and `abo post`.", dir.display()))
+            // Registered for VAT, the tax return has no boxes yet: they are
+            // the form's, which differs by country, so they are set by hand.
+            let vat = match b.config.vat {
+                model::Vat::None => "",
+                _ => "\nThe tax return has no boxes yet: set one for each box of your form with\n  abo config set report.vat.<code> '{ label = \"...\", query = \"...\" }'\n(the query is hledger's, such as acct:^Income; invert = true turns a credit over).",
+            };
+            emit(cli.json, &r, || format!("Books opened in {} ({commit}).\nNext: cd {slug}, then `abo account add` and `abo post`.{vat}", dir.display()))
         }
         Cmd::Post { date, description, postings } => {
             let mut s = Store::open(&here)?;
@@ -145,7 +151,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             let op = Op::Bill { date, description, postings, document, again };
             changed(&mut s, &op, &[], cli.json)
         }
-        Cmd::Invoice { to, items, date, due_days, vat_rate, currency, reference, pay_to, note, customer_tax_id, income, vat_reason } => {
+        Cmd::Invoice { to, items, date, due_days, vat_rate, currency, reference, pay_to, note, customer_tax_id, income, preview, vat_reason } => {
             let mut s = Store::open(&here)?;
             let lines: Vec<model::Line> = items.iter().enumerate().map(|(n, raw)| input::line(n + 1, raw)).collect::<Result<_>>()?;
             let commodity = currency.unwrap_or_else(|| s.books.config.company.currency.clone());
@@ -173,6 +179,12 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 pdf,
                 more: more.clone(),
             };
+            if let Some(path) = preview {
+                outside(&s, &path, "a preview")?;
+                let number = crate::invoice::preview(&s, &op("0".repeat(64)), &path)?;
+                let r = serde_json::json!({ "number": number, "preview": path });
+                return emit(cli.json, &r, || format!("Preview of invoice {number}, as it would be issued now, written to {}. Nothing is booked.", path.display()));
+            }
             issue(&mut s, op, cli.json)
         }
         Cmd::Credit { date, note, number } => {
@@ -292,7 +304,21 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 refs.extend(s.books.all_postings().into_iter().filter(|(r, d, p)| p.account == account && p.amount.commodity == commodity && *d <= date && !cleared.contains(r)).map(|(r, ..)| r));
             }
             let op = Op::Record { account: account.clone(), commodity: commodity.clone(), date, balance, clears: refs };
-            changed(&mut s, &op, &[], cli.json)
+            changed(&mut s, &op, &[], cli.json)?;
+            // How what it shows stands against the books, on its day.
+            if !cli.json {
+                let r = views::reconciled(&s.books, &account, &commodity, date, None);
+                let n = r.outstanding.len();
+                match n {
+                    0 => println!("The books agree: {} in the books, all of it cleared.", r.books.text(" ")),
+                    _ => {
+                        let left: rust_decimal::Decimal = r.outstanding.iter().filter_map(|o| o.amount.quantity.parse::<rust_decimal::Decimal>().ok()).sum();
+                        let left = views::Amount::new(&s.books, left, &commodity);
+                        println!("In the books {} on {date}; {n} posting{} not yet cleared, {} in all (abo reconcile lists them).", r.books.text(" "), if n == 1 { "" } else { "s" }, left.text(" "));
+                    }
+                }
+            }
+            Ok(())
         }
         Cmd::Unrecord { account, commodity } => {
             let mut s = Store::open(&here)?;
@@ -553,10 +579,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             let (commit, rewrote) = s.tidy()?;
             let left = if s.problems.is_empty() { String::new() } else { format!("\nThe books still hold problems tidying does not mend:\n  {}\n{}", s.problems.join("\n  "), mending(&s)) };
             emit(cli.json, &serde_json::json!({ "commit": commit, "problems": s.problems }), || match &commit {
-                Some(c) => format!("Rewrote the books as abo writes them. Committed {c}.{left}"),
-                // Written back as the last commit has them: a hand edit of what
-                // abo derives, which changed nothing, taken out.
-                None if !rewrote.is_empty() => format!("Wrote {} back as abo writes it, as the last commit has it: what was changed there is derived, and changed nothing.{left}", rewrote.join(", ")),
+                Some(c) => format!("Rewrote {} as abo writes them. Committed {c}.{left}", rewrote.join(", ")),
                 None => format!("Nothing to tidy.{left}"),
             })
         }
@@ -590,6 +613,17 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
 }
 
 
+/// What changes nothing in the books is written outside them: a report, a
+/// preview.
+fn outside(books: &Store, path: &std::path::Path, what: &str) -> Result<()> {
+    let full = std::path::absolute(path)?;
+    let dir = full.parent().and_then(|d| d.canonicalize().ok()).unwrap_or_default();
+    if dir.starts_with(books.root.canonicalize()?) {
+        bail!("{} is in the books; {what} is written outside them", path.display());
+    }
+    Ok(())
+}
+
 pub(crate) fn statement(
     books: &Store,
     s: statement::Statement,
@@ -597,12 +631,7 @@ pub(crate) fn statement(
     json: bool,
 ) -> Result<()> {
     if let Some(path) = &pdf {
-        // A report changes nothing in the books, so is written outside them.
-        let full = std::path::absolute(path)?;
-        let dir = full.parent().and_then(|d| d.canonicalize().ok()).unwrap_or_default();
-        if dir.starts_with(books.root.canonicalize()?) {
-            bail!("{} is in the books; a report is written outside them", path.display());
-        }
+        outside(books, path, "a report")?;
         statement::pdf(books, &s, path)?;
     }
     emit(json, &s, || {
@@ -716,15 +745,17 @@ pub(crate) fn emit<T: serde::Serialize>(json: bool, value: &T, human: impl FnOnc
 
 /// How the problems `abo check` lists are mended, from what each is of.
 fn mending(s: &Store) -> String {
-    let mut how: Vec<String> = vec![];
-    // What a hand edit not committed broke: that edit is taken out, or
-    // mended by hand; no abo command runs over it.
-    let by_hand = s.broken_by_hand().unwrap_or_default();
-    if !by_hand.is_empty() {
-        let these = s.edited().unwrap_or_default().join(" ");
-        how.push(format!("git checkout -- {these}, which takes out the hand edit not committed that brought {}; or mend it by hand, then abo tidy", if by_hand.len() == 1 { "the first" } else { "those above" }));
+    // Changes abo did not make come first: abo changes nothing while they
+    // are there, so no abo command is a way out of them.
+    let edited = s.edited().unwrap_or_default();
+    if !edited.is_empty() {
+        let these = edited.join(" ");
+        return format!(
+            "To mend them:\n  {these}: changes abo did not make. Please settle them first: commit them yourself (git commit -m '...' -- {these}), or take them out (git checkout -- {these}); abo changes nothing until then"
+        );
     }
-    for v in model::check(&s.books).into_iter().filter(|v| !by_hand.iter().any(|p| p.ends_with(&v.to_string()))) {
+    let mut how: Vec<String> = vec![];
+    for v in model::check(&s.books) {
         let line = match (&v.of, v.code) {
             (model::Subject::Account(a), "I-A1") => format!("abo account add {a}"),
             (model::Subject::Commodity(c), "I-A1") => format!("abo commodity add {c} <places>"),
@@ -737,9 +768,9 @@ fn mending(s: &Store) -> String {
     if s.problems.iter().any(|p| p.ends_with("not as abo writes it")) {
         how.push("abo tidy, for what is only not as abo writes it".into());
     }
-    if s.problems.len() > how.len() + by_hand.len().saturating_sub(1) {
+    if s.problems.len() > how.len() {
         let rest = if how.is_empty() { "" } else { ", for the rest" };
-        how.push(format!("by hand, at the line named{rest}; git log -p shows what changed there"));
+        how.push(format!("by hand, at the line named{rest}, then committed yourself; git log -p shows what changed there"));
     }
     format!("To mend them:\n  {}", how.join("\n  "))
 }
@@ -756,6 +787,7 @@ pub(crate) fn hints(r: &store::Refused) -> Vec<String> {
             ("I-A1", Subject::Commodity(c)) => format!("abo commodity add {c} <places>"),
             ("I-E4", Subject::Commodity(c)) => format!("abo price add <date> {c} <price> <company currency>"),
             ("I-I1", Subject::Field("reason")) => "--vat-reason '<why no VAT is charged>'".into(),
+            ("I-I1", Subject::Field("default rate")) => "--vat-reason '<why no VAT is charged>'; or --vat-rate <percent>, to charge VAT after all".into(),
             ("N7", Subject::Account(a)) => format!("abo unrecord --account {a}, which takes out its latest statement"),
             ("N9", Subject::Account(a)) => format!("abo post, with the other side moved where it belongs; or abo unrecord --account {a}, if the statement was wrong"),
             ("N8", _) => "--again, if it is another bill just like it".into(),

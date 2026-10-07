@@ -199,7 +199,7 @@ pub fn explain(m: &Books, op: &Op, n: &Books, v: Vec<Violation>) -> Vec<Violatio
             "I-E2" => (pay && has("I-P1")) || (matches!(op, Op::Invoice { .. }) && has("I-I1")),
             "I-E0" | "I-E1" => matches!(op, Op::Invoice { .. }) && has("I-I1"),
             // An invoice in a commodity not declared has no price to be booked at.
-            "I-E4" => matches!(op, Op::Invoice { .. }) && (has("I-I1") || has("I-A1")),
+            "I-E4" => matches!(op, Op::Invoice { .. }) && has("I-A1"),
             _ => false,
         }
     });
@@ -215,7 +215,14 @@ pub fn explain(m: &Books, op: &Op, n: &Books, v: Vec<Violation>) -> Vec<Violatio
         let of: Vec<Subject> = match (code, op) {
             // What is missing is the commodity's price, or the reason.
             ("I-E4", Op::Invoice { commodity, .. }) => vec![Subject::Commodity(commodity.clone()); said.len()],
-            ("I-I1", Op::Invoice { .. }) => said.iter().map(|w| if w.ends_with("say why no VAT is charged") { Subject::Field("reason") } else { Subject::None }).collect(),
+            ("I-I1", Op::Invoice { .. }) => said
+                .iter()
+                .map(|w| match () {
+                    _ if w.ends_with("say why no VAT is charged, or give a rate") => Subject::Field("default rate"),
+                    _ if w.ends_with("say why no VAT is charged") => Subject::Field("reason"),
+                    _ => Subject::None,
+                })
+                .collect(),
             _ if said.len() == these.len() => these.iter().map(|x| x.of.clone()).collect(),
             _ => vec![Subject::None; said.len()],
         };
@@ -443,7 +450,15 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                     InvoiceVat::Exempt { reason } => Some(reason.as_str()),
                     _ => None,
                 };
-                let reason = |r: &str| if r.trim().is_empty() { "at 0% VAT, say why no VAT is charged" } else { "the reason for 0% VAT holds a hidden character" };
+                let defaulted = match (op, &c.vat) {
+                    (Op::Invoice { rate: None, commodity, more, .. }, InvoiceVat::Exempt { .. }) => m.untaxed(commodity, &more.customer_tax_id),
+                    _ => None,
+                };
+                let reason = |r: &str| match (&defaulted, r.trim().is_empty()) {
+                    (Some(why), true) => format!("the rate defaulted to 0%, as {why}: say why no VAT is charged, or give a rate"),
+                    (None, true) => "at 0% VAT, say why no VAT is charged".to_string(),
+                    _ => "the reason for 0% VAT holds a hidden character".to_string(),
+                };
                 let texts = c.lines.iter().map(|l| l.description.as_str()).chain([c.reference.as_str()]).chain(c.pay_to.iter().flat_map(|p| p.lines.iter().chain([&p.label]).map(String::as_str)));
                 let said = if c.lines.is_empty() {
                     "an invoice needs a line".to_string()
@@ -456,7 +471,7 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                 } else if c.due < *date {
                     "the invoice would be due before its date".into()
                 } else if let Some(r) = exempt.filter(|r| r.trim().is_empty() || !text_ok(r)) {
-                    reason(r).into()
+                    reason(r)
                 } else if !hash_ok(pdf) {
                     "the PDF's hash is not a SHA-256".into()
                 } else if c.customer.lines().next().is_none_or(|l| l.trim().is_empty()) {

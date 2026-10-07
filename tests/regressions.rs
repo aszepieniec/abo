@@ -1040,7 +1040,7 @@ fn abo_toml_is_checked_when_read() {
         let o = abo(&dir, &["check"]);
         assert!(!o.status.success() && String::from_utf8_lossy(&o.stdout).contains(says), "{says}: {}", String::from_utf8_lossy(&o.stdout));
         // Not committed, it holds every change up; abo would sign it.
-        refused(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"], "abo.toml: changed by hand");
+        refused(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"], "abo.toml holds changes abo did not make");
     }
 }
 
@@ -1152,7 +1152,7 @@ fn file_and_book_files_nothing_it_cannot_book() {
                 --b0undary\r\nContent-Disposition: form-data; name=\"postings\"\r\n\r\nExpenses:General=1.00\nLiabilities:Payable=-1.00\r\n\
                 --b0undary\r\nContent-Disposition: form-data; name=\"token\"\r\n\r\nfb1\r\n--b0undary--\r\n";
     let (_, _, page) = send(&s, "POST", "/bill", "multipart/form-data; boundary=b0undary", body.as_bytes());
-    assert!(page.contains("changed by hand, by no abo command"), "{page}");
+    assert!(page.contains("changes abo did not make"), "{page}");
     assert!(!dir.join("bills").exists(), "the document was filed");
 }
 
@@ -1237,7 +1237,7 @@ fn an_undo_held_up_by_a_hand_edit_says_so() {
     let dir = books("undo-hand-edit", &[]);
     ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
     std::fs::write(dir.join("journal/2026.journal"), read(&dir, "journal/2026.journal").replace("Fees", "Fees, typed over")).unwrap();
-    refused(&dir, &["undo"], "journal/2026.journal: changed by hand");
+    refused(&dir, &["undo"], "journal/2026.journal holds changes abo did not make");
 }
 
 #[test]
@@ -1411,8 +1411,9 @@ fn an_iban_is_written_in_groups_of_four() {
     assert!(read(&dir, "abo.toml").contains("iban = \"CH93 0076 2011 6238 5295 7\""), "{}", read(&dir, "abo.toml"));
 }
 
-/// `abo tidy` mends a hand edit that is only not as abo writes it, even one
-/// not committed: what it writes is then what the books hold already.
+/// `abo tidy` mends a committed hand edit that is only not as abo writes it:
+/// what it writes is then what the books hold already. Not committed, the
+/// edit holds tidy up as it holds every change.
 #[test]
 fn tidy_mends_an_uncommitted_edit() {
     let dir = books("tidy-uncommitted", &[]);
@@ -1422,6 +1423,8 @@ fn tidy_mends_an_uncommitted_edit() {
         .collect::<Vec<_>>().join("\n") + "\n";
     assert_ne!(spaced, journal);
     std::fs::write(dir.join("journal/2026.journal"), spaced).unwrap();
+    refused(&dir, &["tidy"], "Please settle them first");
+    git(&dir, &["commit", "-qam", "By hand"]);
     ok(&dir, &["tidy"]);
     assert_eq!(read(&dir, "journal/2026.journal"), journal);
     ok(&dir, &["check"]);
@@ -1608,9 +1611,45 @@ fn a_write_off_is_an_expense_or_income_and_moves_no_money() {
     invoice(&dir, "2026-0001", "2026-03-01", "110.00");
     let (bill, _) = bill_entry(&dir, "Acme", "2026-03-01", "40.00");
     refused(&dir, &["write-off", "2026-0001", "--to", "Assets:Bank", "--date", "2026-03-02"], "N4");
-    refused(&dir, &["write-off", &bill, "--to", "Expenses:General", "--date", "2026-03-02"], "N4");
+    refused(&dir, &["write-off", &bill, "--to", "Assets:Cash", "--date", "2026-03-02"], "N4");
+    refused(&dir, &["write-off", "2026-0001", "--to", "Income:Sales", "--date", "2026-03-02"], "N4");
     ok(&dir, &["write-off", "2026-0001", "--to", "Expenses:General", "--date", "2026-03-02"]);
     ok(&dir, &["write-off", &bill, "--to", "Income:Sales", "--date", "2026-03-02"]);
+}
+
+/// Fourth CLI run: a bill a supplier forgave could only go to income, which
+/// a tax return's turnover box counts; it may now take back the expense it
+/// was booked to.
+#[test]
+fn a_forgiven_bill_may_take_back_its_expense() {
+    let dir = books("write-off-expense", &[]);
+    let (bill, _) = bill_entry(&dir, "Acme", "2026-03-01", "40.00");
+    ok(&dir, &["write-off", &bill, "--to", "Expenses:General", "--date", "2026-03-02"]);
+    let pl = json(&dir, &["pl", "-p", "2026"]);
+    assert!(!pl.to_string().contains("40.00"), "{pl}");
+    assert!(ok(&dir, &["bills"]).contains("written off"));
+}
+
+/// Fourth CLI run: an invoice in another currency, or to a customer in
+/// another country, charged the domestic rate without a word.
+#[test]
+fn an_invoice_abroad_charges_no_vat_unless_told() {
+    let base = std::env::temp_dir().join(format!("abo-reg-vat-abroad-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    ok(&base, &["init", "Abroad", "--currency", "EUR", "--vat", "effective", "--sales-rate", "10", "--tax-id", "DE123456789", "--git-name", "t", "--git-email", "t@t"]);
+    let dir = base.join("abroad");
+    ok(&dir, &["commodity", "add", "USD", "2"]);
+    ok(&dir, &["price", "add", "2026-03-01", "USD", "0.92", "EUR"]);
+    refused(&dir, &["invoice", "--to", "H", "--item", "1|100|x", "--currency", "USD", "--date", "2026-03-01"], "the rate defaulted to 0%, as the invoice is in USD");
+    refused(&dir, &["invoice", "--to", "B", "--item", "1|100|x", "--customer-tax-id", "IE6388047V", "--date", "2026-03-01"], "the customer's tax number is of IE, the company's of DE");
+    let v = json(&dir, &["invoice", "--to", "B", "--item", "1|100|x", "--customer-tax-id", "IE6388047V", "--vat-reason", "Reverse charge", "--date", "2026-03-01"]);
+    assert_eq!(v["total"]["quantity"], "100.00", "{v}");
+    // At home, the configured rate; given, the rate given.
+    assert_eq!(json(&dir, &["invoice", "--to", "D", "--item", "1|100|x", "--customer-tax-id", "DE999", "--date", "2026-03-01"])["total"]["quantity"], "110.00");
+    assert_eq!(json(&dir, &["invoice", "--to", "B", "--item", "1|100|x", "--customer-tax-id", "IE6388047V", "--vat-rate", "10", "--date", "2026-03-01"])["total"]["quantity"], "110.00");
+    // The log writes out the rate taken.
+    assert!(read(&dir, ".abo/log.jsonl").contains("--vat-rate=0"));
 }
 
 // ---- known faults, fixed 2026-10-05 ----
@@ -1652,14 +1691,15 @@ fn tidy_does_not_take_in_a_hand_edit_that_breaks_the_books() {
 }
 
 /// Mended by hand, a file abo would write as it is said "Nothing to tidy",
-/// and every change stayed refused for the edit.
+/// and every change stayed refused for the edit. Changes abo did not make
+/// are the person's to settle: committed by them, changes go ahead.
 #[test]
 fn tidy_takes_in_a_hand_edit_abo_would_have_written() {
     let dir = books("tidy-mended", &[]);
     ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
     std::fs::write(dir.join("journal/2026.journal"), read(&dir, "journal/2026.journal").replace("Fees", "Bank fees")).unwrap();
-    let said = ok(&dir, &["tidy"]);
-    assert!(said.contains("Committed"), "{said}");
+    refused(&dir, &["tidy"], "git commit -m '...' -- journal/2026.journal");
+    git(&dir, &["commit", "-qam", "By hand"]);
     ok(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"]);
 }
 
@@ -1839,7 +1879,7 @@ fn help_says_how_to_close_a_period_and_what_hledger_is_passed() {
     for o in ["--period", "--monthly", "--depth", "--layout"] {
         assert!(bal.contains(o), "{o}: {bal}");
     }
-    assert!(ok(&dir, &["write-off", "--help"]).contains("an income account for a bill"));
+    assert!(ok(&dir, &["write-off", "--help"]).contains("for a bill, an income account"));
 }
 
 /// The address of an invoice's customer was `\n` within one --to, where
@@ -1897,7 +1937,8 @@ fn a_hand_edit_not_committed_is_refused_with_the_commands_that_clear_it() {
     std::fs::write(dir.join("journal/accounts.journal"), read(&dir, "journal/accounts.journal").replace("account Expenses:General\n", "")).unwrap();
     refused(&dir, &["account", "add", "Expenses:General"], "git checkout -- journal/accounts.journal");
     let o = abo(&dir, &["account", "add", "Expenses:General"]);
-    assert!(!err(&o).contains("git commit"), "{}", err(&o));
+    // The person's to settle with git; no abo command is a way out of them.
+    assert!(err(&o).contains("git commit -m '...' -- journal/accounts.journal") && !err(&o).contains("abo tidy") && !err(&o).contains("abo account"), "{}", err(&o));
 }
 
 /// Third run: abo check still gave, for a hand edit not committed, the abo
@@ -1914,7 +1955,7 @@ fn check_mends_a_hand_edit_not_committed_by_taking_it_out() {
     assert!(said.contains("git checkout -- journal/accounts.journal") && !said.contains("abo account add"), "{said}");
     git(&dir, &["checkout", "--", "journal/accounts.journal"]);
     std::fs::write(dir.join("journal/2026.journal"), read(&dir, "journal/2026.journal").replace("Fees", "Bank fees")).unwrap();
-    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"], "It breaks nothing: abo tidy takes it in");
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"], "Please settle them first");
 }
 
 /// A change made on books holding a problem went ahead without a word.
@@ -1936,8 +1977,9 @@ fn tidy_says_what_it_wrote_back() {
     ok(&dir, &["invoice", "--to", "C", "--item", "1|100|x", "--date", "2026-03-01"]);
     let j = read(&dir, "journal/2026.journal");
     std::fs::write(dir.join("journal/2026.journal"), j.replace("-100.00 EUR", "-150.00 EUR")).unwrap();
+    git(&dir, &["commit", "-qam", "By hand"]);
     let said = ok(&dir, &["tidy"]);
-    assert!(said.contains("Wrote journal/2026.journal back") && said.contains("derived"), "{said}");
+    assert!(said.contains("Rewrote journal/2026.journal as abo writes them"), "{said}");
     assert_eq!(read(&dir, "journal/2026.journal"), j);
 }
 
@@ -2084,4 +2126,102 @@ fn an_invoice_names_its_income_account() {
     // Unsaid, the configured one, written out.
     ok(&dir, &["invoice", "--to", "C", "--item", "1|100|x", "--date", "2026-03-03"]);
     assert!(read(&dir, ".abo/log.jsonl").contains("--income=Income:Sales"));
+}
+
+// ---- the decisions on the fourth CLI run, 2026-10-07 ----
+
+/// A preview of an invoice books nothing, numbers nothing, commits nothing,
+/// and says PREVIEW on its PDF; into the books it is refused.
+#[test]
+fn an_invoice_preview_changes_nothing() {
+    if Command::new("typst").arg("--version").output().is_err() {
+        return;
+    }
+    let dir = books("preview", &[]);
+    let out = dir.parent().unwrap().join("preview.pdf");
+    let before = log_len(&dir);
+    let said = ok(&dir, &["invoice", "--to", "C", "--item", "1|100|x", "--date", "2026-03-01", "--preview", out.to_str().unwrap()]);
+    assert!(said.contains("Preview of invoice 2026-0001") && said.contains("Nothing is booked"), "{said}");
+    assert!(std::fs::read(&out).unwrap().starts_with(b"%PDF"));
+    assert_eq!(log_len(&dir), before);
+    assert!(!dir.join("invoices").exists() && !dir.join("templates").exists());
+    let status = Command::new("git").args(["status", "--porcelain"]).current_dir(&dir).output().unwrap();
+    assert!(status.stdout.is_empty(), "{}", String::from_utf8_lossy(&status.stdout));
+    if let Ok(t) = Command::new("pdftotext").arg(&out).arg("-").output() {
+        assert!(String::from_utf8_lossy(&t.stdout).contains("PREVIEW"));
+    }
+    refused(&dir, &["invoice", "--to", "C", "--item", "1|100|x", "--date", "2026-03-01", "--preview", "in-the-books.pdf"], "in the books");
+    // The number it showed is the one issued next.
+    assert_eq!(json(&dir, &["invoice", "--to", "C", "--item", "1|100|x", "--date", "2026-03-01"])["number"], "2026-0001");
+}
+
+/// A VAT-registered company was opened with no tax return, and not told.
+#[test]
+fn init_says_the_tax_return_has_no_boxes() {
+    let base = std::env::temp_dir().join(format!("abo-reg-init-vat-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let said = ok(&base, &["init", "Vat Co", "--currency", "EUR", "--vat", "effective", "--sales-rate", "10", "--git-name", "t", "--git-email", "t@t"]);
+    assert!(said.contains("abo config set report.vat.<code>"), "{said}");
+    let said = ok(&base, &["init", "No Vat", "--currency", "EUR", "--vat", "none", "--git-name", "t", "--git-email", "t@t"]);
+    assert!(!said.contains("report.vat"), "{said}");
+}
+
+/// record said nothing of how the statement stood against the books.
+#[test]
+fn record_says_how_the_books_stand() {
+    let dir = books("record-says", &[]);
+    let a = entry(&dir, &["post", "--date", "2026-03-01", "--desc", "Float", "Assets:Cash=10.00", "Equity:Opening=-10.00"]);
+    ok(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Assets:Cash=5.00", "Equity:Opening=-5.00"]);
+    let said = ok(&dir, &["record", "--account", "Assets:Cash", "--date", "2026-03-31", "--balance", "10.00", &format!("{a}.0")]);
+    assert!(said.contains("In the books 15.00 EUR on 2026-03-31; 1 posting not yet cleared, 5.00 EUR"), "{said}");
+    ok(&dir, &["unrecord", "--account", "Assets:Cash"]);
+    let said = ok(&dir, &["record", "--account", "Assets:Cash", "--date", "2026-03-31", "--balance", "15.00", "--all"]);
+    assert!(said.contains("The books agree"), "{said}");
+}
+
+/// An invoice open in full said only "open"; the closed period's refusal
+/// gave no way on; skip was refused where another option was asked for;
+/// init's help named no questions.
+#[test]
+fn small_things_of_the_fourth_run() {
+    let dir = books("small-four", &[]);
+    ok(&dir, &["invoice", "--to", "C", "--item", "1|100|x", "--date", "2026-03-01"]);
+    assert!(ok(&dir, &["invoices"]).contains("open, 110.00 EUR"));
+    ok(&dir, &["config", "set", "company.closed_through", "2026-03-31"]);
+    refused(&dir, &["post", "--date", "2026-03-15", "--desc", "Late", "Expenses:General=1.00", "Assets:Bank=-1.00"], "the first open day is 2026-04-01");
+    let help = ok(&dir, &["init", "--help"]);
+    assert!(help.contains("Questions, in the order asked") && help.contains("Currency code") && help.contains("Add another payment option"), "{help}");
+    let base = std::env::temp_dir().join(format!("abo-reg-skip-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_abo"));
+    c.args(["init", "Skip Co"]).current_dir(&base).env("ABO_TODAY", TODAY).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    use std::io::Write as _;
+    child.stdin.take().unwrap().write_all(b"Main St 1\n\nCH\n\ncash\nAt the till\n\n\n\n\nskip\nchf\nnone\nt\nt@t\n").unwrap();
+    let o = child.wait_with_output().unwrap();
+    assert!(o.status.success(), "{}{}", String::from_utf8_lossy(&o.stdout), err(&o));
+}
+
+/// The invoice form's Preview answers with the PDF, marked PREVIEW, and
+/// issues nothing.
+#[test]
+fn the_invoice_forms_preview_issues_nothing() {
+    if Command::new("typst").arg("--version").output().is_err() {
+        return;
+    }
+    let dir = books("web-preview", &[]);
+    let before = log_len(&dir);
+    let s = serve(&dir);
+    let host = format!("127.0.0.1:{}", s.port);
+    let body = "to=C&items=1%7C100%7Cx&date=2026-03-01&preview=1&token=t1";
+    let mut c = TcpStream::connect(&host).unwrap();
+    write!(c, "POST /invoice HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nConnection: close\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+    let mut out = vec![];
+    c.read_to_end(&mut out).unwrap();
+    let head = String::from_utf8_lossy(&out[..out.len().min(300)]).to_string();
+    assert!(head.starts_with("HTTP/1.1 200") && head.contains("application/pdf"), "{head}");
+    assert_eq!(log_len(&dir), before);
+    assert!(!dir.join("invoices").exists());
 }

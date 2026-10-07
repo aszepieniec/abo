@@ -91,6 +91,7 @@ impl InvoiceRow {
         let mut said = match (&self.credits, &self.open) {
             (Some(n), _) => format!("credits {n}"),
             (None, Some(o)) if self.status == "part paid" => format!("part paid, {} open", o.text(space)),
+            (None, Some(o)) if self.status == "open" => format!("open, {}", o.text(space)),
             _ => self.status.to_string(),
         };
         if self.overdue {

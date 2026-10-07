@@ -146,15 +146,16 @@ impl Store {
             return Ok(());
         }
         let these = files.join(" ");
+        // abo leaves nothing uncommitted: these are someone else's, and theirs
+        // to settle. What they break is said, for information.
         let breaks = self.broken_by_hand()?;
-        if breaks.is_empty() {
-            bail!("{these}: changed by hand, by no abo command. It breaks nothing: abo tidy takes it in; git checkout -- {these} takes it out");
-        }
-        // Committed, a breaking edit would be the books' history; abo's own
-        // commands on top of it would not mend it. Taken out, or mended first.
+        let breaks = match breaks.is_empty() {
+            true => String::new(),
+            false => format!("\nAgainst the last commit, they break:\n  {}", breaks.join("\n  ")),
+        };
         bail!(
-            "{these}: changed by hand, by no abo command, and it breaks the books:\n  {}\nTake it out (git checkout -- {these}), or mend it by hand and then abo tidy",
-            breaks.join("\n  ")
+            "{these} {} changes abo did not make, and abo changes nothing while they are there. Please settle them first: commit them yourself (git commit -m '...' -- {these}), or take them out (git checkout -- {these}).{breaks}",
+            if files.len() == 1 { "holds" } else { "hold" }
         );
     }
 
@@ -177,29 +178,18 @@ impl Store {
         Ok(repo::git_in(&self.root, &ours)?.lines().map(|l| l.get(3..).unwrap_or(l).to_string()).collect())
     }
 
-    /// `abo tidy`: take in the files as they are, hand edits and all, and
-    /// write them as `render` does — unless a hand edit brings a problem the
-    /// last commit did not hold, which is said, with where it is.
-    /// The commit, if one was made, and the files written back as abo
-    /// writes them: some hold what the last commit holds, a hand edit of a
-    /// derived value — an invoice's postings — taken out.
+    /// `abo tidy`: rewrite what is committed as `render` writes it, as one
+    /// commit. Changes not committed hold it up, as they hold every change:
+    /// they are not abo's to take in. The commit, if one was made, and the
+    /// files rewritten.
     pub fn tidy(&mut self) -> Result<(Option<String>, Vec<String>)> {
-        let new = self.broken_by_hand()?;
-        if !new.is_empty() {
-            let these = self.edited()?.join(" ");
-            bail!(
-                "tidying takes in a hand edit only when it breaks nothing, and this one does:\n  {}\nMend it by hand, or take it out (git checkout -- {these})",
-                new.join("\n  ")
-            );
-        }
-        // Edited by hand and written as abo writes it: committed as it is.
+        self.changeable()?;
         let differ = render_on_disk(&self.root, &self.books)?;
-        let edited: Vec<(String, Vec<u8>)> = self.edited()?.into_iter().filter(|f| !differ.contains(f)).filter_map(|f| std::fs::read(self.root.join(&f)).ok().map(|b| (f, b))).collect();
-        if differ.is_empty() && edited.is_empty() {
+        if differ.is_empty() {
             return Ok((None, vec![]));
         }
         let books = self.books.clone();
-        let commit = self.write(books, &edited, &[], "Tidy the books", vec!["tidy".into()])?;
+        let commit = self.write(books, &[], &[], "Tidy the books", vec!["tidy".into()])?;
         *self = Store::open(&self.root)?;
         Ok((commit, differ))
     }
@@ -281,7 +271,7 @@ impl Store {
         let dirty = repo::git_in(&self.root, &["status", "--porcelain"])?;
         if let Some(l) = dirty.lines().next() {
             let f = l.get(3..).unwrap_or(l);
-            return Ok(Some(format!("{f}: changed by hand, by no abo command; take it out (git checkout -- {f}), or abo tidy takes it in if it breaks nothing, first")));
+            return Ok(Some(format!("{f} holds changes abo did not make, and abo changes nothing while they are there. Please settle them first: commit them yourself (git commit -m '...' -- {f}), or take them out (git checkout -- {f})")));
         }
         if repo::git_in(&self.root, &["rev-parse", "--verify", "-q", "HEAD~1"]).is_err() {
             return Ok(Some("the last change opened the books; there is nothing before it to go back to".into()));

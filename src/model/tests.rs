@@ -1505,7 +1505,8 @@ fn paying_in_parts_settles(#[strategy(plan())] plan: Vec<Step>, debt: Index, #[s
 }
 
 /// §5: an invoice is issued as the configuration and the declarations stand
-/// on its day — accounts, terms, VAT as the method says, rate, and in another
+/// on its day — accounts, terms, VAT as the method says, the configured rate
+/// at home and none in another commodity unless one is given, and in another
 /// commodity, the latest price.
 #[proptest]
 fn issuing_follows_the_configuration(#[strategy(plan())] plan: Vec<Step>, usd: bool) {
@@ -1532,16 +1533,18 @@ fn issuing_follows_the_configuration(#[strategy(plan())] plan: Vec<Step>, usd: b
     match (&cfg.vat, &c.vat) {
         (Vat::None, InvoiceVat::NotRegistered) => {}
         (Vat::None, v) => prop_assert!(false, "not registered, and the invoice says {:?}", v),
-        (_, InvoiceVat::Exempt { .. }) => prop_assert!(cfg.invoice.vat_rate.is_zero()),
+        // In another commodity, none unless a rate is given; else the configured.
+        (_, InvoiceVat::Exempt { .. }) => prop_assert!(cfg.invoice.vat_rate.is_zero() || m.untaxed(commodity, "").is_some()),
         (method, InvoiceVat::Charged { rate }) => {
+            prop_assert!(m.untaxed(commodity, "").is_none());
             prop_assert_eq!(*rate, cfg.invoice.vat_rate);
             let apart = matches!(method, Vat::Effective { .. });
             prop_assert_eq!(c.accounts.output.is_some(), apart);
-            let latest = m.prices.range((commodity.to_string(), Date::MIN)..=(commodity.to_string(), today)).rev().find(|(_, p)| p.commodity == cfg.company.currency).map(|((_, d), p)| Price { date: *d, price: p.clone() });
-            prop_assert_eq!(&c.home, &if commodity == cfg.company.currency { None } else { latest });
         }
         (_, v) => prop_assert!(false, "registered, and the invoice says {:?}", v),
     }
+    let latest = m.prices.range((commodity.to_string(), Date::MIN)..=(commodity.to_string(), today)).rev().find(|(_, p)| p.commodity == cfg.company.currency).map(|((_, d), p)| Price { date: *d, price: p.clone() });
+    prop_assert_eq!(&c.home, &if commodity == cfg.company.currency { None } else { latest });
 }
 
 /// §5.2: a key set reads back as set.

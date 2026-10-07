@@ -761,7 +761,8 @@ neither for an entry made long ago.
   says, which `invoice` does by construction.
 - **N4** `pay` moves the money through a money account: an asset, not the
   receivable, not input VAT. `write_off` moves none: it writes an invoice off
-  to an expense account, and a bill to an income account.
+  to an expense account, and a bill to an income account, or against an
+  expense account, taking back the cost it was booked to.
 - **N5** is now I-P3.
 - **N6** `closed_through` only moves forward: a period closed stays closed.
 - **N7** No entry is added with a posting to an account, in a commodity,
@@ -813,7 +814,7 @@ Violations the books held before the operation are kept as `check` says them.
 | `file(bytes, date, issuer, for)` | a `Document`, by the bytes' hash; `for`, when given, a `Bill` entry it is the document of |
 | `unfile(document)` | removes a `Document` that names no standing bill: one filed by mistake, or a reverted bill's |
 | `bill(document, description, postings)` | a `Bill` entry; `document`, when given — filed already, naming no bill or a reversed one — now names it |
-| `invoice(customer, lines, rate, …)` | an `Invoice` entry with its content and its PDF's hash; the accounts, terms, payment options and, in another commodity, the price, as configured and declared now |
+| `invoice(customer, lines, rate, …)` | an `Invoice` entry with its content and its PDF's hash; the accounts, terms, payment options and, in another commodity, the price, as configured and declared now. `rate`, when not given: nought for an invoice in another commodity than the company's, or to a customer whose tax number begins with another country's two capital letters than the company's does; the configured rate otherwise |
 | `credit(invoice, note)` | a `CreditNote` entry, reversing the invoice, and its PDF |
 | `pay(debt, date, amount, from, cost)` | a `Payment` entry, from a money account; `cost`, what was paid, when in another commodity |
 | `write_off(debt, date, to)` | a `Payment` entry of what is open, from the account `to` |
@@ -1101,19 +1102,20 @@ no rules of its own: it is where the two differ.
   held before are not its to answer for. So an operation that mends a
   problem — declaring an account in use, say — goes ahead, as does one that
   leaves them as they are. The files it writes, it writes canonically.
-- **A hand edit not committed holds every operation up**, since abo's commit
-  would sign it as abo's own. One that brings no violation the last commit
-  did not hold, tidying takes in; one that does is taken out, or mended by
-  hand first. Committing a breaking edit is not advised: abo's commands on
-  top of it would not mend it, and the history would hold the break.
+- **Changes not committed hold every operation up, tidying included.** abo
+  commits every change it makes, so a change not committed is someone
+  else's, and theirs to settle: abo asks them to commit it themselves or to
+  take it out, naming the files and the git commands, and changes nothing
+  until they have. It says what the change breaks against the last commit,
+  for information, and offers no abo command as a way out of it: abo's
+  commit would sign the change as abo's own.
 - **`abo check`** lists the problems, each at its file and line — an entry at
   its date line, an account where it is first posted to, a statement at its
-  own line — and says how each is mended: an undeclared account by declaring
-  it, what is not canonical by tidying, the rest by hand at the line named.
-- **`abo tidy`** takes the files in as they are and writes them canonically,
-  as one commit; a hand edit not committed is taken in only when it brings no
-  violation the last commit did not hold. Otherwise it is refused, naming
-  what the edit broke, and where. What tidying cannot mend, it says remains.
+  own line — and says how each is mended: changes not committed, by settling
+  them first; then an undeclared account by declaring it, what is not
+  canonical by tidying, the rest by hand at the line named, and committed.
+- **`abo tidy`** rewrites what is committed canonically, as one commit, and
+  says what remains that tidying cannot mend.
 
 This replaces both today's refusal to read an `abo.toml` it would not have
 written, and its sweeping a hand edit into its own commit.

@@ -19,7 +19,6 @@ mod web_tests;
 
 
 use anyhow::{bail, Result};
-use clap::Parser as _;
 use cli::Cli;
 
 /// What abo shells out to. It runs three external programs and owns none of
@@ -82,7 +81,7 @@ pub(crate) fn preflight() -> Result<Vec<&'static Dep>> {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::process::ExitCode {
     // Under --json a usage error is JSON too: the output is the API.
-    let cli = match Cli::try_parse() {
+    let cli = match cli::command().try_get_matches().and_then(|m| <Cli as clap::FromArgMatches>::from_arg_matches(&m)) {
         Ok(cli) => cli,
         Err(e) if std::env::args().any(|a| a == "--json") && !matches!(e.kind(), clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion) => {
             println!("{}", serde_json::json!({ "error": e.to_string().trim(), "rules": [] }));

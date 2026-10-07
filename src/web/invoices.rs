@@ -54,35 +54,53 @@ pub(super) async fn correct(Books(mut s): Books, Path(number): Path<String>, For
     }
 }
 
+/// The invoice the form asks for, its PDF's hash to be filled in.
+fn invoice_op(b: &model::Books, f: &Fields) -> Result<Op> {
+    let get = |k: &str| f.get(k).map_or("", |v| v.trim()).to_string();
+    let raw: Vec<String> = f.get("items").map_or("", String::as_str).lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect();
+    let lines: Vec<model::Line> = raw.iter().enumerate().map(|(n, l)| input::line(n + 1, l)).collect::<Result<_>>()?;
+    let date = input::day((!get("date").is_empty()).then(|| get("date")).as_deref())?;
+    let rate = match get("vat_rate").as_str() {
+        "" => None,
+        r => Some(Decimal::from_str_exact(r).with_context(|| format!("the VAT rate {r:?} is not a number"))?),
+    };
+    let commodity = if get("currency").is_empty() { b.config.company.currency.clone() } else { get("currency") };
+    let pay_to: Vec<String> = f.keys().filter_map(|k| k.strip_prefix("pay-")).map(String::from).collect();
+    let customer = f.get("to").cloned().unwrap_or_default().replace("\r\n", "\n");
+    let income = Some(get("income")).filter(|i| !i.is_empty());
+    let more = model::InvoiceMore { customer_tax_id: get("customer_tax_id"), income, due_days: None, pay_to };
+    Ok(Op::Invoice { date, customer, commodity, lines, rate, reason: get("vat_reason"), reference: get("reference"), note: get("note"), pdf: String::new(), more })
+}
+
+fn with_pdf(op: &Op, hash: String) -> Op {
+    let mut o = op.clone();
+    if let Op::Invoice { pdf, .. } = &mut o {
+        *pdf = hash;
+    }
+    o
+}
+
 pub(super) async fn invoice_submit(Books(mut s): Books, Form(f): Form<Fields>) -> Response {
     let get = |k: &str| f.get(k).map_or("", |v| v.trim()).to_string();
+    // A preview issues nothing, so spends no token: its PDF, marked PREVIEW.
+    if get("preview") == "1" {
+        let r = (|| -> Result<Vec<u8>> {
+            let op = invoice_op(&s.books, &f)?;
+            let out = s.root.join(".abo/preview.pdf");
+            crate::invoice::preview(&s, &with_pdf(&op, "0".repeat(64)), &out)?;
+            let bytes = std::fs::read(&out)?;
+            let _ = std::fs::remove_file(&out);
+            Ok(bytes)
+        })();
+        return match r {
+            Ok(bytes) => ([("content-type", "application/pdf"), ("x-content-type-options", "nosniff")], bytes).into_response(),
+            Err(e) => again(&s, "Issue an invoice", || Ok(invoice_page(&s, &f, Some(&e)))),
+        };
+    }
     let root = s.root.clone();
     let r = once(Some(&root), &get("token"), || {
-        let raw: Vec<String> = f.get("items").map_or("", String::as_str).lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect();
-        let lines: Vec<model::Line> = raw.iter().enumerate().map(|(n, l)| input::line(n + 1, l)).collect::<Result<_>>()?;
-        let date = input::day((!get("date").is_empty()).then(|| get("date")).as_deref())?;
-        let rate = match get("vat_rate").as_str() {
-            "" => None,
-            r => Some(Decimal::from_str_exact(r).with_context(|| format!("the VAT rate {r:?} is not a number"))?),
-        };
-        let commodity = if get("currency").is_empty() { s.books.config.company.currency.clone() } else { get("currency") };
-        let pay_to: Vec<String> = f.keys().filter_map(|k| k.strip_prefix("pay-")).map(String::from).collect();
-        let customer = f.get("to").cloned().unwrap_or_default().replace("\r\n", "\n");
-        let income = Some(get("income")).filter(|i| !i.is_empty());
-        let more = model::InvoiceMore { customer_tax_id: get("customer_tax_id"), income, due_days: None, pay_to };
-        let op = |pdf: String| Op::Invoice {
-            date,
-            customer: customer.clone(),
-            commodity: commodity.clone(),
-            lines: lines.clone(),
-            rate,
-            reason: get("vat_reason"),
-            reference: get("reference"),
-            note: get("note"),
-            pdf,
-            more: more.clone(),
-        };
-        let issued = crate::invoice::issue(&mut s, op)?;
+        let op = invoice_op(&s.books, &f)?;
+        let issued = crate::invoice::issue(&mut s, |pdf| with_pdf(&op, pdf))?;
         info!(number = %issued.number, commit = %issued.commit, "invoiced");
         Ok(done(&s, &format!("/entry/{}", issued.entry)))
     });
@@ -121,7 +139,7 @@ pub(super) fn invoice_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>)
                         textarea name="items" rows="4" required placeholder="10|150.00|Consulting, September" { (get("items")) }
                     }
                     label.field { "Date" span.hint { "Blank for today." } input type="date" name="date" value=(get("date")); }
-                    label.field { "VAT rate" span.hint { "Percent. Blank for the configured rate; 0 for an export or an exempt supply." } input type="text" name="vat_rate" value=(get("vat_rate")); }
+                    label.field { "VAT rate" span.hint { "Percent. Blank for the default: none for an invoice in another currency, or to a customer whose tax number is of another country; the configured rate otherwise. 0 for an export or an exempt supply." } input type="text" name="vat_rate" value=(get("vat_rate")); }
                     label.field { "Currency" span.hint { "Blank for " (s.books.config.company.currency) "." } input type="text" name="currency" value=(get("currency")); }
                     label.field { "Their tax number" span.hint { "Printed under their address; cross-border invoices to businesses usually need it." } input type="text" name="customer_tax_id" value=(get("customer_tax_id")); }
                     label.field { "Income account" span.hint { "Blank for " (s.books.config.invoice.income) ". Exports and reverse-charge sales may go to their own, which a box of the tax return reads apart." } input type="text" name="income" value=(get("income")); }
@@ -138,7 +156,10 @@ pub(super) fn invoice_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>)
                     }
                     label.field { "Their reference" input type="text" name="reference" value=(get("reference")); }
                     label.field { "Note" input type="text" name="note" value=(get("note")); }
-                    div.actions { button.btn-primary type="submit" { (icon("check")) " Issue it" } }
+                    div.actions {
+                        button.btn type="submit" name="preview" value="1" formtarget="_blank" { (icon("doc")) " Preview" }
+                        button.btn-primary type="submit" { (icon("check")) " Issue it" }
+                    }
                 }
             }
         }
