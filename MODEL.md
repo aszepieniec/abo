@@ -779,7 +779,7 @@ neither for an entry made long ago.
 - **N4** `pay` moves the money through a money account: an asset, not the
   receivable, not input VAT. `write_off` moves none: it writes an invoice off
   to an expense account, and a bill to an income account, or against an
-  expense account, taking back the cost it was booked to.
+  expense account the bill posts to, taking back the cost it was booked to.
 - **N5** is now I-P3.
 - **N6** `closed_through` only moves forward: a period closed stays closed.
 - **N7** No entry is added with a posting to an account, in a commodity,

@@ -84,6 +84,9 @@ pub(super) fn reconcile_page(s: &Store, f: &Fields, ticked: &[String], notice: O
         (false, false) => (closing, "Statement date"),
     };
     // Nothing left to clear, and the books at what was given: they agree.
+    // A count is of the whole box: every movement up to its day ticked,
+    // until the form comes back with ticks of its own.
+    let fresh = notice.is_none() && ticked.is_empty();
     let agree = rows.is_empty() && r.statement.as_ref().is_some_and(|st| st.quantity == r.books.quantity);
     Ok(html! {
         h1 { "Reconcile" }
@@ -114,7 +117,7 @@ pub(super) fn reconcile_page(s: &Store, f: &Fields, ticked: &[String], notice: O
                         tr { td { "Cleared by the " (doc) "s recorded" } td { (money(std::slice::from_ref(&r.cleared))) } }
                         @if let Some(st) = &r.statement { tr { td { "Per the " (doc) } td { (money(std::slice::from_ref(st))) } } }
                     }
-                    @if let Some(d) = &r.difference { tfoot { tr.total { td { "To clear" } td { (money(std::slice::from_ref(d))) } } } }
+                    @if let Some(d) = &r.difference { tfoot { tr.total { td { "Per the " (doc) ", less what is cleared" } td { (money(std::slice::from_ref(d))) } } } }
                 }
             }
             @if agree {
@@ -129,7 +132,7 @@ pub(super) fn reconcile_page(s: &Store, f: &Fields, ticked: &[String], notice: O
                         @for i in rows {
                             li {
                                 label.row {
-                                    input type="checkbox" name="ref" value=(i.posting) checked[ticked.contains(&i.posting)];
+                                    input type="checkbox" name="ref" value=(i.posting) checked[ticked.contains(&i.posting) || (cash && fresh)];
                                     span.date { (i.date) }
                                     span.amt { (money(std::slice::from_ref(&i.amount))) }
                                     span { (i.description) }

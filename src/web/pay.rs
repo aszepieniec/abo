@@ -76,8 +76,12 @@ pub(super) fn pay_page(s: &Store, id: usize, f: &Fields, error: Option<&anyhow::
                     // What a supplier forgives is not sales: the accounts sales
                     // are booked to are left out.
                     @let sales = b.sales_accounts();
-                    @let to: Vec<&String> = b.accounts.iter().filter(|a| classes.contains(&crate::model::class(a)) && b.postable(a) && !sales.contains(a.as_str())).collect();
-                    label.field { "To" span.hint { @if invoice { "An expense, such as Expenses:Bad debts, declared first under " a href="/declarations" { "Accounts and currencies" } "." } @else { "Income, such as Income:Forgiven, declared first under " a href="/declarations" { "Accounts and currencies" } "; or the expense it was booked to, which it takes back." } }
+                    @let to: Vec<&String> = b.accounts.iter().filter(|a| classes.contains(&crate::model::class(a)) && b.postable(a) && !sales.contains(a.as_str()))
+                        // A bill's expense is taken back from the account it was booked to, none other.
+                        .filter(|a| invoice || crate::model::class(a) != "Expenses" || b.postings(id).iter().any(|p| &p.account == *a))
+                        .collect();
+                    @let booked: Vec<String> = b.postings(id).into_iter().map(|p| p.account).filter(|a| a.starts_with("Expenses:")).collect();
+                    label.field { "To" span.hint { @if invoice { "An expense, such as Expenses:Bad debts, declared first under " a href="/declarations" { "Accounts and currencies" } "." } @else { "Income, such as Income:Forgiven, declared first under " a href="/declarations" { "Accounts and currencies" } "; or the expense it was booked to, which it takes back: " @for (i, a) in booked.iter().enumerate() { @if i > 0 { ", " } code { (a) } } "." } }
                         select name="to" required {
                             option value="" { "Choose an account" }
                             @for a in &to { option value=(a) { (a) } }

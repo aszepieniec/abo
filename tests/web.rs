@@ -515,7 +515,7 @@ fn first_web_run() {
     assert!(page.find("acme").unwrap() < page.find("Hosting").unwrap(), "oldest first: {page}");
     let (_, to, _) = http(&s, "POST", "/undo", &[("token", "u1")]);
     let (_, _, page) = http(&s, "GET", &to, &[]);
-    assert!(page.contains("Undone: Filed:") && page.contains("Bill booked") && !page.contains(&last[0]["commit"].as_str().unwrap()[..7]), "{page}");
+    assert!(page.contains("Undone: \u{201c}Filed:") && page.contains("Bill booked") && !page.contains(&last[0]["commit"].as_str().unwrap()[..7]), "{page}");
     assert!(!std::fs::read_to_string(books.join("journal/main.journal")).unwrap().contains("Hosting"), "one undo takes back the booking");
     let filed = Command::new("git").args(["ls-files", "bills"]).current_dir(&books).output().unwrap().stdout;
     assert_eq!(String::from_utf8(filed).unwrap().lines().filter(|l| l.ends_with(".pdf")).count(), 1, "one undo takes back the filing");

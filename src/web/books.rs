@@ -198,7 +198,7 @@ pub(super) fn change_said(s: &Store, line: &serde_json::Value) -> Option<String>
             let undone = what.strip_prefix("Undo ").unwrap_or_default();
             // A change of two lines, a document filed and its bill booked, by both.
             let then: Vec<String> = store::lines(&s.root).into_iter().filter(|l| l["commit"].as_str() == Some(undone)).filter_map(|l| change_said(s, &l)).collect();
-            format!("Undone: {}", if then.is_empty() { "the change before".into() } else { then.join("; and ") })
+            if then.is_empty() { "Undone: the change before".into() } else { format!("Undone: \u{201c}{}\u{201d}", then.join("; and ")) }
         }
         ["tidy", ..] => "Tidied".into(),
         ["init", ..] => what.to_string(),
@@ -228,12 +228,26 @@ fn sentence_start(s: &str) -> String {
 pub(super) async fn activity(Books(s): Books, Query(q): Query<Fields>) -> Response {
     or_error(&s, "Log", || {
         let all = store::lines(&s.root);
-        let shown = if q.contains_key("all") { all.len() } else { 50 };
+        // As `abo log --since`: every change made on or after a day.
+        let since = q.get("since").map(|d| d.trim()).filter(|d| !d.is_empty()).map(|d| input::day(Some(d))).transpose()?.map(|d| d.to_string());
+        let shown = if q.contains_key("all") || since.is_some() { all.len() } else { 50 };
         let skip = all.len().saturating_sub(shown);
-        let lines: Vec<(usize, &serde_json::Value)> = all.iter().enumerate().skip(skip).map(|(i, l)| (i + 1, l)).collect();
+        let lines: Vec<(usize, &serde_json::Value)> = all
+            .iter()
+            .enumerate()
+            .skip(skip)
+            .filter(|(_, l)| since.as_ref().is_none_or(|d| l["at"].as_str().unwrap_or_default().get(..10).is_some_and(|at| at >= d.as_str())))
+            .map(|(i, l)| (i + 1, l))
+            .collect();
         Ok(html! {
             h1 { "Log" }
-            @if lines.is_empty() {
+            form.inline method="get" action="/log" {
+                label.field { "Since" span.hint { "Every change made on or after this day." } input type="date" name="since" value=(since.clone().unwrap_or_default()); }
+                div.actions { button type="submit" { (icon("chart")) " Show" } }
+            }
+            @if lines.is_empty() && since.is_some() {
+                div.flash.flash-info { (icon("info")) div { "Nothing changed since " (since.as_deref().unwrap_or_default()) "." } }
+            } @else if lines.is_empty() {
                 div.flash.flash-info { (icon("info")) div { "Nothing changed yet. Every change to the books is listed here, as it is made." } }
             } @else {
                 @if skip > 0 {

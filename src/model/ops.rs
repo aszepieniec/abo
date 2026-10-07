@@ -549,6 +549,11 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
                 _ => no!("N4", "{to} is not an income or an expense account; what a supplier forgives is written off to income, or against the expense it was booked to"),
             }
         }
+        // Against an expense, only the one the bill was booked to: what it takes back.
+        if m.entry(*debt).is_some_and(|e| matches!(e.kind, Kind::Bill(..)) && class(to) == "Expenses") && !m.postings(*debt).iter().any(|p| p.account == *to) {
+            let booked: Vec<String> = m.postings(*debt).into_iter().map(|p| p.account).filter(|a| class(a) == "Expenses").collect();
+            no!("N4", "{} was not booked to {to}, but to {}; a forgiven bill is written off to income, or against the expense it was booked to", name(m, *debt), booked.join(" and "));
+        }
     }
     if let Some(c) = closed_through {
         if n.config.company.closed_through.is_none_or(|nc| nc < c) {
@@ -571,9 +576,11 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
         if let Some(((a, _, d), _)) = m.statements.iter().find(|(_, s)| s.clears.iter().any(|r| r.entry == *entry)) {
             v.push(Violation {
                 code: "N9",
-                what: format!("{} moved money the statement of {a} on {d} shows, as it was booked: reverting it would book a movement that never was. Correct the other side by an entry of its own, moving an expense to the right period, say; or take the statement out first, if it was wrong", name(m, *entry)),
+                what: format!("{} moved money the statement of {a} on {d} shows, as it was booked: reverting it, on any day, would book a movement that never was", name(m, *entry)),
                 of: Subject::Account(a.clone()),
             });
+            // Whatever its date, it is refused: no advice to date it later.
+            v.retain(|x| x.code != "N7");
         }
     }
     // The same bill twice. Under the same number of the supplier's, owing

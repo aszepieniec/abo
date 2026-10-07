@@ -652,7 +652,7 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                 }
                 let (b, sum) = (amount(m, s.balance, &key.1), amount(m, sum, &key.1));
                 v.push(if *key == new {
-                    format!("what this statement and the earlier ones clear sums to {sum}, not {b}")
+                    format!("what this clears, with what earlier ones cleared, sums to {sum}, not {b}")
                 } else {
                     format!("the statement of {} on {} says {b}; with this one before it, what they clear sums to {sum}", key.0, key.2)
                 });

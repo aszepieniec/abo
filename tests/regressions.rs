@@ -1767,7 +1767,7 @@ fn nothing_is_booked_under_a_statement() {
     let dir = books("under-statement", &[]);
     let id = entry(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
     ok(&dir, &["record", "--date", "2026-03-31", "--balance", "-5.00", &format!("{id}.1")]);
-    refused(&dir, &["revert", &id, "--date", "2026-03-01"], "N7");
+    refused(&dir, &["revert", &id, "--date", "2026-03-01"], "N9");
     refused(&dir, &["post", "--date", "2026-03-31", "--desc", "Late", "Expenses:General=1.00", "Assets:Bank=-1.00"], "N7");
     ok(&dir, &["post", "--date", "2026-04-01", "--desc", "After", "Expenses:General=1.00", "Assets:Bank=-1.00"]);
     assert!(read(&dir, "journal/2026.journal").contains("= -5.00 EUR"));
@@ -2541,4 +2541,39 @@ fn a_vat_registered_company_says_its_rate() {
     let o = abo(&base, &["init", "Test Ltd", "--currency", "EUR", "--vat", "effective", "--git-name", "t", "--git-email", "t@example.invalid"]);
     assert!(!o.status.success() && err(&o).contains("A rate is needed"), "{}", err(&o));
     assert!(!base.join("test-ltd").exists());
+}
+
+// ---- found by the fifth web run, 2026-10-07 ----
+
+/// A forgiven bill could be written off against any expense, Rent for a
+/// licence, though it takes back only the one it was booked to.
+#[test]
+fn a_forgiven_bill_comes_off_its_own_expense() {
+    let dir = books("forgiven-own", &[]);
+    ok(&dir, &["account", "add", "Expenses:Rent"]);
+    let (id, _) = bill_entry(&dir, "Devtools", "2026-03-01", "250.00");
+    refused(&dir, &["write-off", &id, "--date", "2026-03-05", "--to", "Expenses:Rent"], "was not booked to Expenses:Rent, but to Expenses:General");
+    ok(&dir, &["write-off", &id, "--date", "2026-03-05", "--to", "Expenses:General"]);
+}
+
+/// A revert refused for a statement advised dating it after the statement,
+/// which no date mends; the cash count page asked each movement ticked,
+/// though a count is of the whole box; and the log had no day to begin from.
+#[test]
+fn the_fifth_web_run_pages() {
+    let dir = books("fifth-web", &[]);
+    let fee = entry(&dir, &["post", "--date", "2026-03-01", "--desc", "Fee", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
+    ok(&dir, &["record", "--date", "2026-03-31", "--balance=-5.00", &format!("{fee}.1")]);
+    let o = abo(&dir, &["revert", "--date", "2026-03-01", &fee]);
+    assert!(!o.status.success() && err(&o).contains("N9") && !err(&o).contains("N7"), "{}", err(&o));
+    ok(&dir, &["post", "--date", "2026-04-01", "--desc", "Taxi", "Expenses:General=50.00", "Assets:Cash=-50.00"]);
+    let s = serve(&dir);
+    let (_, _, page) = http(&s, "GET", "/reconcile?account=Assets:Cash&commodity=EUR&date=2026-04-02&balance=-50.00", &[]);
+    assert!(page.contains("checked") && page.contains("Per the count, less what is cleared"), "{page}");
+    let (_, _, page) = http(&s, "GET", "/reconcile?account=Assets:Bank&commodity=EUR&date=2026-04-02", &[]);
+    assert!(!page.contains("checked"), "{page}");
+    let (_, _, page) = http(&s, "GET", "/log?since=2999-01-01", &[]);
+    assert!(page.contains("Nothing changed since 2999-01-01"), "{page}");
+    let (_, _, page) = http(&s, "GET", "/log?since=2000-01-01", &[]);
+    assert!(page.contains("Taxi"), "{page}");
 }

@@ -221,11 +221,11 @@ fn hint(v: &model::Violation) -> Option<Markup> {
         // An account a debt is on moves through the debt's own pages.
         ("I-P3", _) => html! { "A bill is booked under " a href="/bill" { "Book a bill" } "; an invoice under " a href="/invoice" { "Issue an invoice" } "; a payment of either with " em { "Pay" } " on " a href="/bills" { "Bills" } " or " a href="/invoices" { "Invoices" } "." },
         ("I-B2", _) => html! { "Add a line crediting what is owed, such as " code { "Liabilities:Payable=-440.00" } "." },
-        ("I-S3", _) => html! { "Book first what the statement shows and the books lack under " a href="/post" { "Entry" } ": a fee, say, or for a count of cash the difference, as cash over or short; or leave out what it does not show." },
+        ("I-S3", _) => html! { "Tick each movement it shows: a statement, those it lists; a count, every one up to its day. What it shows and the books lack, book first under " a href="/post" { "Entry" } ": a fee, say, or for a count the difference, as cash over or short." },
         ("N7", Subject::Account(_)) => html! { "Date it after the statement, or take the statement out on " a href="/reconcile" { "Reconcile" } " first." },
         ("N8", Subject::Field("number")) => return None,
         ("N8", _) => html! { "If it is another bill just like it, tick " em { "Another just like one booked already" } "." },
-        ("N9", _) => html! { "To move an expense to the period it belongs to, book two entries under " a href="/post" { "Entry" } ", through an account between (declared first): one on the day it belongs to, one on the day it was booked. Or take the statement out on " a href="/reconcile" { "Reconcile" } ", if it was wrong." },
+        ("N9", _) => html! { "To move it to the period it belongs to, book two entries under " a href="/post" { "Entry" } ", through an account between, such as " code { "Liabilities:Accrued" } " (declared first): one on the day it belongs to, one on the day it was booked, each the other's opposite. If the statement was wrong, take it out on " a href="/reconcile" { "Reconcile" } " first." },
         _ => return None,
     })
 }
