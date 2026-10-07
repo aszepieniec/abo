@@ -2577,3 +2577,17 @@ fn the_fifth_web_run_pages() {
     let (_, _, page) = http(&s, "GET", "/log?since=2000-01-01", &[]);
     assert!(page.contains("Taxi"), "{page}");
 }
+
+// ---- found by the sixth web run, 2026-10-07 ----
+
+/// A bank statement's closing balance, once recorded, stayed in the form,
+/// and Show for the cash box offered it as what was counted.
+#[test]
+fn a_recorded_balance_is_not_carried_over() {
+    let dir = books("carried-over", &[]);
+    let fee = entry(&dir, &["post", "--date", "2026-03-01", "--desc", "Fee", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
+    ok(&dir, &["record", "--date", "2026-03-31", "--balance=-5.00", &format!("{fee}.1")]);
+    let s = serve(&dir);
+    let (_, _, page) = http(&s, "GET", "/reconcile?account=Assets:Bank&commodity=EUR&date=2026-03-31&balance=-5.00", &[]);
+    assert!(page.contains(r#"name="balance" value="""#) && page.contains("-5.00 EUR"), "{page}");
+}

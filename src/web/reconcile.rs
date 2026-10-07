@@ -61,6 +61,9 @@ pub(super) fn reconcile_page(s: &Store, f: &Fields, ticked: &[String], notice: O
     let at = input::day(Some(&date))?;
     let r = views::reconciled(&s.books, &account, &commodity, at, balance);
     let rows = &r.outstanding;
+    // Once recorded, the figure is the statement's, shown above: the field
+    // starts empty, so Show for another account carries nothing over.
+    let recorded = s.books.statements.contains_key(&(account.clone(), commodity.clone(), at));
     let latest = s.books.statements.keys().rfind(|k| k.0 == account && k.1 == commodity).map(|k| k.2);
     // What a statement can be of: the accounts money moves through, not the
     // receivable or input VAT; one named in a statement already among them;
@@ -105,7 +108,7 @@ pub(super) fn reconcile_page(s: &Store, f: &Fields, ticked: &[String], notice: O
                         select name="commodity" { @for c in s.books.commodities.keys() { option value=(c) selected[c == &commodity] { (c) } } }
                     }
                     label.field { (dated) input type="date" name="date" value=(date); }
-                    label.field { (closing) input type="text" name="balance" value=(raw); }
+                    label.field { (closing) input type="text" name="balance" value=(if recorded { "" } else { raw }); }
                     // A plain GET: it only looks. First in the form, so Enter
                     // in a field does this rather than record anything.
                     div.actions { button type="submit" formmethod="get" { (icon("chart")) " Show" } }

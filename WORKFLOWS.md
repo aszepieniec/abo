@@ -480,6 +480,36 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 ---
 
+## Fifth and sixth web runs of 2026-10-07: found and fixed
+
+Agents again worked in the browser alone. The sixth run was clean by the
+stop condition in SCENARIOS.md: everyone finished every scenario, no one got
+stuck or misread a page, and every refusal said what to do instead. Fixed,
+each with a test (tests/regressions.rs):
+
+- Fifth run:
+  - A cash count is of the whole box. Its page ticks every movement up to
+    the count's date. The row once labelled **To clear** now reads "Per the
+    count, less what is cleared". A refused statement or count says to tick
+    what it shows.
+  - A revert refused for a statement (N9) no longer also advises dating it
+    after the statement (N7), since no date makes it allowed. Its advice on
+    moving an expense to another period names `Liabilities:Accrued`.
+  - **Log** takes a **Since** day, as `abo log --since` does.
+  - A forgiven bill is written off to income, or against an expense the
+    bill posts to and no other (N4). The Pay page names that expense.
+- Sixth run: once a statement is recorded, Reconcile's balance field
+  starts empty. It used to keep the figure, and **Show** for the cash box
+  then offered the bank's closing balance as what was counted.
+
+Reported and left as decided:
+- The VAT default goes by tax numbers alone.
+- No confirmation before what undo takes back.
+- Nothing is changed while there is a change abo did not make, a mend
+  included.
+- Log entries are under the git user who made them ("abo demo" for the
+  demo books).
+
 ## Fourth web run of 2026-10-07: found and fixed
 
 Agents again worked in the browser alone. Fixed, each with a test
