@@ -516,7 +516,7 @@ not in the books.
 | G-F2 | An edit to the files is never read as the same state with no problem | §7, §8 | `edits_are_noticed` |
 | G-F3 | Reading never fails, whatever the text: it gives a state, or problems | §8 | `edits_are_noticed` |
 | G-F4 | `abo tidy`, which is `render(parse(f))`, gives text read as the same state, and tidying it again changes nothing | §7, §8 | `tidying_is_idempotent` |
-| G-F5 | Books holding a problem — a hand edit, a file changed — are read, and a change made on them brings no problem of its own; `abo check` fails exactly while one is there, and `abo tidy` mends what is only not as abo writes it | §8 | `hand_edits_are_checked_and_tidied` |
+| G-F5 | Books holding a problem — a hand edit, a file changed — are read; while they break a rule, the only change made is one that mends one and brings none; `abo check` fails exactly while one is there, and `abo tidy` mends what is only not as abo writes it | §8 | `hand_edits_are_checked_and_tidied` |
 
 ### Debts
 
@@ -1097,11 +1097,12 @@ no rules of its own: it is where the two differ.
 
 - **Reading never stops on a problem.** Pages and reports show the books, and
   every page says that the books hold problems, with a link to the list.
-- **An operation brings no problem of its own.** It is refused for a
-  violation the books after it hold and the books before it did not; those
-  held before are not its to answer for. So an operation that mends a
-  problem — declaring an account in use, say — goes ahead, as does one that
-  leaves them as they are. The files it writes, it writes canonically.
+- **On books that break a rule, an operation is made only if it mends.** It
+  is refused for a violation the books after it hold and the books before it
+  did not; and while the books before it hold a violation, it is made only
+  if the books after it hold fewer. So declaring an account in use, once its
+  declaration was taken out, goes ahead; an entry booked on top of one that
+  does not balance does not. The files it writes, it writes canonically.
 - **Changes not committed hold every operation up, tidying included.** abo
   commits every change it makes, so a change not committed is someone
   else's, and theirs to settle: abo asks them to commit it themselves or to

@@ -233,6 +233,7 @@ pub fn preview(s: &Store, op: &Op, out: &Path) -> Result<String> {
 pub fn issue(s: &mut Store, op: impl Fn(String) -> Op) -> Result<Issued> {
     s.changeable()?;
     let trial = model::apply(&s.books, &op("0".repeat(64)), today()?).map_err(Refused)?;
+    s.mends(&trial)?;
     let id = trial.entries.len();
     let number = trial.number_text(id).context("what was issued is not numbered")?;
     let (bytes, seeded, warnings) = pdf_of(&s.root, &trial, id)?;

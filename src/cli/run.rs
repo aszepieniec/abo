@@ -277,6 +277,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Reconcile { account, commodity, date, balance } => {
             let s = Store::open(&here)?;
+            let account = account.unwrap_or_else(|| s.books.paid_from());
             let commodity = commodity.unwrap_or_else(|| s.books.config.company.currency.clone());
             if !s.books.accounts.contains(&account) {
                 bail!("{account} is not declared; `abo account` lists those that are");
@@ -302,6 +303,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Record { account, commodity, date, balance, all, clears } => {
             let mut s = Store::open(&here)?;
+            let account = account.unwrap_or_else(|| s.books.paid_from());
             let commodity = commodity.unwrap_or_else(|| s.books.config.company.currency.clone());
             let date = input::day(date.as_deref())?;
             let mut refs: std::collections::BTreeSet<model::PostingRef> = clears.iter().map(|c| input::posting_ref(c)).collect::<Result<_>>()?;
@@ -328,6 +330,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Unrecord { account, commodity } => {
             let mut s = Store::open(&here)?;
+            let account = account.unwrap_or_else(|| s.books.paid_from());
             let commodity = commodity.unwrap_or_else(|| s.books.config.company.currency.clone());
             let op = Op::Unrecord { account: account.clone(), commodity };
             changed(&mut s, &op, &[], cli.json)
@@ -756,9 +759,13 @@ fn mending(s: &Store) -> String {
     let edited = s.edited().unwrap_or_default();
     if !edited.is_empty() {
         let these = edited.join(" ");
-        return format!(
-            "To mend them:\n  {these}: changes abo did not make. Please settle them first: commit them yourself (git commit -m '...' -- {these}), or take them out (git checkout -- {these}); abo changes nothing until then"
-        );
+        // What breaks the books is not committed: taken out, or mended first.
+        let settle = if s.broken_by_hand().unwrap_or_default().is_empty() {
+            format!("commit them yourself (git commit -m '...' -- {these}), or take them out (git checkout -- {these})")
+        } else {
+            format!("they break the books, so take them out (git checkout -- {these}), or mend them by hand at the lines named and then commit them yourself")
+        };
+        return format!("To mend them:\n  {these}: changes abo did not make. Please settle them first: {settle}; abo changes nothing until then");
     }
     let mut how: Vec<String> = vec![];
     for v in model::check(&s.books) {
@@ -795,7 +802,12 @@ pub(crate) fn hints(r: &store::Refused) -> Vec<String> {
             ("I-I1", Subject::Field("reason")) => "--vat-reason '<why no VAT is charged>'".into(),
             ("I-I1", Subject::Field("default rate")) => "--vat-reason '<why no VAT is charged>'; or --vat-rate <percent>, to charge VAT after all".into(),
             ("N7", Subject::Account(a)) => format!("abo unrecord --account {a}, which takes out its latest statement"),
-            ("N9", Subject::Account(a)) => format!("abo post, with the other side moved where it belongs; or abo unrecord --account {a}, if the statement was wrong"),
+            ("N9", Subject::Account(a)) => format!(
+                "to move an expense to the period it belongs to, two entries through an account between: \
+                 abo post --date <its day> --desc ... Expenses:X=<amount> Liabilities:Accrued=-<amount>, \
+                 and abo post --date <the day it was booked> --desc ... Liabilities:Accrued=<amount> Expenses:X=-<amount>; \
+                 or abo unrecord --account {a}, if the statement was wrong"
+            ),
             ("N8", _) => "--again, if it is another bill just like it".into(),
             // A count or a statement the books disagree with: what it shows and
             // the books lack is booked first, a shortage say.

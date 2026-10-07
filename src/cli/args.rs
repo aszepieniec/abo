@@ -385,10 +385,10 @@ pub(crate) enum Cmd {
         /// The customer's tax registration number, printed under their address.
         #[arg(long, default_value = "")]
         customer_tax_id: String,
-        /// The income account it books to, a declared Income account, such
-        /// as Income:Exports for exports or reverse-charge sales, so that a
-        /// box of the tax return can read them apart. Defaults to
-        /// invoice.income.
+        /// The income account it books to, an Income account declared first
+        /// (abo account add), such as Income:Exports for exports or
+        /// reverse-charge sales, so that a box of the tax return can read them
+        /// apart. Defaults to invoice.income.
         #[arg(long)]
         income: Option<String>,
         /// Write the PDF this invoice would have to this file, outside the
@@ -432,8 +432,10 @@ pub(crate) enum Cmd {
     /// An account against a statement: what is cleared, what is not yet,
     /// each by the `ENTRY.N` that `abo record` takes.
     Reconcile {
-        #[arg(long, default_value = "Assets:Bank")]
-        account: String,
+        /// Defaults to the first payment option's account, as `pay`'s does;
+        /// with none, Assets:Bank.
+        #[arg(long)]
+        account: Option<String>,
         /// Defaults to the company currency.
         #[arg(long)]
         commodity: Option<String>,
@@ -449,8 +451,10 @@ pub(crate) enum Cmd {
     /// `abo reconcile`. Once recorded, nothing is booked to the account on or
     /// before its date.
     Record {
-        #[arg(long, default_value = "Assets:Bank")]
-        account: String,
+        /// Defaults to the first payment option's account, as `pay`'s does;
+        /// with none, Assets:Bank.
+        #[arg(long)]
+        account: Option<String>,
         /// Defaults to the company currency.
         #[arg(long)]
         commodity: Option<String>,
@@ -466,11 +470,13 @@ pub(crate) enum Cmd {
         /// The postings the statement shows, as `ENTRY.N`.
         clears: Vec<String>,
     },
-    /// Take out an account's latest statement: of Assets:Bank, unless
-    /// --account names another.
+    /// Take out an account's latest statement: of the first payment
+    /// option's account, unless --account names another.
     Unrecord {
-        #[arg(long, default_value = "Assets:Bank")]
-        account: String,
+        /// Defaults to the first payment option's account, as `pay`'s does;
+        /// with none, Assets:Bank.
+        #[arg(long)]
+        account: Option<String>,
         /// Defaults to the company currency.
         #[arg(long)]
         commodity: Option<String>,

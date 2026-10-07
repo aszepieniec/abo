@@ -325,6 +325,7 @@ fn parse_block(
             let file: CreditFile = serde_json::from_str(read_json(tag("invoice").unwrap())?).map_err(|e| e.to_string())?;
             Kind::CreditNote { of: id(tag("credits").unwrap())?, note: file.note, pdf: file.pdf }
         }
+        [] => return Err("an entry without an `; id:` line: abo writes an id, and what kind of entry it is, under every entry's date line".into()),
         _ => return Err(format!("the tags {:?} say no kind of entry", tags.iter().map(|(k, _)| *k).collect::<Vec<_>>())),
     };
     let n = id(tag("id").unwrap())?;

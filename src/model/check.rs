@@ -349,8 +349,11 @@ pub fn check(m: &Books) -> Vec<Violation> {
                 }
             }
         }
-        if ps.len() < 2 || sums.values().any(|s| !s.is_zero()) {
-            no!(@of Subject::Entry(id), "I-E1", "entry {id} does not balance");
+        if ps.len() < 2 {
+            no!(@of Subject::Entry(id), "I-E1", "entry {id} does not balance: it has fewer than two postings");
+        } else if sums.values().any(|s| !s.is_zero()) {
+            let off: Vec<String> = sums.iter().filter(|(_, s)| !s.is_zero()).map(|(c, s)| format!("{} {c}", s.normalize())).collect();
+            no!(@of Subject::Entry(id), "I-E1", "entry {id} does not balance: its postings sum to {}, not nought", off.join(" and "));
         }
         let home = &m.config.company.currency;
         if let Some(p) = ps.iter().find(|p| matches!(class(&p.account), "Income" | "Expenses") && p.amount.commodity != *home) {

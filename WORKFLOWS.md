@@ -460,7 +460,26 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 ---
 
-## Third CLI run of 2026-10-07: found and fixed, not yet run again
+## Fourth and fifth CLI runs of 2026-10-07: found and fixed, not yet run again
+
+The fourth run, after the decisions of the third (ids given once, no undo of
+an issued invoice, dated headings, defaults shown, N8 within a week, N9,
+`ytd`, `--income`), was stuck nowhere but over a hand edit; its findings
+were decided (F8, VAT abroad, a bill written back to its expense, preview,
+a VAT company's empty return) and made. The fifth, on those, found: an
+entry booked on top of one that does not balance, once that was committed,
+went ahead with a warning — now nothing is added to books that break a rule
+but what mends one (MODEL.md §8); a change not committed that breaks the
+books was answered "commit them yourself" first — now only taken out, or
+mended first; `TAX-123` read as a tax number of country TA, so a customer
+with any tax number went without VAT — now only a country's code followed
+by a digit (or `ATU`, `CHE`) names one; reconcile, record and unrecord took
+`Assets:Bank` whatever the bank's option pays into; a refused removal said
+to declare the account; an unbalanced entry did not say by how much; `ytd`
+headed a report as "ytd"; an entry without an id was "the tags [] say no
+kind of entry". Each has a test under "the fifth run".
+
+## Third CLI run of 2026-10-07: found and fixed
 
 Not clean, though no agent was stuck for long but over a hand edit, and
 what remains is mostly for a decision rather than a fix. Fixed, each with a

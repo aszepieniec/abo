@@ -1961,12 +1961,74 @@ fn check_mends_a_hand_edit_not_committed_by_taking_it_out() {
 /// A change made on books holding a problem went ahead without a word.
 #[test]
 fn a_change_on_books_with_problems_says_they_remain() {
+    // Fifth run: an entry booked on top of one that does not balance went
+    // ahead with a warning. Now nothing is added until the books are mended,
+    // but what mends them; the warning stays for what a change leaves.
     let dir = books("still", &[]);
     ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
     std::fs::write(dir.join("journal/2026.journal"), read(&dir, "journal/2026.journal").replace("-5.00 EUR", "-4.00 EUR")).unwrap();
     git(&dir, &["commit", "-qam", "By hand"]);
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"], "does not mend");
+    assert!(String::from_utf8_lossy(&abo(&dir, &["check"]).stdout).contains("its postings sum to 1 EUR, not nought"));
+}
+
+/// Fifth run: with a declaration taken out and committed, declaring it again
+/// mends the books, and is made; a booking is not.
+#[test]
+fn only_a_change_that_mends_goes_ahead_on_broken_books() {
+    let dir = books("mends-only", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
+    std::fs::write(dir.join("journal/accounts.journal"), read(&dir, "journal/accounts.journal").replace("account Expenses:General\n", "")).unwrap();
+    git(&dir, &["commit", "-qam", "By hand"]);
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Assets:Cash=1.00", "Assets:Bank=-1.00"], "does not mend");
+    ok(&dir, &["account", "add", "Expenses:General"]);
+    ok(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Assets:Cash=1.00", "Assets:Bank=-1.00"]);
+}
+
+/// Fifth run: a change not committed that breaks the books was answered
+/// "commit them yourself", first; committed, the break was history.
+#[test]
+fn a_breaking_change_not_committed_is_not_to_be_committed() {
+    let dir = books("no-commit-advice", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
+    std::fs::write(dir.join("journal/2026.journal"), read(&dir, "journal/2026.journal").replace("-5.00 EUR", "-4.00 EUR")).unwrap();
     let o = abo(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"]);
-    assert!(o.status.success() && err(&o).contains("warning: the books hold 1 problem"), "{}", err(&o));
+    assert!(err(&o).contains("they break the books") && err(&o).contains("git checkout") && !err(&o).contains("git commit"), "{}", err(&o));
+}
+
+/// Fifth run: `TAX-123` was read as a tax number of country TA, so every
+/// customer with a tax number went without VAT by default.
+#[test]
+fn only_a_country_code_names_a_country() {
+    let dir = books("tax-country", &["--tax-id", "TAX-123456789"]);
+    let v = json(&dir, &["invoice", "--to", "C", "--customer-tax-id", "IE6388047V", "--item", "1|100|x", "--date", "2026-03-01"]);
+    assert_eq!(v["total"]["quantity"], "110.00", "{v}");
+}
+
+/// Fifth run: reconcile, record and unrecord took Assets:Bank, though the
+/// bank's option paid into another account.
+#[test]
+fn statements_default_to_the_banks_account() {
+    let dir = books("bank-default", &[]);
+    ok(&dir, &["payment-options", "add", "pko", "--iban", "PL61 1090 1014 0000 0712 1981 2874", "--account", "Assets:Current"]);
+    let said = ok(&dir, &["reconcile", "--date", "2026-03-31"]);
+    assert!(said.starts_with("Assets:Current"), "{said}");
+}
+
+/// Fifth run: a removal refused for an account in use said to declare it.
+#[test]
+fn a_refused_removal_says_nothing_of_declaring() {
+    let dir = books("remove-hint", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
+    let o = abo(&dir, &["account", "remove", "Expenses:General"]);
+    assert!(!o.status.success() && !err(&o).contains("abo account add"), "{}", err(&o));
+}
+
+/// Fifth run: the heading of ytd said "ytd".
+#[test]
+fn the_year_to_date_is_headed_so() {
+    let dir = books("ytd-head", &[]);
+    assert!(ok(&dir, &["pl", "-p", "ytd"]).contains("year to date (2027-01-01 to 2027-06-30)"));
 }
 
 /// A hand edit of an invoice's postings, which follow from its content, was
@@ -2063,7 +2125,7 @@ fn a_reports_heading_gives_its_days() {
     ok(&dir, &["post", "--date", "2027-02-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
     assert!(ok(&dir, &["pl", "-p", "2027q1"]).contains("Profit and loss, 2027q1 (2027-01-01 to 2027-03-31)"));
     // The year to date: 1 January through today, ABO_TODAY here.
-    assert!(ok(&dir, &["pl", "-p", "ytd"]).contains("Profit and loss, ytd (2027-01-01 to 2027-06-30)"));
+    assert!(ok(&dir, &["pl", "-p", "ytd"]).contains("Profit and loss, year to date (2027-01-01 to 2027-06-30)"));
     let v = json(&dir, &["pl", "-p", "ytd"]);
     assert_eq!((v["from"].as_str(), v["to"].as_str()), (Some("2027-01-01"), Some("2027-06-30")));
     assert!(ok(&dir, &["pl"]).contains("Profit and loss, all time"));

@@ -215,6 +215,8 @@ pub fn explain(m: &Books, op: &Op, n: &Books, v: Vec<Violation>) -> Vec<Violatio
         let of: Vec<Subject> = match (code, op) {
             // What is missing is the commodity's price, or the reason.
             ("I-E4", Op::Invoice { commodity, .. }) => vec![Subject::Commodity(commodity.clone()); said.len()],
+            // A removal refused for what is in use is of nothing to declare.
+            ("I-A1", Op::AccountRemove(_) | Op::CommodityRemove(_)) => vec![Subject::None; said.len()],
             ("I-I1", Op::Invoice { .. }) => said
                 .iter()
                 .map(|w| match () {

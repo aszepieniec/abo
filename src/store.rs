@@ -127,6 +127,7 @@ impl Store {
     pub fn change_from(&mut self, op: &Op, file: Option<&str>, also: &[(String, Vec<u8>)]) -> Result<Option<String>> {
         self.changeable()?;
         let n = model::apply(&self.books, op, today()?).map_err(Refused)?;
+        self.mends(&n)?;
         let argv = crate::command::argv(op, &self.books, file);
         let what = crate::command::subject(op, &self.books, &n);
         let what = what.as_str();
@@ -149,14 +150,32 @@ impl Store {
         // abo leaves nothing uncommitted: these are someone else's, and theirs
         // to settle. What they break is said, for information.
         let breaks = self.broken_by_hand()?;
-        let breaks = match breaks.is_empty() {
-            true => String::new(),
-            false => format!("\nAgainst the last commit, they break:\n  {}", breaks.join("\n  ")),
-        };
+        let holds = if files.len() == 1 { "holds" } else { "hold" };
+        if breaks.is_empty() {
+            bail!("{these} {holds} changes abo did not make, and abo changes nothing while they are there. Please settle them first: commit them yourself (git commit -m '...' -- {these}), or take them out (git checkout -- {these}).");
+        }
+        // Committed, a change that breaks the books would be their history:
+        // it is taken out, or mended before it is committed.
         bail!(
-            "{these} {} changes abo did not make, and abo changes nothing while they are there. Please settle them first: commit them yourself (git commit -m '...' -- {these}), or take them out (git checkout -- {these}).{breaks}",
-            if files.len() == 1 { "holds" } else { "hold" }
+            "{these} {holds} changes abo did not make, and they break the books:\n  {}\nabo changes nothing while they are there. Please take them out (git checkout -- {these}), or mend them by hand at the lines named and then commit them yourself.",
+            breaks.join("\n  ")
         );
+    }
+
+    /// While the books break a rule, a change is made only if it mends one
+    /// and brings none (`apply` refuses what it would bring): nothing is
+    /// booked on top of books that do not hold together.
+    pub fn mends(&self, n: &Books) -> Result<()> {
+        let held = model::check(&self.books);
+        if !held.is_empty() && model::check(n).len() >= held.len() {
+            let these: Vec<&String> = self.problems.iter().filter(|p| held.iter().any(|v| p.ends_with(&v.to_string()))).collect();
+            bail!(
+                "the books hold {} that this change does not mend, and abo adds nothing to them until they are mended:\n  {}\nabo check says how each is mended",
+                if held.len() == 1 { "a problem" } else { "problems" },
+                these.iter().map(|p| p.as_str()).collect::<Vec<_>>().join("\n  ")
+            );
+        }
+        Ok(())
     }
 
     /// The problems a hand edit not committed brings: those the books hold

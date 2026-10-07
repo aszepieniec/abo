@@ -651,11 +651,12 @@ fn hand_edits_are_checked_and_tidied(#[strategy(plan())] plan: Vec<Step>, file: 
         return Ok(());
     }
     let post = abo(&books, today, &args(&["post", "--desc", "After", "Assets:Bank=1 EUR", "Equity:Opening=-1 EUR"]));
+    // An entry mends nothing: on books that break a rule, it is refused.
+    let held = state.as_ref().map(model::check).unwrap_or_default();
+    prop_assert!(held.is_empty() || !post.ok, "a change that mends nothing was made on top of {:?}", problems);
     if post.ok {
-        let held = state.as_ref().map(model::check).unwrap_or_default();
         let now = model::check(&store::Store::open(&books).unwrap().books);
-        let new: Vec<_> = now.iter().filter(|v| !held.iter().any(|h| h.code == v.code && h.what == v.what)).collect();
-        prop_assert!(new.is_empty(), "a change on top of {:?} brought {:?}", problems, new);
+        prop_assert!(now.is_empty(), "a change on top of {:?} brought {:?}", problems, now);
         crate::repo::git_in(&books, &["reset", "-q", "--hard", "HEAD~1"]).unwrap();
     }
     let tidy = abo(&books, today, &args(&["tidy"]));

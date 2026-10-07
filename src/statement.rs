@@ -70,6 +70,7 @@ pub fn when(st: &Statement) -> String {
         (Some(d), _) => format!("as at {d}"),
         (None, "") => "all time".into(),
         (None, p) => match (&st.from, &st.to) {
+            (Some(f), Some(t)) if p.trim() == "ytd" => format!("year to date ({f} to {t})"),
             (Some(f), Some(t)) => format!("{p} ({f} to {t})"),
             _ => p.to_string(),
         },
