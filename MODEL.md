@@ -86,8 +86,8 @@ Three consequences follow from the definitions, and are why they are chosen:
 As `src/model/mod.rs` writes it. `Decimal` is an exact decimal; `Date` a
 calendar date; a text holds no character that `hidden` refuses (by Unicode
 category, DESIGN §1), and a newline only where the field is lines; `Hash` a
-SHA-256 hash, in lower-case hex; `EntryId` an entry's place in `entries`
-(§2.3).
+SHA-256 hash, in lower-case hex; `EntryId` an entry's place in `entries`,
+a gap included (§2.3).
 
 ### 2.1 The books
 
@@ -158,9 +158,13 @@ alone.
 
 ### 2.3 Entries
 
-Every entry has an **id**: its place in `entries`, counting from 1. Entries are
-only appended, and undo removes only the last, so an id is never changed or
-reused. An entry names another — a payment the debt it pays, a reversal what
+Every entry has an **id**: its place in `entries`, counting from 1. A place may
+hold a **gap** — `Kind::Gone` — an id given to an entry that undo took back.
+The **next id** is one more than the highest id ever given: `entries` holds
+every id given, gaps included, so it is `len(entries) + 1`. Adding an entry
+takes it; undo takes back the entry but not its id (§5.3), so an id, once
+seen in a commit, the log or a message, names that entry alone, or a gap,
+ever after. Nothing names a gap, and a gap has no postings. An entry names another — a payment the debt it pays, a reversal what
 it reverses, a credit note the invoice it cancels — by its id, and so does a
 document or a statement; the id does not move when other entries are booked
 around it. Once added, an entry never changes.
@@ -447,7 +451,8 @@ id, from the last entry down.
 
 An invoice's number is its place, not a stored value: the numbers of a year
 run 1, 2, 3, … with no gap and no repeat because they are counted, not
-assigned. Undo of the last invoice frees its number; nothing else removes one.
+assigned. Nothing removes one: undo does not take back an invoice or a
+credit note issued (§5.3).
 
 Because a payment names one debt, `paid` and `open` are always known. The `?`
 of today's Bills page cannot occur.
@@ -570,6 +575,7 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | G-O8 | The log holds each change as the command that makes it again, whoever made it, a terminal or a form: every part of the operation written out, so that run on the books as they were, on any later day, it makes the same change. One function writes an operation as its command, another as its commit's subject | §5 | `the_log_makes_each_change_again`, `the_web_is_the_model` |
 | G-O9 | A report changes nothing in the books, wherever it is told to write: a PDF, or hledger's output file, goes outside them or is refused | §5 | `a_report_changes_nothing_in_the_books` |
 | G-O11 | Every amount in a command's JSON is `{quantity, commodity}`: the number to its commodity's places, the commodity apart, and nothing of how to write it, which is the reader's to choose; what cannot be read as typed ends abo with 2, as a usage error | §5 | `amounts_in_json_are_quantity_and_commodity`, `an_unreadable_date_exits_2` |
+| G-O12 | An id once given names that entry, or a gap, ever after: no operation and no undo gives it again; an invoice or credit note issued is not undone | §2.3, §5.3 | `ids_are_never_given_twice`, `issued_invoices_are_not_undone` |
 | G-O10 | A refusal says what is wrong with what the operation was given, of the books before it: it names no entry that is not there yet, an invoice or a credit note by its number and never by its id, and quotes nothing as Rust's debug format does | §5 | `refusals_speak_of_the_books_before` |
 
 ### Whoever uses the pages
@@ -886,9 +892,15 @@ payment-options` stay, to ask what they need as questions; each answer is a
 Undo restores the state before the last operation, and is defined only while
 that operation is the last: undo of anything older is not an operation. An
 older mistake is taken back with `revert`, which adds the opposite and
-removes nothing, as bookkeeping does it. In the model, undo is not a function
-of the state: it is the state before, which whoever holds the states keeps —
-the git history, in the books.
+removes nothing, as bookkeeping does it. In the model, undo is a function of
+the states after and before the last operation, `undo(after, before)`, which
+whoever holds the states keeps — the git history, in the books:
+
+- It is `before`, but that the ids `after` gave stay given: an entry the
+  operation added leaves a gap where it was, so its id is never given again.
+- It is not defined where the operation issued an invoice or a credit note:
+  one issued may be with the customer already, and is cancelled by a credit
+  note (F5), not taken back.
 
 This replaces today's undo, which reverses the text of any past commit. Over a
 state, "the last operation" is well defined; "the text of an old commit,
@@ -940,7 +952,7 @@ Six workflows change shape under the model:
 
 ```
 abo.toml                     # the configuration, written by render
-journal/main.journal         # includes accounts.journal, then each year, in order
+journal/main.journal         # includes accounts.journal, then each year, in order; then, when the last id given is a gap, `; next id: N`
 journal/accounts.journal     # declarations, written by render
 journal/2026.journal         # the year's entries and statements
 invoices/2026/2026-0017.json # invoice 2026-0017's content and its PDF's hash, written by render

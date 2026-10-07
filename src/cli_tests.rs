@@ -198,9 +198,18 @@ fn the_cli_is_the_model(#[strategy(vec(any::<Step>(), 1..30))] plan: Vec<Step>) 
         let Some(op) = mt::op(&step.draw, &m, today) else {
             let Some(p) = previous.take() else { continue };
             let o = abo(&books, today, &args(&["undo"]));
-            prop_assert!(o.ok, "undo: {}", o.stderr);
-            previous = Some(std::mem::replace(&mut now, p));
-            changes += 1;
+            match model::undo(&now, &p) {
+                Ok(n) => {
+                    prop_assert!(o.ok, "undo: {}", o.stderr);
+                    previous = Some(std::mem::replace(&mut now, n));
+                    changes += 1;
+                }
+                // An invoice issued is not taken back.
+                Err(_) => {
+                    prop_assert!(!o.ok, "an invoice issued was taken back");
+                    previous = Some(p);
+                }
+            }
             prop_assert_eq!(store::text_files(&books).unwrap(), model::render(&now), "after undo");
             continue;
         };

@@ -21,7 +21,7 @@ pub(crate) mod tests;
 pub use answer::hidden;
 pub use check::{check, option_problem, Subject, Violation};
 pub use explain::{explain, name};
-pub use ops::{apply, key_known, shape, InvoiceMore, Op, Shape};
+pub use ops::{apply, key_known, shape, undo, InvoiceMore, Op, Shape};
 pub use text::{parse, read, render, Files};
 
 pub use jiff::civil::Date;
@@ -92,6 +92,9 @@ pub enum Kind {
     Payment { of: EntryId, postings: Vec<Posting> },
     /// The opposite of `of`.
     Reversal { of: EntryId },
+    /// An id given and taken back by undo: no entry, and no other entry
+    /// ever has it (MODEL.md §2.3).
+    Gone,
 }
 
 /// What a statement says of an account in a commodity on a date: its
@@ -500,6 +503,13 @@ impl Posting {
     }
 }
 
+impl Entry {
+    /// A gap: an id given and taken back.
+    pub fn gone() -> Entry {
+        Entry { date: jiff::civil::date(1, 1, 1), description: String::new(), kind: Kind::Gone }
+    }
+}
+
 impl Kind {
     /// The entry this one names.
     pub fn names(&self) -> Option<EntryId> {
@@ -549,8 +559,9 @@ impl Books {
         }
     }
 
+    /// The entry with this id: none for a gap, an id taken back by undo.
     pub fn entry(&self, id: EntryId) -> Option<&Entry> {
-        self.entries.get(id.checked_sub(1)?)
+        self.entries.get(id.checked_sub(1)?).filter(|e| !matches!(e.kind, Kind::Gone))
     }
 
     pub fn places(&self, c: &str) -> u32 {

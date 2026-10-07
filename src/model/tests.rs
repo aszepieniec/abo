@@ -392,9 +392,16 @@ fn run(plan: &[Step], mut each: impl FnMut(&Books, Option<&Op>, &Outcome, Date) 
         today = today.checked_add(jiff::Span::new().days(s.advance)).unwrap();
         let m = states.last().unwrap();
         match op(&s.draw, m, today) {
+            // Undo, as the model has it: refused for an invoice issued.
             None if states.len() > 1 => {
-                let before = states.pop().unwrap();
-                each(&before, None, &Ok(states.last().unwrap().clone()), today)?;
+                let after = states.pop().unwrap();
+                match undo(&after, states.last().unwrap()) {
+                    Ok(n) => {
+                        *states.last_mut().unwrap() = n.clone();
+                        each(&after, None, &Ok(n), today)?;
+                    }
+                    Err(_) => states.push(after),
+                }
             }
             None => {}
             Some(o) => {
@@ -1164,6 +1171,7 @@ fn tags(m: &Books, id: EntryId) -> BTreeSet<(String, String)> {
         Kind::CreditNote { of, .. } => t.extend([("invoice", number), ("credits", of.to_string())]),
         Kind::Payment { of, .. } => t.push(("pays", of.to_string())),
         Kind::Reversal { of } => t.push(("reverses", of.to_string())),
+        Kind::Gone => {}
     }
     t.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
 }
@@ -1192,7 +1200,8 @@ fn hledger_reads_entries_as_written(#[strategy(plan())] plan: Vec<Step>) {
         seen.insert(id);
         index_of.insert(t["tindex"].to_string(), id);
     }
-    prop_assert_eq!(seen.len(), m.entries.len());
+    // Every entry, and no gap.
+    prop_assert_eq!(seen.len(), (1..=m.entries.len()).filter(|&id| m.entry(id).is_some()).count());
     for (out, at_cost) in [(&outs[1], false), (&outs[2], true)] {
         let mut postings: BTreeMap<EntryId, Vec<(String, Decimal, String)>> = BTreeMap::new();
         for row in csv(out).into_iter().skip(1) {
@@ -1624,7 +1633,7 @@ fn rename(m: &Books, f: &dyn Fn(&str) -> String) -> Books {
                 a.income = f(&a.income);
                 a.output = a.output.as_deref().map(f);
             }
-            Kind::CreditNote { .. } | Kind::Reversal { .. } => {}
+            Kind::CreditNote { .. } | Kind::Reversal { .. } | Kind::Gone => {}
         }
     }
     n.statements = m.statements.iter().map(|((a, c, d), s)| ((f(a), c.clone(), *d), s.clone())).collect();
@@ -2076,4 +2085,35 @@ fn bills_alike_are_refused_unless_another(#[strategy(plan())] plan: Vec<Step>, b
     // Said to be another, N8 is not why it is refused, if it is.
     let again = apply(&m, &twice(true), today);
     prop_assert!(again.as_ref().err().is_none_or(|v| v.iter().all(|v| v.code != "N8")));
+}
+
+/// §2.3 and §5.3: an id once given names that entry, or a gap, ever after:
+/// no step, undo among them, gives an id twice; an entry undone leaves a gap.
+#[proptest]
+fn ids_are_never_given_twice(#[strategy(plan())] plan: Vec<Step>) {
+    let mut given: BTreeMap<EntryId, Entry> = BTreeMap::new();
+    run(&plan, |m, op, outcome, _| {
+        let Ok(n) = outcome else { return Ok(()) };
+        prop_assert!(n.entries.len() >= m.entries.len(), "{:?} took ids back", op);
+        for id in 1..=n.entries.len() {
+            match (n.entry(id), given.get(&id)) {
+                (Some(e), Some(was)) => prop_assert_eq!(e, was, "id {} given twice", id),
+                (Some(e), None) => drop(given.insert(id, e.clone())),
+                (None, _) => {}
+            }
+        }
+        Ok(())
+    })?;
+}
+
+/// §5.3: undo does not take back an invoice or a credit note issued.
+#[proptest]
+fn issued_invoices_are_not_undone(#[strategy(plan())] plan: Vec<Step>) {
+    run(&plan, |m, op, outcome, _| {
+        let Ok(n) = outcome else { return Ok(()) };
+        if op.is_some() && (m.entries.len() + 1..=n.entries.len()).any(|id| n.entry(id).is_some_and(|e| e.kind.numbered())) {
+            prop_assert!(undo(n, m).is_err());
+        }
+        Ok(())
+    })?;
 }

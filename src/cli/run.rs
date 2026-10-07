@@ -357,11 +357,12 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             // the commit it took back, whose change it makes again.
             let lines = store::lines(&s.root);
             let what = |l: &serde_json::Value| l["what"].as_str().unwrap_or_default().to_string();
-            let last = lines.last().map(what).unwrap_or_default();
-            let said = match last.strip_prefix("Undo ") {
-                Some(c) => format!("Made again: {}", lines.iter().find(|l| l["commit"].as_str() == Some(c)).map(what).unwrap_or(last.clone())),
-                None => format!("Took back: {last}"),
-            };
+            // Undo of an undo makes its change again; of that, takes it back.
+            let (mut last, mut back) = (lines.last().map(what).unwrap_or_default(), true);
+            while let Some(earlier) = last.strip_prefix("Undo ").and_then(|c| lines.iter().find(|l| l["commit"].as_str() == Some(c))).map(what) {
+                (last, back) = (earlier, !back);
+            }
+            let said = format!("{}: {last}", if back { "Took back" } else { "Made again" });
             let commit = s.undo()?;
             emit(cli.json, &serde_json::json!({ "commit": commit, "what": said }), || format!("{said}. Committed {commit}."))
         }

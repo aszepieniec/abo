@@ -270,17 +270,12 @@ fn invoices() {
         assert!(!o.status.success() && err(&o).contains(says), "{extra:?}: {}", err(&o));
     }
 
-    // Undo the last invoice, and undo that: it is back, PDF and all; and
-    // once more, gone. An invoice is never reverted; it is corrected by a
-    // credit note.
+    // An invoice issued is not taken back by undo, nor reverted: it may be
+    // with the customer, and is corrected by a credit note.
     let pdf = dir.join("invoices/2026/2026-0007.pdf");
     assert!(pdf.is_file());
     let o = abo(&dir, &["undo"], "");
-    assert!(o.status.success() && !pdf.exists(), "{}", err(&o));
-    let o = abo(&dir, &["undo"], "");
-    assert!(o.status.success() && pdf.is_file(), "{}", err(&o));
-    let o = abo(&dir, &["undo"], "");
-    assert!(o.status.success() && !pdf.exists(), "{}", err(&o));
+    assert!(!o.status.success() && pdf.is_file() && err(&o).contains("abo credit 2026-0007"), "{}", err(&o));
     let o = abo(&dir, &["revert", "--date", "2026-09-25", &btc_invoice], "");
     assert!(!o.status.success() && err(&o).contains("I-R1"), "{}", err(&o));
 

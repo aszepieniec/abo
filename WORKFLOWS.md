@@ -353,9 +353,12 @@ was shown with: one made since, in a terminal say, refuses it. CLI: `abo
 undo`. The Log shows each change as the command that makes it, quoted as a
 shell takes it, with every default it used written out.
 **Done when** the books are as they were before the last change, as a new
-commit, so git keeps both. Undo again, and the change is made again. Refused
-when the last commit is not abo's last change, or files hold changes abo did
-not make. Anything older is reverted (F7).
+commit, so git keeps both; an entry taken back keeps its id, which no later
+entry is given. Undo again, and the change is made again. Refused when the
+last commit is not abo's last change, or files hold changes abo did not
+make; and when the last change issued an invoice or a credit note, which may
+be with the customer: it is cancelled by a credit note (F5), and the refusal
+names the command. Anything older is reverted (F7).
 
 ### F3. Take out a statement recorded by mistake — Supported (browser, CLI)
 **Take out the statement** on Reconcile, or `abo unrecord`: the latest

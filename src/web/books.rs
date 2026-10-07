@@ -40,6 +40,7 @@ pub(super) async fn index(Books(s): Books) -> Response {
         // The last entries, newest first, each by its debits.
         let recent: Vec<(usize, &model::Entry, String)> = (1..=b.entries.len())
             .rev()
+            .filter(|&id| b.entry(id).is_some())
             .take(12)
             .map(|id| {
                 let mut debits = statement::Bag::new();

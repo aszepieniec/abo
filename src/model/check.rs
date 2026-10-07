@@ -147,7 +147,7 @@ fn numbers(m: &Books) -> Vec<Decimal> {
                 }
                 v.extend(content.home.as_ref().map(|h| h.price.quantity));
             }
-            Kind::CreditNote { .. } | Kind::Reversal { .. } => {}
+            Kind::CreditNote { .. } | Kind::Reversal { .. } | Kind::Gone => {}
         }
     }
     v.extend(m.prices.values().map(|p| p.quantity));
@@ -161,7 +161,7 @@ fn numbers(m: &Books) -> Vec<Decimal> {
 
 /// Every date the state holds.
 fn dates(m: &Books) -> Vec<Date> {
-    let mut v: Vec<Date> = m.entries.iter().map(|e| e.date).collect();
+    let mut v: Vec<Date> = m.entries.iter().filter(|e| !matches!(e.kind, Kind::Gone)).map(|e| e.date).collect();
     for e in &m.entries {
         if let Kind::Invoice { content, .. } = &e.kind {
             v.push(content.due);
@@ -330,6 +330,9 @@ pub fn check(m: &Books) -> Vec<Violation> {
     // 3.2 Entries.
     for (i, e) in m.entries.iter().enumerate() {
         let id = i + 1;
+        if matches!(e.kind, Kind::Gone) {
+            continue;
+        }
         if !description_ok(&e.description) {
             no!(@of Subject::Entry(id), "I-E0", "entry {id}'s description {:?} cannot be written on its date line", e.description);
         }
@@ -355,7 +358,7 @@ pub fn check(m: &Books) -> Vec<Violation> {
         }
         if let Some(of) = e.kind.names() {
             match m.entry(of) {
-                Some(n) if of < id && n.date <= e.date => {}
+                Some(n) if of < id && n.date <= e.date && !matches!(n.kind, Kind::Gone) => {}
                 _ => no!(@of Subject::Entry(id), "I-E3", "entry {id} names {of}, which is not an earlier entry dated on or before it"),
             }
         }
@@ -474,7 +477,7 @@ pub fn check(m: &Books) -> Vec<Violation> {
         let own = match &e.kind {
             Kind::Bill(_) | Kind::Invoice { .. } => m.debt(id),
             Kind::Payment { of, .. } => m.debt(*of),
-            Kind::Reversal { .. } | Kind::CreditNote { .. } => continue,
+            Kind::Reversal { .. } | Kind::CreditNote { .. } | Kind::Gone => continue,
             Kind::Plain(_) => None,
         };
         let there: Vec<Posting> = m.postings(id).into_iter().filter(|p| on.contains(&p.account)).collect();

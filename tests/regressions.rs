@@ -1989,3 +1989,27 @@ fn the_data_directory_names_its_companies() {
     let dir = books("data-dir", &[]);
     refused(dir.parent().unwrap(), &["bills"], "it holds the books of test-ltd");
 }
+
+// ---- decided after the third CLI run, 2026-10-07 ----
+
+/// An entry undone gave its id to the next: the log and git spoke of two
+/// entries by one id.
+#[test]
+fn an_id_undone_is_not_given_again() {
+    let dir = books("ids-gaps", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Taxi", "Expenses:General=50.00", "Assets:Cash=-50.00"]);
+    ok(&dir, &["undo"]);
+    let id = entry(&dir, &["post", "--date", "2026-03-01", "--desc", "Salary", "Expenses:General=10.00", "Assets:Bank=-10.00"]);
+    assert_eq!(id, "2");
+    ok(&dir, &["check"]);
+    refused(&dir, &["revert", "1"], "no entry has the id 1");
+}
+
+/// Undo took back an issued invoice, and gave its number up again.
+#[test]
+fn an_issued_invoice_is_not_undone() {
+    let dir = books("invoice-undo", &[]);
+    ok(&dir, &["invoice", "--to", "C", "--item", "1|100|x", "--date", "2026-03-01"]);
+    refused(&dir, &["undo"], "abo credit 2026-0001");
+    assert!(dir.join("invoices/2026/2026-0001.pdf").is_file());
+}

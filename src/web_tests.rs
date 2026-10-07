@@ -270,8 +270,17 @@ fn the_web_is_the_model(#[strategy(vec(any::<Step>(), 1..25))] plan: Vec<Step>) 
         let Some(op) = mt::op(&step.draw, &m, today) else {
             let Some(p) = previous.take() else { continue };
             let a = send(server.port, "POST", "/undo", "application/x-www-form-urlencoded", &form(&[("token", token())]), None);
-            prop_assert_eq!(a.status, 303, "undo: {}", a.body);
-            previous = Some(std::mem::replace(&mut now, p));
+            match model::undo(&now, &p) {
+                Ok(n) => {
+                    prop_assert_eq!(a.status, 303, "undo: {}", a.body);
+                    previous = Some(std::mem::replace(&mut now, n));
+                }
+                // An invoice issued is not taken back.
+                Err(_) => {
+                    prop_assert!(a.status != 303, "an invoice issued was taken back");
+                    previous = Some(p);
+                }
+            }
             prop_assert_eq!(store::text_files(&books).unwrap(), model::render(&now), "after undo");
             continue;
         };
@@ -343,7 +352,7 @@ fn every_page_answers(#[strategy(plan())] plan: Vec<Step>) {
     let server = serve(&books, today);
     let m = store::Store::open(&books).unwrap().books;
     let mut pages: Vec<String> = ["/", "/bills", "/bills?open=1", "/invoices", "/invoices?open=1", "/log", "/report/pl", "/report/bs", "/reconcile", "/company", "/company/payment", "/declarations", "/post", "/bill", "/invoice"].map(String::from).to_vec();
-    pages.extend((1..=m.entries.len()).map(|id| format!("/entry/{id}")));
+    pages.extend((1..=m.entries.len()).filter(|&id| m.entry(id).is_some()).map(|id| format!("/entry/{id}")));
     pages.extend(m.accounts.iter().map(|a| format!("/account?name={}", enc(a))));
     let standing = m.standing();
     pages.extend((1..=m.entries.len()).filter(|&d| m.debt(d).is_some()).map(|d| format!("/pay?debt={d}")));

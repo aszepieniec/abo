@@ -226,7 +226,7 @@ pub fn entries(b: &Books, words: &[String]) -> Vec<EntryRow> {
     let words: Vec<String> = words.iter().map(|w| w.to_lowercase()).collect();
     (1..=b.entries.len())
         .filter_map(|id| {
-            let e = &b.entries[id - 1];
+            let e = b.entry(id)?;
             let ps = b.postings(id);
             let text = std::iter::once(e.description.as_str()).chain(ps.iter().map(|p| p.account.as_str())).collect::<Vec<_>>().join(" ").to_lowercase();
             if !words.iter().all(|w| text.contains(w.as_str())) {

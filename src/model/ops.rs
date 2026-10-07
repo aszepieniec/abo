@@ -238,6 +238,27 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
     Ok(n)
 }
 
+/// Undo (MODEL.md §5.3): from the books `after` the last operation, and the
+/// books `before` it, the state undo leaves. That is `before`, but that an
+/// id once given stays given: an entry the operation added leaves a gap. An
+/// invoice or credit note it issued is not taken back: it may be with the
+/// customer, and is cancelled by a credit note.
+pub fn undo(after: &Books, before: &Books) -> Result<Books, String> {
+    for id in before.entries.len() + 1..=after.entries.len() {
+        let number = after.number_text(id).unwrap_or_default();
+        match after.entry(id).map(|e| &e.kind) {
+            Some(Kind::Invoice { .. }) => return Err(format!("the last change issued invoice {number}, which may be with the customer already; an issued invoice is not taken back, but cancelled by a credit note: abo credit {number}")),
+            Some(Kind::CreditNote { .. }) => return Err(format!("the last change issued credit note {number}, which may be with the customer already; it is not taken back: issue the invoice again, with abo invoice")),
+            _ => {}
+        }
+    }
+    let mut n = before.clone();
+    if n.entries.len() < after.entries.len() {
+        n.entries.resize_with(after.entries.len(), Entry::gone);
+    }
+    Ok(n)
+}
+
 /// One posting taking `amount` off the debt, the other from `from`.
 fn payment(m: &Books, debt: EntryId, date: Date, amount: Decimal, from: &str, cost: Option<Amount>, verb: &str) -> Result<Entry, String> {
     let d = m.debt(debt).ok_or(match m.entry(debt) {

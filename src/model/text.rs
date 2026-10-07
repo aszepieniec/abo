@@ -65,7 +65,9 @@ pub fn render(m: &Books) -> Files {
     // On one date, entries by id, then statements by account and commodity.
     type Place<'a> = (Date, u8, EntryId, &'a str, &'a str);
     let mut items: Vec<(Place, String)> = vec![];
-    for (i, e) in m.entries.iter().enumerate() {
+    // A gap is no entry: its id is said by the ids around it, or, after the
+    // last, by the next id main.journal gives.
+    for (i, e) in m.entries.iter().enumerate().filter(|(_, e)| !matches!(e.kind, Kind::Gone)) {
         items.push(((e.date, 0, i + 1, "", ""), entry(m, i + 1, e, &mut f)));
     }
     for (key, s) in &m.statements {
@@ -80,6 +82,9 @@ pub fn render(m: &Books) -> Files {
     for (y, text) in years {
         main += &format!("include {y:04}.journal\n");
         f.insert(format!("journal/{y:04}.journal"), text);
+    }
+    if matches!(m.entries.last().map(|e| &e.kind), Some(Kind::Gone)) {
+        main += &format!("; next id: {}\n", m.entries.len() + 1);
     }
     f.insert("journal/main.journal".into(), main);
 
@@ -121,6 +126,8 @@ fn entry(m: &Books, id: EntryId, e: &Entry, f: &mut Files) -> String {
         }
         Kind::Payment { of, .. } => tags.push(("pays", of.to_string())),
         Kind::Reversal { of } => tags.push(("reverses", of.to_string())),
+        // Not rendered: `render` passes gaps over.
+        Kind::Gone => {}
     }
     let mut s = format!("{} {}\n", e.date, e.description);
     for (k, v) in tags {
@@ -209,12 +216,24 @@ pub fn parse(f: &Files) -> Result<Books, Vec<String>> {
             block.clear();
         }
     }
-    for (i, (id, e)) in entries.into_iter().enumerate() {
-        if id != i + 1 {
-            errs.push(format!("journal: there is no entry {}", i + 1));
-            break;
+    // An id with no entry is a gap: given once, and taken back by undo.
+    let next = f.get("journal/main.journal").and_then(|t| t.lines().find_map(|l| l.strip_prefix("; next id: "))).map(|n| n.trim().parse::<EntryId>());
+    let next = match next {
+        Some(Ok(n)) => n,
+        Some(Err(_)) => {
+            errs.push("journal/main.journal: the next id is not a number".into());
+            0
+        }
+        None => 0,
+    };
+    for (id, e) in entries {
+        while m.entries.len() + 1 < id {
+            m.entries.push(Entry::gone());
         }
         m.entries.push(e);
+    }
+    while m.entries.len() + 1 < next {
+        m.entries.push(Entry::gone());
     }
 
     for (i, line) in f.get("bills/index").map(String::as_str).unwrap_or("").lines().enumerate() {

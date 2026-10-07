@@ -286,6 +286,12 @@ impl Store {
         if repo::git_in(&self.root, &["rev-parse", "--verify", "-q", "HEAD~1"]).is_err() {
             return Ok(Some("the last change opened the books; there is nothing before it to go back to".into()));
         }
+        // What the model's undo refuses: an issued invoice taken back.
+        if let (Some(before), _) = model::read(&files_at(&self.root, "HEAD~1")?) {
+            if let Err(why) = model::undo(&self.books, &before) {
+                return Ok(Some(why));
+            }
+        }
         Ok(None)
     }
 
@@ -323,7 +329,17 @@ impl Store {
         let head = repo::git_in(&self.root, &["rev-parse", "--short", "HEAD"])?.trim().to_string();
         let stamp = Stamp::now(&self.root)?;
         let what = format!("Undo {head}");
+        let after = self.books.clone();
         repo::git_env(&self.root, &["revert", "--no-edit", "HEAD"], &stamp.env())?;
+        // An id given stays given: an entry taken back leaves a gap, which
+        // main.journal records when it is the last (MODEL.md §2.3).
+        let back = Store::open(&self.root)?.books;
+        let undone = model::undo(&after, &back).map_err(anyhow::Error::msg)?;
+        if undone.entries.len() > back.entries.len() {
+            let main = "journal/main.journal";
+            put(&self.root, main, model::render(&undone)[main].as_bytes())?;
+            repo::git_in(&self.root, &["add", "--", main])?;
+        }
         repo::git_env(&self.root, &["commit", "-q", "--amend", "-m", &what], &stamp.env())?;
         let commit = repo::git_in(&self.root, &["rev-parse", "--short", "HEAD"])?.trim().to_string();
         log(&self.root, &stamp, &argv, &what, &commit, None);
@@ -342,10 +358,15 @@ fn unreadable_mend(problems: &[String]) -> String {
 
 /// The text files `render` writes, as the last commit has them.
 fn head_files(root: &Path) -> Result<Files> {
-    let names = repo::git_in(root, &["ls-tree", "-r", "--name-only", "HEAD", "--", "abo.toml", "journal", "invoices", "bills/index"])?;
+    files_at(root, "HEAD")
+}
+
+/// The text files `render` writes, as commit `rev` has them.
+fn files_at(root: &Path, rev: &str) -> Result<Files> {
+    let names = repo::git_in(root, &["ls-tree", "-r", "--name-only", rev, "--", "abo.toml", "journal", "invoices", "bills/index"])?;
     let mut f = Files::new();
     for rel in names.lines().filter(|n| *n == "abo.toml" || *n == "bills/index" || n.ends_with(".journal") || n.ends_with(".json")) {
-        f.insert(rel.to_string(), repo::git_in(root, &["show", &format!("HEAD:{rel}")])?);
+        f.insert(rel.to_string(), repo::git_in(root, &["show", &format!("{rev}:{rel}")])?);
     }
     Ok(f)
 }
