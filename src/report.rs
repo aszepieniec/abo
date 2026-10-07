@@ -28,6 +28,18 @@ pub fn run(s: &Store, cmd: &str, args: &[String], json: bool) -> Result<String> 
     if json {
         a.extend(["-O", "json"]);
     }
+    // `ytd`, as pl and vat take it, in whatever form the period is given.
+    let ytd = crate::statement::hledger_period("ytd")?;
+    let mut args: Vec<String> = args.to_vec();
+    for i in 0..args.len() {
+        let after_flag = i > 0 && matches!(args[i - 1].as_str(), "-p" | "--period");
+        if after_flag && args[i] == "ytd" {
+            args[i] = ytd.clone();
+        } else if args[i] == "--period=ytd" || args[i] == "-pytd" {
+            args[i] = format!("--period={ytd}");
+        }
+    }
+    let args = &args[..];
     a.extend(args.iter().map(String::as_str));
     // At cost, as the balance sheet: what is owed or held in another
     // commodity, in the company's, at what it was booked at; unless told.

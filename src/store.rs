@@ -483,7 +483,7 @@ impl Store {
             .context("running hledger")?;
         if !out.status.success() {
             if !self.problems.is_empty() {
-                bail!("the books hold problems, so hledger cannot report on them:\n  {}", self.problems.join("\n  "));
+                bail!("the books hold problems, so hledger cannot report on them:\n  {}\nabo check says how each is mended", self.problems.join("\n  "));
             }
             bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
         }

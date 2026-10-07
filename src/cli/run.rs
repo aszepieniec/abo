@@ -182,8 +182,15 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             if let Some(path) = preview {
                 outside(&s, &path, "a preview")?;
                 let number = crate::invoice::preview(&s, &op("0".repeat(64)), &path)?;
+                let vat = model::apply(&s.books, &op("0".repeat(64)), store::today()?)
+                    .ok()
+                    .and_then(|n| match &n.entries.last()?.kind {
+                        model::Kind::Invoice { content, .. } => Some(vat_said(&n, content)),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
                 let r = serde_json::json!({ "number": number, "preview": path });
-                return emit(cli.json, &r, || format!("Preview of invoice {number}, as it would be issued now, written to {}. Nothing is booked.", path.display()));
+                return emit(cli.json, &r, || format!("Preview of invoice {number}{vat}, as it would be issued now, written to {}. Nothing is booked.", path.display()));
             }
             issue(&mut s, op, cli.json)
         }
@@ -317,6 +324,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             if !cli.json {
                 let r = views::reconciled(&s.books, &account, &commodity, date, None);
                 let n = r.outstanding.len();
+                println!("The statement says {}.", views::Amount::new(&s.books, balance, &commodity).text(" "));
                 match n {
                     0 => println!("The books agree: {} in the books, all of it cleared.", r.books.text(" ")),
                     _ => {
@@ -721,8 +729,29 @@ pub(crate) fn issue(s: &mut Store, op: impl Fn(String) -> Op, json: bool) -> Res
     for w in &r.warnings {
         eprintln!("Warning: {w}");
     }
-    let what = if matches!(s.books.entries[r.entry - 1].kind, model::Kind::CreditNote { .. }) { "Credit note" } else { "Invoice" };
-    emit(json, &r, || format!("{what} {} for {}: {}\nCommitted {}.", r.number, r.total.text(" "), r.pdf, r.commit))
+    let e = &s.books.entries[r.entry - 1];
+    let what = if matches!(e.kind, model::Kind::CreditNote { .. }) { "Credit note" } else { "Invoice" };
+    let vat = match &e.kind {
+        model::Kind::Invoice { content, .. } => vat_said(&s.books, content),
+        _ => String::new(),
+    };
+    emit(json, &r, || format!("{what} {} for {}{vat}: {}\nCommitted {}.", r.number, r.total.text(" "), r.pdf, r.commit))
+}
+
+/// The VAT an invoice charges, as its line says it: ", VAT 10%", ", no VAT";
+/// and a warning where its customer's tax number names a country and the
+/// company's names none, which the default rate cannot then tell apart.
+pub(crate) fn vat_said(b: &model::Books, c: &model::Content) -> String {
+    if model::country(&c.customer_tax_id).is_some() && model::country(&b.config.company.tax_id).is_none() && !b.config.company.tax_id.is_empty() {
+        eprintln!(
+            "Warning: the customer's tax number names a country, and the company's ({}) names none, so the VAT rate took no account of where the customer is",
+            b.config.company.tax_id
+        );
+    }
+    match &c.vat {
+        model::InvoiceVat::Charged { rate } => format!(", VAT {}%", rate.normalize()),
+        _ => ", no VAT".into(),
+    }
 }
 
 /// Every key of a table, dotted, with its value.
@@ -809,6 +838,7 @@ pub(crate) fn hints(r: &store::Refused) -> Vec<String> {
                  or abo unrecord --account {a}, if the statement was wrong"
             ),
             ("N8", _) => "--again, if it is another bill just like it".into(),
+            ("I-B2", _) => "a posting crediting what is owed, as Liabilities:Payable=-<the bill's total>".into(),
             // To split an account in use: what names it moves under it first.
             ("I-A2", Subject::Account(a)) => format!(
                 "an account in use takes no accounts under it: declare the new one beside it, or move what names {a} under it first (abo payment-options edit <id> --account {a}:Current, if a payment option names it)"

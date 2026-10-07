@@ -143,7 +143,7 @@ fn period_flags(period: &str) -> Vec<&str> {
 /// A period hledger reads, refused in words of its own when it does not.
 /// The period as hledger takes it: `ytd`, the year to date, is 1 January of
 /// this year through today; any other, as given.
-fn hledger_period(period: &str) -> Result<String> {
+pub(crate) fn hledger_period(period: &str) -> Result<String> {
     if period.trim() == "ytd" {
         let today = crate::store::today()?;
         return Ok(format!("from {}-01-01 to {}", today.year(), today.tomorrow()?));

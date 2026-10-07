@@ -2360,3 +2360,48 @@ fn a_wallet_is_a_wallet() {
     ok(&dir, &["payment-options", "add", "btc", "--kind", "crypto", "--network", "Bitcoin", "--wallet", "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"]);
     assert!(read(&dir, ".abo/log.jsonl").contains("--wallet=bc1q"));
 }
+
+// ---- found by the seventh CLI run, 2026-10-07 ----
+
+/// `-p ytd` worked in pl and vat, and in bal failed with hledger's parse error.
+#[test]
+fn bal_takes_ytd_as_pl_does() {
+    let dir = books("bal-ytd", &[]);
+    ok(&dir, &["post", "--date", "2027-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
+    assert!(ok(&dir, &["bal", "Expenses", "-p", "ytd"]).contains("5.00 EUR"));
+    assert!(ok(&dir, &["reg", "Expenses", "--period=ytd"]).contains("Fees"));
+}
+
+/// A bill without what it owes said so, with no posting to add.
+#[test]
+fn a_bill_without_its_debt_says_what_to_add() {
+    let dir = books("bill-debt", &[]);
+    refused(&dir, &["bill", "--date", "2026-03-03", "--desc", "Chairs", "Expenses:General=400.00", "Assets:VAT:Input=40.00"], "Liabilities:Payable=-<the bill's total>");
+}
+
+/// Booking to an account with accounts under it gave the hint for declaring one.
+#[test]
+fn the_splitting_hint_is_for_declaring_alone() {
+    let dir = books("split-hint", &[]);
+    ok(&dir, &["account", "add", "Assets:Savings:Current"]);
+    let o = abo(&dir, &["post", "--date", "2026-03-01", "--desc", "x", "Assets:Savings=1.00", "Equity:Opening=-1.00"]);
+    assert!(!o.status.success() && !err(&o).contains("declare the new one beside it"), "{}", err(&o));
+}
+
+/// The VAT rate an invoice took was said nowhere but in its PDF; and a
+/// customer of a country, invoiced by a company of none, got VAT unsaid.
+#[test]
+fn an_invoice_says_its_vat_rate() {
+    let dir = books("vat-said", &["--tax-id", "TAX-1"]);
+    let o = abo(&dir, &["invoice", "--to", "C", "--customer-tax-id", "IE6388047V", "--item", "1|100|x", "--date", "2026-03-01"]);
+    assert!(o.status.success() && String::from_utf8_lossy(&o.stdout).contains(", VAT 10%"), "{}", String::from_utf8_lossy(&o.stdout));
+    assert!(err(&o).contains("the company's (TAX-1) names none"), "{}", err(&o));
+}
+
+/// record said how the books stood, not what the statement said.
+#[test]
+fn record_says_what_the_statement_says() {
+    let dir = books("record-statement", &[]);
+    let id = entry(&dir, &["post", "--date", "2026-03-01", "--desc", "Float", "Assets:Bank=10.00", "Equity:Opening=-10.00"]);
+    assert!(ok(&dir, &["record", "--date", "2026-03-31", "--balance", "10.00", &format!("{id}.0")]).contains("The statement says 10.00 EUR."));
+}

@@ -460,7 +460,24 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 ---
 
-## Sixth CLI run of 2026-10-07: found and fixed, not yet run again
+## Seventh CLI run of 2026-10-07: found and fixed, not yet run again
+
+Every scenario done; no agent stuck for more than about two minutes; every
+refusal met said what to do next; output held to ASCII. Fixed, each with a
+test under "the seventh CLI run": `bal` and `reg` refused `-p ytd`, which
+`pl` and `vat` take; `abo bill --help` read as though abo wrote the debt's
+posting, and its refusal gave no posting to add; reports on broken books
+did not point to `abo check`; the hint for splitting an account showed on a
+booking; an invoice named its VAT rate only in its PDF, and a customer of a
+country, invoiced by a company whose tax number names none, got the
+company's rate unsaid; `record` did not repeat what the statement says.
+
+Open, as before: a bill has no number of the supplier's and no due date.
+Not abo's to fix: the demo's tax number names no country, so its VAT
+default cannot tell a customer abroad; a VAT return without a box for the
+VAT payable is the configuration's.
+
+## Sixth CLI run of 2026-10-07: found and fixed
 
 Every scenario was done; no agent was stuck for more than about a minute.
 Found and fixed, each with a test under "the sixth CLI run": a hand edit of

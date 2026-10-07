@@ -94,7 +94,7 @@ pub(crate) struct InitFlags {
     /// A payment option, as a TOML inline table of its fields: `{ kind =
     /// "bank", iban = "CH93 0076 2011 6238 5295 7" }`. Repeatable. The
     /// fields are those of `abo payment-options add`: kind, id, label,
-    /// holder, iban, bic, bank, network, address, details, account; bank and
+    /// holder, iban, bic, bank, network, wallet, details, account; bank and
     /// details take one line, or a list of them.
     #[arg(long = "payment")]
     pub(crate) payment: Vec<String>,
@@ -332,7 +332,9 @@ pub(crate) enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Book a supplier's bill: one posting credits what is owed.
+    /// Book a supplier's bill: its postings, written as abo post takes them,
+    /// one of which credits what is owed to a liability account, as
+    /// `Expenses:Office=400.00 Assets:VAT:Input=40.00 Liabilities:Payable=-440.00`.
     Bill {
         /// Defaults to the document's date, else today.
         #[arg(long)]
