@@ -585,7 +585,12 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                         price: statement::Amount,
                     }
                     let all: Vec<Price> = s.books.prices.iter().map(|((c, d), p)| Price { date: d.to_string(), of: c.clone(), price: statement::Amount::new(&s.books, p.quantity, &p.commodity) }).collect();
-                    emit(cli.json, &all, || all.iter().map(|p| format!("{} {} {}", p.date, p.of, p.price.text(" "))).collect::<Vec<_>>().join("\n"))
+                    emit(cli.json, &all, || {
+                        if all.is_empty() {
+                            return "No prices declared; abo price add declares one.".into();
+                        }
+                        all.iter().map(|p| format!("{} {} {}", p.date, p.of, p.price.text(" "))).collect::<Vec<_>>().join("\n")
+                    })
                 }
                 Some(PriceCmd::Add { date, code, price }) => {
                     let price = input::amount(&s.books, &price.join(" "))?;
@@ -720,6 +725,14 @@ pub(crate) fn changed_from(s: &mut Store, op: &Op, file: Option<&str>, also: &[(
 /// Problems the books hold, read afresh: a change may mend one, and goes
 /// ahead on the others, which are said, so that it does so knowingly.
 pub(crate) fn still(s: &Store) {
+    // A change abo did not make is what most needs saying: abo changes
+    // nothing while it is there, though it still reports.
+    if let Ok(files) = s.edited() {
+        if !files.is_empty() {
+            eprintln!("warning: {} {} a change abo did not make, and abo changes nothing until it is taken out or committed; abo check shows it", files.join(" "), if files.len() == 1 { "holds" } else { "hold" });
+            return;
+        }
+    }
     let n = Store::open(&s.root).map_or(0, |now| now.problems.len());
     if n > 0 {
         eprintln!("warning: the books hold {n} problem{}; abo check lists them", if n == 1 { "" } else { "s" });

@@ -2486,3 +2486,17 @@ fn a_hand_edit_is_shown_and_the_refusal_says_why() {
     assert!(!o.status.success() && e.contains("  -account Expenses:General") && e.contains("not even one that would mend it") && e.contains("its commit would take this one in as abo's own"), "{e}");
     assert!(ok(&dir, &["--help"]).contains("abo commits every change it makes"));
 }
+
+// ---- found by the short ninth CLI run, 2026-10-07 ----
+
+/// A report on books holding a change abo did not make warned only of "a
+/// problem"; and an empty list of prices printed nothing.
+#[test]
+fn reports_say_a_hand_edit_is_there() {
+    let dir = books("report-hand", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
+    assert!(ok(&dir, &["price"]).contains("No prices declared"));
+    std::fs::write(dir.join("journal/accounts.journal"), read(&dir, "journal/accounts.journal").replace("account Expenses:General\n", "")).unwrap();
+    let o = abo(&dir, &["pl", "-p", "2026"]);
+    assert!(o.status.success() && err(&o).contains("holds a change abo did not make"), "{}", err(&o));
+}

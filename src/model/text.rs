@@ -424,10 +424,10 @@ fn derived(text: &str, at: usize) -> &'static str {
     let block = lines[start + 1..].iter().take_while(|l| l.starts_with(' '));
     for l in block {
         if l.starts_with("    ; invoice:") {
-            return ": an invoice's or credit note's postings follow from what it says (its .json), so a change typed here changes nothing, and abo tidy writes them back";
+            return ": an invoice's or credit note's postings follow from what it says (its .json), so a change typed here changes nothing: take it out (git checkout), or, once it is committed, abo tidy writes them back";
         }
         if l.starts_with("    ; reverses:") {
-            return ": a reversal's postings follow from the entry it reverses, so a change typed here changes nothing, and abo tidy writes them back";
+            return ": a reversal's postings follow from the entry it reverses, so a change typed here changes nothing: take it out (git checkout), or, once it is committed, abo tidy writes them back";
         }
     }
     ""

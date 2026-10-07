@@ -469,6 +469,16 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 ---
 
+## Short ninth CLI run of 2026-10-07: the two changes read as meant
+
+Two agents, setting up and invoicing, to try the VAT default by tax numbers
+and the hand edit's refusal. Both read as meant: each invoice said its rate
+and why, and the refusal's diff and reason took the agent straight to `git
+checkout`. Fixed, with a test: reports on books holding a change abo did
+not make warned only of "a problem", where they now say what it is; the
+derived-line message offered `abo tidy`, which a change not committed
+holds up; `abo price` with none printed nothing.
+
 ## After the eighth run: the VAT default by tax numbers alone
 
 The default VAT rate went by currency as well as tax numbers: a Polish
