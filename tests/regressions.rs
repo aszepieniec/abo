@@ -1802,7 +1802,7 @@ fn bills_lists_every_bill_and_what_waits_to_be_booked() {
     std::fs::write(dir.join("scan.pdf"), b"%PDF-1.4 waiting").unwrap();
     ok(&dir, &["file", "--date", "2026-03-05", "--issuer", "Telecom", "scan.pdf"]);
     let said = ok(&dir, &["bills"]);
-    assert!(said.contains(&format!("{id:>5}  2026-03-03  Chairs")) && said.contains("no document") && said.contains("part paid, 300.00 EUR open") && said.contains("bills/2026/2026-03-05-telecom-"), "{said}");
+    assert!(said.contains(&format!("{id:>5}  2026-03-03                Chairs")) && said.contains("no document") && said.contains("part paid, 300.00 EUR open") && said.contains("bills/2026/2026-03-05-telecom-"), "{said}");
     let v = json(&dir, &["bills", "--open"]);
     assert_eq!(v["bills"][0]["open"]["quantity"], "300.00", "{v}");
 }
@@ -2438,7 +2438,7 @@ fn a_bill_says_its_number_and_due_date_if_it_has_them() {
     let j = read(&dir, "journal/2027.journal");
     assert!(j.contains("    ; bill:\n    ; number: INV-4471\n    ; due: 2027-05-31\n"), "{j}");
     let said = ok(&dir, &["bills"]);
-    assert!(said.contains("Chairs (INV-4471)") && said.contains("due 2027-05-31") && said.contains("open, overdue"), "{said}");
+    assert!(said.contains("INV-4471      Chairs") && said.contains("due 2027-05-31") && said.contains("open, overdue"), "{said}");
     let v = json(&dir, &["bills"]);
     let row = v["bills"].as_array().unwrap().iter().find(|b| b["entry"] == id.parse::<u64>().unwrap()).unwrap().clone();
     assert_eq!((row["number"].as_str(), row["due"].as_str(), row["overdue"].as_bool()), (Some("INV-4471"), Some("2027-05-31"), Some(true)), "{row}");
@@ -2448,4 +2448,25 @@ fn a_bill_says_its_number_and_due_date_if_it_has_them() {
     // The same number and debt, months apart: the same bill.
     refused(&dir, &["bill", "--date", "2027-06-20", "--desc", "Chairs again", "--number", "INV-4471", "Expenses:General=40.00", "Liabilities:Payable=-40.00"], "under the supplier's number INV-4471");
     ok(&dir, &["bill", "--date", "2027-06-20", "--desc", "Chairs again", "--number", "INV-4471", "--again", "Expenses:General=40.00", "Liabilities:Payable=-40.00"]);
+}
+
+// ---- found by the eighth CLI run, 2026-10-07 ----
+
+/// `abo vat` with no period gave a return for all time, which is never filed.
+#[test]
+fn a_tax_return_needs_its_period() {
+    let dir = books("vat-period", &[]);
+    refused(&dir, &["vat"], "a tax return is for a period");
+}
+
+/// The warning that the rate took no account of where the customer is
+/// showed with a rate given; and a bill's number was cut off with its
+/// description.
+#[test]
+fn small_things_of_the_eighth_run() {
+    let dir = books("eighth", &["--tax-id", "TAX-1"]);
+    let o = abo(&dir, &["invoice", "--to", "C", "--customer-tax-id", "IE6388047V", "--item", "1|100|x", "--date", "2026-03-01", "--vat-rate", "0", "--vat-reason", "Reverse charge"]);
+    assert!(o.status.success() && !err(&o).contains("took no account"), "{}", err(&o));
+    ok(&dir, &["bill", "--date", "2026-03-03", "--number", "2026-4471", "--desc", "A description long enough to be cut where it ends", "Expenses:General=1.00", "Liabilities:Payable=-1.00"]);
+    assert!(ok(&dir, &["bills"]).contains("2026-4471"));
 }

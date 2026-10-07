@@ -186,23 +186,24 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 let vat = model::apply(&s.books, &op("0".repeat(64)), store::today()?)
                     .ok()
                     .and_then(|n| match &n.entries.last()?.kind {
-                        model::Kind::Invoice { content, .. } => Some(vat_said(&n, content)),
+                        model::Kind::Invoice { content, .. } => Some(vat_said(&n, content, vat_rate.is_some())),
                         _ => None,
                     })
                     .unwrap_or_default();
                 let r = serde_json::json!({ "number": number, "preview": path });
                 return emit(cli.json, &r, || format!("Preview of invoice {number}{vat}, as it would be issued now, written to {}. Nothing is booked.", path.display()));
             }
-            issue(&mut s, op, cli.json)
+            issue(&mut s, op, cli.json, vat_rate.is_some())
         }
         Cmd::Credit { date, note, number } => {
             let mut s = Store::open(&here)?;
             let invoice = input::debt(&s.books, &number)?;
             let date = input::day(date.as_deref())?;
-            issue(&mut s, |pdf| Op::Credit { invoice, date, note: note.clone(), pdf }, cli.json)
+            issue(&mut s, |pdf| Op::Credit { invoice, date, note: note.clone(), pdf }, cli.json, true)
         }
         Cmd::Invoices { open } => {
             let s = Store::open(&here)?;
+            still(&s);
             let all = views::invoices(&s.books, store::today()?);
             let all: Vec<_> = all.into_iter().filter(|i| !open || i.has_open).collect();
             emit(cli.json, &all, || {
@@ -218,6 +219,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Bills { open } => {
             let s = Store::open(&here)?;
+            still(&s);
             let all: Vec<_> = views::bills(&s.books, store::today()?).into_iter().filter(|b| !open || matches!(b.status, "open" | "part paid")).collect();
             let waiting = views::waiting(&s.books);
             emit(cli.json, &serde_json::json!({ "bills": all, "waiting": waiting }), || {
@@ -237,13 +239,11 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                                 said += ", overdue";
                             }
                             let doc = if b.document.is_some() { "document" } else { "no document" };
-                            // The supplier's number beside the description, as the bill gives it.
-                            let what = match &b.number {
-                                Some(n) => format!("{} ({n})", b.description),
-                                None => b.description.clone(),
-                            };
+                            // The supplier's number in a column of its own, never cut:
+                            // it is what a supplier's reminder is matched against.
+                            let number = b.number.clone().unwrap_or_default();
                             let due = b.due.as_ref().map_or(String::new(), |d| format!("due {d}"));
-                            format!("{:>5}  {}  {:<36}  {:>16}  {:<14}  {:<11}  {}", b.entry, b.date, cut(&what), b.owed.text(" "), due, doc, said)
+                            format!("{:>5}  {}  {:<12}  {:<36}  {:>16}  {:<14}  {:<11}  {}", b.entry, b.date, number, cut(&b.description), b.owed.text(" "), due, doc, said)
                         })
                         .collect();
                     lines.join("\n")
@@ -256,6 +256,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Entries { words } => {
             let s = Store::open(&here)?;
+            still(&s);
             let all = views::entries(&s.books, &words);
             emit(cli.json, &all, || {
                 if all.is_empty() {
@@ -366,6 +367,10 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Cmd::Vat { period, pdf } => {
+            // A tax return is for a period; one for all time is never filed.
+            if period.trim().is_empty() {
+                bail!("a tax return is for a period: give one, such as --period 2026q3, -p 'last quarter' or -p ytd");
+            }
             let s = Store::open(&here)?;
             statement(&s, statement::vat_return(&s, &period)?, pdf, cli.json)?;
             still(&s);
@@ -734,7 +739,8 @@ pub(crate) fn past(what: &str) -> String {
 
 
 /// Issue an invoice or a credit note, and say so.
-pub(crate) fn issue(s: &mut Store, op: impl Fn(String) -> Op, json: bool) -> Result<()> {
+/// `given`: the VAT rate was given, not chosen by abo's default.
+pub(crate) fn issue(s: &mut Store, op: impl Fn(String) -> Op, json: bool, given: bool) -> Result<()> {
     let r = crate::invoice::issue(s, op)?;
     for w in &r.warnings {
         eprintln!("Warning: {w}");
@@ -742,7 +748,7 @@ pub(crate) fn issue(s: &mut Store, op: impl Fn(String) -> Op, json: bool) -> Res
     let e = &s.books.entries[r.entry - 1];
     let what = if matches!(e.kind, model::Kind::CreditNote { .. }) { "Credit note" } else { "Invoice" };
     let vat = match &e.kind {
-        model::Kind::Invoice { content, .. } => vat_said(&s.books, content),
+        model::Kind::Invoice { content, .. } => vat_said(&s.books, content, given),
         _ => String::new(),
     };
     emit(json, &r, || format!("{what} {} for {}{vat}: {}\nCommitted {}.", r.number, r.total.text(" "), r.pdf, r.commit))
@@ -751,8 +757,8 @@ pub(crate) fn issue(s: &mut Store, op: impl Fn(String) -> Op, json: bool) -> Res
 /// The VAT an invoice charges, as its line says it: ", VAT 10%", ", no VAT";
 /// and a warning where its customer's tax number names a country and the
 /// company's names none, which the default rate cannot then tell apart.
-pub(crate) fn vat_said(b: &model::Books, c: &model::Content) -> String {
-    if model::country(&c.customer_tax_id).is_some() && model::country(&b.config.company.tax_id).is_none() && !b.config.company.tax_id.is_empty() {
+pub(crate) fn vat_said(b: &model::Books, c: &model::Content, given: bool) -> String {
+    if !given && model::country(&c.customer_tax_id).is_some() && model::country(&b.config.company.tax_id).is_none() && !b.config.company.tax_id.is_empty() {
         eprintln!(
             "Warning: the customer's tax number names a country, and the company's ({}) names none, so the VAT rate took no account of where the customer is",
             b.config.company.tax_id

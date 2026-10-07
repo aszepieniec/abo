@@ -468,7 +468,21 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 ---
 
-## Seventh CLI run of 2026-10-07: found and fixed, not yet run again
+## Eighth CLI run of 2026-10-07: clean but for decisions taken
+
+Every scenario done; every refusal met said what to do next; every hand
+edit caught, with its file and line; output held to ASCII. What the agents
+ranked first was what was decided: `abo account add` refused while a change
+abo did not make is there (F8), and the VAT default by currency where no
+tax number names a country. Fixed, each with a test under "the eighth CLI
+run": `abo vat` needs its period, a return for all time never being filed;
+the warning that the rate took no account of where the customer is showed
+with a rate given; `bills`, `invoices` and `entries` did not warn of
+problems the books hold; a bill's number was cut off with its description,
+and now has a column of its own; `abo bill --help`'s example named an
+account fresh books lack.
+
+## Seventh CLI run of 2026-10-07: found and fixed
 
 Every scenario done; no agent stuck for more than about two minutes; every
 refusal met said what to do next; output held to ASCII. Fixed, each with a

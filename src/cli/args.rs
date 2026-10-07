@@ -334,7 +334,7 @@ pub(crate) enum Cmd {
     },
     /// Book a supplier's bill: its postings, written as abo post takes them,
     /// one of which credits what is owed to a liability account, as
-    /// `Expenses:Office=400.00 Assets:VAT:Input=40.00 Liabilities:Payable=-440.00`.
+    /// `Expenses:General=400.00 Assets:VAT:Input=40.00 Liabilities:Payable=-440.00`.
     Bill {
         /// Defaults to the document's date, else today.
         #[arg(long)]
@@ -435,7 +435,7 @@ pub(crate) enum Cmd {
     /// Tax return for a period, from the report.vat boxes of abo.toml.
     Vat {
         /// An hledger period expression, e.g. 2026q3, "last quarter", or
-        /// ytd, the year to date. Without one, all time.
+        /// ytd, the year to date. Needed: a return is for a period.
         #[arg(short, long, default_value = "")]
         period: String,
         /// Also write a PDF here.
