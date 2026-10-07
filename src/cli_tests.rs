@@ -726,7 +726,7 @@ fn record_all_clears_everything(#[strategy(plan())] plan: Vec<Step>) {
 fn a_document_filed_for_a_bill_names_it(#[strategy(plan())] plan: Vec<Step>, bill: proptest::sample::Index, #[strategy("%PDF-1.4\n[a-z0-9]{8,24}")] bytes: String) {
     let (_parent, books, today) = after(&plan);
     let m = store::Store::open(&books).unwrap().books;
-    let bills: Vec<usize> = (1..=m.entries.len()).filter(|&d| matches!(m.entries[d - 1].kind, model::Kind::Bill(_))).collect();
+    let bills: Vec<usize> = (1..=m.entries.len()).filter(|&d| matches!(m.entries[d - 1].kind, model::Kind::Bill(..))).collect();
     let Some(b) = mt::pick(&bill, &bills) else { return Ok(()) };
     let src = Dir::new();
     let path = src.0.join("bill.pdf");

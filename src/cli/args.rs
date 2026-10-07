@@ -267,12 +267,12 @@ pub(crate) enum PriceCmd {
     Remove { date: String, code: String },
 }
 
-/// What `abo bal` and `abo reg` pass on to hledger, beside the query: the
+/// What `abo balance` and `abo register` pass on to hledger, beside the query: the
 /// list `report::PASSED` holds, which a test keeps in step.
 pub(crate) const PASSED_HELP: &str = "Options passed on to hledger: -b --begin -e --end -p --period -D --daily -W --weekly -M --monthly \
 -Q --quarterly -Y --yearly --depth -V --market -B --cost -X --exchange --value -O --output-format -E --empty -R --real \
 -U --unmarked -P --pending -C --cleared -H --historical -A --average -T --row-total -N --no-total --flat --tree --layout. \
-Amounts are at cost (-B) unless one of -B -V -X --value says otherwise. abo reads these books alone: any other option is refused. A statement clears postings in abo's own tags, not hledger's \
+--period (-p) also takes ytd, the year to date. Amounts are at cost (-B) unless one of -B -V -X --value says otherwise. abo reads these books alone: any other option is refused. A statement clears postings in abo's own tags, not hledger's \
 cleared mark, so --cleared says nothing of reconciling.";
 
 #[derive(Subcommand)]
@@ -324,9 +324,9 @@ pub(crate) enum Cmd {
     /// Take out a document filed by mistake, by its path or hash: one no
     /// bill names.
     Unfile { document: String },
-    /// hledger balance, of these books: `abo bal Expenses -M -p 2026`.
-    #[command(alias = "balance", after_help = PASSED_HELP)]
-    Bal {
+    /// hledger balance, of these books: `abo balance Expenses -M --period 2026`.
+    #[command(alias = "bal", after_help = PASSED_HELP)]
+    Balance {
         /// An hledger query: account names, desc:WORD, date:2026; and the
         /// options below.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -344,10 +344,18 @@ pub(crate) enum Cmd {
         /// The filed document it is the bill of, by its path or hash.
         #[arg(long)]
         document: Option<String>,
-        /// Book it though a bill with this date and these postings is booked
-        /// already: it is another just like it.
+        /// Book it though a bill owing the same is booked already, within a
+        /// week of it or under the same number: it is another just like it.
         #[arg(long)]
         again: bool,
+        /// The supplier's own number for it, as the bill prints it, if it
+        /// has one: one line, without a comma.
+        #[arg(long)]
+        number: Option<String>,
+        /// The day it is due, if it says: on or after its date. abo bills
+        /// then says when it is overdue.
+        #[arg(long)]
+        due: Option<String>,
         /// As `abo post` takes them.
         postings: Vec<String>,
     },
@@ -638,10 +646,10 @@ pub(crate) enum Cmd {
         #[arg(long, default_value_t = 8801)]
         port: u16,
     },
-    /// hledger register, of these books: `abo reg Expenses:Hosting -p 2026`.
+    /// hledger register, of these books: `abo register Expenses:Hosting --period 2026`.
     /// `abo entries` finds an entry's id.
-    #[command(alias = "register", after_help = PASSED_HELP)]
-    Reg {
+    #[command(alias = "reg", after_help = PASSED_HELP)]
+    Register {
         /// An hledger query: account names, desc:WORD, date:2026; and the
         /// options below.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]

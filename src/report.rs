@@ -3,7 +3,7 @@
 use crate::store::Store;
 use anyhow::{bail, Result};
 
-/// The options `abo bal` and `abo reg` pass on: those that choose what is
+/// The options `abo balance` and `abo register` pass on: those that choose what is
 /// reported and how it looks. Anything else — another file, a file of
 /// arguments, a config, a file written — is refused, as is any not listed:
 /// a list of what is safe holds where a list of what is not did not.

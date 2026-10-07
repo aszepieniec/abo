@@ -238,8 +238,8 @@ hold them; the others hold what their postings follow from.
 enum Kind {
     /// Booked by hand: anything that balances.
     Plain(Vec<Posting>),
-    /// A supplier's bill. A debt.
-    Bill(Vec<Posting>),
+    /// A supplier's bill. A debt. What the supplier says of it besides.
+    Bill(Vec<Posting>, BillMore),
     /// An invoice abo issued: what it says, and its PDF's hash (a check).
     /// A debt.
     Invoice { content: Content, pdf: Hash },
@@ -252,6 +252,19 @@ enum Kind {
     Reversal { of: EntryId },
 }
 ```
+
+A bill may say, besides its postings, what the supplier's own number for it
+is and when it is due; either, both or neither, as the bill gives them:
+
+```rust
+struct BillMore {
+    number: Text,          // as the bill prints it; empty where it has none
+    due:    Option<Date>,  // on or after the bill's date
+}
+```
+
+They are inputs, said by whoever books the bill. A bill with something open
+past its due date is overdue, as an invoice is.
 
 `postings(e)` is the entry's own postings for `Plain`, `Bill` and `Payment`.
 For the others it is defined:
@@ -561,7 +574,8 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | | Guarantee | Rules | Properties |
 |---|---|---|---|
 | G-B1 | Each document has a path of its own and is filed once; it keeps its bill while the bill stands, and follows it when it is booked again | I-B1 | `document_paths_are_distinct`, `documents_alike_are_refused`, `documents_keep_their_bill`, `a_document_follows_its_bill` |
-| G-B2 | A bill is not booked twice by mistake: one owing what a standing bill owes, within a week of it, is booked only when said to be another | N8 | `bills_alike_are_refused_unless_another` |
+| G-B2 | A bill is not booked twice by mistake: one owing what a standing bill owes, within a week of it or under the same number of the supplier's, is booked only when said to be another | N8 | `bills_alike_are_refused_unless_another` |
+| G-B3 | What a bill says of itself besides its postings, the supplier's number and when it is due, is read back as said, by abo and by hledger alike, and a due date is never before the bill | I-B3 | `files_say_the_state`, `hledger_reads_entries_as_written` |
 
 ### Whoever runs a command
 
@@ -681,6 +695,9 @@ not reused: those missing below were rules about a value now derived.
   share their first 32 bits; its `of` names a `Bill` entry dated as the
   document, and no two documents name the same one.
 - **I-B2** A bill's booking credits exactly one liability account.
+- **I-B3** A bill's number of the supplier's is one line, trimmed, with nothing
+  hidden and no comma — hledger ends a tag's value at a comma — and its due
+  date, if it has one, is on or after its own.
 
 ### 4.4 Invoices
 
@@ -779,7 +796,10 @@ neither for an entry made long ago.
   of it either side, unless the operation says it is another (`again`). How
   either is split among expenses does not tell two bills apart, nor a day or
   two between the date on it and the day it came: what is owed does. A bill
-  that comes monthly, for the same amount, is a month apart.
+  that comes monthly, for the same amount, is a month apart. Nor is a bill
+  added that owes what a standing bill owes under the same number of the
+  supplier's, whatever the dates of the two: a supplier numbers each bill
+  once.
 
 The conditions hold of every operation but `undo`, which takes back the last
 one and makes no change of its own: a period closed by mistake is reopened by
@@ -1014,7 +1034,7 @@ The kind is written as tags, and read back from them:
 | Kind | Tags |
 |---|---|
 | `Plain` | none |
-| `Bill` | `bill:` |
+| `Bill` | `bill:`, then `number: <text>` and `due: <date>` where given |
 | `Invoice` | `invoice: <number>`, its content in its `.json` |
 | `CreditNote` | `invoice: <number>`, `credits: <id>` |
 | `Payment` | `pays: <id>` |

@@ -16,7 +16,7 @@ pub fn name(m: &Books, id: EntryId) -> String {
     match m.entry(id).map(|e| &e.kind) {
         Some(Kind::Invoice { .. }) => format!("invoice {}", m.number_text(id).unwrap_or_default()),
         Some(Kind::CreditNote { .. }) => format!("credit note {}", m.number_text(id).unwrap_or_default()),
-        Some(Kind::Bill(_)) => format!("bill {id} ({})", m.entries[id - 1].description),
+        Some(Kind::Bill(..)) => format!("bill {id} ({})", m.entries[id - 1].description),
         Some(_) => format!("entry {id}"),
         None => format!("no entry has the id {id}"),
     }
@@ -64,7 +64,7 @@ pub(crate) fn gone(m: &Books, id: EntryId) -> String {
 fn called(m: &Books, id: EntryId) -> &'static str {
     match m.entry(id).map(|e| &e.kind) {
         Some(Kind::Invoice { .. }) => "invoice",
-        Some(Kind::Bill(_)) => "bill",
+        Some(Kind::Bill(..)) => "bill",
         _ => "entry",
     }
 }
@@ -358,6 +358,20 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
             }
             None => vec![],
         },
+        "I-B3" => match op {
+            Op::Bill { date, more, .. } => {
+                let mut v = vec![];
+                let n = more.number.trim();
+                if !text_ok(n) || n.contains(',') {
+                    v.push(format!("the supplier's number {} is not one line without a comma or anything hidden", shown(n)));
+                }
+                if let Some(d) = more.due.filter(|d| d < date) {
+                    v.push(format!("it would be due on {d}, before its own date, {date}"));
+                }
+                v
+            }
+            _ => vec![],
+        },
         "I-E4" => {
             let home = &m.config.company.currency;
             match (op, given_postings(op)) {
@@ -430,7 +444,7 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
             }
             if let Some(b) = bill {
                 match m.entry(*b) {
-                    Some(Entry { kind: Kind::Bill(_), date: bd, .. }) => {
+                    Some(Entry { kind: Kind::Bill(..), date: bd, .. }) => {
                         if bd != date {
                             v.push(format!("{} is dated {bd}; its document cannot be dated {date}", name(m, *b)));
                         }

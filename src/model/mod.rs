@@ -82,8 +82,8 @@ pub struct Posting {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
     Plain(Vec<Posting>),
-    /// A supplier's bill. A debt.
-    Bill(Vec<Posting>),
+    /// A supplier's bill. A debt. What the supplier says of it besides.
+    Bill(Vec<Posting>, BillMore),
     /// An invoice abo issued, and its PDF's hash (a check). A debt.
     Invoice { content: Box<Content>, pdf: Hash },
     /// Cancels invoice `of` in full: its postings negated.
@@ -95,6 +95,16 @@ pub enum Kind {
     /// An id given and taken back by undo: no entry, and no other entry
     /// ever has it (MODEL.md §2.3).
     Gone,
+}
+
+/// What a bill may say besides its postings, each as the supplier gives it,
+/// or nothing: the supplier's own number for it, and the day it is due.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BillMore {
+    /// One line, nothing hidden; empty where none is given.
+    pub number: String,
+    /// On or after the bill's own date.
+    pub due: Option<Date>,
 }
 
 /// What a statement says of an account in a commodity on a date: its
@@ -587,7 +597,7 @@ impl Books {
     pub fn postings(&self, id: EntryId) -> Vec<Posting> {
         let Some(e) = self.entry(id) else { return vec![] };
         match &e.kind {
-            Kind::Plain(p) | Kind::Bill(p) | Kind::Payment { postings: p, .. } => p.clone(),
+            Kind::Plain(p) | Kind::Bill(p, _) | Kind::Payment { postings: p, .. } => p.clone(),
             Kind::Invoice { content, .. } => self.invoice_postings(content),
             Kind::CreditNote { of, .. } | Kind::Reversal { of } if *of < id => {
                 self.postings(*of).iter().map(Posting::negated).collect()
@@ -718,7 +728,7 @@ impl Books {
     pub fn written_off_to(&self, d: EntryId) -> Option<&'static [&'static str]> {
         match self.entry(d)?.kind {
             Kind::Invoice { .. } => Some(&["Expenses"]),
-            Kind::Bill(_) => Some(&["Income", "Expenses"]),
+            Kind::Bill(..) => Some(&["Income", "Expenses"]),
             _ => None,
         }
     }
@@ -769,7 +779,7 @@ impl Books {
 
     pub fn debt(&self, d: EntryId) -> Option<Debt> {
         match &self.entry(d)?.kind {
-            Kind::Bill(ps) => match &ps.iter().filter(|p| class(&p.account) == "Liabilities" && p.amount.quantity < Decimal::ZERO).collect::<Vec<_>>()[..] {
+            Kind::Bill(ps, _) => match &ps.iter().filter(|p| class(&p.account) == "Liabilities" && p.amount.quantity < Decimal::ZERO).collect::<Vec<_>>()[..] {
                 [p] => Some(Debt {
                     account: p.account.clone(),
                     owed: Amount { quantity: -p.amount.quantity, commodity: p.amount.commodity.clone() },

@@ -173,6 +173,11 @@ Browser: **Book a bill**, choose a PDF or take a photograph, give the date on
 it, who issued it, a description and the postings, **File and book it**. CLI:
 `abo file <scan> --date <date> --issuer <name>`, which says where it filed the
 document, then `abo bill --desc <text> --document <that path> <postings>`.
+Where the bill gives them, the supplier's own number for it and when it is
+due go with it, either, both or neither: `--number`, `--due`, and the two
+fields of the same names on the form (MODEL.md I-B3). A bill owing what
+another owes under the same number of the supplier's is the same bill,
+whatever their dates (N8).
 **Done when** the document is filed as
 `bills/<year>/<date>-<issuer>-<hash>.<ext>` in one commit, its type read from
 its bytes, and the bill is booked, dated as the document, in the next, the
@@ -208,7 +213,10 @@ an account that is no money account, a date before the debt's.
 each with its amount, what is open and where it stands; **Pay**, **Upload** for
 a document the books lack, **Book it** and **Delete** for one not booked.
 CLI: `abo bills [--open] [--json]`, each bill with its id, which `pay`,
-`write-off` and `revert` take, and the documents filed and not booked.
+`write-off` and `revert` take, and the documents filed and not booked. A
+bill's number of the supplier's shows beside its description, its due date
+beside its amount, and one with something open past it is overdue, there and
+on the page, as an invoice is.
 
 ### B5. Write off what will not be paid — Supported (browser, CLI)
 What a customer will never pay, or a supplier forgave. Browser: **Write off**
@@ -347,7 +355,7 @@ refused, naming the box and the price to add, rather than leaving the amount
 out.
 
 ### E4. Ask hledger anything — Supported (CLI)
-`abo bal …` and `abo reg …` pass their arguments to hledger: a query, and the
+`abo balance …` and `abo register …` pass their arguments to hledger: a query, and the
 options that choose what is reported and how — periods, depth, value,
 the output format. (A statement clears postings in abo's own tags, not
 hledger's cleared mark, so `--cleared` says nothing of reconciling.) Any other option is refused, so that they

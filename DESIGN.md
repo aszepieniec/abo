@@ -13,7 +13,7 @@ adding it is stated.
 
 Status: M0-M4 built — `abo init`, `post`, `file`, `bill`, `invoice`,
 `reconcile`, `clear`, `revert`, `undo`, `company`, `payment-options`, `pl`, `bs`,
-`vat`, `bal`, `reg`, `log`, `serve`, `demo`. M5 half built: a data
+`vat`, `balance`, `register`, `log`, `serve`, `demo`. M5 half built: a data
 directory serves each of its companies under `/c/<dir>/`; users are next.
 
 ---
@@ -634,7 +634,7 @@ Not legal advice, but none of this is controversial.
 
 - **M0 — foundation, no AI.** `abo init` (six prompts → `abo.toml`, seeded
   `accounts.journal`, `.gitignore`, `git init`, first commit). `abo add` (now `abo post`) with the
-  full validation chain. `abo bal` / `abo reg` passthrough. One test: a balanced
+  full validation chain. `abo balance` / `abo register` passthrough. One test: a balanced
   entry commits; an unbalanced one is rejected; an input-VAT posting under
   `method = "flat"` is rejected. ~300 lines. **Done.**
 - **M1** — `abo bill <file>`: AI proposal, terminal approve/refine. **Done**,

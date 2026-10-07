@@ -42,7 +42,7 @@ pub(super) async fn booking(Books(s): Books, Path(id): Path<String>) -> Response
         let invoice = matches!(e.kind, Kind::Invoice { .. });
         let credit_note = matches!(e.kind, Kind::CreditNote { .. });
         let reversed = b.reversed_by(id, &standing);
-        let is_bill = matches!(e.kind, Kind::Bill(_));
+        let is_bill = matches!(e.kind, Kind::Bill(..));
         let document = document_of(b, id);
         let paid_by = b.payments(id, &standing);
         let owed = owed_text(b, id, &standing).filter(|_| standing[id]);

@@ -101,7 +101,15 @@ fn entry(m: &Books, id: EntryId, e: &Entry, f: &mut Files) -> String {
     let json = |n: &str| invoice_path(n, "json");
     match &e.kind {
         Kind::Plain(_) => {}
-        Kind::Bill(_) => tags.push(("bill", String::new())),
+        Kind::Bill(_, more) => {
+            tags.push(("bill", String::new()));
+            if !more.number.is_empty() {
+                tags.push(("number", more.number.clone()));
+            }
+            if let Some(d) = more.due {
+                tags.push(("due", d.to_string()));
+            }
+        }
         Kind::Invoice { content, pdf } => {
             tags.push(("invoice", number.clone()));
             let mut content = (**content).clone();
@@ -314,7 +322,10 @@ fn parse_block(
     };
     let kind = match tags.iter().map(|(k, _)| *k).collect::<Vec<_>>()[..] {
         ["id"] => Kind::Plain(postings),
-        ["id", "bill"] => Kind::Bill(postings),
+        ["id", "bill"] | ["id", "bill", "number"] | ["id", "bill", "due"] | ["id", "bill", "number", "due"] => {
+            let due = tag("due").map(date).transpose()?;
+            Kind::Bill(postings, BillMore { number: tag("number").unwrap_or_default().to_string(), due })
+        }
         ["id", "pays"] => Kind::Payment { of: id(tag("pays").unwrap())?, postings },
         ["id", "reverses"] => Kind::Reversal { of: id(tag("reverses").unwrap())? },
         ["id", "invoice"] => {

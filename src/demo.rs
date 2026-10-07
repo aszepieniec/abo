@@ -87,7 +87,7 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
                 None
             }
         };
-        s.change(&Op::Bill { date: ago(days), description: description.into(), postings, document, again: false }, &[])?;
+        s.change(&Op::Bill { date: ago(days), description: description.into(), postings, document, again: false, more: Default::default() }, &[])?;
         Ok(s.books.entries.len())
     };
     let pay = |s: &mut Store, days: i64, debt: usize, amount: &str| -> Result<()> {

@@ -168,6 +168,13 @@ pub(crate) enum Draw {
         #[strategy(text())]
         description: String,
         when: When,
+        /// The supplier's number, now and then, of any text: I-B3 refuses
+        /// what is not one line without a comma.
+        #[strategy(proptest::option::weighted(0.3, prop_oneof![4 => "[A-Z0-9-]{1,8}", 1 => text()]))]
+        number: Option<String>,
+        /// Days from its date to when it is due, now and then before it.
+        #[strategy(proptest::option::weighted(0.3, -3i64..60))]
+        due_in: Option<i64>,
     },
     #[weight(4)]
     Invoice {
@@ -265,11 +272,11 @@ pub(crate) fn op(d: &Draw, m: &Books, today: Date) -> Option<Op> {
             Op::Post { date: when.at(today), description, postings: vec![Posting::new(a, q, "EUR"), Posting::new(b, -q, "EUR")] }
         }
         Draw::File { sha256, name, bill, when } => {
-            let bill = bill.and_then(|i| pick(&i, &kind(|k| matches!(k, Kind::Bill(_)))));
+            let bill = bill.and_then(|i| pick(&i, &kind(|k| matches!(k, Kind::Bill(..)))));
             Op::File { sha256, date: when.at(today), name, ext: "pdf".into(), bill }
         }
         Draw::Unfile(i) => Op::Unfile { sha256: pick(&i, &m.documents.keys().cloned().collect::<Vec<_>>()).unwrap_or_default() },
-        Draw::Bill { net, usd: u, to_output, document, description, when } => {
+        Draw::Bill { net, usd: u, to_output, document, description, when, number, due_in } => {
             let c = usd(u);
             let vat = net.checked_mul(Decimal::new(81, 3)).map(|v| round(v, 2)).unwrap_or_default();
             let total = net.checked_add(vat).unwrap_or(net);
@@ -281,7 +288,10 @@ pub(crate) fn op(d: &Draw, m: &Books, today: Date) -> Option<Op> {
             }
             let postings = vec![Posting::new("Expenses:Hosting", net, "EUR"), Posting::new(if to_output { OUTPUT } else { INPUT }, vat, "EUR"), owed];
             let loose: Vec<Hash> = m.documents.iter().filter(|(_, x)| x.of.is_none_or(|b| !standing[b])).map(|(h, _)| h.clone()).collect();
-            Op::Bill { date: when.at(today), description, postings, document: document.and_then(|i| pick(&i, &loose)), again: false }
+            let date = when.at(today);
+            let due = due_in.and_then(|d| jiff::Span::new().try_days(d).ok()).and_then(|s| date.checked_add(s).ok());
+            let more = BillMore { number: number.unwrap_or_default(), due };
+            Op::Bill { date, description, postings, document: document.and_then(|i| pick(&i, &loose)), again: false, more }
         }
         Draw::Invoice { lines, rate, usd: u, customer, pdf, when } => {
             let (rate, reason) = match rate {
@@ -703,7 +713,7 @@ fn vat_accounts_move_as_the_method_says(#[strategy(plan())] plan: Vec<Step>) {
         let by_hand = matches!(kind, Kind::Plain(_) | Kind::Reversal { .. } | Kind::CreditNote { .. });
         let allowed = |a: &str| -> bool {
             match &m.config.vat {
-                Vat::Effective { input, .. } if a == input => by_hand || matches!(kind, Kind::Bill(_)),
+                Vat::Effective { input, .. } if a == input => by_hand || matches!(kind, Kind::Bill(..)),
                 Vat::Effective { output, .. } if a == output => by_hand || matches!(kind, Kind::Invoice { .. }),
                 Vat::Flat { account, .. } if a == account => by_hand,
                 _ => true,
@@ -1166,7 +1176,15 @@ fn tags(m: &Books, id: EntryId) -> BTreeSet<(String, String)> {
     let mut t = vec![("id", id.to_string())];
     match &m.entries[id - 1].kind {
         Kind::Plain(_) => {}
-        Kind::Bill(_) => t.push(("bill", String::new())),
+        Kind::Bill(_, more) => {
+            t.push(("bill", String::new()));
+            if !more.number.is_empty() {
+                t.push(("number", more.number.clone()));
+            }
+            if let Some(d) = more.due {
+                t.push(("due", d.to_string()));
+            }
+        }
         Kind::Invoice { .. } => t.push(("invoice", number)),
         Kind::CreditNote { of, .. } => t.extend([("invoice", number), ("credits", of.to_string())]),
         Kind::Payment { of, .. } => t.push(("pays", of.to_string())),
@@ -1294,14 +1312,14 @@ fn hledger_catches_what_check_catches(#[strategy(plan())] plan: Vec<Step>, tampe
         }
         Tamper::Unbalance(i) => {
             let own: Vec<EntryId> = (1..=m.entries.len())
-                .filter(|&id| matches!(&m.entries[id - 1].kind, Kind::Plain(ps) | Kind::Bill(ps) | Kind::Payment { postings: ps, .. } if ps[0].cost.is_none()))
+                .filter(|&id| matches!(&m.entries[id - 1].kind, Kind::Plain(ps) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. } if ps[0].cost.is_none()))
                 .collect();
             let Some(id) = pick(&i, &own) else { return Ok(()) };
             let u = {
-                let (Kind::Plain(ps) | Kind::Bill(ps) | Kind::Payment { postings: ps, .. }) = &m.entries[id - 1].kind else { unreachable!() };
+                let (Kind::Plain(ps) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. }) = &m.entries[id - 1].kind else { unreachable!() };
                 unit(&m, &ps[0].amount.commodity)
             };
-            let (Kind::Plain(ps) | Kind::Bill(ps) | Kind::Payment { postings: ps, .. }) = &mut m.entries[id - 1].kind else { unreachable!() };
+            let (Kind::Plain(ps) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. }) = &mut m.entries[id - 1].kind else { unreachable!() };
             ps[0].amount.quantity += u;
         }
         Tamper::Undeclare(i) => {
@@ -1449,6 +1467,7 @@ fn a_document_follows_its_bill(#[strategy(plan())] plan: Vec<Step>, #[strategy("
         postings: vec![Posting::new("Expenses:Hosting", Decimal::new(1000, 2), "EUR"), Posting::new(PAYABLE, Decimal::new(-1000, 2), "EUR")],
         document: Some(doc.into()),
         again: false,
+        more: BillMore::default(),
     };
     let fail = |what: &'static str| move |v: Vec<Violation>| TestCaseError::fail(format!("{what}: {v:?}"));
     let file = Op::File { sha256: h.clone(), date: today, name: "acme-ag".into(), ext: "pdf".into(), bill: None };
@@ -1631,7 +1650,7 @@ fn rename(m: &Books, f: &dyn Fn(&str) -> String) -> Books {
     n.accounts = m.accounts.iter().map(|a| f(a)).collect();
     for e in &mut n.entries {
         match &mut e.kind {
-            Kind::Plain(ps) | Kind::Bill(ps) | Kind::Payment { postings: ps, .. } => ps.iter_mut().for_each(|p| p.account = f(&p.account)),
+            Kind::Plain(ps) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. } => ps.iter_mut().for_each(|p| p.account = f(&p.account)),
             Kind::Invoice { content, .. } => {
                 let a = &mut content.accounts;
                 a.receivable = f(&a.receivable);
@@ -1661,7 +1680,7 @@ fn rename_op(op: &Op, f: &dyn Fn(&str) -> String) -> Op {
     let ps = |ps: &[Posting]| ps.iter().map(|p| Posting { account: f(&p.account), ..p.clone() }).collect();
     match op.clone() {
         Op::Post { date, description, postings } => Op::Post { date, description, postings: ps(&postings) },
-        Op::Bill { date, description, postings, document, again } => Op::Bill { date, description, postings: ps(&postings), document, again },
+        Op::Bill { date, description, postings, document, again, more } => Op::Bill { date, description, postings: ps(&postings), document, again, more },
         Op::Pay { debt, date, amount, from, cost } => Op::Pay { debt, date, amount, from: f(&from), cost },
         Op::WriteOff { debt, date, to } => Op::WriteOff { debt, date, to: f(&to) },
         Op::Record { account, commodity, date, balance, clears } => Op::Record { account: f(&account), commodity, date, balance, clears },
@@ -2075,10 +2094,10 @@ fn statements_stay_whole(#[strategy(plan())] plan: Vec<Step>) {
 fn bills_alike_are_refused_unless_another(#[strategy(plan())] plan: Vec<Step>, bill: Index, #[strategy(0i64..30)] apart: i64) {
     let (m, today) = end(&plan);
     let standing = m.standing();
-    let bills: Vec<EntryId> = (1..=m.entries.len()).filter(|&b| standing[b] && matches!(m.entries[b - 1].kind, Kind::Bill(_))).collect();
+    let bills: Vec<EntryId> = (1..=m.entries.len()).filter(|&b| standing[b] && matches!(m.entries[b - 1].kind, Kind::Bill(..))).collect();
     let Some(b) = pick(&bill, &bills) else { return Ok(()) };
     let e = &m.entries[b - 1];
-    let Kind::Bill(postings) = &e.kind else { unreachable!() };
+    let Kind::Bill(postings, _) = &e.kind else { unreachable!() };
     // Split otherwise among expenses, it owes the same: the same bill.
     let mut postings = postings.clone();
     postings.reverse();
@@ -2088,11 +2107,18 @@ fn bills_alike_are_refused_unless_another(#[strategy(plan())] plan: Vec<Step>, b
     let date = e.date.checked_sub(jiff::Span::new().days(apart)).unwrap();
     let owes = m.debt(b);
     let alike = bills.iter().any(|&o| m.debt(o) == owes && (m.entries[o - 1].date - date).get_days().abs() <= BILL_WEEK);
-    let twice = |again| Op::Bill { date, description: "Again".into(), postings: postings.clone(), document: None, again };
+    let twice = |again| Op::Bill { date, description: "Again".into(), postings: postings.clone(), document: None, again, more: BillMore::default() };
     let once = apply(&m, &twice(false), today);
     let n8 = |r: &Outcome| r.as_ref().is_err_and(|v| v.iter().any(|v| v.code == "N8"));
     prop_assert_eq!(n8(&once), alike, "{:?}", once.map(|_| ()));
     prop_assert!(!n8(&apply(&m, &twice(true), today)));
+    // Under the bill's own number of the supplier's, the same whatever its date.
+    if let Kind::Bill(_, more) = &e.kind {
+        if !more.number.is_empty() {
+            let numbered = Op::Bill { date, description: "Again".into(), postings: postings.clone(), document: None, again: false, more: BillMore { number: more.number.clone(), due: None } };
+            prop_assert!(n8(&apply(&m, &numbered, today)), "the same number {:?} and debt were not refused", more.number);
+        }
+    }
 }
 
 /// §2.3 and §5.3: an id once given names that entry, or a gap, ever after:

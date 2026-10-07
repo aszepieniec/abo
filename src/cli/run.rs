@@ -138,7 +138,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             let sha256 = input::filed(&s.books, &document)?;
             changed(&mut s, &Op::Unfile { sha256 }, &[], cli.json)
         }
-        Cmd::Bill { date, description, document, again, postings } => {
+        Cmd::Bill { date, description, document, again, number, due, postings } => {
             let mut s = Store::open(&here)?;
             let document = document.map(|d| input::filed(&s.books, &d)).transpose()?;
             // Dated as its document, unless said; the model refuses another
@@ -148,7 +148,8 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 (d, _) => input::day(d)?,
             };
             let postings = postings.iter().map(|p| input::posting(&s.books, p)).collect::<Result<_>>()?;
-            let op = Op::Bill { date, description, postings, document, again };
+            let more = model::BillMore { number: number.unwrap_or_default(), due: due.map(|d| input::day(Some(&d))).transpose()? };
+            let op = Op::Bill { date, description, postings, document, again, more };
             changed(&mut s, &op, &[], cli.json)
         }
         Cmd::Invoice { to, items, date, due_days, vat_rate, currency, reference, pay_to, note, customer_tax_id, income, preview, vat_reason } => {
@@ -217,7 +218,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Bills { open } => {
             let s = Store::open(&here)?;
-            let all: Vec<_> = views::bills(&s.books).into_iter().filter(|b| !open || matches!(b.status, "open" | "part paid")).collect();
+            let all: Vec<_> = views::bills(&s.books, store::today()?).into_iter().filter(|b| !open || matches!(b.status, "open" | "part paid")).collect();
             let waiting = views::waiting(&s.books);
             emit(cli.json, &serde_json::json!({ "bills": all, "waiting": waiting }), || {
                 let mut out = if all.is_empty() {
@@ -231,9 +232,18 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                     let lines: Vec<String> = rows
                         .iter()
                         .map(|b| {
-                            let said = if b.status == "part paid" { format!("part paid, {} open", b.open.text(" ")) } else { b.status.to_string() };
+                            let mut said = if b.status == "part paid" { format!("part paid, {} open", b.open.text(" ")) } else { b.status.to_string() };
+                            if b.overdue {
+                                said += ", overdue";
+                            }
                             let doc = if b.document.is_some() { "document" } else { "no document" };
-                            format!("{:>5}  {}  {:<36}  {:>16}  {:<11}  {}", b.entry, b.date, cut(&b.description), b.owed.text(" "), doc, said)
+                            // The supplier's number beside the description, as the bill gives it.
+                            let what = match &b.number {
+                                Some(n) => format!("{} ({n})", b.description),
+                                None => b.description.clone(),
+                            };
+                            let due = b.due.as_ref().map_or(String::new(), |d| format!("due {d}"));
+                            format!("{:>5}  {}  {:<36}  {:>16}  {:<14}  {:<11}  {}", b.entry, b.date, cut(&what), b.owed.text(" "), due, doc, said)
                         })
                         .collect();
                     lines.join("\n")
@@ -600,8 +610,8 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 None => format!("Nothing to tidy.{left}"),
             })
         }
-        Cmd::Bal { args } => passthrough(&here, "balance", &args, cli.json),
-        Cmd::Reg { args } => passthrough(&here, "register", &args, cli.json),
+        Cmd::Balance { args } => passthrough(&here, "balance", &args, cli.json),
+        Cmd::Register { args } => passthrough(&here, "register", &args, cli.json),
         Cmd::Serve { port } => {
             if !here.is_dir() {
                 bail!("{} is not a directory", here.display());

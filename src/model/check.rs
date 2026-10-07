@@ -132,7 +132,7 @@ fn numbers(m: &Books) -> Vec<Decimal> {
     let mut v = vec![];
     for e in &m.entries {
         match &e.kind {
-            Kind::Plain(ps) | Kind::Bill(ps) | Kind::Payment { postings: ps, .. } => {
+            Kind::Plain(ps) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. } => {
                 for p in ps {
                     v.push(p.amount.quantity);
                     v.extend(p.cost.as_ref().map(|c| c.quantity));
@@ -162,6 +162,10 @@ fn numbers(m: &Books) -> Vec<Decimal> {
 /// Every date the state holds.
 fn dates(m: &Books) -> Vec<Date> {
     let mut v: Vec<Date> = m.entries.iter().filter(|e| !matches!(e.kind, Kind::Gone)).map(|e| e.date).collect();
+    v.extend(m.entries.iter().filter_map(|e| match &e.kind {
+        Kind::Bill(_, more) => more.due,
+        _ => None,
+    }));
     for e in &m.entries {
         if let Kind::Invoice { content, .. } = &e.kind {
             v.push(content.due);
@@ -389,8 +393,8 @@ pub fn check(m: &Books) -> Vec<Violation> {
         }
         if let Some(of) = d.of {
             match m.entry(of) {
-                Some(Entry { kind: Kind::Bill(_), date, .. }) if *date != d.date => no!("I-B1", "{} is dated {}, and names bill {of}, dated {date}; a bill is dated as its document", d.path(h), d.date),
-                Some(Entry { kind: Kind::Bill(_), .. }) => {}
+                Some(Entry { kind: Kind::Bill(..), date, .. }) if *date != d.date => no!("I-B1", "{} is dated {}, and names bill {of}, dated {date}; a bill is dated as its document", d.path(h), d.date),
+                Some(Entry { kind: Kind::Bill(..), .. }) => {}
                 _ => no!("I-B1", "{} names {of}, which is not a bill", d.path(h)),
             }
             if !documented.insert(of) {
@@ -399,7 +403,15 @@ pub fn check(m: &Books) -> Vec<Violation> {
         }
     }
     for (i, e) in m.entries.iter().enumerate() {
-        if matches!(e.kind, Kind::Bill(_)) && m.debt(i + 1).is_none() {
+        if let Kind::Bill(_, more) = &e.kind {
+            if !text_ok(&more.number) || more.number.trim() != more.number || more.number.contains(',') {
+                no!(@of Subject::Entry(i + 1), "I-B3", "bill {}'s number of the supplier's is not one line, trimmed, without a comma or anything hidden", i + 1);
+            }
+            if more.due.is_some_and(|d| d < e.date) {
+                no!(@of Subject::Entry(i + 1), "I-B3", "bill {} is due before its own date", i + 1);
+            }
+        }
+        if matches!(e.kind, Kind::Bill(..)) && m.debt(i + 1).is_none() {
             no!(@of Subject::Entry(i + 1), "I-B2", "bill {} credits not exactly one liability", i + 1);
         }
     }
@@ -488,7 +500,7 @@ pub fn check(m: &Books) -> Vec<Violation> {
     for (i, e) in m.entries.iter().enumerate() {
         let id = i + 1;
         let own = match &e.kind {
-            Kind::Bill(_) | Kind::Invoice { .. } => m.debt(id),
+            Kind::Bill(..) | Kind::Invoice { .. } => m.debt(id),
             Kind::Payment { of, .. } => m.debt(*of),
             Kind::Reversal { .. } | Kind::CreditNote { .. } | Kind::Gone => continue,
             Kind::Plain(_) => None,

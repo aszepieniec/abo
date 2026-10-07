@@ -12,8 +12,9 @@ pub enum Op {
     Post { date: Date, description: String, postings: Vec<Posting> },
     File { sha256: Hash, date: Date, name: String, ext: String, bill: Option<EntryId> },
     Unfile { sha256: Hash },
-    /// `again`: booked though a standing bill has its date and postings (N8).
-    Bill { date: Date, description: String, postings: Vec<Posting>, document: Option<Hash>, again: bool },
+    /// `again`: booked though a standing bill owes the same (N8). `more`:
+    /// the supplier's number for it and its due date, each if given.
+    Bill { date: Date, description: String, postings: Vec<Posting>, document: Option<Hash>, again: bool, more: BillMore },
     /// `rate`: the configured one when none. Nought charges none, and needs
     /// `reason`.
     Invoice { date: Date, customer: String, commodity: Commodity, lines: Vec<Line>, rate: Option<Decimal>, reason: String, reference: String, note: String, pdf: Hash, more: InvoiceMore },
@@ -88,8 +89,9 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
             Some(d) => return Err(format!("{} is the document of {}; revert the bill first", d.path(&sha256), name(m, d.of.unwrap_or_default()))),
             None => return Err("no document is filed with this hash".into()),
         },
-        Op::Bill { date, description, postings, document, .. } => {
-            n.entries.push(entry(date, description, Kind::Bill(postings)));
+        Op::Bill { date, description, postings, document, more, .. } => {
+            let more = BillMore { number: more.number.trim().to_string(), due: more.due };
+            n.entries.push(entry(date, description, Kind::Bill(postings, more)));
             if let Some(h) = document {
                 let standing = m.standing();
                 match n.documents.get_mut(&h) {
@@ -576,14 +578,25 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
     }
     // The same bill twice, but when said to be another: what is owed, on
     // the same account, within a week either side, however the bill was
-    // split among expenses — a bill booked again on the day it came.
+    // split among expenses — a bill booked again on the day it came; or,
+    // whatever its date, under the same number of the supplier's.
     if let (Op::Bill { again: false, .. }, Some(new), Some(e)) = (op, n.debt(n.entries.len()).filter(|_| added.is_some()), added) {
         let standing = m.standing();
         let near = |d: Date| (d - e.date).get_days().abs() <= BILL_WEEK;
-        if let Some(id) = (1..=m.entries.len()).find(|&id| standing[id] && matches!(m.entries[id - 1].kind, Kind::Bill(_)) && near(m.entries[id - 1].date) && m.debt(id).as_ref() == Some(&new)) {
+        let number = match &e.kind {
+            Kind::Bill(_, more) => more.number.as_str(),
+            _ => "",
+        };
+        let same_number = |k: &Kind| matches!(k, Kind::Bill(_, more) if !number.is_empty() && more.number == number);
+        let alike = |id: EntryId| {
+            let x = &m.entries[id - 1];
+            standing[id] && matches!(x.kind, Kind::Bill(..)) && (near(x.date) || same_number(&x.kind)) && m.debt(id).as_ref() == Some(&new)
+        };
+        if let Some(id) = (1..=m.entries.len()).find(|&id| alike(id)) {
             let mut q = new.owed.quantity;
             q.rescale(m.places(&new.owed.commodity));
-            no!("N8", "{}, dated {}, owes the same, {q} {}, on {}; to book another like it, say it is another", name(m, id), m.entries[id - 1].date, new.owed.commodity, new.account);
+            let by = if same_number(&m.entries[id - 1].kind) { format!(", under the supplier's number {number},") } else { String::new() };
+            no!("N8", "{}, dated {}{by} owes the same, {q} {}, on {}; to book another like it, say it is another", name(m, id), m.entries[id - 1].date, new.owed.commodity, new.account);
         }
     }
     v

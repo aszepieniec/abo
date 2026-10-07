@@ -2405,3 +2405,47 @@ fn record_says_what_the_statement_says() {
     let id = entry(&dir, &["post", "--date", "2026-03-01", "--desc", "Float", "Assets:Bank=10.00", "Equity:Opening=-10.00"]);
     assert!(ok(&dir, &["record", "--date", "2026-03-31", "--balance", "10.00", &format!("{id}.0")]).contains("The statement says 10.00 EUR."));
 }
+
+// ---- asked for after the seventh CLI run, 2026-10-07 ----
+
+/// The reports are named in full: balance and register, the short names
+/// kept, unshown, for what was typed before; --period wherever -p is taken.
+#[test]
+fn balance_and_register_are_named_in_full() {
+    let dir = books("full-names", &[]);
+    let help = ok(&dir, &["--help"]);
+    assert!(help.contains("  balance ") && help.contains("  register ") && !help.contains("  bal ") && !help.contains("  reg "), "{help}");
+    ok(&dir, &["post", "--date", "2027-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
+    for cmd in [&["balance", "Expenses"][..], &["register", "Expenses"], &["bal", "Expenses"], &["reg", "Expenses"]] {
+        for p in [&["-p", "2027"][..], &["--period", "2027"], &["--period", "ytd"], &["-p", "ytd"]] {
+            assert!(ok(&dir, &[cmd, p].concat()).contains("5.00 EUR"), "{cmd:?} {p:?}");
+        }
+    }
+    for cmd in ["pl", "vat"] {
+        let _ = abo(&dir, &[cmd, "--period", "ytd"]);
+        let o = abo(&dir, &[cmd, "-p", "ytd"]);
+        assert!(!err(&o).contains("unexpected argument"), "{cmd}: {}", err(&o));
+    }
+}
+
+/// A bill may say the supplier's number for it and when it is due, either,
+/// both or neither: written as its tags, listed, overdue when open past it.
+#[test]
+fn a_bill_says_its_number_and_due_date_if_it_has_them() {
+    let dir = books("bill-number", &[]);
+    let id = entry(&dir, &["bill", "--date", "2027-05-01", "--desc", "Chairs", "--number", "INV-4471", "--due", "2027-05-31", "Expenses:General=40.00", "Liabilities:Payable=-40.00"]);
+    ok(&dir, &["bill", "--date", "2027-06-02", "--desc", "Paper", "Expenses:General=9.00", "Liabilities:Payable=-9.00"]);
+    let j = read(&dir, "journal/2027.journal");
+    assert!(j.contains("    ; bill:\n    ; number: INV-4471\n    ; due: 2027-05-31\n"), "{j}");
+    let said = ok(&dir, &["bills"]);
+    assert!(said.contains("Chairs (INV-4471)") && said.contains("due 2027-05-31") && said.contains("open, overdue"), "{said}");
+    let v = json(&dir, &["bills"]);
+    let row = v["bills"].as_array().unwrap().iter().find(|b| b["entry"] == id.parse::<u64>().unwrap()).unwrap().clone();
+    assert_eq!((row["number"].as_str(), row["due"].as_str(), row["overdue"].as_bool()), (Some("INV-4471"), Some("2027-05-31"), Some(true)), "{row}");
+    assert!(read(&dir, ".abo/log.jsonl").contains("--number=INV-4471"));
+    refused(&dir, &["bill", "--date", "2027-05-01", "--desc", "Early", "--due", "2027-04-01", "Expenses:General=1.00", "Liabilities:Payable=-1.00"], "before its own date");
+    refused(&dir, &["bill", "--date", "2027-05-01", "--desc", "Comma", "--number", "A,B", "Expenses:General=1.00", "Liabilities:Payable=-1.00"], "I-B3");
+    // The same number and debt, months apart: the same bill.
+    refused(&dir, &["bill", "--date", "2027-06-20", "--desc", "Chairs again", "--number", "INV-4471", "Expenses:General=40.00", "Liabilities:Payable=-40.00"], "under the supplier's number INV-4471");
+    ok(&dir, &["bill", "--date", "2027-06-20", "--desc", "Chairs again", "--number", "INV-4471", "--again", "Expenses:General=40.00", "Liabilities:Payable=-40.00"]);
+}

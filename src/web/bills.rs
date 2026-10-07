@@ -12,18 +12,29 @@ pub(super) struct BillRow {
     pub(super) open: String,
     pub(super) status: &'static str,
     pub(super) has_open: bool,
+    /// The supplier's number for it, and when it is due, if it says.
+    pub(super) number: String,
+    pub(super) due: Option<model::Date>,
+    /// Something open past its due date.
+    pub(super) overdue: bool,
 }
 
 pub(super) fn bills(b: &Model) -> Vec<BillRow> {
     let standing = b.standing();
+    let today = store::today().unwrap_or(model::Date::MAX);
     let mut rows: Vec<BillRow> = (1..=b.entries.len())
-        .filter(|&id| matches!(b.entries[id - 1].kind, Kind::Bill(_)))
+        .filter(|&id| matches!(b.entries[id - 1].kind, Kind::Bill(..)))
         .map(|id| {
             let e = &b.entries[id - 1];
             let (total, open) = owed_text(b, id, &standing).unwrap_or_default();
             let left = b.open(id, &standing);
             let status = b.status(id, &standing).map_or("", model::Status::word);
-            BillRow { entry: Some(id), date: e.date, name: e.description.clone(), document: document_of(b, id).map(|(_, p)| p), total, open, status, has_open: !left.is_zero() }
+            let (number, due) = match &e.kind {
+                Kind::Bill(_, more) => (more.number.clone(), more.due),
+                _ => (String::new(), None),
+            };
+            let overdue = !left.is_zero() && due.is_some_and(|d| d < today);
+            BillRow { entry: Some(id), date: e.date, name: e.description.clone(), document: document_of(b, id).map(|(_, p)| p), total, open, status, has_open: !left.is_zero(), number, due, overdue }
         })
         .collect();
     rows.extend(b.documents.iter().filter(|(_, d)| d.of.is_none_or(|of| !standing[of])).map(|(h, d)| BillRow {
@@ -35,6 +46,9 @@ pub(super) fn bills(b: &Model) -> Vec<BillRow> {
         open: String::new(),
         status: "not booked",
         has_open: false,
+        number: String::new(),
+        due: None,
+        overdue: false,
     }));
     rows.sort_by_key(|r| std::cmp::Reverse(r.date));
     rows
@@ -58,19 +72,22 @@ pub(super) async fn bills_list(Books(s): Books, Query(q): Query<Fields>) -> Resp
                     div.box-body { p.muted { @if only_open { "Every bill is booked and paid." } @else { "No bills yet." } } }
                 } @else {
                     table.list {
-                        thead { tr { th { "Bill" } th.wide { "Date" } th.amt.wide { "Amount" } th.amt.wide { "Open" } th { "Status" } th.wide {} } }
+                        thead { tr { th { "Bill" } th.wide { "Date" } th.wide { "Due" } th.amt.wide { "Amount" } th.amt.wide { "Open" } th { "Status" } th.wide {} } }
                         tbody {
                             @for b in &all {
                                 tr.row-link {
                                     td {
                                         @match b.entry { Some(id) => a.stretch href={"/entry/" (id)} { (b.name) }, None => (b.name) }
+                                        @if !b.number.is_empty() { " " span.muted.small { "(" (b.number) ")" } }
                                         div.narrow.small.muted { (b.date) @if !b.total.is_empty() { " · " (b.total) } @if b.has_open { " · open " (b.open) } }
                                     }
                                     td.date.wide { (b.date) }
+                                    td.date.wide { @if let Some(d) = b.due { (d) } }
                                     td.amt.wide { (b.total) }
                                     td.amt.wide { @if b.has_open { (b.open) } }
                                     td { div.pills {
                                         span class=(match b.status { "not booked" => "pill pill-warn", "open" => "pill pill-info", "part paid" => "pill pill-warn", "settled" => "pill pill-ok", _ => "pill" }) { (b.status) }
+                                        @if b.overdue { span.pill.pill-error { "overdue" } }
                                         div.narrow { (bill_actions(b)) }
                                     } }
                                     td.wide { (bill_actions(b)) }
@@ -162,6 +179,8 @@ pub(super) fn bill_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>) ->
                         label.field { "Issuer" span.hint { "Who sent it. The document is filed under this name and the date; without a document, not needed." } input type="text" name="issuer" value=(get("issuer")); }
                     }
                     label.field { "Description" input type="text" name="description" required value=(get("description")); }
+                    label.field { "The supplier's number for it" span.hint { "As the bill prints it, if it has one." } input type="text" name="number" value=(get("number")); }
+                    label.field { "Due" span.hint { "If the bill says when." } input type="date" name="due" value=(get("due")); }
                     label.field { "Postings"
                         span.hint { "One per line, " code { "account=amount" } ", every amount written; one credits what is owed." }
                         textarea name="postings" rows="5" required placeholder="Expenses:Hosting=100.00\nLiabilities:Payable=-100.00" { (get("postings")) }
@@ -194,6 +213,8 @@ pub(super) async fn bill_submit(Books(mut s): Books, mp: Multipart) -> Response 
     let root = s.root.clone();
     let r = once(Some(&root), &get("token"), || {
         let lines = postings(&s.books, &get("postings"))?;
+        let due = if get("due").is_empty() { None } else { Some(input::day(Some(&get("due")))?) };
+        let more = model::BillMore { number: get("number"), due };
         let (document, date) = if !get("file").is_empty() {
             // One filed already: booked as it is, not filed again.
             let sha256 = input::filed(&s.books, &get("file"))?;
@@ -209,14 +230,14 @@ pub(super) async fn bill_submit(Books(mut s): Books, mp: Multipart) -> Response 
                     let sha256 = sha256.clone();
                     let mut trial = s.books.clone();
                     trial.documents.insert(sha256.clone(), model::Document { date, name: crate::repo::slug(&get("issuer")), ext: path.rsplit('.').next().unwrap_or_default().into(), of: None });
-                    model::apply(&trial, &Op::Bill { date, description: get("description"), postings: lines.clone(), document: Some(sha256.clone()), again: get("again") == "on" }, store::today()?).map_err(store::Refused)?;
+                    model::apply(&trial, &Op::Bill { date, description: get("description"), postings: lines.clone(), document: Some(sha256.clone()), again: get("again") == "on", more: more.clone() }, store::today()?).map_err(store::Refused)?;
                     s.change(&op, &[file])?;
                     (Some(sha256), date)
                 }
                 None => (None, date),
             }
         };
-        change(&mut s, &Op::Bill { date, description: get("description"), postings: lines, document, again: get("again") == "on" }, &[], "/bills")
+        change(&mut s, &Op::Bill { date, description: get("description"), postings: lines, document, again: get("again") == "on", more: more.clone() }, &[], "/bills")
     });
     match r {
         Ok(to) => Redirect::to(&to).into_response(),

@@ -180,24 +180,35 @@ pub struct BillRow {
     pub status: &'static str,
     /// Its document's path, if one is filed for it.
     pub document: Option<String>,
+    /// The supplier's number for it, if the bill gave one.
+    pub number: Option<String>,
+    /// When it is due, if the bill said.
+    pub due: Option<String>,
+    /// Something open past its due date.
+    pub overdue: bool,
 }
 
 /// Every bill, in the order they were booked.
-pub fn bills(b: &Books) -> Vec<BillRow> {
+pub fn bills(b: &Books, today: model::Date) -> Vec<BillRow> {
     let standing = b.standing();
     (1..=b.entries.len())
-        .filter(|&id| matches!(b.entries[id - 1].kind, model::Kind::Bill(_)))
+        .filter(|&id| matches!(b.entries[id - 1].kind, model::Kind::Bill(..)))
         .filter_map(|id| {
             let d = b.debt(id)?;
             let e = &b.entries[id - 1];
+            let model::Kind::Bill(_, more) = &e.kind else { return None };
+            let open = b.open(id, &standing);
             Some(BillRow {
                 entry: id,
                 date: e.date.to_string(),
                 description: e.description.clone(),
                 owed: Amount::new(b, d.owed.quantity, &d.owed.commodity),
-                open: Amount::new(b, b.open(id, &standing), &d.owed.commodity),
+                open: Amount::new(b, open, &d.owed.commodity),
                 status: b.status(id, &standing).map_or("", model::Status::word),
                 document: b.document_of(id).map(|(h, doc)| doc.path(h)),
+                number: (!more.number.is_empty()).then(|| more.number.clone()),
+                due: more.due.map(|x| x.to_string()),
+                overdue: !open.is_zero() && more.due.is_some_and(|x| x < today),
             })
         })
         .collect()
