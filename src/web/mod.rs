@@ -64,7 +64,7 @@ impl axum::extract::FromRequestParts<Arc<PathBuf>> for Books {
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        Store::open(root).map(Books).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response())
+        Store::open(root).map(Books).map_err(|e| unreadable(&e))
     }
 }
 
@@ -91,7 +91,7 @@ fn company_app(root: PathBuf) -> Router {
         .route("/reconcile", get(reconcile_view).post(reconcile_act))
         .route("/invoice", get(invoice_form).post(invoice_submit))
         .route("/invoice/{number}", get(invoice_pdf))
-        .route("/invoice/{number}/correct", post(correct))
+        .route("/invoice/{number}/correct", get(correct_confirm).post(correct))
         .route("/invoices", get(invoices))
         .route("/pay", get(pay_form).post(pay_submit))
         .route("/write-off", post(write_off))
@@ -106,6 +106,8 @@ fn company_app(root: PathBuf) -> Router {
         .route("/company", get(company_view).post(company_submit))
         .route("/company/payment", get(option_view).post(option_submit))
         .route("/company/payment/remove", post(option_remove))
+        .route("/company/close", post(close))
+        .route("/company/tax-return", get(tax_return).post(tax_return_submit))
         .route("/bills/{*rest}", get(bill_doc))
         .fallback(not_found)
         // A scanned bill is much bigger than a form post.
@@ -142,8 +144,114 @@ async fn not_found(Books(s): Books) -> Response {
     or_error(&s, "Not found", || Err(input::not_found("there is no such page".into())))
 }
 
+/// A PDF, named for saving: a browser keeps the name and its extension.
+fn pdf_response(bytes: Vec<u8>, name: &str) -> Response {
+    let name: String = name.chars().filter(|c| c.is_ascii_alphanumeric() || "-._".contains(*c)).collect();
+    ([("content-type", "application/pdf".to_string()), ("x-content-type-options", "nosniff".into()), ("content-disposition", format!("inline; filename=\"{name}\""))], bytes).into_response()
+}
+
 fn refused(e: &anyhow::Error) -> Markup {
-    html! { div.flash.flash-error { (icon("error")) div { strong { "Not done" } pre { (format!("{e:#}")) } } } }
+    html! { div.flash.flash-error { (icon("error")) div { strong { "Not done" } (said(e)) } } }
+}
+
+/// What went wrong, said to whoever keeps the books: a refusal's reasons
+/// without their rule codes, each with where to go to put it right; books
+/// a change outside abo left amiss, in a bookkeeper's words, the technical
+/// text folded away for whoever runs abo; anything else as it reads.
+fn said(e: &anyhow::Error) -> Markup {
+    if let Some(r) = e.downcast_ref::<store::Refused>() {
+        return html! {
+            ul.reasons {
+                @for v in &r.0 {
+                    li { (sentence(&v.what)) @if let Some(h) = hint(v) { div.hint { (h) } } }
+                }
+            }
+            details.tech { summary { "For whoever runs abo" } pre { (r) } }
+        };
+    }
+    if let Some(a) = e.downcast_ref::<store::Amiss>() {
+        return amiss(a.kind, &a.text);
+    }
+    html! { p { (sentence(&format!("{e:#}"))) } }
+}
+
+/// The books left amiss by a change outside abo, said as a bookkeeper
+/// needs it: what happened, that whoever runs abo's server puts it right,
+/// and what still works. The text for that person, folded away.
+fn amiss(kind: store::AmissKind, technical: &str) -> Markup {
+    let words = match kind {
+        store::AmissKind::HandEdit => "Someone changed the books' files outside abo. abo changes nothing until that change is taken out, or mended and saved, by whoever runs abo's server: please tell them. The books and reports can still be read.",
+        store::AmissKind::Problems => "Someone changed the books' files outside abo, and the books no longer hold together. abo adds nothing to them until whoever runs abo's server puts that right: please tell them.",
+        store::AmissKind::Unreadable => "Someone changed the books' files outside abo, and they cannot be read. Nothing can be shown or done until whoever runs abo's server puts them right: please tell them.",
+    };
+    html! {
+        p { (words) }
+        details.tech { summary { "For whoever runs abo" } pre { (technical) } }
+    }
+}
+
+/// `s` with its first letter a capital, and a full stop if it has none.
+fn sentence(s: &str) -> String {
+    let s = s.trim();
+    let mut c = s.chars();
+    let first = c.next().map(|f| f.to_uppercase().collect::<String>()).unwrap_or_default();
+    let mut out = first + c.as_str();
+    if !out.ends_with(['.', '?', '!', ':']) {
+        out.push('.');
+    }
+    out
+}
+
+/// Where to go to put a refusal right, from what it is of: the web's own
+/// words, as the CLI has its own under "Try:".
+fn hint(v: &model::Violation) -> Option<Markup> {
+    use model::Subject;
+    Some(match (v.code, &v.of) {
+        ("I-A1", Subject::Account(a)) => html! { "Declare " code { (a) } " under " a href="/declarations" { "Accounts and currencies" } " first." },
+        ("I-A1", Subject::Commodity(c)) => html! { "Declare " code { (c) } " under " a href="/declarations" { "Accounts and currencies" } " first, with its places." },
+        ("I-E4", Subject::Commodity(c)) => html! { "Add a price of " (c) " under " a href="/declarations" { "Accounts and currencies" } ", Prices." },
+        ("I-I1", Subject::Field("reason")) => html! { "Say why under " em { "Why no VAT" } ", or give a VAT rate." },
+        ("I-A2", Subject::Account(a)) => html! { "An account in use takes no accounts under it: declare the new one beside it, or first move what names " code { (a) } " under it, such as a payment option's account on the " a href="/company" { "Company" } " page." },
+        ("I-B2", _) => html! { "Add a line crediting what is owed, such as " code { "Liabilities:Payable=-440.00" } "." },
+        ("I-S3", _) => html! { "Book first what the statement shows and the books lack, a fee say, under " a href="/post" { "Entry" } "; or leave out what it does not show." },
+        ("N7", Subject::Account(_)) => html! { "Date it after the statement, or take the statement out on " a href="/reconcile" { "Reconcile" } " first." },
+        ("N8", Subject::Field("number")) => return None,
+        ("N8", _) => html! { "If it is another bill just like it, tick " em { "Another just like one booked already" } "." },
+        ("N9", _) => html! { "To move an expense to the period it belongs to, book two entries under " a href="/post" { "Entry" } ", through an account between (declared first): one on the day it belongs to, one on the day it was booked. Or take the statement out on " a href="/reconcile" { "Reconcile" } ", if it was wrong." },
+        _ => return None,
+    })
+}
+
+/// The books' files cannot be read: a page in the app's own layout, which
+/// says so to whoever keeps the books, and holds the details for whoever
+/// runs abo. Not a 2xx: nothing was served.
+fn unreadable(e: &anyhow::Error) -> Response {
+    let body = html! {
+        (DOCTYPE)
+        html lang="en" {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                title { "The books cannot be read · abo" }
+                style { (PreEscaped(STYLE)) }
+            }
+            body {
+                aside.side {
+                    span.brand { span.mark { "abo" } }
+                    nav {
+                        @if PREFIX.try_with(Clone::clone).ok().flatten().is_some() {
+                            a href="/c/" { (icon("left")) span { "All companies" } }
+                        }
+                    }
+                }
+                main.content {
+                    h1 { "The books cannot be read" }
+                    div.flash.flash-error { (icon("error")) div { (said(e)) } }
+                }
+            }
+        }
+    };
+    (StatusCode::SERVICE_UNAVAILABLE, Html(body.into_string())).into_response()
 }
 
 /// A form shown again after it was refused, its problems said: 422, as the
@@ -170,7 +278,7 @@ fn or_error(s: &Store, title: &str, body: impl FnOnce() -> Result<Markup>) -> Re
                 heading,
                 html! {
                     h1 { (heading) }
-                    div.flash.flash-error { (icon("error")) pre { (format!("{e:#}")) } }
+                    div.flash.flash-error { (icon("error")) div { (said(&e)) } }
                     div.actions {
                         span.nav {
                             @if let Some(b) = back { a.btn href=(b) { (icon("left")) " Back" } }
@@ -193,7 +301,8 @@ fn page(s: &Store, title: &str, body: Markup) -> Html<String> {
         ("/reconcile", "checks", "Reconcile", "/reconcile"),
         ("/report/pl", "chart", "Reports", "/report"),
         ("/post", "plus", "Entry", "/post"),
-        ("/declarations", "coins", "Declarations", "/declarations"),
+        ("/declarations", "coins", "Accounts and currencies", "/declarations"),
+        ("/company", "pencil", "Company", "/company"),
         ("/log", "clock", "Log", "/log"),
     ];
     let here = PATH.try_with(String::clone).unwrap_or_default();

@@ -64,8 +64,8 @@ pub(super) async fn bills_list(Books(s): Books, Query(q): Query<Fields>) -> Resp
         Ok(html! {
             h1 { "Bills" }
             nav.tabs {
-                a href="/bills?open=1" class=(if only_open { "current" } else { "" }) { (icon("clock")) " Open" }
                 a href="/bills" class=(if only_open { "" } else { "current" }) { (icon("inbox")) " All" }
+                a href="/bills?open=1" class=(if only_open { "current" } else { "" }) { (icon("clock")) " Open" }
             }
             div.box.scroll {
                 @if all.is_empty() {
@@ -185,8 +185,15 @@ pub(super) fn bill_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>) ->
                         span.hint { "One per line, " code { "account=amount" } ", every amount written; one credits what is owed." }
                         textarea name="postings" rows="5" required placeholder="Expenses:Hosting=100.00\nLiabilities:Payable=-100.00" { (get("postings")) }
                     }
-                    label.choice { input type="checkbox" name="again" checked[get("again") == "on"]; " Another just like one booked already: the same date and postings" }
-                    div.actions { button.btn-primary type="submit" { (icon("check")) @if filed.is_empty() { " File and book it" } @else { " Book it" } } }
+                    label.choice { input type="checkbox" name="again" checked[get("again") == "on"]; " Another just like one booked already: owing the same, within a week of it" }
+                    div.actions {
+                        button.btn-primary type="submit" { (icon("check")) @if filed.is_empty() { " File and book it" } @else { " Book it" } }
+                        // The document alone, booked later: only it, its date and
+                        // who sent it are needed, so the rest is not asked for.
+                        @if filed.is_empty() {
+                            button type="submit" name="action" value="file" formnovalidate { (icon("upload")) " File it, to book later" }
+                        }
+                    }
                 }
             }
         }
@@ -212,32 +219,37 @@ pub(super) async fn bill_submit(Books(mut s): Books, mp: Multipart) -> Response 
     let get = |k: &str| f.get(k).map_or("", |v| v.trim()).to_string();
     let root = s.root.clone();
     let r = once(Some(&root), &get("token"), || {
+        // The document alone, filed to be booked later, as `abo file` does.
+        if get("action") == "file" {
+            let bytes = doc.clone().context("choose the document to file")?;
+            let date = input::day(Some(&get("date")))?;
+            let (op, _, file) = filing(bytes, date, &get("issuer"), None)?;
+            return change(&mut s, &op, &[file], "/bills");
+        }
         let lines = postings(&s.books, &get("postings"))?;
         let due = if get("due").is_empty() { None } else { Some(input::day(Some(&get("due")))?) };
         let more = model::BillMore { number: get("number"), due };
-        let (document, date) = if !get("file").is_empty() {
+        let again = get("again") == "on";
+        let bill = |date, document| Op::Bill { date, description: get("description"), postings: lines.clone(), document, again, more: more.clone() };
+        if !get("file").is_empty() {
             // One filed already: booked as it is, not filed again.
             let sha256 = input::filed(&s.books, &get("file"))?;
             let date = s.books.documents.get(&sha256).map(|d| d.date).with_context(|| format!("{} is not filed", get("file")))?;
-            (Some(sha256), date)
-        } else {
-            let date = input::day(Some(&get("date")))?;
-            match doc {
-                Some(bytes) => {
-                    // Tried first, so that a bill that cannot be booked is not filed.
-                    let (op, path, file) = filing(bytes, date, &get("issuer"), None)?;
-                    let Op::File { sha256, .. } = &op else { unreachable!() };
-                    let sha256 = sha256.clone();
-                    let mut trial = s.books.clone();
-                    trial.documents.insert(sha256.clone(), model::Document { date, name: crate::repo::slug(&get("issuer")), ext: path.rsplit('.').next().unwrap_or_default().into(), of: None });
-                    model::apply(&trial, &Op::Bill { date, description: get("description"), postings: lines.clone(), document: Some(sha256.clone()), again: get("again") == "on", more: more.clone() }, store::today()?).map_err(store::Refused)?;
-                    s.change(&op, &[file])?;
-                    (Some(sha256), date)
-                }
-                None => (None, date),
+            return change(&mut s, &bill(date, Some(sha256)), &[], "/bills");
+        }
+        let date = input::day(Some(&get("date")))?;
+        match doc {
+            // Filed and booked as one change, which one undo takes back:
+            // neither is made if the other is refused.
+            Some(bytes) => {
+                let (op, _, file) = filing(bytes, date, &get("issuer"), None)?;
+                let Op::File { sha256, .. } = &op else { unreachable!() };
+                let booked = bill(date, Some(sha256.clone()));
+                s.change_pair(&op, &booked, &[file])?;
+                Ok(done(&s, "/bills"))
             }
-        };
-        change(&mut s, &Op::Bill { date, description: get("description"), postings: lines, document, again: get("again") == "on", more: more.clone() }, &[], "/bills")
+            None => change(&mut s, &bill(date, None), &[], "/bills"),
+        }
     });
     match r {
         Ok(to) => Redirect::to(&to).into_response(),

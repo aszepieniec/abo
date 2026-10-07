@@ -9,7 +9,7 @@ pub(super) fn params(s: &Store, f: &Fields) -> (String, String, String) {
         _ => d.to_string(),
     };
     let today = store::today().map(|d| d.to_string()).unwrap_or_default();
-    (pick("account", "Assets:Bank"), pick("commodity", &s.books.config.company.currency), pick("date", &today))
+    (pick("account", &s.books.paid_from()), pick("commodity", &s.books.config.company.currency), pick("date", &today))
 }
 
 pub(super) async fn reconcile_view(Books(s): Books, Query(q): Query<Fields>) -> Response {
@@ -21,6 +21,11 @@ pub(super) async fn reconcile_view(Books(s): Books, Query(q): Query<Fields>) -> 
 pub(super) async fn reconcile_act(Books(mut s): Books, Form(pairs): Form<Vec<(String, String)>>) -> Response {
     let refs: Vec<String> = pairs.iter().filter(|(k, _)| k == "ref").map(|(_, v)| v.clone()).collect();
     let f: Fields = pairs.into_iter().filter(|(k, _)| k != "ref").collect();
+    // Sent without an action, as a browser may send Show: it only looks,
+    // and spends no token.
+    if !matches!(f.get("action").map(String::as_str), Some("record" | "unrecord")) {
+        return or_error(&s, "Reconcile", || reconcile_page(&s, &f, None));
+    }
     let root = s.root.clone();
     let r = once(Some(&root), f.get("token").map_or("", String::as_str), || {
         let (account, commodity, date) = params(&s, &f);
@@ -70,8 +75,9 @@ pub(super) fn reconcile_page(s: &Store, f: &Fields, notice: Option<Markup>) -> R
                     div.actions { button type="submit" formmethod="get" { (icon("chart")) " Show" } }
                 }
                 table.figures {
-                    thead { tr { th { "Balance" } th.amt { (commodity) } } }
+                    thead { tr { th { "On " (date) } th.amt { "In " (commodity) } } }
                     tbody {
+                        tr { td { "In the books" } td { (money(std::slice::from_ref(&r.books))) } }
                         tr { td { "Cleared by the statements recorded" } td { (money(std::slice::from_ref(&r.cleared))) } }
                         @if let Some(st) = &r.statement { tr { td { "Per the statement" } td { (money(std::slice::from_ref(st))) } } }
                     }

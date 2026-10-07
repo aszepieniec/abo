@@ -157,6 +157,13 @@ input:focus, textarea:focus { outline: none; border-color: var(--link); box-shad
 .flash > div { min-width: 0; }
 .flash ul { margin: 4px 0 0; padding-left: 18px; }
 .flash ul.plain { list-style: none; padding: 0; }
+.flash ul.reasons { list-style: none; padding: 0; }
+.flash ul.reasons li + li { margin-top: 6px; }
+.flash .hint { color: var(--notice-text); font-size: 13px; margin-top: 2px; }
+.flash p { margin: 2px 0 0; }
+details.tech { margin-top: 8px; font-size: 12px; color: var(--muted); }
+details.tech > summary { cursor: pointer; }
+details.tech pre { margin-top: 4px; }
 .flash-error { background: var(--error-bg); border-color: var(--error-border); }
 .flash-error > .icon, .flash-error strong { color: var(--error); }
 .flash-warn { background: var(--warn-bg); border-color: var(--warn-border); }

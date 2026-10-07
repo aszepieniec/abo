@@ -64,8 +64,9 @@ fn send(s: &Server, method: &str, path: &str, content_type: &str, body: &[u8]) -
     )
     .unwrap();
     c.write_all(body).unwrap();
-    let mut out = String::new();
-    c.read_to_string(&mut out).unwrap();
+    let mut out = Vec::new();
+    c.read_to_end(&mut out).unwrap();
+    let out = String::from_utf8_lossy(&out);
     // Read as text: the spaces a page keeps from breaking are spaces.
     let out = out.replace(['\u{a0}', '\u{202f}'], " ");
     let status = out[9..12].parse().unwrap();
@@ -92,7 +93,7 @@ fn new_company() {
 
     let (status, _, page) = http(&s, "GET", "/", &[]);
     assert_eq!(status, 200);
-    assert!(page.contains("No companies in") && page.contains("href=\"/new\""), "{page}");
+    assert!(page.contains("No companies yet.") && page.contains("href=\"/new\""), "{page}");
     let (_, _, page) = http(&s, "GET", "/new", &[]);
     assert!(page.contains("<select name=\"p0.kind\"><option value=\"bank\" selected>"), "{page}");
     assert!(!page.contains("name=\"p1.kind\""), "a second option before one was asked for");
@@ -459,6 +460,126 @@ fn bills_page() {
     assert_eq!((status, to.starts_with("/bills?done=")), (303, true), "{page}");
     let (_, _, page) = http(&s, "GET", "/bills", &[]);
     assert!(!page.contains(&format!("popovertarget=\"up-{lost}\"")) && page.contains("2026-05-01-lost-"), "{page}");
+
+    drop(s);
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+/// A multipart body of `fields`, with `doc` as the uploaded document.
+fn multipart(fields: &[(&str, &str)], doc: Option<&[u8]>) -> Vec<u8> {
+    let mut b = Vec::new();
+    for (k, v) in fields {
+        b.extend(format!("--b0undary\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n").bytes());
+    }
+    if let Some(d) = doc {
+        b.extend(b"--b0undary\r\nContent-Disposition: form-data; name=\"document\"; filename=\"bill.pdf\"\r\nContent-Type: application/pdf\r\n\r\n");
+        b.extend(d);
+        b.extend(b"\r\n");
+    }
+    b.extend(b"--b0undary--\r\n");
+    b
+}
+
+/// Found by the first web run, 2026-10-07: what the browser lacked against
+/// the terminal, and what it said in the computer's words.
+#[test]
+fn first_web_run() {
+    let base = std::env::temp_dir().join(format!("abo-web-run-{}", std::process::id()));
+    let (books, s) = company_books(&base);
+    const MP: &str = "multipart/form-data; boundary=b0undary";
+    let commits = || String::from_utf8(Command::new("git").args(["rev-list", "--count", "HEAD"]).current_dir(&books).output().unwrap().stdout).unwrap();
+
+    // The sidebar names the company and the accounts plainly.
+    let (_, _, page) = http(&s, "GET", "/", &[]);
+    assert!(page.contains("Accounts and currencies") && !page.contains(">Declarations<"), "{page}");
+
+    // A bill filed alone, to book later: no booking.
+    let body = multipart(&[("token", "f1"), ("action", "file"), ("date", "2026-03-01"), ("issuer", "Acme")], Some(b"%PDF-1.4\n% one\n"));
+    let (status, to, page) = send(&s, "POST", "/bill", MP, &body);
+    assert_eq!((status, to.starts_with("/bills?done=")), (303, true), "{page}");
+    assert_eq!(last_argv(&books)[0], "file");
+
+    // Filed and booked: one change, two lines in the log, one undo.
+    let before = commits();
+    let bill = [("token", "f2"), ("date", "2026-03-02"), ("issuer", "Hoster"), ("description", "Hosting"), ("number", "H-1"), ("postings", "Expenses:General=110.00\nLiabilities:Payable=-110.00")];
+    let (status, _, page) = send(&s, "POST", "/bill", MP, &multipart(&bill, Some(b"%PDF-1.4\n% two\n")));
+    assert_eq!(status, 303, "{page}");
+    assert_eq!(commits().trim().parse::<u32>().unwrap(), before.trim().parse::<u32>().unwrap() + 1);
+    let log = std::fs::read_to_string(books.join(".abo/log.jsonl")).unwrap();
+    let last: Vec<serde_json::Value> = log.lines().rev().take(2).map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!((last[1]["argv"][0].as_str(), last[0]["argv"][0].as_str()), (Some("file"), Some("bill")));
+    assert_eq!(last[0]["commit"], last[1]["commit"]);
+
+    // The Log, oldest first, in words; the toast without a commit.
+    let (_, _, page) = http(&s, "GET", "/log", &[]);
+    assert!(page.find("acme").unwrap() < page.find("Hosting").unwrap(), "oldest first: {page}");
+    let (_, to, _) = http(&s, "POST", "/undo", &[("token", "u1")]);
+    let (_, _, page) = http(&s, "GET", &to, &[]);
+    assert!(page.contains("taken back") && !page.contains(&last[0]["commit"].as_str().unwrap()[..7]), "{page}");
+    assert!(!std::fs::read_to_string(books.join("journal/main.journal")).unwrap().contains("Hosting"), "one undo takes back the booking");
+    let filed = Command::new("git").args(["ls-files", "bills"]).current_dir(&books).output().unwrap().stdout;
+    assert_eq!(String::from_utf8(filed).unwrap().lines().filter(|l| l.ends_with(".pdf")).count(), 1, "one undo takes back the filing");
+
+    // Same supplier number, said to be another: refused, in words, no code.
+    let mut rebook = bill.to_vec();
+    rebook[0] = ("token", "f2b");
+    let (status, _, _) = send(&s, "POST", "/bill", MP, &multipart(&rebook, Some(b"%PDF-1.4\n% two\n")));
+    assert_eq!(status, 303);
+    let mut again = bill.to_vec();
+    again[0] = ("token", "f3");
+    again.push(("again", "on"));
+    let (status, _, page) = send(&s, "POST", "/bill", MP, &multipart(&again, Some(b"%PDF-1.4\n% three\n")));
+    assert_eq!(status, 422, "{page}");
+    assert!(page.contains("so this is that bill") && page.contains("For whoever runs abo"), "{page}");
+    assert!(!page.split("For whoever runs abo").next().unwrap().contains("N8"), "a code before the fold: {page}");
+
+    // The account page by period, with the month's totals.
+    let (_, _, page) = http(&s, "GET", "/account?name=Expenses:General&period=2026-03", &[]);
+    assert!(page.contains("110.00"), "{page}");
+    let (status, _, page) = http(&s, "GET", "/account?name=Expenses:General&period=nonsense", &[]);
+    assert_eq!(status, 422, "{page}");
+
+    // A report's bad period said on its page.
+    let (status, _, page) = http(&s, "GET", "/report/balance?period=nonsense", &[]);
+    assert_eq!(status, 422, "{page}");
+
+    // The tax return's boxes, added and removed from the browser.
+    let boxv = [("token", "t1"), ("code", "200"), ("label", "Turnover"), ("query", "acct:Income"), ("invert", "on")];
+    let (status, _, page) = http(&s, "POST", "/company/tax-return", &boxv);
+    assert_eq!(status, 303, "{page}");
+    let c: toml::Value = toml::from_str(&std::fs::read_to_string(books.join("abo.toml")).unwrap()).unwrap();
+    assert_eq!(c["report"]["vat"]["200"]["label"].as_str(), Some("Turnover"));
+    assert_eq!(c["report"]["vat"]["200"]["invert"].as_bool(), Some(true));
+    let (status, _, _) = http(&s, "POST", "/company/tax-return", &[("token", "t2"), ("code", "200"), ("action", "remove")]);
+    assert_eq!(status, 303);
+    assert!(!std::fs::read_to_string(books.join("abo.toml")).unwrap().contains("Turnover"));
+
+    // A period closed from the company page.
+    let (status, _, page) = http(&s, "POST", "/company/close", &[("token", "c1"), ("through", "2026-03-31")]);
+    assert_eq!(status, 303, "{page}");
+    let c: toml::Value = toml::from_str(&std::fs::read_to_string(books.join("abo.toml")).unwrap()).unwrap();
+    assert_eq!(c["company"]["closed_through"].as_str(), Some("2026-03-31"));
+
+    // An invoice: its PDF named by its number; Correct asks first.
+    let (status, to, page) = http(&s, "POST", "/invoice", &[("token", "i1"), ("to", "Customer One\n1 Road"), ("items", "1|100.00|Advice"), ("date", "2026-04-02")]);
+    assert_eq!(status, 303, "{page}");
+    assert!(to.contains("?vat="), "{to}");
+    let (_, _, page) = http(&s, "GET", &to, &[]);
+    let number = page.split("/invoice/").nth(1).unwrap().split(".pdf").next().unwrap().to_string();
+    let (status, _, pdf) = http(&s, "GET", &format!("/invoice/{number}.pdf"), &[]);
+    assert_eq!(status, 200);
+    assert!(pdf.to_ascii_lowercase().contains(&format!("content-disposition: inline; filename=\"{number}.pdf\"")), "{}", &pdf[..300]);
+    let before = commits();
+    let (status, _, page) = http(&s, "GET", &format!("/invoice/{number}/correct"), &[]);
+    assert_eq!(status, 200);
+    assert!(page.contains(&format!("action=\"/invoice/{number}/correct\"")), "{page}");
+    assert_eq!(commits(), before, "asking issues nothing");
+
+    // An abo.toml no one can read: a page that says so, not a bare error.
+    std::fs::write(books.join("abo.toml"), "this is = = not toml").unwrap();
+    let (status, _, page) = http(&s, "GET", "/", &[]);
+    assert_eq!(status, 503, "{page}");
+    assert!(page.contains("For whoever runs abo") && page.contains("<link") || page.contains("<style"), "{page}");
 
     drop(s);
     std::fs::remove_dir_all(&base).unwrap();

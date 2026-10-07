@@ -38,6 +38,32 @@ pub(super) async fn invoice_form(Books(s): Books, Query(q): Query<Fields>) -> Re
     })
 }
 
+/// What Correct will do, asked before it is done: a credit note, numbered
+/// next, cancels the invoice in full, and undo cannot take it back.
+pub(super) async fn correct_confirm(Books(s): Books, Path(number): Path<String>) -> Response {
+    or_error(&s, "Correct an invoice", || {
+        let id = input::debt(&s.books, &number)?;
+        let e = s.books.entry(id).ok_or_else(|| input::not_found(format!("there is no invoice {number}")))?;
+        let year = store::today()?.year();
+        let next = s.books.next_number(year);
+        Ok(html! {
+            h1 { "Correct invoice " (number) }
+            div.flash.flash-warn { (icon("alert")) div {
+                strong { "This cannot be undone" }
+                p { "Credit note " (next) ", dated today, will cancel invoice " (number) " (" (e.description.replace(" | ", ", ")) ") in full. Like an invoice, it goes to the customer and keeps its number, so undo cannot take it back." }
+                p { "Then the invoice form opens, filled in as " (number) " was, for the corrected invoice." }
+            } }
+            form method="post" action={"/invoice/" (enc(&number)) "/correct"} {
+                (token())
+                div.actions {
+                    button.btn-danger type="submit" { (icon("check")) " Issue the credit note" }
+                    span.nav { a.btn href={"/entry/" (id)} { (icon("left")) " Cancel" } }
+                }
+            }
+        })
+    })
+}
+
 /// Cancel an invoice with a credit note, then offer the invoice form filled
 /// in as it was: the correction is the new invoice.
 pub(super) async fn correct(Books(mut s): Books, Path(number): Path<String>, Form(f): Form<Fields>) -> Response {
@@ -93,7 +119,7 @@ pub(super) async fn invoice_submit(Books(mut s): Books, Form(f): Form<Fields>) -
             Ok(bytes)
         })();
         return match r {
-            Ok(bytes) => ([("content-type", "application/pdf"), ("x-content-type-options", "nosniff")], bytes).into_response(),
+            Ok(bytes) => pdf_response(bytes, "invoice-preview.pdf"),
             Err(e) => again(&s, "Issue an invoice", || Ok(invoice_page(&s, &f, Some(&e)))),
         };
     }
@@ -102,7 +128,9 @@ pub(super) async fn invoice_submit(Books(mut s): Books, Form(f): Form<Fields>) -
         let op = invoice_op(&s.books, &f)?;
         let issued = crate::invoice::issue(&mut s, |pdf| with_pdf(&op, pdf))?;
         info!(number = %issued.number, commit = %issued.commit, "invoiced");
-        Ok(done(&s, &format!("/entry/{}", issued.entry)))
+        // Whether the rate was given or abo's default, for the page to say why.
+        let given = if get("vat_rate").is_empty() { "default" } else { "given" };
+        Ok(done(&s, &format!("/entry/{}?vat={given}", issued.entry)))
     });
     match r {
         Ok(to) => Redirect::to(&to).into_response(),
@@ -116,7 +144,7 @@ pub(super) async fn invoice_pdf(Books(s): Books, Path(number): Path<String>) -> 
     let Some(id) = id else { return or_error(&s, "Not found", || Err(input::not_found(format!("there is no invoice {number}")))) };
     let n = s.books.number_text(id).unwrap_or_default();
     match s.pdf(&n) {
-        Some(bytes) => ([("content-type", "application/pdf"), ("x-content-type-options", "nosniff")], bytes).into_response(),
+        Some(bytes) => pdf_response(bytes, &format!("{n}.pdf")),
         None => or_error(&s, "Not found", || Err(input::not_found(format!("the books have no PDF of {n}")))),
     }
 }
@@ -139,7 +167,7 @@ pub(super) fn invoice_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>)
                         textarea name="items" rows="4" required placeholder="10|150.00|Consulting, September" { (get("items")) }
                     }
                     label.field { "Date" span.hint { "Blank for today." } input type="date" name="date" value=(get("date")); }
-                    label.field { "VAT rate" span.hint { "Percent. Blank for the default: none for an invoice in another currency, or to a customer whose tax number is of another country; the configured rate otherwise. 0 for an export or an exempt supply." } input type="text" name="vat_rate" value=(get("vat_rate")); }
+                    label.field { "VAT rate" span.hint { "Percent. Blank for the default: none when the customer's tax number and the company's name different countries, as EU VAT numbers do; the configured rate otherwise, whatever the currency. 0 for an export or an exempt supply, with why below. The invoice's page says which rate it took, and why." } input type="text" name="vat_rate" value=(get("vat_rate")); }
                     label.field { "Currency" span.hint { "Blank for " (s.books.config.company.currency) "." } input type="text" name="currency" value=(get("currency")); }
                     label.field { "Their tax number" span.hint { "Printed under their address; cross-border invoices to businesses usually need it." } input type="text" name="customer_tax_id" value=(get("customer_tax_id")); }
                     label.field { "Income account" span.hint { "Blank for " (s.books.config.invoice.income) ". Exports and reverse-charge sales may go to their own, which a box of the tax return reads apart." } input type="text" name="income" value=(get("income")); }
@@ -176,8 +204,8 @@ pub(super) async fn invoices(Books(s): Books, Query(q): Query<Fields>) -> Respon
         Ok(html! {
             h1 { "Invoices" }
             nav.tabs {
-                a href="/invoices?open=1" class=(if open { "current" } else { "" }) { (icon("clock")) " Open" }
                 a href="/invoices" class=(if open { "" } else { "current" }) { (icon("outbox")) " All" }
+                a href="/invoices?open=1" class=(if open { "current" } else { "" }) { (icon("clock")) " Open" }
             }
             div.box.scroll {
                 @if all.is_empty() {

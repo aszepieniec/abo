@@ -1076,7 +1076,8 @@ fn a_bad_abo_toml_is_named_in_the_browser() {
     // Read, but against a rule: said on the page, with the rule.
     std::fs::write(dir.join("abo.toml"), toml.replace("receivable = \"Assets:Receivable\"", "receivable = \"Income:Sales\"")).unwrap();
     let (_, _, page) = http(&s, "GET", "/", &[]);
-    assert!(page.contains("The books hold problems") && page.contains("I-C3"), "{page}");
+    // Said in a bookkeeper's words; the rule kept for whoever runs abo.
+    assert!(page.contains("changed the books' files outside abo") && page.contains("For whoever runs abo") && page.contains("I-C3"), "{page}");
     // Not read at all: what stops it is said.
     let option = "\n[payment.x]\nkind = \"cash\"\nlabel = \"Cash\"\ndetails = \"Till\"\naccount = \"Assets:Cash\"\n";
     std::fs::write(dir.join("abo.toml"), format!("{toml}{option}{option}")).unwrap();
@@ -2450,7 +2451,9 @@ fn a_bill_says_its_number_and_due_date_if_it_has_them() {
     refused(&dir, &["bill", "--date", "2027-05-01", "--desc", "Comma", "--number", "A,B", "Expenses:General=1.00", "Liabilities:Payable=-1.00"], "I-B3");
     // The same number and debt, months apart: the same bill.
     refused(&dir, &["bill", "--date", "2027-06-20", "--desc", "Chairs again", "--number", "INV-4471", "Expenses:General=40.00", "Liabilities:Payable=-40.00"], "under the supplier's number INV-4471");
-    ok(&dir, &["bill", "--date", "2027-06-20", "--desc", "Chairs again", "--number", "INV-4471", "--again", "Expenses:General=40.00", "Liabilities:Payable=-40.00"]);
+    // Said to be another, all the same (the first web run): a supplier
+    // numbers each bill once.
+    refused(&dir, &["bill", "--date", "2027-06-20", "--desc", "Chairs again", "--number", "INV-4471", "--again", "Expenses:General=40.00", "Liabilities:Payable=-40.00"], "so this is that bill");
 }
 
 // ---- found by the eighth CLI run, 2026-10-07 ----
@@ -2499,4 +2502,17 @@ fn reports_say_a_hand_edit_is_there() {
     std::fs::write(dir.join("journal/accounts.journal"), read(&dir, "journal/accounts.journal").replace("account Expenses:General\n", "")).unwrap();
     let o = abo(&dir, &["pl", "-p", "2026"]);
     assert!(o.status.success() && err(&o).contains("holds a change abo did not make"), "{}", err(&o));
+}
+
+// ---- found by the first web run, 2026-10-07 ----
+
+/// A bill under a standing bill's number of the supplier's, owing the same,
+/// went in when said to be another.
+#[test]
+fn the_same_supplier_number_is_that_bill_whatever_is_said() {
+    let dir = books("same-number", &[]);
+    let bill = ["bill", "--date", "2026-03-03", "--desc", "Chairs", "--number", "2026-4471", "Expenses:General=40.00", "Liabilities:Payable=-40.00"];
+    ok(&dir, &bill);
+    let o = abo(&dir, &[&bill[..], &["--again"]].concat());
+    assert!(!o.status.success() && err(&o).contains("N8") && err(&o).contains("so this is that bill") && !err(&o).contains("--again"), "{}", err(&o));
 }

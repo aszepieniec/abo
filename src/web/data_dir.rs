@@ -74,26 +74,28 @@ pub(super) async fn landing(axum::extract::State(root): axum::extract::State<Arc
         "Companies",
         html! {
             h1 { "Companies" }
-            @if let Some((dir, Ok(name))) = opened {
+            @if let Some((_, Ok(name))) = opened {
                 div.flash.flash-ok { (icon("success")) div {
                     strong { "Books opened" }
-                    "The books for " (name) " are in " code { (dir) } "."
+                    "The books for " (name) " are open: they are listed below."
                 } }
             }
             @if companies.is_empty() {
-                p.muted { "No companies in " code { (root.display()) } " yet." }
+                p.muted { "No companies yet." }
             } @else {
                 div.box {
                     table.list {
-                        thead { tr { th { "Company" } th { "Directory" } } }
+                        thead { tr { th { "Company" } } }
                         tbody {
                             @for (dir, name) in &companies {
                                 tr {
                                     @match name {
                                         Ok(n) => td { a href={"/c/" (dir) "/"} { (n) } },
-                                        Err(e) => td.muted { "The books cannot be read: " (e) },
+                                        Err(e) => td {
+                                            span.muted { (dir) ": its books cannot be read; whoever runs abo's server can put them right." }
+                                            details.tech { summary { "For whoever runs abo" } pre { (e) } }
+                                        },
                                     }
-                                    td { code { (dir) } }
                                 }
                             }
                         }
@@ -101,7 +103,6 @@ pub(super) async fn landing(axum::extract::State(root): axum::extract::State<Arc
                 }
             }
             div.actions { a.btn.btn-primary href="/new" { (icon("plus")) " Open the books for a new company" } }
-            p.muted.small { "Or run " code { "abo init <name>" } " in " code { (root.display()) } ": the same questions, on the terminal." }
         },
     )
     .into_response()
@@ -159,7 +160,7 @@ pub(super) fn new_page(f: &Fields, problems: &Problems, refused: Option<&anyhow:
     html! {
         h1 { "Open the books for a new company" }
         @if let Some(e) = refused {
-            div.flash.flash-error { (icon("error")) div { strong { "Not done" } pre { (format!("{e:#}")) } } }
+            (super::refused(e))
         } @else if !problems.is_empty() {
             div.flash.flash-error { (icon("error")) div {
                 strong { "Not done" }

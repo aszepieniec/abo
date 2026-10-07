@@ -177,11 +177,13 @@ Where the bill gives them, the supplier's own number for it and when it is
 due go with it, either, both or neither: `--number`, `--due`, and the two
 fields of the same names on the form (MODEL.md I-B3). A bill owing what
 another owes under the same number of the supplier's is the same bill,
-whatever their dates (N8).
+whatever their dates, and is refused even when said to be another (N8).
 **Done when** the document is filed as
-`bills/<year>/<date>-<issuer>-<hash>.<ext>` in one commit, its type read from
-its bytes, and the bill is booked, dated as the document, in the next, the
-document naming it in `bills/index`. In the browser a bill the rules refuse
+`bills/<year>/<date>-<issuer>-<hash>.<ext>`, its type read from
+its bytes, and the bill is booked, dated as the document, the
+document naming it in `bills/index`: in the browser one change, which one
+Undo takes back (MODEL.md §5.4); in a terminal two. **File it, to book
+later** on the form files the document alone, as `abo file` does. In the browser a bill the rules refuse
 files nothing, and the form comes back filled in but for the document. A
 document filed and not booked is listed under the form as **Filed, not booked
 yet**; **Book it** opens the form with that document. A bill may be booked
@@ -195,7 +197,8 @@ bill has is refused (MODEL.md I-B1); so is a bill owing what a standing
 one owes, on the same account, dated within 7 days of it either side,
 document or not and however it is split among expenses, unless it is said
 to be another — `abo bill
---again`, or the checkbox on the form (N8).
+--again`, or the checkbox on the form (N8). Under the same number of the supplier's
+it is that bill whatever is said.
 
 ### B4. Pay a bill, or receive an invoice's payment — Supported (browser, CLI)
 A payment names the one bill or invoice it pays, by its id; whether that is
@@ -348,7 +351,9 @@ liabilities and equity) is nil.
 Needs a box for each on the form: `abo config set report.vat.<code> '{ label
 = "...", query = "...", invert = true }'`, its figure the balance of the
 hledger query over the period, turned over for a box on the credit side.
-Without them the page says what to set.
+In the browser: **The tax return** on the company page adds, changes and
+removes the boxes, each logged as the `abo config` command that makes it.
+Without them the tax return's page links there.
 **Done when** each configured box shows its figure for the period, in the
 company currency. Amounts in another commodity are valued at the price on the
 day of the posting, from the declared prices; with no price the return is
@@ -368,10 +373,10 @@ neither does any report abo makes.
 ## F. Checking and correcting
 
 ### F1. See what was done — Supported (browser)
-**Log**: every change to the books, newest first, as the `abo` command that
-made it, with every default it used written out; reads and refusals change
-nothing and are not there. Each opens to the command and the diff its commit
-made, documents shown as binary. The last 50 show, and **Show all** the rest.
+**Log**: every change to the books, oldest first, in words — "Booked bill 3:
+Hosting"; reads and refusals change nothing and are not there. Each opens to
+the `abo` command that made it, every default it used written out, and the
+diff its commit made, documents shown as binary. The last 50 show, and **Show all** the rest.
 CLI: `abo log` (`--since <date>` for a day's changes), and `abo entries
 <words>` to find an entry and its id.
 **Done when** the last change appears as a command that, typed, would make it
@@ -403,6 +408,10 @@ still read. Committed, a change that breaks the books is listed by `abo
 check` at its file and line, with how to mend it; changes go ahead on such
 books, each saying that problems remain, and refused only for a problem of
 their own.
+In the browser a page says it in the bookkeeper's words — the books were
+changed outside abo, and whoever runs abo settles it — with the files, the
+diff and the git commands folded under **For whoever runs abo**. So does an
+`abo.toml` that cannot be read, as a page of its own, not a bare error.
 **Done when** nothing is changed while files hold changes abo did not make,
 and the refusal names both git commands.
 
@@ -431,7 +440,8 @@ first.
 ### F5. Correct an issued invoice — Supported (browser, CLI)
 An issued invoice is a document the customer has; it is corrected by a credit
 note that cancels it in full, and a new invoice. Browser: open the invoice and
-**Correct**: a credit note is issued, dated today, and the invoice form opens
+**Correct**, which asks first, saying what the credit note will do, and
+**Issue the credit note**: it is issued, dated today, and the invoice form opens
 filled in as the cancelled invoice was. CLI: `abo credit <number>` (`--date`,
 `--note`), then `abo invoice` as usual.
 **Done when** the credit note has the next number in the series, its PDF says
@@ -439,8 +449,9 @@ filled in as the cancelled invoice was. CLI: `abo credit <number>` (`--date`,
 the invoice's. Refused: an invoice a standing payment pays (revert it first),
 one cancelled already, and a credit note.
 
-### F6. Close a period — Supported (CLI)
-`abo config set company.closed_through 2026-06-30`. Nothing dated on or
+### F6. Close a period — Supported (browser, CLI)
+**Closing a period** on the company page, or `abo config set
+company.closed_through 2026-06-30`. Nothing dated on or
 before it is added, no document there filed or taken out, and no statement
 or price there added or taken out; the date only moves forward (MODEL.md N2,
 N6). Setting it is a change like any other: while it is the last, Undo takes
@@ -468,6 +479,35 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 - **Year-end closing entries** (§12) — until then unclosed profit is a computed equity line.
 
 ---
+
+## First web run of 2026-10-07: found and fixed
+
+Agents worked through the workflows in the browser alone. Fixed, each with
+a test (tests/web.rs `first_web_run`, tests/regressions.rs):
+
+- Missing against the terminal: closing a period (F6) and the tax return's
+  boxes (E3) from the company page; filing a bill to book later (B2); an
+  account's page by period, with each month's total.
+- Said in the computer's words: refusals named rule codes and files, and
+  the hint the terminal gives was missing; a change made outside abo, or
+  problems in the books, showed git's text; an unreadable `abo.toml` a bare
+  error. Now said in words, with what is technical folded under **For
+  whoever runs abo**, and the hint chosen by the rule broken and the field
+  it is about, never by its wording.
+- Notices named commit hashes and doubled their verbs; the Log was newest
+  first in commands, now oldest first in words (F1).
+- **Correct** issued a credit note at one click; it asks first (F5).
+- **File and book it** was two changes, and one Undo took back half (B2).
+- The same supplier number, said to be another bill, was booked: it is
+  that bill whatever is said (B3, N8; in the terminal too).
+- The issued invoice did not say which VAT rate it took and why; reports
+  took a bad period as an error page, now said on the page; Books valued
+  holdings at a price, not at cost; the last booked showed by id, not
+  date; PDFs downloaded without their number as their name; Reconcile's
+  **Show** without an action was an error.
+- Words: "Declarations" is **Accounts and currencies**; the company is in
+  the sidebar; the VAT methods say what each means; the new-company form
+  asks who keeps the books in plain words, folded, without git's.
 
 ## Short ninth CLI run of 2026-10-07: the two changes read as meant
 

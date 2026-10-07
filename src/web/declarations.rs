@@ -1,10 +1,10 @@
-//! Accounts, commodities and prices declared.
+//! Accounts, commodities and prices declared: "Accounts and currencies" on the page.
 
 use super::*;
 
 /// The accounts, commodities and prices, each with Add and Remove (§5.1).
 pub(super) async fn declarations(Books(s): Books) -> Response {
-    or_error(&s, "Declarations", || Ok(declarations_page(&s, None)))
+    or_error(&s, "Accounts and currencies", || Ok(declarations_page(&s, None)))
 }
 
 pub(super) fn declarations_page(s: &Store, error: Option<&anyhow::Error>) -> Markup {
@@ -18,7 +18,7 @@ pub(super) fn declarations_page(s: &Store, error: Option<&anyhow::Error>) -> Mar
         }
     };
     html! {
-        h1 { "Declarations" }
+        h1 { "Accounts and currencies" }
         @if let Some(e) = error { (refused(e)) }
         div.box {
             div.box-header { (icon("book")) "Accounts" }
@@ -30,7 +30,7 @@ pub(super) fn declarations_page(s: &Store, error: Option<&anyhow::Error>) -> Mar
             } }
         }
         div.box {
-            div.box-header { (icon("coins")) "Commodities" }
+            div.box-header { (icon("coins")) "Currencies" span.spacer.muted.small { "and other commodities, such as BTC" } }
             table.list { tbody { @for (c, p) in &b.commodities { tr { td { code { (c) } } td { (p) " places" } td.amt { (remove("commodity", c)) } } } } }
             div.box-body { form method="post" action="/declarations" {
                 (token()) input type="hidden" name="action" value="add-commodity";
@@ -40,7 +40,7 @@ pub(super) fn declarations_page(s: &Store, error: Option<&anyhow::Error>) -> Mar
             } }
         }
         div.box {
-            div.box-header { (icon("chart")) "Prices" }
+            div.box-header { (icon("chart")) "Prices" span.spacer.muted.small { "what one unit of a currency was worth, for invoices in it" } }
             table.list { tbody { @for ((c, d), p) in &b.prices { tr { td.date { (d) } td { "1 " (c) " = " (p.quantity) " " (p.commodity) } td.amt { (remove("price", &format!("{d} {c}"))) } } } } }
             div.box-body { form method="post" action="/declarations" {
                 (token()) input type="hidden" name="action" value="add-price";
@@ -82,6 +82,6 @@ pub(super) async fn declare(Books(mut s): Books, Form(f): Form<Fields>) -> Respo
     });
     match r {
         Ok(to) => Redirect::to(&to).into_response(),
-        Err(e) => again(&s, "Declarations", || Ok(declarations_page(&s, Some(&e)))),
+        Err(e) => again(&s, "Accounts and currencies", || Ok(declarations_page(&s, Some(&e)))),
     }
 }

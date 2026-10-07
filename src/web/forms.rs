@@ -114,11 +114,23 @@ pub(super) fn render(qs: &[Q], prefix: &str, f: &Fields, problems: &Problems, om
     let mut out = html! {};
     for q in qs {
         let m = match q {
+            // Who keeps the books: asked in words of the page's own, folded
+            // away, as a blank answer takes what the computer is set up with.
+            Q::Group { title: "git", qs, .. } => html! {
+                details.box {
+                    summary.box-header { (icon("pencil")) "Who keeps the books (optional)" }
+                    div.box-body {
+                        p.muted.small { "Their name and email go with every change made to the books, to show who made it. Blank takes the ones this computer is set up with." }
+                        (render(qs, prefix, f, problems, omit, css))
+                    }
+                }
+            },
             Q::Group { title, icon: ic, note, qs } => html! {
                 div.box {
                     div.box-header { (icon(ic)) (title) }
                     div.box-body {
-                        @if !note.is_empty() { p.muted.small { (with_code(note)) } }
+                        // How its books are named on disk is the computer's business.
+                        @if !note.is_empty() && *title != "The company" { p.muted.small { (with_code(note)) } }
                         (render(qs, prefix, f, problems, omit, css))
                     }
                 }
@@ -126,8 +138,14 @@ pub(super) fn render(qs: &[Q], prefix: &str, f: &Fields, problems: &Problems, om
             Q::Text { key, label, hint, offer, .. } => {
                 let k = format!("{prefix}{key}");
                 let blank = match offer {
+                    _ if key.starts_with("git_") => String::new(),
                     questions::Offer::From(words, _) => format!("Blank for {words}."),
                     _ => String::new(),
+                };
+                let label = match *key {
+                    "git_name" => "Name",
+                    "git_email" => "Email",
+                    _ => label,
                 };
                 html! {
                     label.field { (label)

@@ -30,7 +30,7 @@ pub(super) fn owed_text(b: &Model, d: usize, standing: &[bool]) -> Option<(Strin
 
 /// One entry: as it stands in the journal, what it owes and what paid it,
 /// its document or PDF, and Revert or Correct.
-pub(super) async fn booking(Books(s): Books, Path(id): Path<String>) -> Response {
+pub(super) async fn booking(Books(s): Books, Path(id): Path<String>, Query(q): Query<Fields>) -> Response {
     // An entry by its id; anything else names none.
     let Ok(id) = id.parse::<usize>() else { return or_error(&s, "Not found", || Err(input::not_found(format!("there is no entry {id}")))) };
     or_error(&s, "Entry", || {
@@ -53,6 +53,10 @@ pub(super) async fn booking(Books(s): Books, Path(id): Path<String>) -> Response
             p.muted.small {
                 (e.date) " · entry " (id)
                 @if let Some(n) = &number { " · " @if credit_note { "credit note " } @else { "invoice " } (n) }
+            }
+            @if let Kind::Invoice { content, .. } = &e.kind {
+                @let (rate, why, _) = views::vat_taken(b, content, q.get("vat").is_some_and(|v| v == "given"));
+                p { (rate) @if q.contains_key("vat") { " (" (why) ")" } @else if let model::InvoiceVat::Exempt { reason } = &content.vat { ": " (reason) } }
             }
             @if let Some(r) = reversed {
                 div.flash.flash-info { (icon("info")) div { strong { "Reverted" } " by " a href={"/entry/" (r)} { (b.entries[r - 1].description) } } }
@@ -103,9 +107,11 @@ pub(super) async fn booking(Books(s): Books, Path(id): Path<String>) -> Response
                     }
                 }
                 @if invoice {
-                    form method="post" action={"/invoice/" (number.clone().unwrap_or_default()) "/correct"} {
-                        (token())
-                        button.btn-danger type="submit" disabled[reversed.is_some() || !paid_by.is_empty()] { (icon("undo")) " Correct" }
+                    // Asked first: a credit note is not undone.
+                    @if reversed.is_none() && paid_by.is_empty() {
+                        a.btn.btn-danger href={"/invoice/" (number.clone().unwrap_or_default()) "/correct"} { (icon("undo")) " Correct" }
+                    } @else {
+                        button.btn-danger type="button" disabled { (icon("undo")) " Correct" }
                     }
                     span.muted.small {
                         @if reversed.is_some() { "Cancelled already." }
@@ -211,29 +217,75 @@ pub(super) async fn entry_file(Books(mut s): Books, Path(id): Path<String>, mp: 
 pub(super) async fn bill_doc(Books(s): Books, Path(rest): Path<String>) -> Response {
     // A document the books name, and nothing else under bills/.
     match s.document(&format!("bills/{rest}")).and_then(|b| store::sniff(&b).ok().map(|(_, mime)| (mime, b))) {
-        Some((mime, bytes)) => ([("content-type", mime), ("x-content-type-options", "nosniff")], bytes).into_response(),
+        Some((mime, bytes)) => {
+            let name = rest.rsplit('/').next().unwrap_or("document").to_string();
+            ([("content-type", mime.to_string()), ("x-content-type-options", "nosniff".into()), ("content-disposition", format!("inline; filename=\"{name}\""))], bytes).into_response()
+        }
         None => or_error(&s, "Not found", || Err(input::not_found(format!("no document is filed as bills/{rest}")))),
     }
 }
 
 /// One account's register: every entry that touches it, oldest first, with
-/// the running balance.
+/// the running balance; with `?period=`, those in the period, and the
+/// account's total for each of its months, as `abo balance -M` gives them.
 pub(super) async fn register(Books(s): Books, Query(q): Query<Fields>) -> Response {
     let name = q.get("name").cloned().unwrap_or_default();
-    or_error(&s, &name, || {
+    let period = q.get("period").map(|p| p.trim().to_string()).unwrap_or_default();
+    // A period hledger cannot read is said on the form, which keeps it.
+    let bad = (!period.is_empty()).then(|| statement::period_ok(&period).err()).flatten();
+    let (from, to) = if period.is_empty() || bad.is_some() { (None, None) } else { statement::period_days(&period).unwrap_or_default() };
+    let within = |d: &model::Date| from.as_ref().is_none_or(|f| d.to_string() >= *f) && to.as_ref().is_none_or(|t| d.to_string() <= *t);
+    let mut r = or_error(&s, &name, || {
         let b = &s.books;
         let mut balance = statement::Bag::new();
         let mut rows = Vec::new();
+        let mut months: std::collections::BTreeMap<String, statement::Bag> = std::collections::BTreeMap::new();
         let mut ps: Vec<_> = b.all_postings().into_iter().filter(|(_, _, p)| p.account == name).collect();
         ps.sort_by_key(|(r, d, _)| (*d, r.entry, r.n));
         for (r, d, p) in ps {
+            // At cost, as the books and the reports show it.
+            let a = p.cost.clone().unwrap_or(p.amount.clone());
+            *balance.entry(a.commodity.clone()).or_default() += a.quantity;
+            if !within(&d) {
+                continue;
+            }
             let mut change = statement::Bag::new();
-            *change.entry(p.amount.commodity.clone()).or_default() += p.amount.quantity;
-            *balance.entry(p.amount.commodity).or_default() += p.amount.quantity;
+            *change.entry(a.commodity.clone()).or_default() += a.quantity;
+            *months.entry(d.to_string()[..7].to_string()).or_default().entry(a.commodity).or_default() += a.quantity;
             rows.push((d, r.entry, b.entries[r.entry - 1].description.clone(), money(&statement::amounts(b, &change)), money(&statement::amounts(b, &balance))));
+        }
+        let mut in_all = statement::Bag::new();
+        for (c, q) in months.values().flatten() {
+            *in_all.entry(c.clone()).or_default() += q;
         }
         Ok(html! {
             h1 { (name) }
+            form method="get" action="/account" {
+                input type="hidden" name="name" value=(name);
+                div.box { div.box-body {
+                    label.field { "Period"
+                        span.hint { "A year, a quarter or a month: " code { "2026" } ", " code { "2026q1" } ", " code { "2026-08" } ", " code { "last month" } "; " code { "ytd" } " for the year to date. Blank for all time." }
+                        input type="text" name="period" value=(period);
+                        @if let Some(e) = &bad { span.problem { (sentence(&format!("{e:#}"))) } }
+                    }
+                    div.actions { button type="submit" { (icon("chart")) " Show" } }
+                } }
+            }
+            @if !period.is_empty() && bad.is_none() {
+                div.box {
+                    div.box-header { (icon("chart")) "By month" @if let (Some(f), Some(t)) = (&from, &to) { span.spacer.muted.small { (f) " to " (t) } } }
+                    table.list {
+                        thead { tr { th { "Month" } th.amt { "Total" } } }
+                        tbody {
+                            @for (m, bag) in &months { tr { td.date { (m) } td.amt { (money(&statement::amounts(b, bag))) } } }
+                        }
+                        @if months.len() > 1 {
+                            tfoot { tr.total { td { "In all" } td.amt { (money(&statement::amounts(b, &in_all))) } } }
+                        }
+                    }
+                    @if months.is_empty() { div.box-body { p.muted { "Nothing booked to it in the period." } } }
+                }
+            }
             div.box {
                 table.list {
                     thead { tr { th { "Date" } th { "Description" } th.amt { "Amount" } th.amt { "Balance" } } }
@@ -249,10 +301,14 @@ pub(super) async fn register(Books(s): Books, Query(q): Query<Fields>) -> Respon
                     }
                 }
             }
-            @if rows.is_empty() { p.muted { "Nothing booked to this account." } }
+            @if rows.is_empty() { p.muted { "Nothing booked to this account" @if !period.is_empty() { " in the period" } "." } }
             div.actions { span.nav { a.btn href=(back_to("/")) { (icon("left")) " Back" } } }
         })
-    })
+    });
+    if bad.is_some() {
+        *r.status_mut() = StatusCode::UNPROCESSABLE_ENTITY;
+    }
+    r
 }
 
 pub(super) async fn revert(Books(mut s): Books, Path(id): Path<String>, Form(f): Form<Once>) -> Response {
@@ -320,7 +376,7 @@ pub(super) fn form(s: &Store, f: &Fields, error: Option<&anyhow::Error>) -> Mark
 pub(super) fn accounts_box(b: &Model) -> Markup {
     html! {
         div.box {
-            div.box-header { (icon("book")) "Declared accounts" span.spacer { a.small href="/declarations" { "Declarations" } } }
+            div.box-header { (icon("book")) "Declared accounts" span.spacer { a.small href="/declarations" { "Accounts and currencies" } } }
             div.box-body { ul.accounts { @for a in &b.accounts { li { code { (a) } } } } }
         }
     }

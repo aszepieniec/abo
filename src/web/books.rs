@@ -6,11 +6,15 @@ use super::*;
 pub(super) fn bags(b: &Model) -> Vec<(String, statement::Bag)> {
     let mut out: std::collections::BTreeMap<String, statement::Bag> = std::collections::BTreeMap::new();
     // Every account posted to, at nought too once it has come back to it.
+    // At cost, as the balance sheet: what is owed or held in another
+    // commodity, in the company's, at what it was booked at.
     for (_, _, p) in b.all_postings() {
-        out.entry(p.account).or_default().entry(p.amount.commodity).or_insert(Decimal::ZERO);
+        let a = p.cost.clone().unwrap_or(p.amount.clone());
+        *out.entry(p.account.clone()).or_default().entry(a.commodity).or_insert(Decimal::ZERO) += a.quantity;
     }
-    for ((a, c), q) in b.balances() {
-        *out.entry(a).or_default().entry(c).or_insert(Decimal::ZERO) += q;
+    for bag in out.values_mut() {
+        let any = bag.values().any(|q| !q.is_zero());
+        bag.retain(|_, q| !q.is_zero() || !any);
     }
     out.into_iter().collect()
 }
@@ -38,9 +42,11 @@ pub(super) async fn index(Books(s): Books) -> Response {
             tiles.push(("VAT, output less input".into(), due));
         }
         // The last entries, newest first, each by its debits.
-        let recent: Vec<(usize, &model::Entry, String)> = (1..=b.entries.len())
-            .rev()
-            .filter(|&id| b.entry(id).is_some())
+        // By date, newest first, as a heading of dates promises.
+        let mut ids: Vec<usize> = (1..=b.entries.len()).filter(|&id| b.entry(id).is_some()).collect();
+        ids.sort_by_key(|&id| std::cmp::Reverse((b.entries[id - 1].date, id)));
+        let recent: Vec<(usize, &model::Entry, String)> = ids
+            .into_iter()
             .take(12)
             .map(|id| {
                 let mut debits = statement::Bag::new();
@@ -59,11 +65,15 @@ pub(super) async fn index(Books(s): Books) -> Response {
                     a.btn.btn-primary href="/bill" { (icon("camera")) " Book a bill" }
                 }
             }
-            @if !s.problems.is_empty() {
+            @if let Some(edit) = s.hand_edit().ok().flatten() {
                 div.flash.flash-error { (icon("error")) div {
-                    strong { "The books hold problems" }
-                    " A change goes ahead only if it brings no problem of its own. " code { "abo check" } " lists them, and how each is mended; " code { "abo tidy" } " mends what is only not as abo writes it."
-                    ul { @for p in &s.problems { li { code { (p) } } } }
+                    strong { "Changed outside abo" }
+                    (amiss(store::AmissKind::HandEdit, &edit))
+                } }
+            } @else if !s.problems.is_empty() {
+                div.flash.flash-error { (icon("error")) div {
+                    strong { "The books do not hold together" }
+                    (amiss(store::AmissKind::Problems, &format!("{}\nabo check lists them, and how each is mended; abo tidy mends what is only not as abo writes it.", s.problems.join("\n"))))
                 } }
             }
             @if !tiles.is_empty() {
@@ -158,6 +168,17 @@ pub(super) fn toast(s: &Store, n: usize) -> Option<Markup> {
         _ => return None,
     };
     let commit = line["commit"].as_str();
+    let (_, rest) = crate::command::done(line["what"].as_str().unwrap_or_default());
+    let argv: Vec<&str> = line["argv"].as_array().into_iter().flatten().filter_map(|a| a.as_str()).collect();
+    let rest = match argv.as_slice() {
+        // What was taken back, as the log said it then; not a commit's code.
+        ["undo", ..] => store::lines(&s.root).iter().find(|l| l["commit"].as_str() == Some(rest.as_str())).and_then(|l| l["what"].as_str()).map_or(String::new(), |w| format!("taken back: {w}")),
+        // A setting, as a bookkeeper names it.
+        ["config", "set", "--", "company.closed_through", d] => format!("the books are closed through {d}"),
+        ["config", "unset", "--", "company.closed_through"] => "the books are open again".into(),
+        ["config", _, "--", k, ..] if k.starts_with("report.vat.") => format!("box {} of the tax return", &k["report.vat.".len()..]),
+        _ => rest,
+    };
     // A link to the PDF where the change issued one.
     // By the entry the change added, if it was an invoice or a credit note.
     let number = line["entry"].as_u64().and_then(|id| s.books.number_text(id as usize));
@@ -166,9 +187,8 @@ pub(super) fn toast(s: &Store, n: usize) -> Option<Markup> {
             (icon("success"))
             div {
                 strong { (title) }
-                (line["what"].as_str().unwrap_or_default())
-                @if let Some(c) = commit { span.muted { " · " (c) } }
-                @if let Some(n) = &number { " · " a href={"/invoice/" (n)} { "the PDF" } }
+                @if !rest.is_empty() { (rest) }
+                @if let Some(n) = &number { " · " a href={"/invoice/" (n) ".pdf"} { "the PDF" } }
             }
             @if undoable(s, n) {
                 form.undo method="post" action="/undo" {
@@ -181,43 +201,46 @@ pub(super) fn toast(s: &Store, n: usize) -> Option<Markup> {
     })
 }
 
-/// The changes, newest first, each opening to the command that made it and
-/// the diff it made, which is the thing to check.
-/// ponytail: one `git show` per row with a commit, so 50 rows unless `?all`.
+/// The changes, oldest first as they were made, each said in words, who
+/// made it and when; the command that made it and the diff it made folded
+/// away under details, for whoever wants to check.
+/// ponytail: one `git show` per row with a commit, so the last 50 unless `?all`.
 pub(super) async fn activity(Books(s): Books, Query(q): Query<Fields>) -> Response {
     or_error(&s, "Log", || {
         let all = store::lines(&s.root);
         let shown = if q.contains_key("all") { all.len() } else { 50 };
-        let lines: Vec<(usize, &serde_json::Value)> = all.iter().enumerate().rev().take(shown).map(|(i, l)| (i + 1, l)).collect();
-        // A document's bytes as binary, not as text.
+        let skip = all.len().saturating_sub(shown);
+        let lines: Vec<(usize, &serde_json::Value)> = all.iter().enumerate().skip(skip).map(|(i, l)| (i + 1, l)).collect();
         Ok(html! {
             h1 { "Log" }
             @if lines.is_empty() {
-                div.flash.flash-info { (icon("info")) div { "Nothing changed yet. Every change to the books is recorded here, as the command that made it." } }
+                div.flash.flash-info { (icon("info")) div { "Nothing changed yet. Every change to the books is listed here, as it is made." } }
             } @else {
+                @if skip > 0 {
+                    p.muted { "The last " (shown) " of " (all.len()) " changes. " a href="/log?all" { "Show all" } }
+                }
                 div.box {
                     table.list.log {
-                        thead { tr { th { "When" } th.who { "Who" } th { "Command" } th { "What" } th.amt { "Commit" } th {} } }
+                        thead { tr { th { "When" } th.who { "Who" } th { "What" } th {} } }
                         tbody {
                             @for (n, l) in &lines {
                                 @let commit = l["commit"].as_str().filter(|h| is_hash(h));
                                 @let words: Vec<&str> = l["argv"].as_array().into_iter().flatten().filter_map(|a| a.as_str()).collect();
+                                @let (verb, rest) = crate::command::done(l["what"].as_str().unwrap_or(""));
                                 tr {
                                     td.date { (l["at"].as_str().unwrap_or("").get(..16).unwrap_or("").replace('T', " ")) }
                                     td.who { (l["who"].as_str().unwrap_or("")) }
-                                    td { code { (words.first().copied().unwrap_or("")) } }
                                     td.what {
                                         details {
-                                            summary { (l["what"].as_str().unwrap_or("")) }
-                                            h2 { "Command" }
+                                            summary { (verb) @if !rest.is_empty() { " " (rest) } }
+                                            h2 { "The command that makes it" }
                                             pre { (crate::command::shell(&words)) }
                                             @if let Some(h) = commit {
-                                                h2 { "Commit " (h) }
+                                                h2 { "What it changed in the files" }
                                                 pre { (s.diff(h).unwrap_or_else(|e| e.to_string())) }
                                             }
                                         }
                                     }
-                                    td.amt { @if let Some(h) = commit { code { (h) } } }
                                     td {
                                         @if undoable(&s, *n) {
                                             form method="post" action="/undo" {
@@ -231,9 +254,6 @@ pub(super) async fn activity(Books(s): Books, Query(q): Query<Fields>) -> Respon
                             }
                         }
                     }
-                }
-                @if all.len() > shown {
-                    p.muted { "The last " (shown) " of " (all.len()) ". " a href="/log?all" { "Show all" } }
                 }
             }
         })
