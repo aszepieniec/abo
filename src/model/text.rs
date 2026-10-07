@@ -357,7 +357,8 @@ pub fn read(f: &Files) -> (Option<Books>, Vec<String>) {
                 // Where they first differ; past the end of the file — a last
                 // line missing, or its newline — is its last line.
                 let at = a.lines().zip(b.lines()).position(|(x, y)| x != y).unwrap_or(a.lines().count().min(b.lines().count()));
-                problems.push(format!("{name}:{}: not as abo writes it", (at + 1).min(a.lines().count().max(1))));
+                let line = (at + 1).min(a.lines().count().max(1));
+                problems.push(format!("{name}:{line}: not as abo writes it{}", derived(a, line - 1)));
             }
             (None, _) => problems.push(format!("{name}: missing")),
             (_, None) => problems.push(format!("{name}: says nothing abo would write")),
@@ -398,4 +399,25 @@ fn place(f: &Files, of: &super::check::Subject) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// Of a line that differs from what abo writes: whether it lies in an entry
+/// whose postings abo derives — an invoice's, a credit note's, a
+/// reversal's — which no hand edit changes, said so.
+fn derived(text: &str, at: usize) -> &'static str {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() {
+        return "";
+    }
+    let Some(start) = (0..=at.min(lines.len().saturating_sub(1))).rev().find(|&i| !lines[i].starts_with(' ')) else { return "" };
+    let block = lines[start + 1..].iter().take_while(|l| l.starts_with(' '));
+    for l in block {
+        if l.starts_with("    ; invoice:") {
+            return ": an invoice's or credit note's postings follow from what it says (its .json), so a change typed here changes nothing, and abo tidy writes them back";
+        }
+        if l.starts_with("    ; reverses:") {
+            return ": a reversal's postings follow from the entry it reverses, so a change typed here changes nothing, and abo tidy writes them back";
+        }
+    }
+    ""
 }

@@ -157,7 +157,7 @@ impl Store {
         // Committed, a change that breaks the books would be their history:
         // it is taken out, or mended before it is committed.
         bail!(
-            "{these} {holds} changes abo did not make, and they break the books:\n  {}\nabo changes nothing while they are there. Please take them out (git checkout -- {these}), or mend them by hand at the lines named and then commit them yourself.",
+            "{these} {holds} changes abo did not make, and they break the books:\n  {}\nabo changes nothing while they are there. Please take them out (git checkout -- {these}), or mend them by hand (git diff shows what changed) and then commit them yourself.",
             breaks.join("\n  ")
         );
     }
@@ -166,6 +166,15 @@ impl Store {
     /// and brings none (`apply` refuses what it would bring): nothing is
     /// booked on top of books that do not hold together.
     pub fn mends(&self, n: &Books) -> Result<()> {
+        // Text not as abo writes it is written over by any change, which would
+        // change it unasked: tidying does it first, and says what it changes.
+        let form: Vec<&String> = self.problems.iter().filter(|p| p.contains(": not as abo writes it") || p.ends_with(": says nothing abo would write")).collect();
+        if !form.is_empty() {
+            bail!(
+                "the books are not written as abo writes them:\n  {}\nabo changes nothing until abo tidy has written them so, and said what it changed",
+                form.iter().map(|p| p.as_str()).collect::<Vec<_>>().join("\n  ")
+            );
+        }
         let held = model::check(&self.books);
         if !held.is_empty() && model::check(n).len() >= held.len() {
             let these: Vec<&String> = self.problems.iter().filter(|p| held.iter().any(|v| p.ends_with(&v.to_string()))).collect();
@@ -183,11 +192,15 @@ impl Store {
     pub fn broken_by_hand(&self) -> Result<Vec<String>> {
         let (before, _) = model::read(&head_files(&self.root)?);
         let before = before.map(|b| model::check(&b)).unwrap_or_default();
-        Ok(model::check(&self.books)
+        let mut broken: Vec<String> = model::check(&self.books)
             .iter()
             .filter(|v| !before.iter().any(|b| b.code == v.code && b.what == v.what))
             .filter_map(|v| self.problems.iter().find(|p| p.ends_with(&v.to_string())).cloned())
-            .collect())
+            .collect();
+        // A change typed into what abo derives changes nothing: committing
+        // it is no way to settle it.
+        broken.extend(self.problems.iter().filter(|p| p.contains("a change typed here changes nothing")).cloned());
+        Ok(broken)
     }
 
     /// The books' files that hold a change not committed: another file is
@@ -287,10 +300,15 @@ impl Store {
         if last.as_deref() != Some(head.as_str()) {
             return Ok(Some(format!("the last commit, {head}, is not a change abo logged; undo takes back only abo's last change")));
         }
+        if let Err(e) = self.changeable() {
+            return Ok(Some(e.to_string()));
+        }
+        // Undo reverts a commit, which git does only over a clean tree: a
+        // file beside the books, changed, holds it up too.
         let dirty = repo::git_in(&self.root, &["status", "--porcelain"])?;
         if let Some(l) = dirty.lines().next() {
             let f = l.get(3..).unwrap_or(l);
-            return Ok(Some(format!("{f} holds changes abo did not make, and abo changes nothing while they are there. Please settle them first: commit them yourself (git commit -m '...' -- {f}), or take them out (git checkout -- {f})")));
+            return Ok(Some(format!("{f} holds changes abo did not make, and undo needs none: please commit them yourself, or take them out, first")));
         }
         if repo::git_in(&self.root, &["rev-parse", "--verify", "-q", "HEAD~1"]).is_err() {
             return Ok(Some("the last change opened the books; there is nothing before it to go back to".into()));

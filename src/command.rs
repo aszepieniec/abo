@@ -179,7 +179,7 @@ fn posting(p: &model::Posting) -> String {
 fn option_flags(words: &[&str], c: &OptionChange, all: bool) -> Vec<String> {
     let kind = c.kind.and_then(|k| serde_json::to_value(k).ok()).and_then(|v| v.as_str().map(String::from));
     let mut flags: Vec<(&str, String)> = vec![];
-    let one = [("kind", &kind), ("label", &c.label), ("holder", &c.holder), ("iban", &c.iban), ("bic", &c.bic), ("network", &c.network), ("address", &c.address), ("account", &c.account)];
+    let one = [("kind", &kind), ("label", &c.label), ("holder", &c.holder), ("iban", &c.iban), ("bic", &c.bic), ("network", &c.network), ("wallet", &c.address), ("account", &c.account)];
     flags.extend(one.into_iter().filter_map(|(k, v)| v.clone().map(|v| (k, v))));
     // Repeatable: a line each, and given empty, none.
     for (k, v) in [("bank", &c.bank), ("details", &c.details)] {

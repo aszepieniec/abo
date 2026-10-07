@@ -1969,7 +1969,7 @@ fn a_change_on_books_with_problems_says_they_remain() {
     std::fs::write(dir.join("journal/2026.journal"), read(&dir, "journal/2026.journal").replace("-5.00 EUR", "-4.00 EUR")).unwrap();
     git(&dir, &["commit", "-qam", "By hand"]);
     refused(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"], "does not mend");
-    assert!(String::from_utf8_lossy(&abo(&dir, &["check"]).stdout).contains("its postings sum to 1 EUR, not nought"));
+    assert!(String::from_utf8_lossy(&abo(&dir, &["check"]).stdout).contains("its postings sum to 1.00 EUR, not nought"));
 }
 
 /// Fifth run: with a declaration taken out and committed, declaring it again
@@ -2300,4 +2300,63 @@ fn bills_are_listed_newest_first_with_their_documents() {
     let lines: Vec<&str> = said.lines().take(2).collect();
     assert!(lines[0].starts_with(&format!("{late:>5}")) && lines[1].starts_with(&format!("{early:>5}")), "{said}");
     assert_eq!(lines[0].find("1.00 EUR"), lines[1].find("2.00 EUR"), "{said}");
+}
+
+// ---- found by the sixth CLI run, 2026-10-07 ----
+
+/// A hand edit of an invoice's posting, committed, was written back inside
+/// the next booking's commit, unsaid; check called it only "not as abo
+/// writes it".
+#[test]
+fn text_not_as_abo_writes_it_holds_changes_up_until_tidied() {
+    let dir = books("derived-edit", &[]);
+    ok(&dir, &["invoice", "--to", "C", "--item", "1|100|x", "--date", "2026-03-01"]);
+    let j = read(&dir, "journal/2026.journal");
+    std::fs::write(dir.join("journal/2026.journal"), j.replace("-100.00 EUR", "-150.00 EUR")).unwrap();
+    let o = abo(&dir, &["check"]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("an invoice's or credit note's postings follow from what it says"), "{}", String::from_utf8_lossy(&o.stdout));
+    let o = abo(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"]);
+    assert!(err(&o).contains("git checkout") && !err(&o).contains("git commit"), "{}", err(&o));
+    git(&dir, &["commit", "-qam", "By hand"]);
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"], "until abo tidy");
+    assert!(ok(&dir, &["tidy"]).contains("Rewrote journal/2026.journal"));
+    assert_eq!(read(&dir, "journal/2026.journal"), j);
+    ok(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"]);
+}
+
+/// A document named by the path of its own file was "not filed".
+#[test]
+fn a_document_is_named_by_its_own_file_too() {
+    let dir = books("doc-path", &[]);
+    std::fs::write(dir.join("../scan.pdf"), b"%PDF-1.4 mine").unwrap();
+    let scan = dir.join("../scan.pdf").display().to_string();
+    ok(&dir, &["file", "--date", "2026-03-05", "--issuer", "Shop", &scan]);
+    ok(&dir, &["unfile", &scan]);
+    refused(&dir, &["unfile", &scan], "is not filed; abo file files it");
+}
+
+/// Plain `abo bal` came out short of nil, what is owed in USD not at its cost.
+#[test]
+fn bal_is_at_cost_unless_told() {
+    let dir = books("bal-cost", &[]);
+    ok(&dir, &["commodity", "add", "USD", "2"]);
+    ok(&dir, &["bill", "--date", "2026-03-01", "--desc", "Licence", "Expenses:General=230.00", "Liabilities:Payable=-250.00 USD @@ 230.00 EUR"]);
+    let said = ok(&dir, &["bal"]);
+    assert!(said.trim_end().ends_with('0') && !said.contains("USD"), "{said}");
+}
+
+/// Splitting an account in use was refused with no way round said.
+#[test]
+fn splitting_an_account_in_use_says_how() {
+    let dir = books("split", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Float", "Assets:Bank=10.00", "Equity:Opening=-10.00"]);
+    refused(&dir, &["account", "add", "Assets:Bank:Savings"], "declare the new one beside it, or move what names Assets:Bank under it first");
+}
+
+/// The crypto option's wallet was --address, as a company's address line is.
+#[test]
+fn a_wallet_is_a_wallet() {
+    let dir = books("wallet", &[]);
+    ok(&dir, &["payment-options", "add", "btc", "--kind", "crypto", "--network", "Bitcoin", "--wallet", "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"]);
+    assert!(read(&dir, ".abo/log.jsonl").contains("--wallet=bc1q"));
 }

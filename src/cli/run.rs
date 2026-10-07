@@ -242,7 +242,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             let all = views::entries(&s.books, &words);
             emit(cli.json, &all, || {
                 if all.is_empty() {
-                    return "No entry holds those words.".into();
+                    return if words.is_empty() { "No entries yet." } else { "No entry holds those words." }.into();
                 }
                 all.iter()
                     .map(|e| {
@@ -803,12 +803,16 @@ pub(crate) fn hints(r: &store::Refused) -> Vec<String> {
             ("I-I1", Subject::Field("default rate")) => "--vat-reason '<why no VAT is charged>'; or --vat-rate <percent>, to charge VAT after all".into(),
             ("N7", Subject::Account(a)) => format!("abo unrecord --account {a}, which takes out its latest statement"),
             ("N9", Subject::Account(a)) => format!(
-                "to move an expense to the period it belongs to, two entries through an account between: \
-                 abo post --date <its day> --desc ... Expenses:X=<amount> Liabilities:Accrued=-<amount>, \
+                "to move an expense to the period it belongs to, two entries through an account between, \
+                 declared first if it is not (abo account add Liabilities:Accrued): abo post --date <its day> --desc ... Expenses:X=<amount> Liabilities:Accrued=-<amount>, \
                  and abo post --date <the day it was booked> --desc ... Liabilities:Accrued=<amount> Expenses:X=-<amount>; \
                  or abo unrecord --account {a}, if the statement was wrong"
             ),
             ("N8", _) => "--again, if it is another bill just like it".into(),
+            // To split an account in use: what names it moves under it first.
+            ("I-A2", Subject::Account(a)) => format!(
+                "an account in use takes no accounts under it: declare the new one beside it, or move what names {a} under it first (abo payment-options edit <id> --account {a}:Current, if a payment option names it)"
+            ),
             // A count or a statement the books disagree with: what it shows and
             // the books lack is booked first, a shortage say.
             ("I-S3", _) => "abo post what the statement shows and the books lack (a shortage, a fee) first; or leave out what it does not show".into(),

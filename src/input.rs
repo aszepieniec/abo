@@ -105,6 +105,14 @@ pub fn filed(b: &Books, text: &str) -> Result<String> {
     if let Some((h, _)) = b.documents.iter().find(|(h, d)| d.path(h) == text) {
         return Ok(h.clone());
     }
+    // A file of one's own: the document filed with its bytes, if one is.
+    if let Ok(bytes) = std::fs::read(text) {
+        let h = crate::store::sha256(&bytes);
+        return match b.documents.contains_key(&h) {
+            true => Ok(h),
+            false => Err(unreadable(format!("{text} is not filed; abo file files it, and says where"))),
+        };
+    }
     // The start of a hash, as a document's file name shows its first eight.
     if text.len() >= 8 && text.len() < 64 {
         match b.documents.keys().filter(|h| h.starts_with(text)).collect::<Vec<_>>()[..] {

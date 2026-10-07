@@ -621,7 +621,15 @@ fn reports_read_the_books_as_the_model_does(#[strategy(plan())] plan: Vec<Step>)
             }
         }
     }
-    prop_assert_eq!(theirs, m.balances());
+    // At cost, as abo bal reports unless told: a posting with a cost counts
+    // in its cost's commodity.
+    let mut ours = std::collections::BTreeMap::new();
+    for (_, _, p) in m.all_postings() {
+        let a = p.cost.unwrap_or(p.amount);
+        *ours.entry((p.account, a.commodity)).or_insert(Decimal::ZERO) += a.quantity;
+    }
+    ours.retain(|_, q: &mut Decimal| !q.is_zero());
+    prop_assert_eq!(theirs, ours);
     for r in [&["pl"][..], &["bs"]] {
         let o = abo(&books, today, &args(r));
         prop_assert!(o.ok && o.json.is_some(), "{:?}: {}", r, o.stderr);

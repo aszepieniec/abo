@@ -152,7 +152,7 @@ pub(crate) struct OptionParts {
     #[arg(long)]
     pub(crate) network: Option<String>,
     /// Crypto: the wallet's address.
-    #[arg(long)]
+    #[arg(long = "wallet", alias = "address")]
     pub(crate) address: Option<String>,
     /// A further line invoices print, such as an account number or where to
     /// pay cash. Repeatable.
@@ -272,7 +272,7 @@ pub(crate) enum PriceCmd {
 pub(crate) const PASSED_HELP: &str = "Options passed on to hledger: -b --begin -e --end -p --period -D --daily -W --weekly -M --monthly \
 -Q --quarterly -Y --yearly --depth -V --market -B --cost -X --exchange --value -O --output-format -E --empty -R --real \
 -U --unmarked -P --pending -C --cleared -H --historical -A --average -T --row-total -N --no-total --flat --tree --layout. \
-abo reads these books alone: any other option is refused. A statement clears postings in abo's own tags, not hledger's \
+Amounts are at cost (-B) unless one of -B -V -X --value says otherwise. abo reads these books alone: any other option is refused. A statement clears postings in abo's own tags, not hledger's \
 cleared mark, so --cleared says nothing of reconciling.";
 
 #[derive(Subcommand)]
@@ -366,9 +366,12 @@ pub(crate) enum Cmd {
         #[arg(long, allow_hyphen_values = true)]
         due_days: Option<i64>,
         /// Percent. Defaults to none for an invoice in another currency than
-        /// the company's, or to a customer whose tax number begins with another
-        /// country's two letters than the company's; to invoice.vat_rate
-        /// otherwise. Given, it is the rate whatever the currency or customer.
+        /// the company's, or to a customer in another country: when both the
+        /// customer's tax number and the company's begin with a country's code
+        /// (as EU VAT numbers do, IE6388047V) and the two differ. To
+        /// invoice.vat_rate otherwise, a company's tax number without a
+        /// country's code included. Given, it is the rate whatever the
+        /// currency or customer.
         #[arg(long, allow_hyphen_values = true)]
         vat_rate: Option<Decimal>,
         /// Commodity to invoice in. Defaults to the company currency.
@@ -652,7 +655,7 @@ fn payment_flag(s: &str, prefix: &str) -> Result<questions::Answers> {
     use anyhow::Context as _;
     let t: toml::Table = toml::from_str(&format!("p = {s}")).with_context(|| format!("--payment {s}: not a TOML inline table"))?;
     let t = t.get("p").and_then(toml::Value::as_table).with_context(|| format!("--payment {s}: not a TOML inline table"))?;
-    let fields = ["kind", "id", "label", "holder", "iban", "bic", "bank", "network", "address", "details", "account"];
+    let fields = ["kind", "id", "label", "holder", "iban", "bic", "bank", "network", "wallet", "address", "details", "account"];
     t.iter()
         .map(|(k, v)| {
             if !fields.contains(&k.as_str()) {
@@ -665,6 +668,8 @@ fn payment_flag(s: &str, prefix: &str) -> Result<questions::Answers> {
                 }
                 v => v.as_str().with_context(|| format!("--payment {s}: {k} is not a string"))?.to_string(),
             };
+            // The wallet's address, as payment-options takes it, or as abo.toml names it.
+            let k = if k == "wallet" { "address" } else { k.as_str() };
             Ok((format!("{prefix}{k}"), v))
         })
         .collect()

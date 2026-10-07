@@ -1102,7 +1102,10 @@ no rules of its own: it is where the two differ.
   did not; and while the books before it hold a violation, it is made only
   if the books after it hold fewer. So declaring an account in use, once its
   declaration was taken out, goes ahead; an entry booked on top of one that
-  does not balance does not. The files it writes, it writes canonically.
+  does not balance does not. While text is not as abo writes it, nothing is
+  changed until `abo tidy` has written it so, and said what it changed: a
+  change would rewrite it unasked — a hand edit of an invoice's derived
+  postings among it.
 - **Changes not committed hold every operation up, tidying included.** abo
   commits every change it makes, so a change not committed is someone
   else's, and theirs to settle: abo asks them to commit it themselves or to

@@ -460,7 +460,23 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 ---
 
-## Fourth and fifth CLI runs of 2026-10-07: found and fixed, not yet run again
+## Sixth CLI run of 2026-10-07: found and fixed, not yet run again
+
+Every scenario was done; no agent was stuck for more than about a minute.
+Found and fixed, each with a test under "the sixth CLI run": a hand edit of
+an invoice's derived postings, committed, was written back inside the next
+booking's commit, unsaid — text not as abo writes it now holds every change
+up until `abo tidy`, and `check` says the line is derived; a document named
+by the path of its own file was "not filed"; plain `abo bal` came out short
+of nil, what is owed in USD not at its cost — `bal` and `reg` are at cost
+unless told; the N9 hint named an account the books lacked; `undo` still
+offered to commit what breaks the books; splitting an account in use said
+no way round; a crypto option's wallet was `--address`, now `--wallet`.
+
+Open, for a decision: a bill has no number of the supplier's and no due
+date.
+
+## Fourth and fifth CLI runs of 2026-10-07: found and fixed
 
 The fourth run, after the decisions of the third (ids given once, no undo of
 an issued invoice, dated headings, defaults shown, N8 within a week, N9,

@@ -352,7 +352,17 @@ pub fn check(m: &Books) -> Vec<Violation> {
         if ps.len() < 2 {
             no!(@of Subject::Entry(id), "I-E1", "entry {id} does not balance: it has fewer than two postings");
         } else if sums.values().any(|s| !s.is_zero()) {
-            let off: Vec<String> = sums.iter().filter(|(_, s)| !s.is_zero()).map(|(c, s)| format!("{} {c}", s.normalize())).collect();
+            let off: Vec<String> = sums
+                .iter()
+                .filter(|(_, s)| !s.is_zero())
+                .map(|(c, s)| {
+                    let mut q = s.normalize();
+                    if q.scale() < m.places(c) {
+                        q.rescale(m.places(c));
+                    }
+                    format!("{q} {c}")
+                })
+                .collect();
             no!(@of Subject::Entry(id), "I-E1", "entry {id} does not balance: its postings sum to {}, not nought", off.join(" and "));
         }
         let home = &m.config.company.currency;

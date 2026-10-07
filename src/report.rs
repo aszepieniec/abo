@@ -29,6 +29,12 @@ pub fn run(s: &Store, cmd: &str, args: &[String], json: bool) -> Result<String> 
         a.extend(["-O", "json"]);
     }
     a.extend(args.iter().map(String::as_str));
+    // At cost, as the balance sheet: what is owed or held in another
+    // commodity, in the company's, at what it was booked at; unless told.
+    let valued = ["-B", "--cost", "-V", "--market", "-X", "--exchange", "--value"];
+    if !args.iter().any(|x| valued.contains(&x.split('=').next().unwrap_or_default())) {
+        a.push("-B");
+    }
     s.hledger(&a)
 }
 
