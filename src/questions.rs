@@ -387,7 +387,7 @@ pub static OPTION: &[Q] = &[
             Q::Text {
                 key: "id",
                 label: "Short name",
-                hint: "How abo names this option in its Log, and on the command line.",
+                hint: "How abo names this option in its Log.",
                 offer: Offer::From("the kind: bank, cash or crypto, numbered if taken", |env| free_id(env.kind(), &env.taken())),
                 check: Check::By(|s, env| match s {
                     s if env.taken().iter().any(|t| t == s) => Err(format!("{s} is already the id of a payment option.")),

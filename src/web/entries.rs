@@ -88,7 +88,10 @@ pub(super) async fn booking(Books(s): Books, Path(id): Path<String>, Query(q): Q
                         } }
                     }
                     @if has_open {
-                        div.box-body { div.actions { a.btn href={"/pay?debt=" (id)} { (icon("coins")) " Pay" } } }
+                        div.box-body { div.actions {
+                            a.btn href={"/pay?debt=" (id)} { (icon("coins")) " Pay" }
+                            a.btn href={"/pay?debt=" (id) "#write-off"} { (icon("trash")) " Write off" }
+                        } }
                     }
                 }
             }
@@ -292,7 +295,7 @@ pub(super) async fn register(Books(s): Books, Query(q): Query<Fields>) -> Respon
                 input type="hidden" name="name" value=(name);
                 div.box { div.box-body {
                     label.field { "Period"
-                        span.hint { "A year, a quarter or a month: " code { "2026" } ", " code { "2026q1" } ", " code { "2026-08" } ", " code { "last month" } "; " code { "ytd" } " for the year to date. Blank for all time." }
+                        span.hint { "A year, a quarter or a month: " code { "2026" } ", " code { "2026q1" } ", " code { "2026-08" } ", " code { "last month" } ", " code { "last quarter" } ", " code { "this year" } "; " code { "ytd" } " for the year to date. Blank for all time." }
                         input type="text" name="period" value=(period);
                         @if let Some(e) = &bad { span.problem { (sentence(&format!("{e:#}"))) } }
                     }
@@ -446,8 +449,9 @@ pub(super) fn form(s: &Store, f: &Fields, error: Option<&anyhow::Error>) -> Mark
 pub(super) fn accounts_box(b: &Model) -> Markup {
     html! {
         div.box {
-            div.box-header { (icon("book")) "Declared accounts" span.spacer { a.small href="/declarations" { "Accounts and currencies" } } }
-            div.box-body { ul.accounts { @for a in &b.accounts { li { code { (a) } } } } }
+            div.box-header { (icon("book")) "Accounts to post to" span.spacer { a.small href="/declarations" { "Accounts and currencies" } } }
+            // Leaves alone: one with accounts under it takes no postings.
+            div.box-body { ul.accounts { @for a in b.accounts.iter().filter(|a| b.postable(a)) { li { code { (a) } } } } }
         }
     }
 }

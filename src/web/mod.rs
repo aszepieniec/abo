@@ -218,6 +218,8 @@ fn hint(v: &model::Violation) -> Option<Markup> {
         ("I-E4", Subject::Commodity(c)) => html! { "Add a price of " (c) " under " a href="/declarations" { "Accounts and currencies" } ", Prices." },
         ("I-I1", Subject::Field("reason")) => html! { "Say why under " em { "Why no VAT" } ", or give a VAT rate." },
         ("I-A2", Subject::Account(a)) => html! { "An account in use takes no accounts under it: declare the new one beside it, or first move what names " code { (a) } " under it, such as a payment option's account on the " a href="/company" { "Company" } " page." },
+        // An account a debt is on moves through the debt's own pages.
+        ("I-P3", _) => html! { "A bill is booked under " a href="/bill" { "Book a bill" } "; an invoice under " a href="/invoice" { "Issue an invoice" } "; a payment of either with " em { "Pay" } " on " a href="/bills" { "Bills" } " or " a href="/invoices" { "Invoices" } "." },
         ("I-B2", _) => html! { "Add a line crediting what is owed, such as " code { "Liabilities:Payable=-440.00" } "." },
         ("I-S3", _) => html! { "Book first what the statement shows and the books lack under " a href="/post" { "Entry" } ": a fee, say, or for a count of cash the difference, as cash over or short; or leave out what it does not show." },
         ("N7", Subject::Account(_)) => html! { "Date it after the statement, or take the statement out on " a href="/reconcile" { "Reconcile" } " first." },

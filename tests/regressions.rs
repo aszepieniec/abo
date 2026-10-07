@@ -2147,7 +2147,7 @@ fn a_question_shows_what_a_blank_answer_takes() {
     child.stdin.take().unwrap().write_all(b"cash\n\nAt the office\n\n\n\n\n").unwrap();
     let o = child.wait_with_output().unwrap();
     let said = String::from_utf8_lossy(&o.stdout);
-    for q in ["Name on invoices [Cash]: ", "Short name (how abo names this option in its Log, and on the command line) [cash]: ", "Account the money arrives in [Assets:Cash]: "] {
+    for q in ["Name on invoices [Cash]: ", "Short name (how abo names this option in its Log) [cash]: ", "Account the money arrives in [Assets:Cash]: "] {
         assert!(said.contains(q), "{q}: {said}\n{}", err(&o));
     }
 }

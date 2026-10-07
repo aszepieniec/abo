@@ -65,7 +65,7 @@ pub(super) fn reconcile_page(s: &Store, f: &Fields, ticked: &[String], notice: O
     // What a statement can be of: the accounts money moves through, not the
     // receivable or input VAT; one named in a statement already among them;
     // and every currency declared.
-    let mut accounts: Vec<&String> = s.books.accounts.iter().filter(|a| s.books.moves_money(a)).collect();
+    let mut accounts: Vec<&String> = s.books.accounts.iter().filter(|a| s.books.moves_money(a) && s.books.postable(a)).collect();
     if !accounts.contains(&&account) {
         accounts.push(&account);
     }
@@ -75,8 +75,19 @@ pub(super) fn reconcile_page(s: &Store, f: &Fields, ticked: &[String], notice: O
     // a cash payment option's, or the cash account abo opens books with.
     let cash = is_cash(&s.books, &account);
     let (doc, closing) = if cash { ("count", "Counted") } else { ("statement", "Closing balance on the statement") };
+    // Until an account is chosen, the labels fit every account offered: no
+    // page script follows the choice.
+    let mixed = !f.contains_key("account") && accounts.iter().any(|a| is_cash(&s.books, a)) && accounts.iter().any(|a| !is_cash(&s.books, a));
+    let (closing, dated) = match (mixed, cash) {
+        (true, _) => ("Closing balance, or what was counted", "Date of the statement or count"),
+        (false, true) => (closing, "Date of the count"),
+        (false, false) => (closing, "Statement date"),
+    };
+    // Nothing left to clear, and the books at what was given: they agree.
+    let agree = rows.is_empty() && r.statement.as_ref().is_some_and(|st| st.quantity == r.books.quantity);
     Ok(html! {
         h1 { "Reconcile" }
+        p.muted { "Check an account against its bank statement, or a cash box against a count: tick what the statement shows, give its closing balance, and record it. What stays unticked waits for the next statement." }
         @if let Some(n) = notice { (n) }
         form method="post" action="/reconcile" {
             (token())
@@ -90,7 +101,7 @@ pub(super) fn reconcile_page(s: &Store, f: &Fields, ticked: &[String], notice: O
                     label.field { "Currency"
                         select name="commodity" { @for c in s.books.commodities.keys() { option value=(c) selected[c == &commodity] { (c) } } }
                     }
-                    label.field { @if cash { "Date of the count" } @else { "Statement date" } input type="date" name="date" value=(date); }
+                    label.field { (dated) input type="date" name="date" value=(date); }
                     label.field { (closing) input type="text" name="balance" value=(raw); }
                     // A plain GET: it only looks. First in the form, so Enter
                     // in a field does this rather than record anything.
@@ -106,7 +117,9 @@ pub(super) fn reconcile_page(s: &Store, f: &Fields, ticked: &[String], notice: O
                     @if let Some(d) = &r.difference { tfoot { tr.total { td { "To clear" } td { (money(std::slice::from_ref(d))) } } } }
                 }
             }
-            @if rows.is_empty() {
+            @if agree {
+                div.flash.flash-ok { (icon("success")) div { "The books agree: " (money(std::slice::from_ref(&r.books))) " in the books, " @if cash { "as counted" } @else { "as the statement says" } "." } }
+            } @else if rows.is_empty() {
                 div.flash.flash-ok { (icon("success")) div { "Nothing outstanding." } }
             } @else {
                 div.box {

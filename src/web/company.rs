@@ -222,7 +222,7 @@ pub(super) fn option_page(s: &Store, f: &Fields, problems: &Problems, refused: O
     let mut css = vec![];
     let fields = render(questions::OPTION, "", f, problems, &["skip"], &mut css);
     // Where money paid this way can arrive.
-    let accounts: Vec<&String> = s.books.accounts.iter().filter(|a| model::class(a) == "Assets").collect();
+    let accounts: Vec<&String> = s.books.accounts.iter().filter(|a| model::class(a) == "Assets" && s.books.postable(a)).collect();
     let was = f.get("was").cloned().unwrap_or_default();
     html! {
         h1 { @if was.is_empty() { "Add a payment option" } @else { "Payment option " code { (was) } } }

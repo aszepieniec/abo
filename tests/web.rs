@@ -822,3 +822,94 @@ fn third_web_run() {
     drop(d);
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+/// Found by the fourth web run, 2026-10-07: a report's fold that sent
+/// whoever runs abo to `abo check`, sales offered to write a bill off to,
+/// accounts with accounts under them offered for postings, a correction
+/// filled in as resolved, a company changed by hand listed as sound, and
+/// words that fitted one account and not another.
+#[test]
+fn fourth_web_run() {
+    let base = std::env::temp_dir().join(format!("abo-web-run4-{}", std::process::id()));
+    let (books, s) = company_books(&base);
+    const MP: &str = "multipart/form-data; boundary=b0undary";
+    let git = |args: &[&str]| assert!(Command::new("git").args(args).current_dir(&books).status().unwrap().success());
+
+    // A bill, and an account declared under another.
+    let (status, _, page) = send(&s, "POST", "/bill", MP, &multipart(&[("token", "b1"), ("date", "2026-03-03"), ("description", "Licence"), ("postings", "Expenses:General=300.00\nLiabilities:Payable=-300.00")], None));
+    assert_eq!(status, 303, "{page}");
+    for (t, a) in [("d1", "Income:Forgiven"), ("d2", "Assets:Bank:Savings")] {
+        assert_eq!(http(&s, "POST", "/declarations", &[("token", t), ("action", "add-account"), ("value", a)]).0, 303);
+    }
+    let page = http(&s, "GET", "/bills", &[]).2;
+    let n = page.split("bill ").nth(1).and_then(|r| r.split(|c: char| !c.is_ascii_digit()).next()).unwrap().to_string();
+
+    // Written off to income, not to sales; the hint links where to declare.
+    let page = http(&s, "GET", &format!("/pay?debt={n}"), &[]).2;
+    let off = page.split("id=\"write-off\"").nth(1).unwrap();
+    assert!(off.contains("value=\"Income:Forgiven\"") && !off.contains("value=\"Income:Sales\"") && off.contains("href=\"/declarations\">Accounts and currencies</a>"), "{off}");
+    // Leaves alone: Assets:Bank has Assets:Bank:Savings under it.
+    assert!(!page.contains("value=\"Assets:Bank\"") && page.contains("value=\"Assets:Bank:Savings\""), "{page}");
+    let page = http(&s, "GET", "/post", &[]).2;
+    assert!(page.contains("Accounts to post to") && !page.contains("<code>Assets:Bank</code>") && page.contains("<code>Assets:Bank:Savings</code>"), "{page}");
+
+    // The bill's page: Write off beside Pay.
+    let page = http(&s, "GET", &format!("/entry/{n}"), &[]).2;
+    assert!(page.contains(&format!("href=\"/pay?debt={n}#write-off\"")), "{page}");
+
+    // Posting to the account a debt is on says where to go instead.
+    let (status, _, page) = http(&s, "POST", "/post", &[("token", "e1"), ("date", "2026-03-05"), ("description", "Paid"), ("postings", "Liabilities:Payable=300.00\nAssets:Bank:Savings=-300.00")]);
+    assert!(status == 422 && page.contains("href=\"/bill\"") && page.contains("href=\"/bills\""), "{page}");
+
+    // Wording: tiles in full, periods, the option's short name, Reconcile.
+    for path in ["/report/pl", "/account?name=Expenses:General"] {
+        let page = http(&s, "GET", path, &[]).2;
+        assert!(page.contains("last quarter") && page.contains("this year"), "{path}: {page}");
+    }
+    let page = http(&s, "GET", "/company/payment", &[]).2;
+    assert!(!page.contains("command line"), "{page}");
+    let page = http(&s, "GET", "/reconcile", &[]).2;
+    assert!(page.contains("Closing balance, or what was counted") && page.contains("Check an account against its bank statement"), "{page}");
+    assert_eq!(http(&s, "POST", "/post", &[("token", "e2"), ("date", "2026-03-05"), ("description", "Float"), ("postings", "Assets:Cash=50.00\nAssets:Bank:Savings=-50.00")]).0, 303);
+    let page = http(&s, "GET", "/", &[]).2;
+    assert!(page.contains(">Assets:Cash<"), "tiles in full: {page}");
+    let page = http(&s, "GET", "/reconcile?account=Assets:Cash", &[]).2;
+    let ticked = page.split("name=\"ref\" value=\"").nth(1).and_then(|r| r.split('"').next()).unwrap().to_string();
+    let to = http(&s, "POST", "/reconcile", &[("token", "r1"), ("action", "record"), ("account", "Assets:Cash"), ("commodity", "EUR"), ("date", "2026-03-31"), ("balance", "50.00"), ("ref", &ticked)]).1;
+    let page = http(&s, "GET", &to, &[]).2;
+    assert!(page.contains("The books agree: 50.00 EUR in the books, as counted."), "{page}");
+
+    // Changed by hand: a report's fold gives the remedy every page gives,
+    // and the companies list flags it.
+    let j = std::fs::read_to_string(books.join("journal/2026.journal")).unwrap();
+    std::fs::write(books.join("journal/2026.journal"), j.replacen("300.00 EUR", "305.00 EUR", 1)).unwrap();
+    let page = http(&s, "GET", "/report/pl?period=2026", &[]).2;
+    assert!(page.contains("git checkout") && !page.contains("abo check says how each is mended"), "{page}");
+    drop(s);
+    let d = serve(&base, &base);
+    let page = http(&d, "GET", "/", &[]).2;
+    assert!(page.contains("href=\"/c/test-ltd/\">Test Ltd</a>") && page.replace("&#39;", "'").contains("changed its books' files outside abo"), "{page}");
+    drop(d);
+    git(&["checkout", "--", "."]);
+
+    // A correction filled in as given: blanks blank, and what it replaces.
+    let o = Command::new(env!("CARGO_BIN_EXE_abo"))
+        .args(["init", "Vat Co", "--currency", "EUR", "--vat", "effective", "--sales-rate", "21", "--tax-id", "NL123456789B01", "--git-name", "Ann", "--git-email", "ann@example.invalid"])
+        .current_dir(&base)
+        .env("HOME", &base)
+        .env("XDG_CONFIG_HOME", &base)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let s = serve(&base.join("vat-co"), &base);
+    let (status, to, page) = http(&s, "POST", "/invoice", &[("token", "v1"), ("to", "Klant BV\nStraat 1"), ("items", "1|100.00|Advice"), ("date", "2026-04-02")]);
+    assert_eq!(status, 303, "{page}");
+    let first = http(&s, "GET", &to, &[]).2;
+    let number = first.split("/invoice/").nth(1).unwrap().split(".pdf").next().unwrap().to_string();
+    let to = http(&s, "POST", &format!("/invoice/{number}/correct"), &[("token", "c1")]).1;
+    let page = http(&s, "GET", &to, &[]).2;
+    assert!(page.contains("name=\"vat_rate\" value=\"\"") && page.contains("name=\"income\" value=\"\""), "{page}");
+    assert!(page.contains(&format!("Replaces invoice {number}, cancelled by credit note ")), "{page}");
+    drop(s);
+    std::fs::remove_dir_all(&base).unwrap();
+}

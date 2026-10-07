@@ -12,17 +12,34 @@ pub(super) async fn invoice_form(Books(s): Books, Query(q): Query<Fields>) -> Re
             f.insert("to".into(), c.customer.clone());
             f.insert("items".into(), c.lines.iter().map(|l| format!("{}|{}|{}", l.quantity, l.unit_price, l.description)).collect::<Vec<_>>().join("\n"));
             f.insert("customer_tax_id".into(), c.customer_tax_id.clone());
-            f.insert("income".into(), c.accounts.income.clone());
             f.insert("reference".into(), c.reference.clone());
-            f.insert("note".into(), c.note.clone());
-            match &c.vat {
-                model::InvoiceVat::Charged { rate, .. } => drop(f.insert("vat_rate".into(), rate.normalize().to_string())),
-                model::InvoiceVat::Exempt { reason } => {
-                    f.insert("vat_rate".into(), "0".into());
-                    f.insert("vat_reason".into(), reason.clone());
-                }
-                model::InvoiceVat::NotRegistered => {}
+            // Filled in as it was given: what the default gave is left blank,
+            // for the default to give again. ponytail: inferred, as the books
+            // keep what an invoice took, not what was typed; a rate typed
+            // equal to the default comes back blank, which gives the same.
+            let b = &s.books;
+            if c.accounts.income != b.config.invoice.income {
+                f.insert("income".into(), c.accounts.income.clone());
             }
+            let default = if b.untaxed(&c.customer_tax_id).is_some() { rust_decimal::Decimal::ZERO } else { b.config.invoice.vat_rate };
+            let rate = match &c.vat {
+                model::InvoiceVat::Charged { rate } => Some(*rate),
+                model::InvoiceVat::Exempt { reason } => {
+                    f.insert("vat_reason".into(), reason.clone());
+                    Some(rust_decimal::Decimal::ZERO)
+                }
+                model::InvoiceVat::NotRegistered => None,
+            };
+            if let Some(r) = rate.filter(|r| *r != default) {
+                f.insert("vat_rate".into(), r.normalize().to_string());
+            }
+            // What it replaces, said on it: the cancelled invoice and its credit note.
+            let credit = b.entries.iter().enumerate().rev().find(|(_, e)| matches!(e.kind, Kind::CreditNote { of, .. } if of == id)).and_then(|(i, _)| b.number_text(i + 1));
+            let replaces = match credit {
+                Some(cn) => format!("Replaces invoice {n}, cancelled by credit note {cn}."),
+                None => String::new(),
+            };
+            f.insert("note".into(), [replaces, c.note.clone()].into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" "));
             if c.commodity != s.books.config.company.currency {
                 f.insert("currency".into(), c.commodity.clone());
             }

@@ -66,15 +66,22 @@ pub(super) fn company_dir(name: &str) -> bool {
 }
 
 pub(super) async fn landing(axum::extract::State(root): axum::extract::State<Arc<PathBuf>>, Query(q): Query<Fields>) -> Response {
-    // (directory, company name, or why its books could not be read)
-    let mut companies: Vec<(String, Result<String, String>)> = std::fs::read_dir(&*root)
+    // (directory, company name and what is amiss with its books if anything,
+    // or why its books could not be read)
+    type Read = Result<(String, Option<String>), String>;
+    let mut companies: Vec<(String, Read)> = std::fs::read_dir(&*root)
         // Only what init makes, as the company's pages serve only that.
         .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.join("abo.toml").is_file() && p.file_name().is_some_and(|n| company_dir(&n.to_string_lossy()))).collect::<Vec<_>>())
         .unwrap_or_default()
         .into_iter()
         .map(|p| {
             let dir = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
-            (dir, Store::open(&p).map(|s| s.books.config.company.name).map_err(|e| format!("{e:#}")))
+            let read = Store::open(&p).map(|s| {
+                // A change abo did not make, or books that no longer hold together.
+                let amiss = s.hand_edit().ok().flatten().or_else(|| (!s.problems.is_empty()).then(|| s.problems.join("\n")));
+                (s.books.config.company.name, amiss)
+            });
+            (dir, read.map_err(|e| format!("{e:#}")))
         })
         .collect();
     companies.sort();
@@ -83,7 +90,7 @@ pub(super) async fn landing(axum::extract::State(root): axum::extract::State<Arc
         "Companies",
         html! {
             h1 { "Companies" }
-            @if let Some((_, Ok(name))) = opened {
+            @if let Some((_, Ok((name, _)))) = opened {
                 div.flash.flash-ok { (icon("success")) div {
                     strong { "Books opened" }
                     "The books for " (name) " are open: they are listed below."
@@ -99,7 +106,12 @@ pub(super) async fn landing(axum::extract::State(root): axum::extract::State<Arc
                             @for (dir, name) in &companies {
                                 tr {
                                     @match name {
-                                        Ok(n) => td { a href={"/c/" (dir) "/"} { (n) } },
+                                        Ok((n, None)) => td { a href={"/c/" (dir) "/"} { (n) } },
+                                        Ok((n, Some(why))) => td {
+                                            a href={"/c/" (dir) "/"} { (n) }
+                                            div.muted.small { "Someone changed its books' files outside abo; whoever runs abo's server can put them right." }
+                                            details.tech { summary { "For whoever runs abo" } pre { (why) } }
+                                        },
                                         Err(e) => td {
                                             a href={"/c/" (dir) "/"} { (name_of(&root.join(dir)).unwrap_or_else(|| dir.clone())) }
                                             div.muted.small { "Its books cannot be read; whoever runs abo's server can put them right." }

@@ -702,6 +702,24 @@ impl Books {
         }
     }
 
+    /// Whether `a` can be posted to: declared, and no account declared under
+    /// it (I-A2: postings go to leaves alone).
+    pub fn postable(&self, a: &str) -> bool {
+        self.accounts.contains(a) && !self.accounts.iter().any(|b| b.len() > a.len() && b.starts_with(a) && b.as_bytes()[a.len()] == b':')
+    }
+
+    /// The accounts sales are booked to: the configured income, and every
+    /// account an invoice was booked to.
+    pub fn sales_accounts(&self) -> BTreeSet<&str> {
+        let mut v: BTreeSet<&str> = BTreeSet::from([self.config.invoice.income.as_str()]);
+        for e in &self.entries {
+            if let Kind::Invoice { content, .. } = &e.kind {
+                v.insert(content.accounts.income.as_str());
+            }
+        }
+        v
+    }
+
     /// The VAT accounts the configuration names.
     pub fn vat_accounts(&self) -> Vec<&Account> {
         match &self.config.vat {

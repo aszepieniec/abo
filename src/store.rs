@@ -607,6 +607,11 @@ impl Store {
             .context("running hledger")?;
         if !out.status.success() {
             if !self.problems.is_empty() {
+                // A change not committed is the cause, and its remedy the one
+                // every other page gives: taken out, or mended and committed.
+                if let Ok(Some(edit)) = self.hand_edit() {
+                    return Err(amiss(AmissKind::Unreportable, format!("hledger cannot report on the books as they now are.\n{edit}")));
+                }
                 return Err(amiss(AmissKind::Unreportable, format!("the books hold problems, so hledger cannot report on them:\n  {}\nabo check says how each is mended", self.problems.join("\n  "))));
             }
             bail!("{}", String::from_utf8_lossy(&out.stderr).trim());

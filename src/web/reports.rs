@@ -51,7 +51,7 @@ pub(super) async fn report(Books(s): Books, Path(kind): Path<String>, Query(q): 
                             label.field { "As at" input type="date" name="date" value=(date); }
                         } @else {
                             label.field { "Period"
-                                span.hint { "A year, a quarter or a month: " code { "2026" } ", " code { "2026q1" } ", " code { "2026-08" } ", " code { "last month" } "; " code { "ytd" } " for the year to date. Blank for all time." }
+                                span.hint { "A year, a quarter or a month: " code { "2026" } ", " code { "2026q1" } ", " code { "2026-08" } ", " code { "last month" } ", " code { "last quarter" } ", " code { "this year" } "; " code { "ytd" } " for the year to date. Blank for all time." }
                                 input type="text" name="period" value=(period);
                                 @if let Some(e) = &bad_period { span.problem { (sentence(&format!("{e:#}"))) } }
                             }

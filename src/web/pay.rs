@@ -4,7 +4,7 @@ use super::*;
 
 /// The money accounts: assets but the receivable and input VAT.
 pub(super) fn money_accounts(b: &Model) -> Vec<String> {
-    b.accounts.iter().filter(|a| b.moves_money(a)).cloned().collect()
+    b.accounts.iter().filter(|a| b.moves_money(a) && b.postable(a)).cloned().collect()
 }
 
 /// A payment of a bill or an invoice, `?debt=<id>`: what is open, from or into
@@ -63,7 +63,7 @@ pub(super) fn pay_page(s: &Store, id: usize, f: &Fields, error: Option<&anyhow::
                 span.nav { a.btn href=(back_to(if invoice { "/invoices?open=1" } else { "/bills?open=1" })) { (icon("left")) " Back" } }
             }
         }
-        form method="post" action="/write-off" {
+        form #write-off method="post" action="/write-off" {
             (token())
             input type="hidden" name="debt" value=(id);
             div.box {
@@ -73,10 +73,14 @@ pub(super) fn pay_page(s: &Store, id: usize, f: &Fields, error: Option<&anyhow::
                     label.field { "Date" input type="date" name="date" required value=(today); }
                     // What a customer never pays is an expense; what a supplier forgives, income.
                     @let classes = b.written_off_to(id).unwrap_or_default();
+                    // What a supplier forgives is not sales: the accounts sales
+                    // are booked to are left out.
+                    @let sales = b.sales_accounts();
+                    @let to: Vec<&String> = b.accounts.iter().filter(|a| classes.contains(&crate::model::class(a)) && b.postable(a) && !sales.contains(a.as_str())).collect();
                     label.field { "To" span.hint { @if invoice { "An expense, such as Expenses:Bad debts, declared first under " a href="/declarations" { "Accounts and currencies" } "." } @else { "Income, such as Income:Forgiven, declared first under " a href="/declarations" { "Accounts and currencies" } "; or the expense it was booked to, which it takes back." } }
                         select name="to" required {
                             option value="" { "Choose an account" }
-                            @for a in b.accounts.iter().filter(|a| classes.contains(&crate::model::class(a))) { option value=(a) { (a) } }
+                            @for a in &to { option value=(a) { (a) } }
                         }
                     }
                     div.actions { button.btn-danger type="submit" { (icon("check")) " Write off " (open) } }

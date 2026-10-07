@@ -30,7 +30,7 @@ pub(super) async fn index(Books(s): Books) -> Response {
         let mut tiles: Vec<(String, statement::Bag)> = accounts
             .iter()
             .filter(|(a, bag)| model::class(a) == "Assets" && !vat.contains(&a) && bag.values().any(|v| !v.is_zero()))
-            .map(|(a, bag)| (a["Assets:".len()..].to_string(), bag.clone()))
+            .map(|(a, bag)| (a.to_string(), bag.clone()))
             .collect();
         if let model::Vat::Effective { input, output } = &b.config.vat {
             let mut due = statement::Bag::new();
