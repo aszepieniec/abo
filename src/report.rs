@@ -31,3 +31,11 @@ pub fn run(s: &Store, cmd: &str, args: &[String], json: bool) -> Result<String> 
     a.extend(args.iter().map(String::as_str));
     s.hledger(&a)
 }
+
+#[test]
+fn the_help_of_bal_and_reg_lists_what_is_passed() {
+    let words: Vec<&str> = crate::cli::PASSED_HELP.split([' ', '.', ',']).collect();
+    for p in PASSED {
+        assert!(words.contains(&p), "{p} is passed on, and the help does not say so");
+    }
+}

@@ -224,7 +224,7 @@ pub fn vat_return(s: &Store, period: &str) -> Result<Statement> {
         bail!(
             "no tax return is configured: a box for each on the form is set as report.vat.<code>, \
              with a label and an hledger query, its figure the query's balance over the period \
-             (on a terminal: abo config set report.vat.<code> '{{ label = \"...\", query = \"...\" }}')"
+             (abo config set report.vat.<code> '{{ label = \"...\", query = \"...\" }}')"
         );
     }
     checked_period(period)?;

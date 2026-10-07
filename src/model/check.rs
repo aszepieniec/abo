@@ -31,6 +31,8 @@ pub enum Subject {
     Entry(EntryId),
     /// A statement, by its account and date.
     Statement(Account, Date),
+    /// What the operation was given that is missing or wrong, by its name.
+    Field(&'static str),
 }
 
 impl Violation {
@@ -311,7 +313,7 @@ pub fn check(m: &Books) -> Vec<Violation> {
     }
     for a in amounts {
         if !fits(a.quantity, &a.commodity) {
-            no!("I-K1", "{} {} has more places than {} has", a.quantity, a.commodity, a.commodity);
+            no!("I-K1", "{} {} has more places than {} has", a.quantity.normalize(), a.commodity, a.commodity);
         }
     }
     for (key, s) in &m.statements {

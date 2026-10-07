@@ -1751,3 +1751,128 @@ fn a_closed_period_says_undo_takes_it_back() {
     let o = abo(&dir, &["config", "get", "company.closed_through"]);
     assert!(!o.status.success());
 }
+
+/// No command listed bills: what one owed, what was open, its id, nor the
+/// documents filed and not booked.
+#[test]
+fn bills_lists_every_bill_and_what_waits_to_be_booked() {
+    let dir = books("bills-list", &[]);
+    let id = entry(&dir, &["bill", "--date", "2026-03-03", "--desc", "Chairs", "Expenses:General=400.00", "Liabilities:Payable=-400.00"]);
+    ok(&dir, &["pay", &id, "--amount", "100.00", "--date", "2026-03-04"]);
+    std::fs::write(dir.join("scan.pdf"), b"%PDF-1.4 waiting").unwrap();
+    ok(&dir, &["file", "--date", "2026-03-05", "--issuer", "Telecom", "scan.pdf"]);
+    let said = ok(&dir, &["bills"]);
+    assert!(said.contains(&format!("{id:>5}  2026-03-03  Chairs")) && said.contains("part paid, 300.00 EUR open") && said.contains("bills/2026/2026-03-05-telecom-"), "{said}");
+    let v = json(&dir, &["bills", "--open"]);
+    assert_eq!(v["bills"][0]["open"]["quantity"], "300.00", "{v}");
+}
+
+/// Nothing showed an entry's id but the journal: `reg` shows none.
+#[test]
+fn entries_finds_an_entry_and_its_id() {
+    let dir = books("entries", &[]);
+    let id = entry(&dir, &["post", "--date", "2026-03-01", "--desc", "Salary", "Expenses:General=6000.00", "Assets:Bank=-6000.00"]);
+    ok(&dir, &["post", "--date", "2026-03-02", "--desc", "Rent", "Expenses:General=1800.00", "Assets:Bank=-1800.00"]);
+    let said = ok(&dir, &["entries", "salary"]);
+    assert!(said.contains(&format!("{id:>5}  2026-03-01  Salary")) && !said.contains("Rent"), "{said}");
+}
+
+/// What was done today could only be picked out of the log by eye.
+#[test]
+fn the_log_takes_a_day_to_start_from() {
+    let dir = books("log-since", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
+    let v = json(&dir, &["log", "--since", "2999-01-01"]);
+    assert_eq!(v, serde_json::json!([]));
+    let v = json(&dir, &["log", "--since", "2000-01-01", "--last", "1"]);
+    assert_eq!(v.as_array().unwrap().len(), 2, "{v}");
+}
+
+/// `reconcile` never showed the account's balance in the books.
+#[test]
+fn reconcile_shows_the_balance_in_the_books() {
+    let dir = books("reconcile-books", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Float", "Assets:Cash=757.50", "Equity:Opening=-757.50"]);
+    let said = ok(&dir, &["reconcile", "--account", "Assets:Cash", "--date", "2026-03-31"]);
+    assert!(said.contains("in the books") && said.contains("757.50 EUR"), "{said}");
+}
+
+/// Without a terminal, init printed only its questions of many lines; the
+/// others were learned from where the input ran out.
+#[test]
+fn init_prints_its_questions_without_a_terminal() {
+    let base = std::env::temp_dir().join(format!("abo-reg-init-piped-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_abo"));
+    c.args(["init", "Piped"]).current_dir(&base).env("ABO_TODAY", TODAY).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    use std::io::Write as _;
+    child.stdin.take().unwrap().write_all(b"Main St 1\n\nSwitzerland\n\nskip\nchf\nnone\nt\nt@t\n").unwrap();
+    let o = child.wait_with_output().unwrap();
+    let said = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success(), "{}", err(&o));
+    for q in ["Country: Switzerland", "Tax registration number", "Currency code", "VAT method"] {
+        assert!(said.contains(q), "{q}: {said}");
+    }
+}
+
+/// Refusals said what was wrong, not what to type to put it right.
+#[test]
+fn a_refusal_says_what_to_type() {
+    let dir = books("hints", &[]);
+    refused(&dir, &["post", "--date", "2026-03-01", "--desc", "Rent", "Expenses:Rent=1800", "Assets:Bank=-1800"], "abo account add Expenses:Rent");
+    ok(&dir, &["commodity", "add", "USD", "2"]);
+    refused(&dir, &["invoice", "--to", "X", "--item", "1|100|a", "--currency", "USD", "--date", "2026-03-01"], "abo price add <date> USD");
+    refused(&dir, &["invoice", "--to", "X", "--item", "1|100|a", "--vat-rate", "0", "--date", "2026-03-01"], "--vat-reason");
+    let id = entry(&dir, &["bill", "--date", "2026-03-03", "--desc", "Chairs", "Expenses:General=40.00", "Liabilities:Payable=-40.00"]);
+    ok(&dir, &["pay", &id, "--date", "2026-03-04"]);
+    refused(&dir, &["pay", &id, "--date", "2026-03-04"], "is settled: nothing is open");
+}
+
+/// Closing a period was in no help; bal and reg did not say what they pass on.
+#[test]
+fn help_says_how_to_close_a_period_and_what_hledger_is_passed() {
+    let dir = books("help", &[]);
+    assert!(ok(&dir, &["config", "set", "--help"]).contains("company.closed_through"));
+    let bal = ok(&dir, &["bal", "--help"]);
+    for o in ["--period", "--monthly", "--depth", "--layout"] {
+        assert!(bal.contains(o), "{o}: {bal}");
+    }
+    assert!(ok(&dir, &["write-off", "--help"]).contains("an income account for a bill"));
+}
+
+/// The address of an invoice's customer was `\n` within one --to, where
+/// init's and the company's took --address a line each.
+#[test]
+fn an_invoices_customer_is_a_line_each() {
+    let dir = books("to-lines", &[]);
+    ok(&dir, &["invoice", "--to", "Nordlicht AG", "--to", "Seestrasse 12", "--item", "1|100|a", "--date", "2026-03-01"]);
+    assert!(read(&dir, "invoices/2026/2026-0001.json").contains("Nordlicht AG\\nSeestrasse 12"));
+    let log = read(&dir, ".abo/log.jsonl");
+    assert!(log.contains("\"--to=Nordlicht AG\",\"--to=Seestrasse 12\""), "{log}");
+}
+
+/// init's --payment refused a list of the bank's lines, which
+/// payment-options takes a flag each; and took details where payment-options
+/// took --detail.
+#[test]
+fn a_payment_options_lines_are_taken_alike() {
+    let base = std::env::temp_dir().join(format!("abo-reg-pay-lines-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    ok(&base, &["init", "Lines", "--currency", "EUR", "--vat", "none", "--git-name", "t", "--git-email", "t@t",
+                "--payment", "{ kind = \"bank\", iban = \"CH93 0076 2011 6238 5295 7\", bank = [\"PostFinance\", \"Bern\"] }"]);
+    let dir = base.join("lines");
+    assert!(read(&dir, "abo.toml").contains("PostFinance\nBern"), "{}", read(&dir, "abo.toml"));
+    ok(&dir, &["payment-options", "add", "till", "--kind", "cash", "--details", "At the office, Fridays"]);
+}
+
+/// A crypto option's account, Assets:Crypto, was refused as not declared:
+/// init never declares it.
+#[test]
+fn an_options_account_is_declared_with_it() {
+    let dir = books("crypto-account", &[]);
+    ok(&dir, &["payment-options", "add", "btc", "--kind", "crypto", "--network", "Bitcoin", "--address", "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"]);
+    assert!(read(&dir, "journal/accounts.journal").contains("account Assets:Crypto"));
+}

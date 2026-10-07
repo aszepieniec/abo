@@ -159,7 +159,8 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 .collect();
             let more = model::InvoiceMore { customer_tax_id, due_days, pay_to };
             let date = input::day(date.as_deref())?;
-            let customer = to.replace("\\n", "\n");
+            // A line each; `\n` within one, as logs written before take it.
+            let customer = to.iter().map(|l| l.replace("\\n", "\n")).collect::<Vec<_>>().join("\n");
             let op = |pdf: String| Op::Invoice {
                 date,
                 customer: customer.clone(),
@@ -195,6 +196,45 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                     .join("\n")
             })
         }
+        Cmd::Bills { open } => {
+            let s = Store::open(&here)?;
+            let all: Vec<_> = views::bills(&s.books).into_iter().filter(|b| !open || matches!(b.status, "open" | "part paid")).collect();
+            let waiting = views::waiting(&s.books);
+            emit(cli.json, &serde_json::json!({ "bills": all, "waiting": waiting }), || {
+                let mut out = if all.is_empty() {
+                    if open { "No bill is open." } else { "No bills yet." }.to_string()
+                } else {
+                    all.iter()
+                        .rev()
+                        .map(|b| {
+                            let said = if b.status == "part paid" { format!("part paid, {} open", b.open.text(" ")) } else { b.status.to_string() };
+                            format!("{:>5}  {}  {:<36}  {:>16}  {}", b.entry, b.date, b.description, b.owed.text(" "), said)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                if !waiting.is_empty() {
+                    out += &format!("\n\nFiled, not booked yet; `abo bill --document` books one:\n  {}", waiting.join("\n  "));
+                }
+                out
+            })
+        }
+        Cmd::Entries { words } => {
+            let s = Store::open(&here)?;
+            let all = views::entries(&s.books, &words);
+            emit(cli.json, &all, || {
+                if all.is_empty() {
+                    return "No entry holds those words.".into();
+                }
+                all.iter()
+                    .map(|e| {
+                        let amount = e.amount.iter().map(|a| a.text(" ")).collect::<Vec<_>>().join(", ");
+                        format!("{:>5}  {}  {:<40}  {:>16}{}", e.entry, e.date, e.description, amount, if e.reversed { "  reversed" } else { "" })
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+        }
         Cmd::Pay { debt: d, amount, from, cost, date } => {
             let mut s = Store::open(&here)?;
             let id = input::debt(&s.books, &d)?;
@@ -226,7 +266,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             let date = input::day(date.as_deref())?;
             let r = views::reconciled(&s.books, &account, &commodity, date, balance);
             emit(cli.json, &r, || {
-                let mut out = format!("{account} at {date} ({commodity})\n  cleared               {:>14}\n", r.cleared.text(" "));
+                let mut out = format!("{account} at {date} ({commodity})\n  in the books          {:>14}\n  cleared               {:>14}\n", r.books.text(" "), r.cleared.text(" "));
                 if let (Some(st), Some(d)) = (&r.statement, &r.difference) {
                     out += &format!("  per the statement     {:>14}\n  to clear              {:>14}\n", st.text(" "), d.text(" "));
                 }
@@ -272,13 +312,16 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             let s = Store::open(&here)?;
             statement(&s, statement::vat_return(&s, &period)?, pdf, cli.json)
         }
-        Cmd::Log { last } => {
+        Cmd::Log { last, since } => {
             let s = Store::open(&here)?;
             let all = store::lines(&s.root);
+            let since = since.map(|d| input::day(Some(&d))).transpose()?.map(|d| d.to_string());
+            let skip = if since.is_some() { 0 } else { all.len().saturating_sub(last) };
             let rows: Vec<serde_json::Value> = all
                 .iter()
                 .enumerate()
-                .skip(all.len().saturating_sub(last))
+                .skip(skip)
+                .filter(|(_, l)| since.as_ref().is_none_or(|d| l["at"].as_str().unwrap_or_default().get(..10).is_some_and(|at| at >= d.as_str())))
                 .map(|(i, l)| {
                     let mut l = l.clone();
                     l["line"] = (i + 1).into();
@@ -659,4 +702,27 @@ fn mending(s: &Store) -> String {
         how.push(format!("by hand, at the line named{rest}; git log -p shows what changed there"));
     }
     format!("To mend them:\n  {}", how.join("\n  "))
+}
+
+/// What to type to get past a refusal, where what it is of says: the
+/// commands that declare, price or take out what it lacks, and the flags it
+/// wants.
+pub(crate) fn hints(r: &store::Refused) -> Vec<String> {
+    use model::Subject;
+    let mut v: Vec<String> = vec![];
+    for x in &r.0 {
+        let h = match (x.code, &x.of) {
+            ("I-A1", Subject::Account(a)) => format!("abo account add {a}"),
+            ("I-A1", Subject::Commodity(c)) => format!("abo commodity add {c} <places>"),
+            ("I-E4", Subject::Commodity(c)) => format!("abo price add <date> {c} <price> <company currency>"),
+            ("I-I1", Subject::Field("reason")) => "--vat-reason '<why no VAT is charged>'".into(),
+            ("N7", Subject::Account(a)) => format!("abo unrecord --account {a}, which takes out its latest statement"),
+            ("N8", _) => "--again, if it is another bill just like it".into(),
+            _ => continue,
+        };
+        if !v.contains(&h) {
+            v.push(h);
+        }
+    }
+    v
 }

@@ -104,7 +104,13 @@ async fn main() -> std::process::ExitCode {
             } else {
                 // A refusal says so itself; anything else, its causes on one line.
                 match e.downcast_ref::<store::Refused>() {
-                    Some(r) => eprintln!("{r}"),
+                    Some(r) => {
+                        eprintln!("{r}");
+                        let try_ = cli::hints(r);
+                        if !try_.is_empty() {
+                            eprintln!("Try:\n  {}", try_.join("\n  "));
+                        }
+                    }
                     None => eprintln!("Error: {e:#}"),
                 }
             }

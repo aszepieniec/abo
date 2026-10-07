@@ -805,8 +805,8 @@ Violations the books held before the operation are kept as `check` says them.
 | `unrecord(account, commodity)` | removes the latest statement of the account in the commodity; an earlier one cannot go, since later ones count what it cleared (I-S3) |
 | `config_set(key, value)`, `config_unset(key)` | `config` (§5.2) |
 | `company(name?, address?, country?, tax_id?)` | the company's details given, trimmed; a payment option held in its old name is held in its new one |
-| `option_add(id, option)` | a payment option, in its canonical form (an IBAN in groups of four, a BIC in capitals, lines without blank ones); refused if the id is taken |
-| `option_edit(id, new_id?, change)` | the option `id`, renamed `new_id`, with each field `change` gives; another kind keeps only what every kind has, a label or account that was the old kind's default becoming the new one's; refused if `id` names none or `new_id` is taken |
+| `option_add(id, option)` | a payment option, in its canonical form (an IBAN in groups of four, a BIC in capitals, lines without blank ones), and the account it names, declared if it is not, as `init` declares it; refused if the id is taken |
+| `option_edit(id, new_id?, change)` | the option `id`, renamed `new_id`, with each field `change` gives, and its account declared as `option_add` does; another kind keeps only what every kind has, a label or account that was the old kind's default becoming the new one's; refused if `id` names none or `new_id` is taken |
 | `option_remove(id)` | the option `id`; refused if it names none |
 | `account_add(account)`, `account_remove(account)` | `accounts` |
 | `commodity_add(commodity, places)`, `commodity_remove(commodity)` | `commodities` |

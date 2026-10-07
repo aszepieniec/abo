@@ -60,7 +60,9 @@ pub(crate) struct InitFlags {
     pub(crate) tax_id: Option<String>,
     #[arg(long)]
     pub(crate) currency: Option<String>,
-    /// effective, flat or none.
+    /// How VAT is accounted for. effective: VAT charged and paid is booked
+    /// apart, as output and input VAT; flat: a flat rate of gross turnover
+    /// is remitted; none: not VAT registered.
     #[arg(long = "vat")]
     pub(crate) method: Option<String>,
     /// Effective: the input VAT account.
@@ -83,7 +85,10 @@ pub(crate) struct InitFlags {
     #[arg(long)]
     pub(crate) git_email: Option<String>,
     /// A payment option, as a TOML inline table of its fields: `{ kind =
-    /// "bank", iban = "CH93 0076 2011 6238 5295 7" }`. Repeatable.
+    /// "bank", iban = "CH93 0076 2011 6238 5295 7" }`. Repeatable. The
+    /// fields are those of `abo payment-options add`: kind, id, label,
+    /// holder, iban, bic, bank, network, address, details, account; bank and
+    /// details take one line, or a list of them.
     #[arg(long = "payment")]
     pub(crate) payment: Vec<String>,
 }
@@ -144,7 +149,7 @@ pub(crate) struct OptionParts {
     pub(crate) address: Option<String>,
     /// A further line invoices print, such as an account number or where to
     /// pay cash. Repeatable.
-    #[arg(long = "detail")]
+    #[arg(long = "details", alias = "detail")]
     pub(crate) details: Vec<String>,
     /// The declared account money paid this way arrives in. Adding, it
     /// defaults to Assets:Bank, Assets:Cash or Assets:Crypto by kind.
@@ -200,7 +205,9 @@ pub(crate) enum ConfigCmd {
     /// One key's value.
     Get { key: String },
     /// Set a key: a table's keys together as `{ name = value, ... }`, a
-    /// whole number where the key takes one, else text.
+    /// whole number where the key takes one, else text. To close a period,
+    /// so that nothing dated on or before it changes:
+    /// `abo config set company.closed_through 2026-06-30`.
     Set {
         key: String,
         #[arg(allow_hyphen_values = true)]
@@ -235,15 +242,29 @@ pub(crate) enum PriceCmd {
     /// The prices. The same as no subcommand.
     List,
     /// What one unit of CODE was worth on DATE: `2026-09-30 BTC 60000.00 EUR`.
+    /// An invoice in another commodity is booked at the latest price on or
+    /// before its date.
     Add {
+        /// The day it was worth that.
         date: String,
+        /// The commodity priced, such as USD.
         code: String,
+        /// What one unit was worth, and in what: `0.92 EUR`. The commodity
+        /// defaults to the company currency.
         #[arg(num_args = 1..=2, required = true)]
         price: Vec<String>,
     },
     /// Take out a price.
     Remove { date: String, code: String },
 }
+
+/// What `abo bal` and `abo reg` pass on to hledger, beside the query: the
+/// list `report::PASSED` holds, which a test keeps in step.
+pub(crate) const PASSED_HELP: &str = "Options passed on to hledger: -b --begin -e --end -p --period -D --daily -W --weekly -M --monthly \
+-Q --quarterly -Y --yearly --depth -V --market -B --cost -X --exchange --value -O --output-format -E --empty -R --real \
+-U --unmarked -P --pending -C --cleared -H --historical -A --average -T --row-total -N --no-total --flat --tree --layout. \
+abo reads these books alone: any other option is refused. A statement clears postings in abo's own tags, not hledger's \
+cleared mark, so --cleared says nothing of reconciling.";
 
 #[derive(Subcommand)]
 pub(crate) enum Cmd {
@@ -294,9 +315,11 @@ pub(crate) enum Cmd {
     /// Take out a document filed by mistake, by its path or hash: one no
     /// bill names.
     Unfile { document: String },
-    /// hledger balance.
-    #[command(alias = "balance")]
+    /// hledger balance, of these books: `abo bal Expenses -M -p 2026`.
+    #[command(alias = "balance", after_help = PASSED_HELP)]
     Bal {
+        /// An hledger query: account names, desc:WORD, date:2026; and the
+        /// options below.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -319,9 +342,10 @@ pub(crate) enum Cmd {
     },
     /// Issue an invoice: render the PDF and book the receivable.
     Invoice {
-        /// Customer name and address. Use \n between lines.
-        #[arg(long)]
-        to: String,
+        /// The customer's name, then a line of their address each: repeatable,
+        /// as `--to 'Nordlicht AG' --to 'Seestrasse 12' --to '8002 Zurich'`.
+        #[arg(long, required = true)]
+        to: Vec<String>,
         /// `quantity|unit price|description`, repeatable; a negative quantity,
         /// such as a discount's, as it is: `--item -1|20|Discount`.
         #[arg(long = "item", allow_hyphen_values = true)]
@@ -357,6 +381,7 @@ pub(crate) enum Cmd {
     /// Profit and loss for a period.
     Pl {
         /// An hledger period expression, e.g. 2026, 2026q1, "last month".
+        /// Without one, all time.
         #[arg(long, default_value = "")]
         period: String,
         /// Also write a PDF here.
@@ -368,13 +393,17 @@ pub(crate) enum Cmd {
         /// Defaults to today.
         #[arg(long)]
         date: Option<String>,
+        /// Also write a PDF here.
         #[arg(long)]
         pdf: Option<PathBuf>,
     },
     /// Tax return for a period, from the report.vat boxes of abo.toml.
     Vat {
+        /// An hledger period expression, e.g. 2026q3, "last quarter".
+        /// Without one, all time.
         #[arg(long, default_value = "")]
         period: String,
+        /// Also write a PDF here.
         #[arg(long)]
         pdf: Option<PathBuf>,
     },
@@ -393,8 +422,10 @@ pub(crate) enum Cmd {
         #[arg(long, allow_hyphen_values = true)]
         balance: Option<Decimal>,
     },
-    /// Record a bank statement: its balance, and the postings it shows, as
-    /// `ENTRY.N`.
+    /// Record a statement (a bank's, a wallet's, a count of the cash box):
+    /// its closing balance, and the postings it shows, as `ENTRY.N` from
+    /// `abo reconcile`. Once recorded, nothing is booked to the account on or
+    /// before its date.
     Record {
         #[arg(long, default_value = "Assets:Bank")]
         account: String,
@@ -404,17 +435,21 @@ pub(crate) enum Cmd {
         /// Defaults to today.
         #[arg(long)]
         date: Option<String>,
+        /// The closing balance printed on the statement, or counted.
         #[arg(long, allow_hyphen_values = true)]
         balance: Decimal,
         /// Every posting to it not yet cleared, dated on or before it.
         #[arg(long)]
         all: bool,
+        /// The postings the statement shows, as `ENTRY.N`.
         clears: Vec<String>,
     },
-    /// Take out an account's latest statement.
+    /// Take out an account's latest statement: of Assets:Bank, unless
+    /// --account names another.
     Unrecord {
         #[arg(long, default_value = "Assets:Bank")]
         account: String,
+        /// Defaults to the company currency.
         #[arg(long)]
         commodity: Option<String>,
     },
@@ -425,7 +460,8 @@ pub(crate) enum Cmd {
         /// Defaults to what it has open.
         #[arg(long, allow_hyphen_values = true)]
         amount: Option<Decimal>,
-        /// The money account. Defaults to the first payment option's.
+        /// The money account it is paid from, or, for an invoice, into.
+        /// Defaults to the first payment option's.
         #[arg(long)]
         from: Option<String>,
         /// What was paid, when in another commodity than the debt's:
@@ -436,19 +472,29 @@ pub(crate) enum Cmd {
         #[arg(long)]
         date: Option<String>,
     },
-    /// Write off what a debt has open, to an account for it.
+    /// Write off what a debt has open, to an account for it: what a customer
+    /// never pays, to an expense; what a supplier forgives, to income.
     WriteOff {
+        /// A bill's id, or an invoice's number.
         debt: String,
+        /// The account it is written off to: an expense account for an
+        /// invoice, an income account for a bill.
         #[arg(long)]
         to: String,
+        /// Defaults to today.
         #[arg(long)]
         date: Option<String>,
     },
     /// The latest changes from the log, oldest first, the last change at the
     /// foot, as a terminal shows the end.
     Log {
+        /// How many of the latest changes to show.
         #[arg(long, default_value_t = 20)]
         last: usize,
+        /// Only the changes made on or after this day, such as today's:
+        /// --since 2026-10-07. Then --last is not counted.
+        #[arg(long)]
+        since: Option<String>,
     },
     /// Take back abo's last change, while nothing has happened since; again,
     /// and it is made again.
@@ -489,6 +535,20 @@ pub(crate) enum Cmd {
         #[arg(long)]
         open: bool,
     },
+    /// Every bill: its id, which `pay`, `write-off` and `revert` take, what it
+    /// owes and what is open; then the documents filed and not booked yet,
+    /// which `abo bill --document` books.
+    Bills {
+        /// Only those with something open.
+        #[arg(long)]
+        open: bool,
+    },
+    /// Find entries, with the ids `revert` and `pay` take: those whose
+    /// description or an account they post to holds every word given, case
+    /// aside; every entry, given none.
+    Entries {
+        words: Vec<String>,
+    },
     /// Book the opposite of an entry, by its id, or an invoice's number.
     Revert {
         /// Defaults to today.
@@ -496,7 +556,9 @@ pub(crate) enum Cmd {
         date: Option<String>,
         entry: String,
     },
-    /// The configuration, read and changed by keys named as in abo.toml.
+    /// The configuration, read and changed by keys named as in abo.toml:
+    /// company.closed_through closes a period, invoice.terms_days sets the
+    /// payment terms, report.vat.<code> a box of the tax return.
     Config {
         #[command(subcommand)]
         change: Option<ConfigCmd>,
@@ -530,9 +592,12 @@ pub(crate) enum Cmd {
         #[arg(long, default_value_t = 8801)]
         port: u16,
     },
-    /// hledger register.
-    #[command(alias = "register")]
+    /// hledger register, of these books: `abo reg Expenses:Hosting -p 2026`.
+    /// `abo entries` finds an entry's id.
+    #[command(alias = "register", after_help = PASSED_HELP)]
     Reg {
+        /// An hledger query: account names, desc:WORD, date:2026; and the
+        /// options below.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -552,8 +617,14 @@ fn payment_flag(s: &str, prefix: &str) -> Result<questions::Answers> {
             if !fields.contains(&k.as_str()) {
                 anyhow::bail!("--payment {s}: {k:?} is not one of {}", fields.join(", "));
             }
-            let v = v.as_str().with_context(|| format!("--payment {s}: {k} is not a string"))?;
-            Ok((format!("{prefix}{k}"), v.to_string()))
+            // Lines, for bank and details: one, or a list.
+            let v = match v {
+                toml::Value::Array(lines) if matches!(k.as_str(), "bank" | "details") => {
+                    lines.iter().map(|l| l.as_str().map(String::from)).collect::<Option<Vec<_>>>().with_context(|| format!("--payment {s}: {k} is not a list of lines"))?.join("\n")
+                }
+                v => v.as_str().with_context(|| format!("--payment {s}: {k} is not a string"))?.to_string(),
+            };
+            Ok((format!("{prefix}{k}"), v))
         })
         .collect()
 }

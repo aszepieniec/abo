@@ -38,9 +38,11 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
             a.extend(postings.iter().map(posting));
         }
         Op::Invoice { date, customer, commodity, lines, rate, reason, reference, note, more, .. } => {
-            // ponytail: a customer's line break is written `\n`, as --to takes it;
-            // a customer that types `\n` itself is read back as a break.
-            a = vec![s("invoice"), flag("date", date), flag("to", &customer.replace('\n', "\\n")), flag("currency", commodity)];
+            // A line of the customer each. ponytail: a `\n` typed within a
+            // line is read back as a break, as logs written before have it.
+            a = vec![s("invoice"), flag("date", date)];
+            a.extend(customer.split('\n').map(|l| flag("to", &l)));
+            a.push(flag("currency", commodity));
             if let Some(r) = rate {
                 a.push(flag("vat-rate", r));
             }
@@ -173,7 +175,7 @@ fn option_flags(words: &[&str], c: &OptionChange, all: bool) -> Vec<String> {
     let one = [("kind", &kind), ("label", &c.label), ("holder", &c.holder), ("iban", &c.iban), ("bic", &c.bic), ("network", &c.network), ("address", &c.address), ("account", &c.account)];
     flags.extend(one.into_iter().filter_map(|(k, v)| v.clone().map(|v| (k, v))));
     // Repeatable: a line each, and given empty, none.
-    for (k, v) in [("bank", &c.bank), ("detail", &c.details)] {
+    for (k, v) in [("bank", &c.bank), ("details", &c.details)] {
         if let Some(v) = v {
             flags.extend(v.lines().map(|l| (k, l.to_string())));
             if v.is_empty() {

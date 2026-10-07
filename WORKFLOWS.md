@@ -129,15 +129,17 @@ method is; then the questions for the kind chosen, each answer starting on the
 line as most would give it (the company as holder, "Bank transfer" as the
 name, the kind as the id). `... add <id> --kind ... --iban ... --bic ...
 --bank ... --network ... --address ... --detail ... --label ... --account ...`
-answers the same questions from its flags: what is not given is what they
+answers the same questions from its flags (`--details` and `--bank` a
+line each, as `init --payment` takes them a line or a list): what is not given is what they
 offer, as a blank answer is (the company as holder, "Bank transfer" as the
 name), a flag of another kind is refused, and every problem is said at once. `... edit <id>` asks again, each answer on the line
 as it stands, or changes just the parts given as flags (and `--id`); another
 kind drops the old kind's fields. `... remove <id>` removes one. Wherever an
 id is asked for, its start will do when it names one option. A taken id, a
 bad IBAN or BIC, a field of another kind, too little to pay by (a cash
-option without its lines among it), a control character, an undeclared
-account or one that is no asset are refused; asked on the terminal, the
+option without its lines among it), a control character, or an account
+that is no asset are refused; an account not declared yet is declared
+along with the option, as init declares it; asked on the terminal, the
 question comes again. An edit that changes nothing makes no commit. Each
 change is a commit to `abo.toml`, written as abo writes it (a comment there is
 a change no abo command made, and refused as one), logged and undoable like
@@ -183,7 +185,9 @@ a document, must be the document's date.
 
 ### B3. The same bill twice — Supported
 Filing a document already filed is refused; booking a document a standing
-bill has is refused (MODEL.md I-B1).
+bill has is refused (MODEL.md I-B1); so is a bill with the date and the
+postings of a standing one, document or not, unless it is said to be
+another — `abo bill --again`, or the checkbox on the form (N8).
 
 ### B4. Pay a bill, or receive an invoice's payment — Supported (browser, CLI)
 A payment names the one bill or invoice it pays, by its id; whether that is
@@ -200,6 +204,8 @@ an account that is no money account, a date before the debt's.
 **Bills** lists every bill and every document not booked yet, newest first,
 each with its amount, what is open and where it stands; **Pay**, **Upload** for
 a document the books lack, **Book it** and **Delete** for one not booked.
+CLI: `abo bills [--open] [--json]`, each bill with its id, which `pay`,
+`write-off` and `revert` take, and the documents filed and not booked.
 
 ### B5. Write off what will not be paid — Supported (browser, CLI)
 What a customer will never pay, or a supplier forgave. Browser: **Write off**
@@ -214,7 +220,7 @@ an income account; a write-off moves no money, so another account is refused
 ## C. Invoicing
 
 ### C1. Issue an invoice — Supported (browser, CLI)
-**Issue an invoice**: customer, one line per item
+**Issue an invoice**: customer (`--to` a line each, name first), one line per item
 (`quantity|unit price|description`), optionally date, VAT rate, commodity,
 the customer's tax number (printed under their address), why no VAT is
 charged, which payment options it prints, their reference and a note. CLI:
@@ -255,9 +261,14 @@ invoice's page lists what paid it, and what is open.
 
 ### C3. Invoice in another commodity — Supported
 The commodity field (`--currency`), declared with its places; the invoice is
-stated to those. Its VAT is stated in the company's currency too, at the
-latest price on or before its date, which it keeps.
-**Done when** the entry and the PDF are in that commodity.
+stated to those. It needs a price of its commodity in the company's
+currency on or before its date, which it keeps: its VAT is stated in the
+company's currency at it, and its entry booked at it (MODEL.md I-E4).
+**Done when** the PDF is in that commodity, and the entry has the
+receivable in it at its cost in the company's currency, and income and VAT
+in the company's currency; a bill owed in another commodity likewise has
+its expense in the company's currency, and what is owed at its cost. So
+profit and loss is one amount.
 
 ---
 
@@ -269,12 +280,15 @@ the statement. Tick every posting the statement shows and **Record the
 statement**; **Take out the statement** takes out the latest. CLI: `abo
 reconcile` to see, `abo record --balance <b> <ENTRY.N…>` (or `--all`), `abo
 unrecord`. **Show** updates the figures without changing anything.
+`abo reconcile` shows the balance in the books beside what is cleared.
 **Done when** the statement is recorded with the postings it clears, as one
 commit, and its balance is what they and the earlier statements clear (MODEL.md
 I-S3); when every posting to it on or before its date is cleared, the journal
 asserts the balance for hledger to check too. Refused: a balance that is not
 what is cleared, a posting cleared twice or to another account, a statement in
-a closed period.
+a closed period. Once it is recorded, nothing is booked to the account in its
+commodity on or before its date (N7): dated after it, or the statement taken
+out first.
 
 ### D2. Reconcile cash or a wallet — Supported (as D1)
 Any asset account and any commodity.
@@ -323,7 +337,8 @@ neither does any report abo makes.
 made it, with every default it used written out; reads and refusals change
 nothing and are not there. Each opens to the command and the diff its commit
 made, documents shown as binary. The last 50 show, and **Show all** the rest.
-CLI: `abo log`.
+CLI: `abo log` (`--since <date>` for a day's changes), and `abo entries
+<words>` to find an entry and its id.
 **Done when** the last change appears as a command that, typed, would make it
 again.
 
@@ -372,7 +387,7 @@ one cancelled already, and a credit note.
 before it is added, no document there filed or taken out, and no statement
 or price there added or taken out; the date only moves forward (MODEL.md N2,
 N6). Setting it is a change like any other: while it is the last, Undo takes
-it back, for a date typed wrong.
+it back, for a date typed wrong, as the refusal to move it back says.
 
 ---
 
@@ -397,7 +412,34 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 ---
 
-## Last verified: 2026-10-04
+## CLI run of 2026-10-07: found and fixed, not yet run again
+
+The first run of SCENARIOS.md, the command line alone: four fresh agents
+with a shell, the books and no source, judged on the books afterwards. Not
+clean: each got stuck somewhere. Each fault has a test in
+`tests/regressions.rs`, under "the CLI run of 2026-10-07". Its output held
+to ASCII throughout.
+
+| Workflow | Found, fixed |
+|---|---|
+| C1, C3, E1, E2 | An invoice in USD was booked in USD, so profit and loss and the balance sheet came out in two currencies while the tax return converted. Income and expenses are now in the company's currency (I-E4), an invoice in another commodity always priced, and booked at that price |
+| D1, F7 | A reversal dated back to May went under two recorded statements and took the assertion off the first; nothing is now booked on or before a statement of its account (N7) |
+| B3 | The same bill, without its document, was booked twice without a word; now only with `--again` (N8) |
+| F6 | The refusal to move a closing date back said the books "stay closed", where undo reopens them while it is the last change; it now says so |
+| (S26) | Hand edits: `abo tidy` committed an entry that did not balance and called it tidied; declaring an account in use was refused for the very problem it mended; a report blamed its period, or showed hledger's command line; `abo check` named no line, abo.toml's error no line; a canonical hand edit was "nothing to tidy" while every change stayed refused for it |
+| B2, B4 | No CLI list of bills, their ids and what is open, nor of documents filed and not booked: `abo bills` |
+| F1, F7 | No command showed an entry's id: `abo entries`; no day to start the log from: `abo log --since` |
+| A1 | Without a terminal, init printed only its questions of several lines |
+| A4 | A crypto option's default account was refused as undeclared; an option's account is now declared with it. `--detail` is `--details`, as abo.toml has it, and init's `--payment` takes a list of lines |
+| C1 | `--to` took `\n` within one argument; now a line each, as `--address` |
+| D2 | `abo reconcile` never showed the book balance |
+| (all) | Refusals said what was wrong and not what to type: they now end with the command or flag that puts it right; paying a settled bill said "the amount must be above nought". Help: closing a period, write-off's account, price, record and unrecord's arguments, the options bal and reg pass on, a report's default period |
+
+Left as they are: an entry's id is its place among the entries, so an
+undone entry's id is the next one's (MODEL.md §2.1: only appended, undo
+removes the last); `reg --json` is hledger's JSON, not abo's.
+
+## Verified: 2026-10-04
 
 A fifth run, after the CLI and the web moved onto the model: four fresh agents,
 working from this file as before. Each fault found has a test in

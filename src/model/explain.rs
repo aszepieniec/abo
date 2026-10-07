@@ -211,8 +211,16 @@ pub fn explain(m: &Books, op: &Op, n: &Books, v: Vec<Violation>) -> Vec<Violatio
         if said.is_empty() {
             said = these.iter().map(|x| x.what.clone()).collect();
         }
-        for what in said {
-            let x = Violation::new(code, what);
+        // Said one for one, each keeps what it is of, for whoever words it again.
+        let of: Vec<Subject> = match (code, op) {
+            // What is missing is the commodity's price, or the reason.
+            ("I-E4", Op::Invoice { commodity, .. }) => vec![Subject::Commodity(commodity.clone()); said.len()],
+            ("I-I1", Op::Invoice { .. }) => said.iter().map(|w| if w.ends_with("say why no VAT is charged") { Subject::Field("reason") } else { Subject::None }).collect(),
+            _ if said.len() == these.len() => these.iter().map(|x| x.of.clone()).collect(),
+            _ => vec![Subject::None; said.len()],
+        };
+        for (what, of) in said.into_iter().zip(of) {
+            let x = Violation { code, what, of };
             if !out.contains(&x) {
                 out.push(x);
             }
@@ -348,6 +356,7 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                     .map(|p| format!("{} is posted {}; income and expenses are in the company currency, {home}: post it in {home}, and what is owed or paid in {} at its cost in {home}", p.account, amount(m, p.amount.quantity, &p.amount.commodity), p.amount.commodity))
                     .collect(),
                 (Op::WriteOff { debt, .. }, _) => vec![format!("{} is owed in another commodity than {home}, at no cost in {home}, so what is written off cannot be put in {home}", name(m, *debt))],
+                (Op::Invoice { commodity, date, .. }, _) => vec![format!("no price of {commodity} in {home} on or before {date}: an invoice in {commodity} is booked in {home}, at the latest price on or before its date")],
                 _ => vec![],
             }
         }
@@ -434,7 +443,7 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                     InvoiceVat::Exempt { reason } => Some(reason.as_str()),
                     _ => None,
                 };
-                let reason = |r: &str| if r.trim().is_empty() { "at 0% VAT, say why" } else { "the reason for 0% VAT holds a hidden character" };
+                let reason = |r: &str| if r.trim().is_empty() { "at 0% VAT, say why no VAT is charged" } else { "the reason for 0% VAT holds a hidden character" };
                 let texts = c.lines.iter().map(|l| l.description.as_str()).chain([c.reference.as_str()]).chain(c.pay_to.iter().flat_map(|p| p.lines.iter().chain([&p.label]).map(String::as_str)));
                 let said = if c.lines.is_empty() {
                     "an invoice needs a line".to_string()
@@ -485,6 +494,7 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
         }
         "I-P1" => match op {
             Op::Pay { debt, .. } | Op::WriteOff { debt, .. } if m_standing.get(*debt) == Some(&false) => vec![gone(m, *debt)],
+            Op::Pay { debt, .. } if m.debt(*debt).is_some() && m.open(*debt, &m_standing).is_zero() => vec![format!("{} is settled: nothing is open", name(m, *debt))],
             Op::Pay { .. } => vec!["the amount must be above nought".into()],
             _ => vec![],
         },

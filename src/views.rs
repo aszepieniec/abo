@@ -108,6 +108,8 @@ pub struct Reconciled {
     pub commodity: String,
     pub date: String,
     pub cleared: Amount,
+    /// The account's balance in the books on that date, cleared or not.
+    pub books: Amount,
     /// The balance the statement gives, if one was given; and what is then
     /// left to clear.
     pub statement: Option<Amount>,
@@ -133,6 +135,7 @@ pub fn reconciled(b: &Books, account: &str, commodity: &str, date: model::Date, 
     // By date, as a statement lists them.
     ps.sort_by_key(|(r, d, _)| (*d, r.entry, r.n));
     let done: Decimal = ps.iter().filter(|(r, ..)| cleared.contains(r)).map(|(_, _, p)| p.amount.quantity).sum();
+    let all: Decimal = ps.iter().map(|(_, _, p)| p.amount.quantity).sum();
     let outstanding = ps
         .iter()
         .filter(|(r, ..)| !cleared.contains(r))
@@ -143,6 +146,7 @@ pub fn reconciled(b: &Books, account: &str, commodity: &str, date: model::Date, 
         commodity: commodity.into(),
         date: date.to_string(),
         cleared: money(done),
+        books: money(all),
         statement: balance.map(money),
         difference: balance.map(|s| money(s - done)),
         outstanding,
@@ -162,3 +166,83 @@ pub struct Issued {
     pub warnings: Vec<String>,
 }
 
+
+#[derive(serde::Serialize)]
+pub struct BillRow {
+    /// Its id, which `pay`, `write-off` and `revert` take.
+    pub entry: usize,
+    pub date: String,
+    pub description: String,
+    pub owed: Amount,
+    pub open: Amount,
+    /// open, part paid, settled or cancelled.
+    pub status: &'static str,
+    /// Its document's path, if one is filed for it.
+    pub document: Option<String>,
+}
+
+/// Every bill, in the order they were booked.
+pub fn bills(b: &Books) -> Vec<BillRow> {
+    let standing = b.standing();
+    (1..=b.entries.len())
+        .filter(|&id| matches!(b.entries[id - 1].kind, model::Kind::Bill(_)))
+        .filter_map(|id| {
+            let d = b.debt(id)?;
+            let e = &b.entries[id - 1];
+            Some(BillRow {
+                entry: id,
+                date: e.date.to_string(),
+                description: e.description.clone(),
+                owed: Amount::new(b, d.owed.quantity, &d.owed.commodity),
+                open: Amount::new(b, b.open(id, &standing), &d.owed.commodity),
+                status: b.status(id, &standing).map_or("", model::Status::word),
+                document: b.document_of(id).map(|(h, doc)| doc.path(h)),
+            })
+        })
+        .collect()
+}
+
+/// The documents filed and not booked: none names a bill that stands.
+pub fn waiting(b: &Books) -> Vec<String> {
+    let standing = b.standing();
+    b.documents.iter().filter(|(_, d)| d.of.is_none_or(|of| !standing[of])).map(|(h, d)| d.path(h)).collect()
+}
+
+#[derive(serde::Serialize)]
+pub struct EntryRow {
+    pub entry: usize,
+    pub date: String,
+    pub description: String,
+    /// What it moves: the sum of its debits, in each commodity.
+    pub amount: Vec<Amount>,
+    /// Reversed by a standing entry, or a credit note.
+    pub reversed: bool,
+}
+
+/// The entries whose description or an account posted to holds each of
+/// `words`, case aside; every entry, given none.
+pub fn entries(b: &Books, words: &[String]) -> Vec<EntryRow> {
+    let standing = b.standing();
+    let words: Vec<String> = words.iter().map(|w| w.to_lowercase()).collect();
+    (1..=b.entries.len())
+        .filter_map(|id| {
+            let e = &b.entries[id - 1];
+            let ps = b.postings(id);
+            let text = std::iter::once(e.description.as_str()).chain(ps.iter().map(|p| p.account.as_str())).collect::<Vec<_>>().join(" ").to_lowercase();
+            if !words.iter().all(|w| text.contains(w.as_str())) {
+                return None;
+            }
+            let mut debits: std::collections::BTreeMap<&str, Decimal> = Default::default();
+            for p in ps.iter().filter(|p| p.amount.quantity > Decimal::ZERO) {
+                *debits.entry(&p.amount.commodity).or_default() += p.amount.quantity;
+            }
+            Some(EntryRow {
+                entry: id,
+                date: e.date.to_string(),
+                description: e.description.clone(),
+                amount: debits.iter().map(|(c, q)| Amount::new(b, *q, c)).collect(),
+                reversed: !standing[id],
+            })
+        })
+        .collect()
+}

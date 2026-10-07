@@ -6,4 +6,6 @@ mod prompt;
 mod run;
 
 pub(crate) use args::Cli;
-pub(crate) use run::run;
+#[cfg(test)]
+pub(crate) use args::PASSED_HELP;
+pub(crate) use run::{hints, run};

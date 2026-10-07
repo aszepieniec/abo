@@ -618,7 +618,13 @@ fn each_operation_changes_only_its_part(#[strategy(plan())] plan: Vec<Step>) {
             Op::Unfile { .. } => (&["documents"], -grows(m.documents.len(), n.documents.len())),
             Op::Record { .. } => (&["statements"], grows(m.statements.len(), n.statements.len())),
             Op::Unrecord { .. } => (&["statements"], -grows(m.statements.len(), n.statements.len())),
-            Op::ConfigSet { .. } | Op::ConfigUnset { .. } | Op::Company { .. } | Op::OptionAdd { .. } | Op::OptionEdit { .. } | Op::OptionRemove { .. } => (&["config"], 1),
+            Op::ConfigSet { .. } | Op::ConfigUnset { .. } | Op::Company { .. } | Op::OptionRemove { .. } => (&["config"], 1),
+            // An option's account is declared along with it, if it is not.
+            Op::OptionAdd { .. } | Op::OptionEdit { .. } => {
+                let new: Vec<_> = n.accounts.difference(&m.accounts).collect();
+                prop_assert!(m.accounts.is_subset(&n.accounts) && new.iter().all(|a| n.config.payment.values().any(|o| &&o.account == a)), "{:?} declared {:?}", op, new);
+                (&["config", "accounts"], 1)
+            }
             Op::AccountAdd(_) => (&["accounts"], grows(m.accounts.len(), n.accounts.len())),
             Op::AccountRemove(_) => (&["accounts"], -grows(m.accounts.len(), n.accounts.len())),
             Op::CommodityAdd(..) => (&["commodities"], grows(m.commodities.len(), n.commodities.len())),

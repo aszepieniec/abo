@@ -397,7 +397,7 @@ pub static OPTION: &[Q] = &[
                 label: "Account the money arrives in",
                 hint: "",
                 offer: Offer::From("Assets:Bank, Assets:Cash or Assets:Crypto, by kind", |env| env.kind().account().to_string()),
-                check: Check::By(account_check),
+                check: Check::By(|s, _| answer::account(s).and_then(|a| if model::class(&a) == "Assets" { Ok(a) } else { Err(format!("{a} is not an account money arrives in: an asset.")) })),
             },
         ],
     },
@@ -428,7 +428,7 @@ fn account_check(s: &str, env: &Env) -> Result<String, String> {
     let a = answer::account(s)?;
     match &env.context.declared {
         Some(d) if !d.contains(&a) => {
-            Err(format!("{a} is not declared; declare it first (under Declarations, or abo account add {a}), or choose another."))
+            Err(format!("{a} is not declared; declare it first, or choose another."))
         }
         _ => Ok(a),
     }

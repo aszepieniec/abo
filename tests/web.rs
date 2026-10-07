@@ -321,9 +321,9 @@ fn company_page() {
     assert_eq!((c["company"]["address"].as_str(), c["company"]["country"].as_str()), (Some("1 Street"), Some("CH")));
 
     // Refused answers say why under their fields, and nothing is added.
-    let (status, _, page) = http(&s, "POST", "/company/payment", &[("token", "p0"), ("was", ""), ("kind", "crypto"), ("account", "Assets:Nope")]);
+    let (status, _, page) = http(&s, "POST", "/company/payment", &[("token", "p0"), ("was", ""), ("kind", "crypto"), ("account", "Expenses:Nope")]);
     assert_eq!(status, 422);
-    assert!(page.contains("A network is needed") && page.contains("Assets:Nope is not declared"), "{page}");
+    assert!(page.contains("A network is needed") && page.contains("Expenses:Nope is not an account money arrives in"), "{page}");
 
     let add = [("token", "p1"), ("was", ""), ("kind", "cash"), ("details", "At our office")];
     let (status, to, _) = http(&s, "POST", "/company/payment", &add);

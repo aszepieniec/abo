@@ -18,11 +18,31 @@ pub(crate) fn ran_out(question: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
+/// A line typed after `prompt`, `initial` on it to change or keep: on a
+/// terminal, in a line editor, so the arrow keys move along it. Without one,
+/// the prompt is printed all the same, and the answer read after it, so that
+/// whoever pipes the answers in sees what each was to.
+fn line(prompt: &str, initial: &str) -> rustyline::Result<String> {
+    use std::io::IsTerminal as _;
+    if std::io::stdin().is_terminal() {
+        return rustyline::DefaultEditor::new()?.readline_with_initial(prompt, (initial, ""));
+    }
+    print!("{prompt}");
+    std::io::stdout().flush()?;
+    let mut s = String::new();
+    if std::io::stdin().read_line(&mut s)? == 0 {
+        println!();
+        return Err(rustyline::error::ReadlineError::Eof);
+    }
+    let s = s.trim_end_matches(['\n', '\r']).to_string();
+    println!("{s}");
+    Ok(s)
+}
+
 /// The answer, or the default for a blank one; `None` for Ctrl-D.
 pub(crate) fn read(question: &str, default: &str) -> Result<Option<String>> {
     let prompt = if default.is_empty() { format!("{question}: ") } else { format!("{question} [{default}]: ") };
-    // A line editor, so the arrow keys move along what has been typed.
-    let s = match rustyline::DefaultEditor::new()?.readline(&prompt) {
+    let s = match line(&prompt, "") {
         Err(rustyline::error::ReadlineError::Eof) => return ran_out(question),
         r => r?,
     };
@@ -35,7 +55,7 @@ pub(crate) fn read(question: &str, default: &str) -> Result<Option<String>> {
 /// line, so there a blank answer keeps `now`.
 pub(crate) fn read_over(question: &str, now: &str) -> Result<Option<String>> {
     use std::io::IsTerminal as _;
-    let s = match rustyline::DefaultEditor::new()?.readline_with_initial(&format!("{question}: "), (now, "")) {
+    let s = match line(&format!("{question}: "), now) {
         Err(rustyline::error::ReadlineError::Eof) => return ran_out(question),
         r => r?,
     };
@@ -75,13 +95,12 @@ pub(crate) fn ask_until<T>(
 pub(crate) fn prompt_lines_over(question: &str, now: &[&str]) -> Result<Vec<String>> {
     use std::io::IsTerminal as _;
     println!("{question}, a line at a time; an empty line ends it:");
-    let mut editor = rustyline::DefaultEditor::new()?;
     let mut lines = vec![];
     loop {
         let now = now.get(lines.len()).copied().unwrap_or("");
         // Without a terminal there is no line to put them on.
         let now = if std::io::stdin().is_terminal() { now } else { "" };
-        match editor.readline_with_initial("  ", (now, "")) {
+        match line("  ", now) {
             Err(rustyline::error::ReadlineError::Eof) => {
                 ran_out(question)?;
                 break;

@@ -214,7 +214,9 @@ For each person: a fresh directory under the scratchpad as `$HOME`, holding
 the demo books (`abo demo --dir $BOOKS/example-ltd`, stopped once it serves);
 git's `user.name` and `user.email` set in that `$HOME`. `abo` on the PATH is a
 wrapper that runs the release build of the commit under test and appends the
-command, its exit status and everything it wrote to a log outside `$HOME`.
+command, its exit status and everything it wrote to a log outside `$HOME`,
+and waits for what it copies there before it returns: the first run's
+wrapper did not, so output came after the command had ended.
 The log is what the ASCII check and the judging read; the person does not
 know of it.
 

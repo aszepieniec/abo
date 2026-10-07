@@ -3,7 +3,7 @@
 //! condition holds of it. Undo is not here: it is the state before, which
 //! whoever holds the states keeps.
 
-use super::check::Violation;
+use super::check::{Subject, Violation};
 use super::explain::{gone, name, shown};
 use super::*;
 
@@ -104,20 +104,12 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
                 (_, r) if r.is_zero() => InvoiceVat::Exempt { reason },
                 (_, rate) => InvoiceVat::Charged { rate },
             };
-            // Booked in the company's currency (I-E4), at the latest price on
-            // or before its date. Undeclared, it is I-A1's to refuse, not the
-            // price's.
-            let home = (commodity != c.company.currency && m.commodities.contains_key(&commodity))
-                .then(|| {
-                    let from = (commodity.clone(), Date::MIN);
-                    m.prices
-                        .range(from..=(commodity.clone(), date))
-                        .rev()
-                        .find(|(_, p)| p.commodity == c.company.currency)
-                        .map(|((_, d), p)| Price { date: *d, price: p.clone() })
-                        .ok_or(format!("no price of {commodity} in {} on or before {date}", c.company.currency))
-                })
-                .transpose()?;
+            // Booked in the company's currency, at the latest price on or
+            // before its date; with none, I-E4 refuses it.
+            let home = (commodity != c.company.currency)
+                .then(|| m.prices.range((commodity.clone(), Date::MIN)..=(commodity.clone(), date)).rev().find(|(_, p)| p.commodity == c.company.currency))
+                .flatten()
+                .map(|((_, d), p)| Price { date: *d, price: p.clone() });
             let output = match (&c.vat, &vat) {
                 (Vat::Effective { output, .. }, InvoiceVat::Charged { .. }) => Some(output.clone()),
                 _ => None,
@@ -170,7 +162,7 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
         Op::Revert { entry: id, date } => n.entries.push(entry(date, format!("Revert {}", about(id)?), Kind::Reversal { of: id })),
         Op::Record { account, commodity, date, balance, clears } => {
             if n.statements.insert((account.clone(), commodity.clone(), date), Statement { balance, clears }).is_some() {
-                return Err(format!("there is a statement of {account} in {commodity} on {date} already"));
+                return Err(format!("there is a statement of {account} in {commodity} on {date} already; to record it again, take it out first"));
             }
         }
         Op::Unrecord { account, commodity } => {
@@ -198,7 +190,10 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
             if n.config.payment.contains_key(&id) {
                 return Err(format!("there is a payment option {} already", shown(&id)));
             }
-            n.config.payment.insert(id, option.canonical());
+            let option = option.canonical();
+            // Declared along with it, as init declares an option's account.
+            n.accounts.insert(option.account.clone());
+            n.config.payment.insert(id, option);
         }
         Op::OptionEdit { id, new_id, change } => {
             let now = n.config.payment.remove(&id).ok_or(format!("there is no payment option {}", shown(&id)))?;
@@ -206,7 +201,9 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
             if n.config.payment.contains_key(&new) {
                 return Err(format!("there is a payment option {} already", shown(&new)));
             }
-            n.config.payment.insert(new, now.changed(change).canonical());
+            let option = now.changed(change).canonical();
+            n.accounts.insert(option.account.clone());
+            n.config.payment.insert(new, option);
         }
         Op::OptionRemove { id } => drop(n.config.payment.remove(&id).ok_or(format!("there is no payment option {}", shown(&id)))?),
         Op::ConfigUnset { key } => n.config = config_edit(&m.config, &key, None)?,
@@ -527,7 +524,7 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
         for p in n.postings(n.entries.len()) {
             let (a, c) = (p.account.clone(), p.amount.commodity.clone());
             if let Some(((_, _, d), _)) = m.statements.range((a.clone(), c.clone(), e.date)..=(a, c, Date::MAX)).next_back() {
-                no!("N7", "{} has a statement on {d}, and this is dated {}, on or before it; date it after {d}, or take the statement out first", p.account, e.date);
+                v.push(Violation { code: "N7", what: format!("{} has a statement on {d}, and this is dated {}, on or before it; date it after {d}, or take the statement out first", p.account, e.date), of: Subject::Account(p.account.clone()) });
                 break;
             }
         }

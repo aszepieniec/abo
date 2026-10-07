@@ -583,7 +583,8 @@ fn payment_options() {
     for (args, says) in [
         (&["add", "cash", "--kind", "cash", "--label", "Cash"][..], "cash is already the id of a payment option"),
         (&["add", "Wallet", "--kind", "cash", "--label", "Wallet", "--detail", "x"][..], "Wallet is not an id"),
-        (&["add", "wallet", "--kind", "crypto", "--network", "Bitcoin", "--address", "bc1q"][..], "Assets:Crypto is not declared"),
+        // An account not declared is declared with the option; one no asset is refused.
+        (&["add", "wallet", "--kind", "crypto", "--network", "Bitcoin", "--address", "bc1q", "--account", "Expenses:General"][..], "not an account money arrives in"),
         (&["add", "wallet", "--kind", "crypto", "--network", "Bitcoin", "--account", "Assets:Bank"][..], "An address is needed"),
         (&["add", "iban", "--iban", "CH93 0076 2011 6238 5295 8"][..], "its check digits do not match"),
         (&["add", "bank2", "--label", "Bank"][..], "needs an IBAN, or details"),

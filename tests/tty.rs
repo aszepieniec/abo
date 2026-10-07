@@ -301,12 +301,11 @@ fn payment_options() {
             ("Anything else", "\r"),
             ("Name on invoices: ", "\r"),
             ("Id, for abo commands: ", "\r"),
+            // Not declared yet, it is declared with the option.
             ("Account the money arrives in: ", "\r"),
-            ("Account the money arrives in: ", &format!("{CTRL_A}{CTRL_K}Assets:Cash\r")),
         ],
     );
     assert!(status.success() && restored, "add failed:\n{screen}");
-    assert!(screen.contains("Assets:Crypto is not declared"), "{screen}");
 
     let c = done(&r);
     // A table of options, keyed by id.
@@ -324,5 +323,5 @@ fn payment_options() {
     assert_eq!(wallet["label"].as_str(), Some("Bitcoin"));
     assert_eq!(wallet["network"].as_str(), Some("Bitcoin"));
     assert_eq!(wallet["address"].as_str(), Some("bc1qexample"));
-    assert_eq!(wallet["account"].as_str(), Some("Assets:Cash"));
+    assert_eq!(wallet["account"].as_str(), Some("Assets:Crypto"));
 }
