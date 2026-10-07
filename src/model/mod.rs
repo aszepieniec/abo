@@ -691,15 +691,11 @@ impl Books {
     }
 
     /// Why an invoice charges no VAT unless given a rate, if it does not:
-    /// it is in another commodity than the company's, or its customer is
-    /// known to be in another country — their tax number and the company's
-    /// each begin with a country's two letters, as EU VAT numbers do, and
-    /// the two differ.
-    pub fn untaxed(&self, commodity: &str, customer_tax_id: &str) -> Option<String> {
-        let home = &self.config.company.currency;
-        if commodity != home {
-            return Some(format!("the invoice is in {commodity}, not {home}"));
-        }
+    /// its customer is known to be in another country — their tax number
+    /// and the company's each name a country, as EU VAT numbers do, and the
+    /// two differ. The commodity it is in says nothing of where the customer
+    /// is, and does not count.
+    pub fn untaxed(&self, customer_tax_id: &str) -> Option<String> {
         match (country(customer_tax_id), country(&self.config.company.tax_id)) {
             (Some(theirs), Some(ours)) if theirs != ours => Some(format!("the customer's tax number is of {theirs}, the company's of {ours}")),
             _ => None,

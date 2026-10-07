@@ -380,13 +380,13 @@ pub(crate) enum Cmd {
         /// Payment terms. Defaults to invoice.terms_days.
         #[arg(long, allow_hyphen_values = true)]
         due_days: Option<i64>,
-        /// Percent. Defaults to none for an invoice in another currency than
-        /// the company's, or to a customer in another country: when both the
-        /// customer's tax number and the company's begin with a country's code
-        /// (as EU VAT numbers do, IE6388047V) and the two differ. To
-        /// invoice.vat_rate otherwise, a company's tax number without a
-        /// country's code included. Given, it is the rate whatever the
-        /// currency or customer.
+        /// Percent. Defaults to none for a customer known to be in another
+        /// country: when both the customer's tax number and the company's
+        /// begin with a country's code (as EU VAT numbers do, IE6388047V) and
+        /// the two differ. To invoice.vat_rate otherwise: the currency an
+        /// invoice is in says nothing of where its customer is. Given, it is
+        /// the rate whatever the customer. The invoice says which it took,
+        /// and why.
         #[arg(long, allow_hyphen_values = true)]
         vat_rate: Option<Decimal>,
         /// Commodity to invoice in. Defaults to the company currency.

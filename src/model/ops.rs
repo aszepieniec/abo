@@ -105,7 +105,7 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
         Op::Invoice { date, customer, commodity, lines, rate, reason, reference, note, pdf, more } => {
             let c = &m.config;
             // Unless given: none where the sale is known to be taxed elsewhere.
-            let rate = rate.unwrap_or_else(|| if m.untaxed(&commodity, &more.customer_tax_id).is_some() { Decimal::ZERO } else { c.invoice.vat_rate });
+            let rate = rate.unwrap_or_else(|| if m.untaxed(&more.customer_tax_id).is_some() { Decimal::ZERO } else { c.invoice.vat_rate });
             let vat = match (&c.vat, rate) {
                 (Vat::None, r) if r.is_zero() => InvoiceVat::NotRegistered,
                 (Vat::None, _) => return Err("the company is not VAT registered, so an invoice charges none".into()),

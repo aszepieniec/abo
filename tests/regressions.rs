@@ -1641,7 +1641,10 @@ fn an_invoice_abroad_charges_no_vat_unless_told() {
     let dir = base.join("abroad");
     ok(&dir, &["commodity", "add", "USD", "2"]);
     ok(&dir, &["price", "add", "2026-03-01", "USD", "0.92", "EUR"]);
-    refused(&dir, &["invoice", "--to", "H", "--item", "1|100|x", "--currency", "USD", "--date", "2026-03-01"], "the rate defaulted to 0%, as the invoice is in USD");
+    // Option b, after the eighth run: the currency says nothing of where the
+    // customer is; in USD, at home, the configured rate.
+    let said = ok(&dir, &["invoice", "--to", "H", "--item", "1|100|x", "--currency", "USD", "--date", "2026-03-01"]);
+    assert!(said.contains("VAT 10% (the configured rate: no tax number says the customer is abroad"), "{said}");
     refused(&dir, &["invoice", "--to", "B", "--item", "1|100|x", "--customer-tax-id", "IE6388047V", "--date", "2026-03-01"], "the customer's tax number is of IE, the company's of DE");
     let v = json(&dir, &["invoice", "--to", "B", "--item", "1|100|x", "--customer-tax-id", "IE6388047V", "--vat-reason", "Reverse charge", "--date", "2026-03-01"]);
     assert_eq!(v["total"]["quantity"], "100.00", "{v}");
@@ -2394,8 +2397,8 @@ fn the_splitting_hint_is_for_declaring_alone() {
 fn an_invoice_says_its_vat_rate() {
     let dir = books("vat-said", &["--tax-id", "TAX-1"]);
     let o = abo(&dir, &["invoice", "--to", "C", "--customer-tax-id", "IE6388047V", "--item", "1|100|x", "--date", "2026-03-01"]);
-    assert!(o.status.success() && String::from_utf8_lossy(&o.stdout).contains(", VAT 10%"), "{}", String::from_utf8_lossy(&o.stdout));
-    assert!(err(&o).contains("the company's (TAX-1) names none"), "{}", err(&o));
+    let said = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success() && said.contains(", VAT 10% (the configured rate: the company's tax number (TAX-1) names no country"), "{said}");
 }
 
 /// record said how the books stood, not what the statement said.

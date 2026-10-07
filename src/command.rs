@@ -51,7 +51,7 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
             a.push(flag("currency", commodity));
             // The rate it took, written out: a default follows from the
             // configuration and the company's tax number, which may change.
-            let r = rate.unwrap_or_else(|| if m.untaxed(commodity, &more.customer_tax_id).is_some() { rust_decimal::Decimal::ZERO } else { m.config.invoice.vat_rate });
+            let r = rate.unwrap_or_else(|| if m.untaxed(&more.customer_tax_id).is_some() { rust_decimal::Decimal::ZERO } else { m.config.invoice.vat_rate });
             a.push(flag("vat-rate", &r.normalize()));
             if let Some(d) = more.due_days {
                 a.push(flag("due-days", &d));

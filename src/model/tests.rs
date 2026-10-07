@@ -1552,10 +1552,11 @@ fn issuing_follows_the_configuration(#[strategy(plan())] plan: Vec<Step>, usd: b
     match (&cfg.vat, &c.vat) {
         (Vat::None, InvoiceVat::NotRegistered) => {}
         (Vat::None, v) => prop_assert!(false, "not registered, and the invoice says {:?}", v),
-        // In another commodity, none unless a rate is given; else the configured.
-        (_, InvoiceVat::Exempt { .. }) => prop_assert!(cfg.invoice.vat_rate.is_zero() || m.untaxed(commodity, "").is_some()),
+        // The configured rate, whatever the commodity: only tax numbers say
+        // a customer is abroad.
+        (_, InvoiceVat::Exempt { .. }) => prop_assert!(cfg.invoice.vat_rate.is_zero() || m.untaxed("").is_some()),
         (method, InvoiceVat::Charged { rate }) => {
-            prop_assert!(m.untaxed(commodity, "").is_none());
+            prop_assert!(m.untaxed("").is_none());
             prop_assert_eq!(*rate, cfg.invoice.vat_rate);
             let apart = matches!(method, Vat::Effective { .. });
             prop_assert_eq!(c.accounts.output.is_some(), apart);

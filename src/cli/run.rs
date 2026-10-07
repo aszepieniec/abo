@@ -758,16 +758,24 @@ pub(crate) fn issue(s: &mut Store, op: impl Fn(String) -> Op, json: bool, given:
 /// and a warning where its customer's tax number names a country and the
 /// company's names none, which the default rate cannot then tell apart.
 pub(crate) fn vat_said(b: &model::Books, c: &model::Content, given: bool) -> String {
-    if !given && model::country(&c.customer_tax_id).is_some() && model::country(&b.config.company.tax_id).is_none() && !b.config.company.tax_id.is_empty() {
-        eprintln!(
-            "Warning: the customer's tax number names a country, and the company's ({}) names none, so the VAT rate took no account of where the customer is",
-            b.config.company.tax_id
-        );
+    let rate = match &c.vat {
+        model::InvoiceVat::Charged { rate } => format!("VAT {}%", rate.normalize()),
+        _ => "no VAT".into(),
+    };
+    if matches!(c.vat, model::InvoiceVat::NotRegistered) {
+        return ", no VAT (the company is not VAT registered)".into();
     }
-    match &c.vat {
-        model::InvoiceVat::Charged { rate } => format!(", VAT {}%", rate.normalize()),
-        _ => ", no VAT".into(),
+    if given {
+        return format!(", {rate} (as given)");
     }
+    let ours = model::country(&b.config.company.tax_id);
+    let why = match (model::country(&c.customer_tax_id), ours) {
+        (Some(theirs), Some(ours)) if theirs != ours => format!("the customer's tax number is of {theirs}, the company's of {ours}"),
+        (Some(theirs), Some(_)) => format!("the configured rate: the customer's tax number is of {theirs}, as the company's"),
+        (Some(_), None) => format!("the configured rate: the company's tax number ({}) names no country, so where the customer is cannot be told", b.config.company.tax_id),
+        (None, _) => "the configured rate: no tax number says the customer is abroad".to_string(),
+    };
+    format!(", {rate} ({why}; --vat-rate gives another)")
 }
 
 /// Every key of a table, dotted, with its value.

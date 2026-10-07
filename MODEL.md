@@ -834,7 +834,7 @@ Violations the books held before the operation are kept as `check` says them.
 | `file(bytes, date, issuer, for)` | a `Document`, by the bytes' hash; `for`, when given, a `Bill` entry it is the document of |
 | `unfile(document)` | removes a `Document` that names no standing bill: one filed by mistake, or a reverted bill's |
 | `bill(document, description, postings)` | a `Bill` entry; `document`, when given — filed already, naming no bill or a reversed one — now names it |
-| `invoice(customer, lines, rate, …)` | an `Invoice` entry with its content and its PDF's hash; the accounts, terms, payment options and, in another commodity, the price, as configured and declared now. `rate`, when not given: nought for an invoice in another commodity than the company's, or to a customer whose tax number begins with another country's two capital letters than the company's does; the configured rate otherwise |
+| `invoice(customer, lines, rate, …)` | an `Invoice` entry with its content and its PDF's hash; the accounts, terms, payment options and, in another commodity, the price, as configured and declared now. `rate`, when not given: nought to a customer whose tax number names another country than the company's does (a country's code, then a digit, or `ATU`, `CHE`); the configured rate otherwise, whatever commodity the invoice is in, which says nothing of where the customer is |
 | `credit(invoice, note)` | a `CreditNote` entry, reversing the invoice, and its PDF |
 | `pay(debt, date, amount, from, cost)` | a `Payment` entry, from a money account; `cost`, what was paid, when in another commodity |
 | `write_off(debt, date, to)` | a `Payment` entry of what is open, from the account `to` |

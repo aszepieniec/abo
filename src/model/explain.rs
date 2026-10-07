@@ -469,7 +469,7 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                     _ => None,
                 };
                 let defaulted = match (op, &c.vat) {
-                    (Op::Invoice { rate: None, commodity, more, .. }, InvoiceVat::Exempt { .. }) => m.untaxed(commodity, &more.customer_tax_id),
+                    (Op::Invoice { rate: None, more, .. }, InvoiceVat::Exempt { .. }) => m.untaxed(&more.customer_tax_id),
                     _ => None,
                 };
                 let reason = |r: &str| match (&defaulted, r.trim().is_empty()) {

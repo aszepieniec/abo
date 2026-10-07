@@ -247,13 +247,14 @@ income account is refused. With no option chosen it prints them all. With
 none it says only when to pay; with one or more, "to the following" or "to
 any of the following" and each option's name and details, side by side.
 An invoice is stated to the places its commodity is declared with (A2).
-Its VAT rate, unless given: none for an invoice in another commodity than the
-company's, or to a customer known to be in another country — their tax
-number and the company's each begin with a country's two letters, as EU VAT
-numbers do, and the two differ; the configured `invoice.vat_rate` otherwise.
-`--vat-rate` (the form's VAT rate) is always the rate. At none, a
-VAT-registered company says why, and the refusal says the rate defaulted
-and why. The log writes out the rate taken. `--preview <file.pdf>` (the
+Its VAT rate, unless given: none to a customer known to be in another
+country — their tax number and the company's each name a country, as EU VAT
+numbers do, and the two differ; the configured `invoice.vat_rate`
+otherwise. The commodity it is in does not count: it says nothing of where
+the customer is. `--vat-rate` (the form's VAT rate) is always the rate. The
+invoice, and its preview, say the rate taken and why. At none, a
+VAT-registered company says why no VAT is charged, and the refusal says the
+rate defaulted and why. The log writes out the rate taken. `--preview <file.pdf>` (the
 form's **Preview**) writes the PDF it would have, with the number it would
 take, outside the books, PREVIEW across every page, and books, numbers and
 commits nothing.
@@ -467,6 +468,14 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 - **Year-end closing entries** (§12) — until then unclosed profit is a computed equity line.
 
 ---
+
+## After the eighth run: the VAT default by tax numbers alone
+
+The default VAT rate went by currency as well as tax numbers: a Polish
+customer billed in USD got none, a Swiss one billed in EUR the full rate,
+the same customer two ways by currency alone. Now tax numbers alone decide
+(none when both name countries and they differ, the configured rate
+otherwise), and every invoice and preview says the rate it took and why.
 
 ## After the eighth run: a hand edit's refusal says what and why
 
