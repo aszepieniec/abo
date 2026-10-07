@@ -1802,7 +1802,7 @@ fn bills_lists_every_bill_and_what_waits_to_be_booked() {
     std::fs::write(dir.join("scan.pdf"), b"%PDF-1.4 waiting").unwrap();
     ok(&dir, &["file", "--date", "2026-03-05", "--issuer", "Telecom", "scan.pdf"]);
     let said = ok(&dir, &["bills"]);
-    assert!(said.contains(&format!("{id:>5}  2026-03-03  Chairs")) && said.contains("part paid, 300.00 EUR open") && said.contains("bills/2026/2026-03-05-telecom-"), "{said}");
+    assert!(said.contains(&format!("{id:>5}  2026-03-03  Chairs")) && said.contains("no document") && said.contains("part paid, 300.00 EUR open") && said.contains("bills/2026/2026-03-05-telecom-"), "{said}");
     let v = json(&dir, &["bills", "--open"]);
     assert_eq!(v["bills"][0]["open"]["quantity"], "300.00", "{v}");
 }
@@ -2224,4 +2224,18 @@ fn the_invoice_forms_preview_issues_nothing() {
     assert!(head.starts_with("HTTP/1.1 200") && head.contains("application/pdf"), "{head}");
     assert_eq!(log_len(&dir), before);
     assert!(!dir.join("invoices").exists());
+}
+
+/// Fourth run: bills were listed by id, not by date, a long description
+/// pushed the amounts out of their column, and nothing said which bill had
+/// its document.
+#[test]
+fn bills_are_listed_newest_first_with_their_documents() {
+    let dir = books("bills-order", &[]);
+    let late = entry(&dir, &["bill", "--date", "2026-03-20", "--desc", "A description long enough to push every column out of line", "Expenses:General=1.00", "Liabilities:Payable=-1.00"]);
+    let early = entry(&dir, &["bill", "--date", "2026-03-01", "--desc", "Early", "Expenses:General=2.00", "Liabilities:Payable=-2.00"]);
+    let said = ok(&dir, &["bills"]);
+    let lines: Vec<&str> = said.lines().take(2).collect();
+    assert!(lines[0].starts_with(&format!("{late:>5}")) && lines[1].starts_with(&format!("{early:>5}")), "{said}");
+    assert_eq!(lines[0].find("1.00 EUR"), lines[1].find("2.00 EUR"), "{said}");
 }

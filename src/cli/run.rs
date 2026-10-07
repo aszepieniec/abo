@@ -216,14 +216,20 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 let mut out = if all.is_empty() {
                     if open { "No bill is open." } else { "No bills yet." }.to_string()
                 } else {
-                    all.iter()
-                        .rev()
+                    // Newest first, by the date on the bill; a long description
+                    // cut, so that the amounts stay in their column.
+                    let mut rows: Vec<_> = all.iter().collect();
+                    rows.sort_by(|a, b| (&b.date, b.entry).cmp(&(&a.date, a.entry)));
+                    let cut = |d: &str| if d.chars().count() > 36 { format!("{}...", d.chars().take(33).collect::<String>()) } else { d.to_string() };
+                    let lines: Vec<String> = rows
+                        .iter()
                         .map(|b| {
                             let said = if b.status == "part paid" { format!("part paid, {} open", b.open.text(" ")) } else { b.status.to_string() };
-                            format!("{:>5}  {}  {:<36}  {:>16}  {}", b.entry, b.date, b.description, b.owed.text(" "), said)
+                            let doc = if b.document.is_some() { "document" } else { "no document" };
+                            format!("{:>5}  {}  {:<36}  {:>16}  {:<11}  {}", b.entry, b.date, cut(&b.description), b.owed.text(" "), doc, said)
                         })
-                        .collect::<Vec<_>>()
-                        .join("\n")
+                        .collect();
+                    lines.join("\n")
                 };
                 if !waiting.is_empty() {
                     out += &format!("\n\nFiled, not booked yet; `abo bill --document` books one:\n  {}", waiting.join("\n  "));
