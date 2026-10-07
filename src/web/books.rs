@@ -65,24 +65,14 @@ pub(super) async fn index(Books(s): Books) -> Response {
                     a.btn.btn-primary href="/bill" { (icon("camera")) " Book a bill" }
                 }
             }
-            @if let Some(edit) = s.hand_edit().ok().flatten() {
-                div.flash.flash-error { (icon("error")) div {
-                    strong { "Changed outside abo" }
-                    (amiss(store::AmissKind::HandEdit, &edit))
-                } }
-            } @else if !s.problems.is_empty() {
-                div.flash.flash-error { (icon("error")) div {
-                    strong { "The books do not hold together" }
-                    (amiss(store::AmissKind::Problems, &format!("{}\nabo check lists them, and how each is mended; abo tidy mends what is only not as abo writes it.", s.problems.join("\n"))))
-                } }
-            }
             @if !tiles.is_empty() {
                 div.tiles {
                     @for (label, bag) in &tiles {
                         div.tile {
                             span.muted.small { (label) }
                             @for a in statement::amounts(b, bag) {
-                                span.figure { (a.quantity) " " span.muted.small { (a.commodity) } }
+                                // Grouped as the tables group them.
+                                span.figure { (model::grouped(a.quantity.parse().unwrap_or_default(), b.places(&a.commodity), &a.commodity, "\u{202f}")) " " span.muted.small { (a.commodity) } }
                             }
                         }
                     }
@@ -147,38 +137,8 @@ pub(super) fn undoable(s: &Store, n: usize) -> bool {
 /// change.
 pub(super) fn toast(s: &Store, n: usize) -> Option<Markup> {
     let line = store::lines(&s.root).into_iter().nth(n.checked_sub(1)?)?;
-    let title = match line["argv"][0].as_str().unwrap_or_default() {
-        "post" => "Booked",
-        "file" => "Filed",
-        "unfile" => "Deleted",
-        "bill" => "Bill booked",
-        "invoice" => "Invoice issued",
-        "credit" => "Credit note issued",
-        "pay" => "Payment booked",
-        "write-off" => "Written off",
-        "revert" => "Reverted",
-        "record" => "Statement recorded",
-        "unrecord" => "Statement taken out",
-        "company" => "Details saved",
-        "payment-options" => "Payment options changed",
-        "account" | "commodity" | "price" => "Declared",
-        "config" => "Setting changed",
-        "undo" => "Undone",
-        "tidy" => "Tidied",
-        _ => return None,
-    };
     let commit = line["commit"].as_str();
-    let (_, rest) = crate::command::done(line["what"].as_str().unwrap_or_default());
-    let argv: Vec<&str> = line["argv"].as_array().into_iter().flatten().filter_map(|a| a.as_str()).collect();
-    let rest = match argv.as_slice() {
-        // What was taken back, as the log said it then; not a commit's code.
-        ["undo", ..] => store::lines(&s.root).iter().find(|l| l["commit"].as_str() == Some(rest.as_str())).and_then(|l| l["what"].as_str()).map_or(String::new(), |w| format!("taken back: {w}")),
-        // A setting, as a bookkeeper names it.
-        ["config", "set", "--", "company.closed_through", d] => format!("the books are closed through {d}"),
-        ["config", "unset", "--", "company.closed_through"] => "the books are open again".into(),
-        ["config", _, "--", k, ..] if k.starts_with("report.vat.") => format!("box {} of the tax return", &k["report.vat.".len()..]),
-        _ => rest,
-    };
+    let said = change_said(s, &line)?;
     // A link to the PDF where the change issued one.
     // By the entry the change added, if it was an invoice or a credit note.
     let number = line["entry"].as_u64().and_then(|id| s.books.number_text(id as usize));
@@ -186,8 +146,7 @@ pub(super) fn toast(s: &Store, n: usize) -> Option<Markup> {
         div.flash.flash-ok.toast role="status" {
             (icon("success"))
             div {
-                strong { (title) }
-                @if !rest.is_empty() { (rest) }
+                strong { (said) }
                 @if let Some(n) = &number { " · " a href={"/invoice/" (n) ".pdf"} { "the PDF" } }
             }
             @if undoable(s, n) {
@@ -199,6 +158,58 @@ pub(super) fn toast(s: &Store, n: usize) -> Option<Markup> {
             }
         }
     })
+}
+
+/// A change of the log, said as a sentence a bookkeeper reads: what it did,
+/// to what, from its command and its subject; an undo by what it took back,
+/// never by a commit's code. None for a line no change of the books made.
+pub(super) fn change_said(s: &Store, line: &serde_json::Value) -> Option<String> {
+    let argv: Vec<&str> = line["argv"].as_array().into_iter().flatten().filter_map(|a| a.as_str()).collect();
+    let what = line["what"].as_str().unwrap_or_default();
+    let after = |p: &str| what.strip_prefix(p).unwrap_or(what).to_string();
+    Some(match argv.as_slice() {
+        ["post", ..] => format!("Booked: {}", after("Book ")),
+        ["file", ..] => format!("Filed: {}", after("File ")),
+        ["unfile", ..] => format!("Deleted: {}", after("Take out ")),
+        ["bill", ..] => format!("Bill booked: {}", after("Book the bill ")),
+        ["invoice", ..] => format!("{what} issued"),
+        ["credit", ..] => format!("{what} issued"),
+        ["pay", ..] => format!("Payment booked: {}", after("Pay ")),
+        ["write-off", ..] => format!("Written off: {}", after("Write off ")),
+        ["revert", ..] => format!("Reverted: {}", after("Revert ")),
+        ["record", ..] => format!("{} recorded", sentence_start(&after("Record the "))),
+        ["unrecord", ..] => format!("{} taken out", sentence_start(&after("Take out the "))),
+        ["company", ..] => "Company's details saved".into(),
+        ["payment-options", verb, ..] => {
+            let id = what.rsplit(' ').next().unwrap_or_default();
+            format!("Payment option {id} {}", match *verb { "add" => "added", "remove" => "removed", _ => "changed" })
+        }
+        ["account" | "commodity", "add", ..] => format!("Declared: {}", after("Declare ")),
+        ["account" | "commodity", "remove", ..] => format!("Taken out: {}", after("Take out ")),
+        ["price", "add", ..] => format!("{} added", sentence_start(&after("Add the "))),
+        ["price", "remove", ..] => format!("{} taken out", sentence_start(&after("Take out the "))),
+        ["config", "set", "--", "company.closed_through", d] => format!("The books are closed through {d}"),
+        ["config", "unset", "--", "company.closed_through"] => "The books are open again".into(),
+        ["config", _, "--", k, ..] if k.starts_with("report.vat.") => format!("Box {} of the tax return changed", &k["report.vat.".len()..]),
+        ["config", _, "--", "invoice.terms_days", d] => format!("Payment terms set to {d} days"),
+        ["config", ..] => "Setting changed".into(),
+        // What was taken back, as the log said it then; not a commit's code.
+        ["undo", ..] => {
+            let undone = what.strip_prefix("Undo ").unwrap_or_default();
+            // A change of two lines, a document filed and its bill booked, by both.
+            let then: Vec<String> = store::lines(&s.root).into_iter().filter(|l| l["commit"].as_str() == Some(undone)).filter_map(|l| change_said(s, &l)).collect();
+            format!("Undone: {}", if then.is_empty() { "the change before".into() } else { then.join("; and ") })
+        }
+        ["tidy", ..] => "Tidied".into(),
+        ["init", ..] => what.to_string(),
+        _ => return None,
+    })
+}
+
+/// `s` with its first letter a capital.
+fn sentence_start(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }
 
 /// The changes, oldest first as they were made, each said in words, who
@@ -226,13 +237,13 @@ pub(super) async fn activity(Books(s): Books, Query(q): Query<Fields>) -> Respon
                             @for (n, l) in &lines {
                                 @let commit = l["commit"].as_str().filter(|h| is_hash(h));
                                 @let words: Vec<&str> = l["argv"].as_array().into_iter().flatten().filter_map(|a| a.as_str()).collect();
-                                @let (verb, rest) = crate::command::done(l["what"].as_str().unwrap_or(""));
+                                @let said = change_said(&s, l).unwrap_or_else(|| l["what"].as_str().unwrap_or("").to_string());
                                 tr {
                                     td.date { (l["at"].as_str().unwrap_or("").get(..16).unwrap_or("").replace('T', " ")) }
                                     td.who { (l["who"].as_str().unwrap_or("")) }
                                     td.what {
                                         details {
-                                            summary { (verb) @if !rest.is_empty() { " " (rest) } }
+                                            summary { (said) }
                                             h2 { "The command that makes it" }
                                             pre { (crate::command::shell(&words)) }
                                             @if let Some(h) = commit {

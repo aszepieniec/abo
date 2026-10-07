@@ -13,7 +13,7 @@ pub(super) fn params(s: &Store, f: &Fields) -> (String, String, String) {
 }
 
 pub(super) async fn reconcile_view(Books(s): Books, Query(q): Query<Fields>) -> Response {
-    or_error(&s, "Reconcile", || reconcile_page(&s, &q, None))
+    or_error(&s, "Reconcile", || reconcile_page(&s, &q, &[], None))
 }
 
 /// One form, two buttons: record the statement with what is ticked, or take
@@ -24,7 +24,7 @@ pub(super) async fn reconcile_act(Books(mut s): Books, Form(pairs): Form<Vec<(St
     // Sent without an action, as a browser may send Show: it only looks,
     // and spends no token.
     if !matches!(f.get("action").map(String::as_str), Some("record" | "unrecord")) {
-        return or_error(&s, "Reconcile", || reconcile_page(&s, &f, None));
+        return or_error(&s, "Reconcile", || reconcile_page(&s, &f, &refs, None));
     }
     let root = s.root.clone();
     let r = once(Some(&root), f.get("token").map_or("", String::as_str), || {
@@ -46,11 +46,13 @@ pub(super) async fn reconcile_act(Books(mut s): Books, Form(pairs): Form<Vec<(St
     });
     match r {
         Ok(to) => Redirect::to(&to).into_response(),
-        Err(e) => again(&s, "Reconcile", || reconcile_page(&s, &f, Some(refused(&e)))),
+        // The ticks come back as they were sent, with the reason.
+        Err(e) => again(&s, "Reconcile", || reconcile_page(&s, &f, &refs, Some(refused(&e)))),
     }
 }
 
-pub(super) fn reconcile_page(s: &Store, f: &Fields, notice: Option<Markup>) -> Result<Markup> {
+/// `ticked`: the postings ticked when the form was sent, ticked again.
+pub(super) fn reconcile_page(s: &Store, f: &Fields, ticked: &[String], notice: Option<Markup>) -> Result<Markup> {
     let (account, commodity, date) = params(s, f);
     let raw = f.get("balance").map(|b| b.trim()).unwrap_or("");
     let balance = if raw.is_empty() { None } else { Decimal::from_str_exact(raw).ok() };
@@ -58,6 +60,14 @@ pub(super) fn reconcile_page(s: &Store, f: &Fields, notice: Option<Markup>) -> R
     let r = views::reconciled(&s.books, &account, &commodity, at, balance);
     let rows = &r.outstanding;
     let latest = s.books.statements.keys().rfind(|k| k.0 == account && k.1 == commodity).map(|k| k.2);
+    // What a statement can be of: the assets, those named in a statement
+    // already among them; and every currency declared.
+    let mut accounts: Vec<&String> = s.books.accounts.iter().filter(|a| model::class(a) == "Assets").collect();
+    if !accounts.contains(&&account) {
+        accounts.push(&account);
+    }
+    let home = &s.books.config.company.currency;
+    let of = if &commodity == home { account.clone() } else { format!("{account} in {commodity}") };
     Ok(html! {
         h1 { "Reconcile" }
         @if let Some(n) = notice { (n) }
@@ -66,8 +76,13 @@ pub(super) fn reconcile_page(s: &Store, f: &Fields, notice: Option<Markup>) -> R
             div.box {
                 div.box-header { (icon("checks")) "Against the statement" }
                 div.box-body {
-                    label.field { "Account" input type="text" name="account" value=(account); }
-                    label.field { "Currency" input type="text" name="commodity" value=(commodity); }
+                    label.field { "Account"
+                        span.hint { "The bank account, wallet or cash box the statement or count is of." }
+                        select name="account" { @for a in &accounts { option value=(a) selected[*a == &account] { (a) } } }
+                    }
+                    label.field { "Currency"
+                        select name="commodity" { @for c in s.books.commodities.keys() { option value=(c) selected[c == &commodity] { (c) } } }
+                    }
                     label.field { "Statement date" input type="date" name="date" value=(date); }
                     label.field { "Closing balance on the statement" input type="text" name="balance" value=(raw); }
                     // A plain GET: it only looks. First in the form, so Enter
@@ -94,7 +109,7 @@ pub(super) fn reconcile_page(s: &Store, f: &Fields, notice: Option<Markup>) -> R
                         @for i in rows {
                             li {
                                 label.row {
-                                    input type="checkbox" name="ref" value=(i.posting);
+                                    input type="checkbox" name="ref" value=(i.posting) checked[ticked.contains(&i.posting)];
                                     span.date { (i.date) }
                                     span.amt { (money(std::slice::from_ref(&i.amount))) }
                                     span { (i.description) }
@@ -107,7 +122,7 @@ pub(super) fn reconcile_page(s: &Store, f: &Fields, notice: Option<Markup>) -> R
             div.actions {
                 button.btn-primary type="submit" name="action" value="record" { (icon("book")) " Record the statement, with what is ticked" }
                 @if let Some(d) = latest {
-                    button.btn-danger type="submit" name="action" value="unrecord" { (icon("undo")) " Take out the statement of " (d) }
+                    button.btn-danger type="submit" name="action" value="unrecord" { (icon("undo")) " Take out the statement of " (of) " of " (d) }
                 }
                 span.nav { a.btn href=(back_to("/")) { (icon("left")) " Back" } }
             }

@@ -49,6 +49,8 @@ pub enum AmissKind {
     Problems,
     /// Files that cannot be read at all.
     Unreadable,
+    /// Books hledger cannot read as they now are: no report can be made.
+    Unreportable,
 }
 
 impl std::fmt::Display for Amiss {
@@ -562,6 +564,13 @@ pub fn init(dir: &Path, config: model::Config, author: Option<(String, String)>,
 }
 
 impl Store {
+    /// Whether hledger reads the books as they now are, so that reports can
+    /// be made: asked only of books that hold a problem or a change abo did
+    /// not make, as it runs hledger.
+    pub fn reportable(&self) -> bool {
+        self.hledger(&["accounts"]).is_ok()
+    }
+
     /// hledger over the books' journal, without a config of its own.
     pub fn hledger(&self, args: &[&str]) -> Result<String> {
         let out = std::process::Command::new("hledger")
@@ -573,7 +582,7 @@ impl Store {
             .context("running hledger")?;
         if !out.status.success() {
             if !self.problems.is_empty() {
-                return Err(amiss(AmissKind::Problems, format!("the books hold problems, so hledger cannot report on them:\n  {}\nabo check says how each is mended", self.problems.join("\n  "))));
+                return Err(amiss(AmissKind::Unreportable, format!("the books hold problems, so hledger cannot report on them:\n  {}\nabo check says how each is mended", self.problems.join("\n  "))));
             }
             bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
         }

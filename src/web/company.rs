@@ -68,15 +68,22 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
                     tr { td { "Currency" } td { code { (cfg.company.currency) } } }
                     tr { td { "VAT" } td {
                         @match &cfg.vat {
-                            model::Vat::None => "Not registered: invoices charge none.",
-                            model::Vat::Flat { rate, account } => { "Flat rate: " (rate) "% of gross turnover is remitted, to " code { (account) } "; VAT on purchases is not reclaimed." }
-                            model::Vat::Effective { input, output } => { "As charged and paid: the VAT charged to customers is booked apart, to " code { (output) } ", and the VAT paid on purchases, to " code { (input) } "; what is owed is the one less the other." }
+                            model::Vat::None => "Not registered (none): invoices charge none.",
+                            model::Vat::Flat { rate, account } => { "Flat rate (flat): " (rate) "% of gross turnover is remitted, to " code { (account) } "; VAT on purchases is not reclaimed." }
+                            model::Vat::Effective { input, output } => { "As charged and paid (effective): the VAT charged to customers is booked apart, to " code { (output) } ", and the VAT paid on purchases, to " code { (input) } "; what is owed is the one less the other." }
                         }
                     } }
                     @if !matches!(cfg.vat, model::Vat::None) {
                         tr { td { "VAT rate charged" } td { (cfg.invoice.vat_rate.normalize()) "%, unless an invoice says otherwise" } }
                     }
-                    tr { td { "Payment terms" } td { (cfg.invoice.terms_days) " days" } }
+                    tr { td { "Payment terms" } td {
+                        form.inline method="post" action="/company/terms" {
+                            (token())
+                            input type="number" name="days" min="0" required value=(cfg.invoice.terms_days) style="width:6em";
+                            " days, unless an invoice says otherwise "
+                            button.small type="submit" { (icon("check")) " Save" }
+                        }
+                    } }
                 }
             }
             div.box-body { p.muted.small {
@@ -111,7 +118,7 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
                         tr {
                             td {
                                 strong { (p.label) }
-                                " " code { (id) }
+                                " " span.muted.small { "short name " (id) }
                                 @for l in &p.lines { div.muted.small { (l) } }
                             }
                             td { "Into " code { (o.account) } }
@@ -241,6 +248,21 @@ pub(super) fn option_page(s: &Store, f: &Fields, problems: &Problems, refused: O
 }
 
 /// Close the books through a day: `abo config set company.closed_through`.
+/// The payment terms invoices take unless they say otherwise, as `abo
+/// config set invoice.terms_days` sets them.
+pub(super) async fn terms(Books(mut s): Books, Form(f): Form<Fields>) -> Response {
+    let root = s.root.clone();
+    let r = once(Some(&root), f.get("token").map_or("", String::as_str), || {
+        let days = f.get("days").map_or("", |d| d.trim()).to_string();
+        days.parse::<u32>().map_err(|_| anyhow::anyhow!("payment terms are a whole number of days, such as 30; {days:?} is not"))?;
+        change(&mut s, &Op::ConfigSet { key: "invoice.terms_days".into(), value: days }, &[], "/company")
+    });
+    match r {
+        Ok(to) => Redirect::to(&to).into_response(),
+        Err(e) => again(&s, "The company", || Ok(company_page(&s, &company_fields(&s), &Problems::new(), Some(&e)))),
+    }
+}
+
 pub(super) async fn close(Books(mut s): Books, Form(f): Form<Fields>) -> Response {
     let root = s.root.clone();
     let r = once(Some(&root), f.get("token").map_or("", String::as_str), || {

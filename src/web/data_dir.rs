@@ -50,6 +50,15 @@ pub(super) fn data_page(title: &str, body: Markup) -> Html<String> {
     )
 }
 
+/// The company's name, as its abo.toml says it, read as plain text: for
+/// books that cannot be read, so the list names them as a person knows them.
+fn name_of(books: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(books.join("abo.toml")).ok()?;
+    let line = text.lines().find_map(|l| l.trim().strip_prefix("name").map(str::trim).and_then(|l| l.strip_prefix('=')))?.trim();
+    let name = line.trim_start_matches('"').split('"').next()?.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 /// A directory name as init makes them, `smith-sons-llc`: its own slug, and
 /// so nothing that could reach outside the data directory either.
 pub(super) fn company_dir(name: &str) -> bool {
@@ -92,7 +101,8 @@ pub(super) async fn landing(axum::extract::State(root): axum::extract::State<Arc
                                     @match name {
                                         Ok(n) => td { a href={"/c/" (dir) "/"} { (n) } },
                                         Err(e) => td {
-                                            span.muted { (dir) ": its books cannot be read; whoever runs abo's server can put them right." }
+                                            a href={"/c/" (dir) "/"} { (name_of(&root.join(dir)).unwrap_or_else(|| dir.clone())) }
+                                            div.muted.small { "Its books cannot be read; whoever runs abo's server can put them right." }
                                             details.tech { summary { "For whoever runs abo" } pre { (e) } }
                                         },
                                     }

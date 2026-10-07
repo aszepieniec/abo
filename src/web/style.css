@@ -292,3 +292,4 @@ ul.accounts li { padding: 2px 0; }
   table.list.options td:first-child { flex-basis: 100%; }
   table.list.options .btn, table.list.options button { min-height: 32px; padding: 0 10px; font-size: 13px; }
 }
+form.inline { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }

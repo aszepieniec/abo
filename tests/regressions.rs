@@ -448,7 +448,7 @@ fn saving_the_company_shows_its_notice_and_changes_nothing_unchanged() {
     let (status, to, _) = http(&s, "POST", "/company", &form("Renamed Ltd"));
     assert!(status == 303 && to.contains("done="), "{to}");
     let (_, _, page) = http(&s, "GET", &to, &[]);
-    assert!(page.contains("Details saved") && page.contains("action=\"/undo\""), "{page}");
+    assert!(page.contains("Company's details saved") && page.contains("action=\"/undo\""), "{page}");
     // Sent as it stands: nothing to change, nothing logged, nothing said.
     let before = log_len(&dir);
     let (status, to, _) = http(&s, "POST", "/company", &form("Renamed Ltd"));
@@ -464,7 +464,7 @@ fn saving_a_payment_option_shows_its_notice() {
         ("label", "Cash"), ("id", "cash"), ("account", "Assets:Cash")]);
     assert_eq!(status, 303, "{page}");
     let (_, _, page) = http(&s, "GET", &to, &[]);
-    assert!(page.contains("Payment options changed"), "{page}");
+    assert!(page.contains("Payment option") && (page.contains(" added") || page.contains(" changed")), "{page}");
 }
 
 #[test]
@@ -2147,7 +2147,7 @@ fn a_question_shows_what_a_blank_answer_takes() {
     child.stdin.take().unwrap().write_all(b"cash\n\nAt the office\n\n\n\n\n").unwrap();
     let o = child.wait_with_output().unwrap();
     let said = String::from_utf8_lossy(&o.stdout);
-    for q in ["Name on invoices [Cash]: ", "Id, for abo commands [cash]: ", "Account the money arrives in [Assets:Cash]: "] {
+    for q in ["Name on invoices [Cash]: ", "Short name (how abo names this option in its Log, and on the command line) [cash]: ", "Account the money arrives in [Assets:Cash]: "] {
         assert!(said.contains(q), "{q}: {said}\n{}", err(&o));
     }
 }

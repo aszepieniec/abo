@@ -51,7 +51,7 @@ pub(super) async fn booking(Books(s): Books, Path(id): Path<String>, Query(q): Q
         Ok(html! {
             h1 { (e.description) }
             p.muted.small {
-                (e.date) " · entry " (id)
+                (e.date) " · " @if is_bill { "bill " } @else { "entry " } (id)
                 @if let Some(n) = &number { " · " @if credit_note { "credit note " } @else { "invoice " } (n) }
             }
             @if let Kind::Invoice { content, .. } = &e.kind {
@@ -115,7 +115,7 @@ pub(super) async fn booking(Books(s): Books, Path(id): Path<String>, Query(q): Q
                     }
                     span.muted.small {
                         @if reversed.is_some() { "Cancelled already." }
-                        @else if !paid_by.is_empty() { "Paid in part or in full: revert its payments first, then correct it." }
+                        @else if !paid_by.is_empty() { "Paid or written off, in part or in full: revert those first, then correct it." }
                         @else { "Cancels it with a credit note dated today, then opens a new invoice filled in as this one was." }
                     }
                 } @else if !credit_note {
@@ -127,7 +127,7 @@ pub(super) async fn booking(Books(s): Books, Path(id): Path<String>, Query(q): Q
                     }
                     span.muted.small {
                         @if reversed.is_some() { "Already reverted." }
-                        @else if !paid_by.is_empty() { "Paid in part or in full: revert its payments first." }
+                        @else if !paid_by.is_empty() { "Paid or written off, in part or in full: revert those first." }
                         @else { "Books the opposite amounts as a new entry, dated today. This one stays." }
                     }
                 }
@@ -172,6 +172,9 @@ pub(super) async fn fields(mut mp: Multipart) -> (Fields, Option<Vec<u8>>) {
     while let Ok(Some(field)) = mp.next_field().await {
         let name = field.name().unwrap_or_default().to_string();
         if name == "document" {
+            if let Some(n) = field.file_name().filter(|n| !n.is_empty()) {
+                f.insert("document_name".into(), n.to_string());
+            }
             doc = field.bytes().await.ok().map(|b| b.to_vec()).filter(|b| !b.is_empty());
         } else if let Ok(v) = field.text().await {
             f.insert(name, v);
@@ -258,6 +261,19 @@ pub(super) async fn register(Books(s): Books, Query(q): Query<Fields>) -> Respon
         for (c, q) in months.values().flatten() {
             *in_all.entry(c.clone()).or_default() += q;
         }
+        // Every month of the period, nil ones too: within its bounds, or for
+        // all time from the first month with something booked to the last.
+        let first = from.as_ref().map(|f| f[..7].to_string()).or_else(|| months.keys().next().cloned());
+        let last = to.as_ref().map(|t| t[..7].to_string()).or_else(|| months.keys().next_back().cloned());
+        if let (Some(first), Some(last)) = (first, last) {
+            let (mut y, mut m): (i32, u32) = (first[..4].parse().unwrap_or(0), first[5..7].parse().unwrap_or(1));
+            while format!("{y:04}-{m:02}") <= last {
+                months.entry(format!("{y:04}-{m:02}")).or_default();
+                (y, m) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+            }
+        }
+        let home = b.config.company.currency.clone();
+        let month_money = |bag: &statement::Bag| if bag.values().all(|q| q.is_zero()) { money_of(b, Decimal::ZERO, &home) } else { money(&statement::amounts(b, bag)) };
         Ok(html! {
             h1 { (name) }
             form method="get" action="/account" {
@@ -271,20 +287,21 @@ pub(super) async fn register(Books(s): Books, Query(q): Query<Fields>) -> Respon
                     div.actions { button type="submit" { (icon("chart")) " Show" } }
                 } }
             }
-            @if !period.is_empty() && bad.is_none() {
+            @if bad.is_none() && !months.is_empty() {
                 div.box {
                     div.box-header { (icon("chart")) "By month" @if let (Some(f), Some(t)) = (&from, &to) { span.spacer.muted.small { (f) " to " (t) } } }
                     table.list {
                         thead { tr { th { "Month" } th.amt { "Total" } } }
                         tbody {
-                            @for (m, bag) in &months { tr { td.date { (m) } td.amt { (money(&statement::amounts(b, bag))) } } }
+                            @for (m, bag) in &months { tr { td.date { (m) } td.amt { (month_money(bag)) } } }
                         }
                         @if months.len() > 1 {
                             tfoot { tr.total { td { "In all" } td.amt { (money(&statement::amounts(b, &in_all))) } } }
                         }
                     }
-                    @if months.is_empty() { div.box-body { p.muted { "Nothing booked to it in the period." } } }
                 }
+            } @else if bad.is_none() && !period.is_empty() {
+                div.box { div.box-body { p.muted { "Nothing booked to it in the period." } } }
             }
             div.box {
                 table.list {
@@ -337,6 +354,16 @@ pub(super) fn postings(b: &Model, text: &str) -> Result<Vec<model::Posting>> {
 pub(super) async fn post_submit(Books(mut s): Books, Form(f): Form<Fields>) -> Response {
     let get = |k: &str| f.get(k).map_or("", |v| v.trim()).to_string();
     let root = s.root.clone();
+    // Declare it and come back: the account the entry lacked, declared, and
+    // the form again as it was sent, to book now.
+    if !get("declare").is_empty() {
+        let mut f = f.clone();
+        let a = f.remove("declare").unwrap_or_default();
+        return match declare_and_back(&mut s, &root, &get("token"), &a) {
+            Ok(notice) => or_error(&s, "Book an entry", || Ok(html! { (notice) (form(&s, &f, None)) })),
+            Err(e) => again(&s, "Book an entry", || Ok(form(&s, &f, Some(&e)))),
+        };
+    }
     let r = once(Some(&root), &get("token"), || {
         let date = input::day(Some(&get("date")))?;
         let lines = postings(&s.books, &get("postings"))?;
@@ -347,6 +374,35 @@ pub(super) async fn post_submit(Books(mut s): Books, Form(f): Form<Fields>) -> R
         // The form comes back filled in with the reason. Nothing is lost.
         Err(e) => again(&s, "Book an entry", || Ok(form(&s, &f, Some(&e)))),
     }
+}
+
+/// The accounts a refusal says are not declared, by what it is of.
+pub(super) fn undeclared(e: Option<&anyhow::Error>) -> Vec<String> {
+    let Some(r) = e.and_then(|e| e.downcast_ref::<store::Refused>()) else { return vec![] };
+    r.0.iter().filter_map(|v| match (v.code, &v.of) {
+        ("I-A1", model::Subject::Account(a)) => Some(a.clone()),
+        _ => None,
+    }).collect()
+}
+
+/// Buttons, inside the refused form, that declare each account it lacked
+/// and bring the form back as it was: no JavaScript, nothing typed lost.
+pub(super) fn declare_buttons(e: Option<&anyhow::Error>) -> Markup {
+    html! {
+        @for a in undeclared(e) {
+            button type="submit" name="declare" value=(a) formnovalidate { (icon("plus")) " Declare " code { (a) } " and come back to this" }
+        }
+    }
+}
+
+/// Declare `account` for a refused form, once for its token: the notice
+/// to show above the form, brought back as it was.
+pub(super) fn declare_and_back(s: &mut Store, root: &std::path::Path, token: &str, account: &str) -> Result<Markup> {
+    once(Some(root), token, || {
+        s.change(&Op::AccountAdd(account.to_string()), &[])?;
+        Ok(String::new())
+    })?;
+    Ok(html! { div.flash.flash-ok { (icon("success")) div { strong { "Declared " (account) } " Your entry is as you left it: book it now." } } })
 }
 
 pub(super) fn form(s: &Store, f: &Fields, error: Option<&anyhow::Error>) -> Markup {
@@ -365,7 +421,7 @@ pub(super) fn form(s: &Store, f: &Fields, error: Option<&anyhow::Error>) -> Mark
                         span.hint { "One per line, " code { "account=amount" } ", every amount written; " code { "account=250.00 USD @@ 230.00 EUR" } " for one exchanged." }
                         textarea name="postings" rows="5" required placeholder="Expenses:Hosting=100.00\nAssets:Bank=-100.00" { (get("postings")) }
                     }
-                    div.actions { button.btn-primary type="submit" { (icon("check")) " Book it" } }
+                    div.actions { button.btn-primary type="submit" { (icon("check")) " Book it" } (declare_buttons(error)) }
                 }
             }
         }

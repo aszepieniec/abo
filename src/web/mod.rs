@@ -107,6 +107,7 @@ fn company_app(root: PathBuf) -> Router {
         .route("/company/payment", get(option_view).post(option_submit))
         .route("/company/payment/remove", post(option_remove))
         .route("/company/close", post(close))
+        .route("/company/terms", post(terms))
         .route("/company/tax-return", get(tax_return).post(tax_return_submit))
         .route("/bills/{*rest}", get(bill_doc))
         .fallback(not_found)
@@ -151,6 +152,10 @@ fn pdf_response(bytes: Vec<u8>, name: &str) -> Response {
 }
 
 fn refused(e: &anyhow::Error) -> Markup {
+    // Refused for books amiss: the banner above says what and why, once.
+    if e.downcast_ref::<store::Amiss>().is_some_and(|a| a.kind != store::AmissKind::Unreportable) {
+        return html! { div.flash.flash-error { (icon("error")) div { strong { "Not done" } p { "Nothing is changed while the books are as the notice above says." } } } };
+    }
     html! { div.flash.flash-error { (icon("error")) div { strong { "Not done" } (said(e)) } } }
 }
 
@@ -180,9 +185,10 @@ fn said(e: &anyhow::Error) -> Markup {
 /// and what still works. The text for that person, folded away.
 fn amiss(kind: store::AmissKind, technical: &str) -> Markup {
     let words = match kind {
-        store::AmissKind::HandEdit => "Someone changed the books' files outside abo. abo changes nothing until that change is taken out, or mended and saved, by whoever runs abo's server: please tell them. The books and reports can still be read.",
+        store::AmissKind::HandEdit => "Someone changed the books' files outside abo. abo changes nothing until that change is taken out, or mended and saved, by whoever runs abo's server: please tell them.",
         store::AmissKind::Problems => "Someone changed the books' files outside abo, and the books no longer hold together. abo adds nothing to them until whoever runs abo's server puts that right: please tell them.",
         store::AmissKind::Unreadable => "Someone changed the books' files outside abo, and they cannot be read. Nothing can be shown or done until whoever runs abo's server puts them right: please tell them.",
+        store::AmissKind::Unreportable => "Someone changed the books' files outside abo, and as they now are no report can be made of them. None can be until whoever runs abo's server puts that right: please tell them.",
     };
     html! {
         p { (words) }
@@ -272,8 +278,16 @@ fn or_error(s: &Store, title: &str, body: impl FnOnce() -> Result<Markup>) -> Re
             let back = BACK.try_with(Clone::clone).ok().flatten();
             // What is not there is not found; anything else was refused.
             let missing = LOOKS.try_with(|l| *l).unwrap_or(false) && e.downcast_ref::<input::NotFound>().is_some();
-            let (status, heading) = if missing { (StatusCode::NOT_FOUND, "Not found") } else { (StatusCode::UNPROCESSABLE_ENTITY, "That did not go through") };
-            (status, page(
+            let unreportable = e.downcast_ref::<store::Amiss>().is_some_and(|a| a.kind == store::AmissKind::Unreportable);
+            let (status, heading) = match () {
+                _ if missing => (StatusCode::NOT_FOUND, "Not found"),
+                // Nothing was asked to change: a report cannot be made.
+                _ if unreportable => (StatusCode::UNPROCESSABLE_ENTITY, "No report can be made"),
+                _ => (StatusCode::UNPROCESSABLE_ENTITY, "That did not go through"),
+            };
+            // A refusal that is itself about books amiss says it once, not twice.
+            let about = e.downcast_ref::<store::Amiss>().is_none();
+            (status, page_with(
                 s,
                 heading,
                 html! {
@@ -286,13 +300,50 @@ fn or_error(s: &Store, title: &str, body: impl FnOnce() -> Result<Markup>) -> Re
                         }
                     }
                 },
+                about,
             ))
             .into_response()
         }
     }
 }
 
+/// Books changed outside abo, or not holding together: said on every page,
+/// above what it shows, as its figures are read from the files as they now
+/// are; with whether reports can be made of them, and who puts it right.
+fn banner(s: &Store) -> Option<Markup> {
+    let edit = s.hand_edit().ok().flatten();
+    if edit.is_none() && s.problems.is_empty() {
+        return None;
+    }
+    let reports = if s.reportable() {
+        "Reports can still be made, from the books as they now are."
+    } else {
+        "As the books now are, no report can be made of them."
+    };
+    let (heading, what, technical) = match &edit {
+        Some(e) => ("Changed outside abo", "Someone changed the books' files outside abo. The figures here are read from the files as they now are, so they may be wrong; and abo changes nothing until whoever runs abo's server takes that change out, or mends and saves it: please tell them.", e.clone()),
+        None => (
+            "The books do not hold together",
+            "Someone changed the books' files outside abo, and the books no longer hold together. The figures here are read from the files as they now are, so they may be wrong; and abo adds nothing to them until whoever runs abo's server puts that right: please tell them.",
+            format!("{}\nabo check lists them, and how each is mended; abo tidy mends what is only not as abo writes it.", s.problems.join("\n")),
+        ),
+    };
+    Some(html! {
+        div.flash.flash-error { (icon("error")) div {
+            strong { (heading) }
+            p { (what) " " (reports) }
+            details.tech { summary { "For whoever runs abo" } pre { (technical) } }
+        } }
+    })
+}
+
 fn page(s: &Store, title: &str, body: Markup) -> Html<String> {
+    page_with(s, title, body, true)
+}
+
+/// `page`, with the banner of books amiss or without it: without, where the
+/// page itself says so.
+fn page_with(s: &Store, title: &str, body: Markup, with_banner: bool) -> Html<String> {
     // (link, icon, label, the paths that count as being there)
     let nav = [
         ("/", "book", "Books", "/"),
@@ -333,6 +384,7 @@ fn page(s: &Store, title: &str, body: Markup) -> Html<String> {
                         }
                     }
                     main.content {
+                        @if with_banner { @if let Some(b) = banner(s) { (b) } }
                         @if let Some(t) = QUERY.try_with(|q| q.split('&').find_map(|kv| kv.strip_prefix("done=")?.parse::<usize>().ok())).ok().flatten().and_then(|n| toast(s, n)) { (t) }
                         (body)
                     }

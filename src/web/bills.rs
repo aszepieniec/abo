@@ -78,7 +78,10 @@ pub(super) async fn bills_list(Books(s): Books, Query(q): Query<Fields>) -> Resp
                                 tr.row-link {
                                     td {
                                         @match b.entry { Some(id) => a.stretch href={"/entry/" (id)} { (b.name) }, None => (b.name) }
-                                        @if !b.number.is_empty() { " " span.muted.small { "(" (b.number) ")" } }
+                                        div.small.muted {
+                                            @if let Some(id) = b.entry { "bill " (id) }
+                                            @if !b.number.is_empty() { " · their number " (b.number) }
+                                        }
                                         div.narrow.small.muted { (b.date) @if !b.total.is_empty() { " · " (b.total) } @if b.has_open { " · open " (b.open) } }
                                     }
                                     td.date.wide { (b.date) }
@@ -169,8 +172,16 @@ pub(super) fn bill_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>) ->
                         input type="hidden" name="file" value=(filed);
                         div.field { "The bill" span.hint { "Filed already; the booking is dated " (date) ", as the document." } a href={"/" (filed)} { (icon("doc")) " " (filed) } }
                     } @else {
+                        @if !get("kept").is_empty() {
+                            input type="hidden" name="kept" value=(get("kept"));
+                            input type="hidden" name="document_name" value=(get("document_name"));
+                        }
                         label.field { "The bill"
-                            span.hint { "A PDF, or a photograph. On a phone: the camera, the photo library or a file. Blank for a bill with no document yet." }
+                            @if get("kept").is_empty() {
+                                span.hint { "A PDF, or a photograph. On a phone: the camera, the photo library or a file. Blank for a bill with no document yet." }
+                            } @else {
+                                span.hint { "Kept from before: " strong { (if get("document_name").is_empty() { "the document chosen".to_string() } else { get("document_name") }) } ". It is sent again with the form; choose another to send that instead." }
+                            }
                             // No capture=: that would take a phone straight to
                             // the camera, and a PDF could not be chosen.
                             input type="file" name="document" accept="image/*,application/pdf";
@@ -193,6 +204,7 @@ pub(super) fn bill_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>) ->
                         @if filed.is_empty() {
                             button type="submit" name="action" value="file" formnovalidate { (icon("upload")) " File it, to book later" }
                         }
+                        (declare_buttons(error))
                     }
                 }
             }
@@ -214,11 +226,87 @@ pub(super) fn bill_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>) ->
     }
 }
 
+/// Where a refused form's document is kept until it is sent again: in the
+/// books' working directory, which git does not keep, by a name of its own.
+fn kept_path(root: &std::path::Path, id: &str) -> Option<std::path::PathBuf> {
+    id.bytes().all(|b| b.is_ascii_hexdigit()).then(|| root.join(".abo/kept").join(id)).filter(|_| !id.is_empty())
+}
+
+/// Keep `bytes` for a form shown again: its id. Those kept a day or more,
+/// never sent again, are cleared away.
+fn keep(root: &std::path::Path, bytes: &[u8]) -> Option<String> {
+    let dir = root.join(".abo/kept");
+    std::fs::create_dir_all(&dir).ok()?;
+    for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        if e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age.as_secs() > 86_400) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+    let id = store::sha256(bytes)[..16].to_string();
+    std::fs::write(dir.join(&id), bytes).ok()?;
+    Some(id)
+}
+
+/// What a bill's form lacks or has wrong, all of it at once: said before
+/// anything is tried, as a refusal is.
+fn bill_problems(b: &Model, get: &dyn Fn(&str) -> String, doc: bool) -> Vec<String> {
+    let mut v = vec![];
+    let file_only = get("action") == "file";
+    let filed = !get("file").is_empty();
+    if file_only && !doc {
+        v.push("choose the document to file".to_string());
+    }
+    if !filed {
+        if let Err(e) = input::day(Some(&get("date"))) {
+            v.push(format!("{e:#}"));
+        }
+        if doc && crate::repo::slug(&get("issuer")).is_empty() {
+            v.push("an issuer is needed, with letters or digits to name the file after".to_string());
+        }
+    }
+    // What the model judges, it says itself, every rule at once, once
+    // these are read: a description among them.
+    if !file_only {
+        if let Err(e) = postings(b, &get("postings")) {
+            v.push(format!("{e:#}"));
+        }
+        if !get("due").is_empty() {
+            if let Err(e) = input::day(Some(&get("due"))) {
+                v.push(format!("the due date: {e:#}"));
+            }
+        }
+    }
+    v
+}
+
 pub(super) async fn bill_submit(Books(mut s): Books, mp: Multipart) -> Response {
-    let (f, doc) = fields(mp).await;
-    let get = |k: &str| f.get(k).map_or("", |v| v.trim()).to_string();
+    let (mut f, mut doc) = fields(mp).await;
     let root = s.root.clone();
+    // Declare it and come back, as the entry form does: the document kept.
+    if let Some(a) = f.remove("declare").filter(|a| !a.is_empty()) {
+        if let Some(bytes) = &doc {
+            if let Some(id) = keep(&root, bytes) {
+                f.insert("kept".into(), id);
+            }
+        }
+        let token = f.get("token").cloned().unwrap_or_default();
+        return match declare_and_back(&mut s, &root, &token, &a) {
+            Ok(notice) => or_error(&s, "Book a bill", || Ok(html! { (notice) (bill_page(&s, &f, None)) })),
+            Err(e) => again(&s, "Book a bill", || Ok(bill_page(&s, &f, Some(&e)))),
+        };
+    }
+    // A document kept from a form refused before, sent again with it.
+    let kept = f.get("kept").and_then(|id| kept_path(&root, id));
+    if doc.is_none() {
+        doc = kept.as_ref().and_then(|p| std::fs::read(p).ok());
+    }
+    let get = |k: &str| f.get(k).map_or("", |v| v.trim()).to_string();
+    let held = doc.clone();
     let r = once(Some(&root), &get("token"), || {
+        let problems = bill_problems(&s.books, &get, doc.is_some());
+        if !problems.is_empty() {
+            return Err(store::Refused(problems.into_iter().map(|p| model::Violation::new("OP", p)).collect()).into());
+        }
         // The document alone, filed to be booked later, as `abo file` does.
         if get("action") == "file" {
             let bytes = doc.clone().context("choose the document to file")?;
@@ -252,7 +340,19 @@ pub(super) async fn bill_submit(Books(mut s): Books, mp: Multipart) -> Response 
         }
     });
     match r {
-        Ok(to) => Redirect::to(&to).into_response(),
-        Err(e) => again(&s, "Book a bill", || Ok(bill_page(&s, &f, Some(&e)))),
+        Ok(to) => {
+            if let Some(p) = kept {
+                let _ = std::fs::remove_file(p);
+            }
+            Redirect::to(&to).into_response()
+        }
+        Err(e) => {
+            // Refused: the document is kept, and the form says so.
+            let mut f = f.clone();
+            if let Some(id) = held.as_deref().and_then(|b| keep(&root, b)) {
+                f.insert("kept".into(), id);
+            }
+            again(&s, "Book a bill", || Ok(bill_page(&s, &f, Some(&e))))
+        }
     }
 }

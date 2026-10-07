@@ -178,7 +178,7 @@ pub(super) fn render(qs: &[Q], prefix: &str, f: &Fields, problems: &Problems, om
                     label.field { (label)
                         select name=(k) {
                             @for (o, _) in options.iter().filter(|(o, _)| !omit.contains(o)) {
-                                option value=(o) selected[v(&k) == *o] { (o) }
+                                option value=(o) selected[v(&k) == *o] { (choice_said(key, o)) }
                             }
                         }
                         (problem(&k))
@@ -231,4 +231,15 @@ pub(super) fn find_repeat<'a>(qs: &'a [Q], key: &str) -> Option<&'a Q> {
         Q::Choice { options, .. } => options.iter().find_map(|(_, then)| find_repeat(then, key)),
         _ => None,
     })
+}
+
+/// A choice as a page names it: the VAT methods by what they are, their
+/// short name beside, as the company page says them.
+fn choice_said(key: &str, o: &str) -> String {
+    match (key, o) {
+        ("method", "effective") => "As charged and paid (effective)".into(),
+        ("method", "flat") => "Flat rate (flat)".into(),
+        ("method", "none") => "Not registered (none)".into(),
+        _ => o.to_string(),
+    }
 }

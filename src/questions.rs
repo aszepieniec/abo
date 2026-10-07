@@ -272,9 +272,9 @@ pub static INIT: &[Q] = &[
     Q::Group {
         title: "Currency and VAT",
         icon: "coins",
-        note: "VAT method: effective books the VAT charged to customers and the VAT paid on purchases apart, and \
-               owes the one less the other; flat remits a flat rate of gross turnover; none is for a company not VAT \
-               registered.",
+        note: "VAT method: effective, as charged and paid, books the VAT charged to customers and the VAT paid on \
+               purchases apart, and owes the one less the other; flat, a flat rate, remits a share of gross turnover; \
+               none, not registered, is for a company not VAT registered.",
         qs: &[
             Q::Text {
                 key: "currency",
@@ -386,8 +386,8 @@ pub static OPTION: &[Q] = &[
             },
             Q::Text {
                 key: "id",
-                label: "Id, for abo commands",
-                hint: "",
+                label: "Short name",
+                hint: "How abo names this option in its Log, and on the command line.",
                 offer: Offer::From("the kind: bank, cash or crypto, numbered if taken", |env| free_id(env.kind(), &env.taken())),
                 check: Check::By(|s, env| match s {
                     s if env.taken().iter().any(|t| t == s) => Err(format!("{s} is already the id of a payment option.")),

@@ -515,7 +515,7 @@ fn first_web_run() {
     assert!(page.find("acme").unwrap() < page.find("Hosting").unwrap(), "oldest first: {page}");
     let (_, to, _) = http(&s, "POST", "/undo", &[("token", "u1")]);
     let (_, _, page) = http(&s, "GET", &to, &[]);
-    assert!(page.contains("taken back") && !page.contains(&last[0]["commit"].as_str().unwrap()[..7]), "{page}");
+    assert!(page.contains("Undone: Filed:") && page.contains("Bill booked") && !page.contains(&last[0]["commit"].as_str().unwrap()[..7]), "{page}");
     assert!(!std::fs::read_to_string(books.join("journal/main.journal")).unwrap().contains("Hosting"), "one undo takes back the booking");
     let filed = Command::new("git").args(["ls-files", "bills"]).current_dir(&books).output().unwrap().stdout;
     assert_eq!(String::from_utf8(filed).unwrap().lines().filter(|l| l.ends_with(".pdf")).count(), 1, "one undo takes back the filing");
@@ -583,4 +583,111 @@ fn first_web_run() {
 
     drop(s);
     std::fs::remove_dir_all(&base).unwrap();
+}
+
+/// Found by the second web run, 2026-10-07: the banner on one page alone,
+/// forms that lost what was entered, a button that named no account, and
+/// words that read as records rather than sentences.
+#[test]
+fn second_web_run() {
+    let base = std::env::temp_dir().join(format!("abo-web-run2-{}", std::process::id()));
+    let (books, s) = company_books(&base);
+    const MP: &str = "multipart/form-data; boundary=b0undary";
+    let git = |args: &[&str]| assert!(Command::new("git").args(args).current_dir(&books).status().unwrap().success());
+    let outside = |page: &str, words: &str| page.split("<details").next().unwrap_or(page).contains(words);
+
+    // An entry lacking its account: the form keeps it, and a button
+    // declares the account and brings it back as it was.
+    let entry = [("token", "e1"), ("date", "2026-03-01"), ("description", "Rent"), ("postings", "Expenses:Rent=100.00\nAssets:Bank=-100.00")];
+    let (status, _, page) = http(&s, "POST", "/post", &entry);
+    assert!(status == 422 && page.contains("name=\"declare\" value=\"Expenses:Rent\""), "{page}");
+    let mut declare = entry.to_vec();
+    declare[0] = ("token", "e2");
+    declare.push(("declare", "Expenses:Rent"));
+    let (status, _, page) = http(&s, "POST", "/post", &declare);
+    assert!(status == 200 && page.contains("Declared Expenses:Rent") && page.contains("Expenses:Rent=100.00"), "{page}");
+    let mut book = entry.to_vec();
+    book[0] = ("token", "e3");
+    assert_eq!(http(&s, "POST", "/post", &book).0, 303);
+
+    // A refused bill keeps its document, and says every problem at once.
+    let (status, _, page) = send(&s, "POST", "/bill", MP, &multipart(&[("token", "b1"), ("action", "file"), ("date", "someday"), ("issuer", "")], Some(b"%PDF-1.4\n% kept\n")));
+    assert!(status == 422 && page.contains("name=\"kept\"") && page.contains("Kept from before"), "{page}");
+    assert!(page.contains("not a date") && page.contains("an issuer is needed"), "both problems at once: {page}");
+    let kept = page.split("name=\"kept\" value=\"").nth(1).and_then(|r| r.split('"').next()).unwrap().to_string();
+    let (status, _, page) = send(&s, "POST", "/bill", MP, &multipart(&[("token", "b2"), ("action", "file"), ("date", "2026-03-02"), ("issuer", "Acme"), ("kept", &kept)], None));
+    assert_eq!(status, 303, "the kept document filed: {page}");
+    assert!(!books.join(".abo/kept").join(&kept).exists(), "a kept document is cleared once filed");
+
+    // Reconcile names the account of the statement it takes out, offers
+    // the accounts and currencies as lists, and keeps the ticks refused.
+    let (status, to, _) = http(&s, "POST", "/reconcile", &[("token", "r1"), ("action", "record"), ("account", "Assets:Bank"), ("commodity", "EUR"), ("date", "2026-03-31"), ("balance", "-100.00"), ("ref", "1.1")]);
+    assert_eq!(status, 303);
+    let page = http(&s, "GET", &to, &[]).2;
+    assert!(page.contains("Statement of Assets:Bank on 2026-03-31 recorded"), "{page}");
+    assert!(page.contains("Take out the statement of Assets:Bank of 2026-03-31"), "{page}");
+    assert!(page.contains("<select name=\"account\"") && page.contains("<select name=\"commodity\""), "{page}");
+    let (status, _, page) = http(&s, "POST", "/reconcile", &[("token", "r2"), ("action", "record"), ("account", "Assets:Cash"), ("commodity", "EUR"), ("date", "2026-03-31"), ("balance", "5.00")]);
+    assert_eq!(status, 422, "{page}");
+    // The notice of what was recorded is a sentence.
+    let to = http(&s, "POST", "/reconcile", &[("token", "r3"), ("action", "unrecord"), ("account", "Assets:Bank"), ("commodity", "EUR")]).1;
+    let page = http(&s, "GET", &to, &[]).2;
+    assert!(page.contains("Statement of Assets:Bank on 2026-03-31 taken out"), "{page}");
+
+    // Refused, the ticks come back ticked.
+    let (status, _, page) = http(&s, "POST", "/reconcile", &[("token", "r4"), ("action", "record"), ("account", "Assets:Bank"), ("commodity", "EUR"), ("date", "2026-03-31"), ("balance", "7.00"), ("ref", "1.1")]);
+    assert!(status == 422 && page.contains("value=\"1.1\" checked"), "{page}");
+
+    // Payment terms set from the company page; options by their short name.
+    let to = http(&s, "POST", "/company/terms", &[("token", "t1"), ("days", "14")]).1;
+    assert!(std::fs::read_to_string(books.join("abo.toml")).unwrap().contains("terms_days = 14"));
+    let page = http(&s, "GET", &to, &[]).2;
+    assert!(page.contains("Payment terms set to 14 days"), "{page}");
+    let page = http(&s, "GET", "/company/payment", &[]).2;
+    assert!(page.contains("Short name") && !page.contains("for abo commands"), "{page}");
+
+    // A bill is "bill N", on the list and on its Pay page; the figures on
+    // Books grouped as the tables are.
+    let (status, _, _) = send(&s, "POST", "/bill", MP, &multipart(&[("token", "b3"), ("date", "2026-03-03"), ("description", "Chairs"), ("postings", "Expenses:General=1500.00\nLiabilities:Payable=-1500.00")], None));
+    assert_eq!(status, 303);
+    let page = http(&s, "GET", "/bills", &[]).2;
+    let n = page.split("bill ").nth(1).and_then(|r| r.split(|c: char| !c.is_ascii_digit()).next()).unwrap().to_string();
+    let page = http(&s, "GET", &format!("/pay?debt={n}"), &[]).2;
+    assert!(page.contains(&format!(">bill {n}<")) && !page.contains(&format!(">entry {n}<")), "{page}");
+    assert!(page.contains("declared first under"), "the write-off's hint says to declare: {page}");
+    assert_eq!(http(&s, "POST", "/post", &[("token", "e4"), ("date", "2026-03-04"), ("description", "Capital"), ("postings", "Assets:Bank=2500.00\nEquity:Opening=-2500.00")]).0, 303);
+    let page = http(&s, "GET", "/", &[]).2;
+    assert!(page.contains("class=\"figure\">2 400.00"), "tiles grouped: {page}");
+
+    // The month view: every month of the period, nil ones too.
+    let page = http(&s, "GET", "/account?name=Expenses:Rent&period=2026q1", &[]).2;
+    assert!(page.contains("2026-01") && page.contains("2026-02") && page.contains("2026-03"), "{page}");
+
+    // The invoice form's VAT hint, ungarbled.
+    let page = http(&s, "GET", "/invoice", &[]).2;
+    assert!(page.contains("both the customer's tax number and the company's name a country") || page.contains("both the customer&#39;s tax number"), "{page}");
+
+    // Changed outside abo: the banner on every page that shows figures,
+    // saying they may be wrong; a report that cannot be made says so.
+    let j = std::fs::read_to_string(books.join("journal/2026.journal")).unwrap();
+    std::fs::write(books.join("journal/2026.journal"), j.replacen("100.00 EUR", "105.00 EUR", 1)).unwrap();
+    for path in ["/", "/account?name=Expenses:Rent", "/bills", "/invoices", "/reconcile", "/declarations", "/post", "/bill"] {
+        let page = http(&s, "GET", path, &[]).2;
+        assert!(page.contains("Changed outside abo") && page.contains("may be wrong"), "{path}: {page}");
+    }
+    let (_, _, page) = http(&s, "GET", "/report/pl?period=2026", &[]);
+    assert!(page.contains("No report can be made") && !outside(&page, "abo check") && !outside(&page, "hledger"), "{page}");
+    git(&["checkout", "--", "."]);
+    let page = http(&s, "GET", "/", &[]).2;
+    assert!(!page.contains("Changed outside abo"), "{page}");
+
+    // Books that cannot be read are listed by the company's name, linked.
+    let toml = std::fs::read_to_string(books.join("abo.toml")).unwrap();
+    std::fs::write(books.join("abo.toml"), toml.replacen("name = \"Test Ltd\"", "name = \"Test Ltd", 1)).unwrap();
+    let d = serve(&base, &base);
+    let new = http(&d, "GET", "/new", &[]).2;
+    assert!(new.contains("As charged and paid (effective)"), "the VAT method by one name: {new}");
+    let page = http(&d, "GET", "/", &[]).2;
+    assert!(page.contains("href=\"/c/test-ltd/\">Test Ltd</a>") && page.contains("cannot be read"), "{page}");
+    git(&["checkout", "--", "abo.toml"]);
 }

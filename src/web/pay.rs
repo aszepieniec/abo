@@ -43,7 +43,7 @@ pub(super) fn pay_page(s: &Store, id: usize, f: &Fields, error: Option<&anyhow::
     }
     Ok(html! {
         h1 { @if invoice { "A payment of " } @else { "Pay " } (e.description.replace(" | ", ", ")) }
-        p.muted { (e.date) " · " (total) " · " (open) " open" " · " a href={"/entry/" (id)} { "entry " (id) } }
+        p.muted { (e.date) " · " (total) " · " (open) " open" " · " a href={"/entry/" (id)} { @match b.number_text(id) { Some(n) => { "invoice " (n) }, None => { "bill " (id) } } } }
         @if let Some(e) = error { (refused(e)) }
         form method="post" action="/pay" {
             (token())
@@ -73,7 +73,7 @@ pub(super) fn pay_page(s: &Store, id: usize, f: &Fields, error: Option<&anyhow::
                     label.field { "Date" input type="date" name="date" required value=(today); }
                     // What a customer never pays is an expense; what a supplier forgives, income.
                     @let classes = b.written_off_to(id).unwrap_or_default();
-                    label.field { "To" span.hint { @if invoice { "An expense, such as Expenses:Bad debts." } @else { "Income, such as Income:Forgiven; or the expense it was booked to, which it takes back." } }
+                    label.field { "To" span.hint { @if invoice { "An expense, such as Expenses:Bad debts, declared first under " a href="/declarations" { "Accounts and currencies" } "." } @else { "Income, such as Income:Forgiven, declared first under " a href="/declarations" { "Accounts and currencies" } "; or the expense it was booked to, which it takes back." } }
                         select name="to" required {
                             option value="" { "Choose an account" }
                             @for a in b.accounts.iter().filter(|a| classes.contains(&crate::model::class(a))) { option value=(a) { (a) } }
