@@ -574,7 +574,7 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | | Guarantee | Rules | Properties |
 |---|---|---|---|
 | G-B1 | Each document has a path of its own and is filed once; it keeps its bill while the bill stands, and follows it when it is booked again | I-B1 | `document_paths_are_distinct`, `documents_alike_are_refused`, `documents_keep_their_bill`, `a_document_follows_its_bill` |
-| G-B2 | A bill is not booked twice by mistake: one owing what a standing bill owes, within a week of it or under the same number of the supplier's, is booked only when said to be another | N8 | `bills_alike_are_refused_unless_another` |
+| G-B2 | A bill is not booked twice by mistake: one owing what a standing bill owes, within a week of it or under the same number of the supplier's, is booked only when said to be another; one under a standing bill's number of the supplier's, owing the same, never | N8 | `bills_alike_are_refused_unless_another` |
 | G-B3 | What a bill says of itself besides its postings, the supplier's number and when it is due, is read back as said, by abo and by hledger alike, and a due date is never before the bill | I-B3 | `files_say_the_state`, `hledger_reads_entries_as_written` |
 
 ### Whoever runs a command
@@ -798,8 +798,9 @@ neither for an entry made long ago.
   two between the date on it and the day it came: what is owed does. A bill
   that comes monthly, for the same amount, is a month apart. Nor is a bill
   added that owes what a standing bill owes under the same number of the
-  supplier's, whatever the dates of the two: a supplier numbers each bill
-  once.
+  supplier's, whatever the dates of the two, and whether or not the
+  operation says it is another: a supplier numbers each bill once, so it is
+  that bill.
 
 The conditions hold of every operation but `undo`, which takes back the last
 one and makes no change of its own: a period closed by mistake is reopened by
@@ -946,6 +947,13 @@ its stamp. The log is a record of what was done, not a source of the state:
 the state is read from the files alone. Replaying it needs what the commands
 read besides — the documents filed, the templates as they were — so the git
 history, not the log, is what restores a state.
+
+Two operations may be made as one change: the second applied to the state
+the first leaves, each checked as if alone, neither made if either is
+refused. The change is one commit and two lines of the log, each its own
+operation's command; undo takes back both, as the change was one. The
+browser's **File and book it** is the one such pair: a `file` and the
+`bill` that names its document.
 
 ---
 

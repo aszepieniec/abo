@@ -2118,6 +2118,9 @@ fn bills_alike_are_refused_unless_another(#[strategy(plan())] plan: Vec<Step>, b
         if !more.number.is_empty() {
             let numbered = Op::Bill { date, description: "Again".into(), postings: postings.clone(), document: None, again: false, more: BillMore { number: more.number.clone(), due: None } };
             prop_assert!(n8(&apply(&m, &numbered, today)), "the same number {:?} and debt were not refused", more.number);
+            // Said to be another, all the same: a supplier numbers each bill once.
+            let another = Op::Bill { date, description: "Again".into(), postings: postings.clone(), document: None, again: true, more: BillMore { number: more.number.clone(), due: None } };
+            prop_assert!(n8(&apply(&m, &another, today)), "the same number {:?}, said to be another, was taken", more.number);
         }
     }
 }

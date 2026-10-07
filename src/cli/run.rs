@@ -742,12 +742,8 @@ pub(crate) fn still(s: &Store) {
 
 /// A change as done: `what`, which names it as a commit does, in the past.
 pub(crate) fn past(what: &str) -> String {
-    const VERBS: [(&str, &str); 15] = [
-        ("Declare ", "Declared "), ("Take out ", "Took out "), ("Record ", "Recorded "), ("Change ", "Changed "), ("Set ", "Set "),
-        ("Unset ", "Unset "), ("File ", "Filed "), ("Book ", "Booked "), ("Pay ", "Paid "), ("Write off ", "Wrote off "),
-        ("Revert ", "Reverted "), ("Add ", "Added "), ("Remove ", "Removed "), ("Undo ", "Undid "), ("Close ", "Closed "),
-    ];
-    VERBS.iter().find_map(|(now, then)| what.strip_prefix(now).map(|rest| format!("{then}{rest}"))).unwrap_or_else(|| what.to_string())
+    let (verb, rest) = crate::command::done(what);
+    if rest.is_empty() { verb } else { format!("{verb} {rest}") }
 }
 
 
@@ -771,24 +767,10 @@ pub(crate) fn issue(s: &mut Store, op: impl Fn(String) -> Op, json: bool, given:
 /// and a warning where its customer's tax number names a country and the
 /// company's names none, which the default rate cannot then tell apart.
 pub(crate) fn vat_said(b: &model::Books, c: &model::Content, given: bool) -> String {
-    let rate = match &c.vat {
-        model::InvoiceVat::Charged { rate } => format!("VAT {}%", rate.normalize()),
-        _ => "no VAT".into(),
-    };
-    if matches!(c.vat, model::InvoiceVat::NotRegistered) {
-        return ", no VAT (the company is not VAT registered)".into();
-    }
-    if given {
-        return format!(", {rate} (as given)");
-    }
-    let ours = model::country(&b.config.company.tax_id);
-    let why = match (model::country(&c.customer_tax_id), ours) {
-        (Some(theirs), Some(ours)) if theirs != ours => format!("the customer's tax number is of {theirs}, the company's of {ours}"),
-        (Some(theirs), Some(_)) => format!("the configured rate: the customer's tax number is of {theirs}, as the company's"),
-        (Some(_), None) => format!("the configured rate: the company's tax number ({}) names no country, so where the customer is cannot be told", b.config.company.tax_id),
-        (None, _) => "the configured rate: no tax number says the customer is abroad".to_string(),
-    };
-    format!(", {rate} ({why}; --vat-rate gives another)")
+    let (rate, why, configured) = views::vat_taken(b, c, given);
+    // A rate abo chose may be another: the flag that says so.
+    let tail = if configured { "; --vat-rate gives another" } else { "" };
+    format!(", {rate} ({why}{tail})")
 }
 
 /// Every key of a table, dotted, with its value.
@@ -866,6 +848,8 @@ pub(crate) fn hints(r: &store::Refused) -> Vec<String> {
                  and abo post --date <the day it was booked> --desc ... Liabilities:Accrued=<amount> Expenses:X=-<amount>; \
                  or abo unrecord --account {a}, if the statement was wrong"
             ),
+            // Under the same number it is that bill: no flag makes it another.
+            ("N8", Subject::Field("number")) => continue,
             ("N8", _) => "--again, if it is another bill just like it".into(),
             ("I-B2", _) => "a posting crediting what is owed, as Liabilities:Payable=-<the bill's total>".into(),
             // To split an account in use: what names it moves under it first.

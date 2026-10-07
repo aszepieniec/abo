@@ -258,3 +258,28 @@ pub fn entries(b: &Books, words: &[String]) -> Vec<EntryRow> {
         })
         .collect()
 }
+
+/// The VAT an invoice charges, and why that rate: as given, as the company
+/// is not registered, by the tax numbers, or the configured rate. And
+/// whether the rate is one abo chose, which another may then be given for.
+/// Words for any reader; each interface adds how another rate is given.
+pub fn vat_taken(b: &Books, c: &model::Content, given: bool) -> (String, String, bool) {
+    let rate = match &c.vat {
+        model::InvoiceVat::Charged { rate } => format!("VAT {}%", rate.normalize()),
+        _ => "no VAT".into(),
+    };
+    if matches!(c.vat, model::InvoiceVat::NotRegistered) {
+        return (rate, "the company is not VAT registered".into(), false);
+    }
+    if given {
+        return (rate, "as given".into(), false);
+    }
+    let ours = model::country(&b.config.company.tax_id);
+    let why = match (model::country(&c.customer_tax_id), ours) {
+        (Some(theirs), Some(ours)) if theirs != ours => format!("the customer's tax number is of {theirs}, the company's of {ours}"),
+        (Some(theirs), Some(_)) => format!("the configured rate: the customer's tax number is of {theirs}, as the company's"),
+        (Some(_), None) => format!("the configured rate: the company's tax number ({}) names no country, so where the customer is cannot be told", b.config.company.tax_id),
+        (None, _) => "the configured rate: no tax number says the customer is abroad".to_string(),
+    };
+    (rate, why, true)
+}

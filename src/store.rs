@@ -31,6 +31,38 @@ impl std::fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
+/// The books, in a state no change is made in: a change someone made to
+/// their files outside abo, problems they hold, files that cannot be read.
+/// Its text is for whoever keeps the files; a page says it otherwise, to
+/// whoever keeps the books, from what kind it is.
+#[derive(Debug)]
+pub struct Amiss {
+    pub kind: AmissKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AmissKind {
+    /// Files changed, not by abo, not committed.
+    HandEdit,
+    /// Problems the books hold, which this change does not mend.
+    Problems,
+    /// Files that cannot be read at all.
+    Unreadable,
+}
+
+impl std::fmt::Display for Amiss {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+impl std::error::Error for Amiss {}
+
+fn amiss(kind: AmissKind, text: String) -> anyhow::Error {
+    anyhow::Error::new(Amiss { kind, text })
+}
+
 /// The day a change is made: today, or ABO_TODAY, for tests and replays.
 pub fn today() -> Result<model::Date> {
     match std::env::var("ABO_TODAY") {
@@ -95,7 +127,7 @@ impl Store {
             }
         })?;
         let (books, mut problems) = model::read(&text_files(&root)?);
-        let books = books.with_context(|| format!("the books cannot be read:\n  {}\n{}", problems.join("\n  "), unreadable_mend(&problems)))?;
+        let books = books.ok_or_else(|| amiss(AmissKind::Unreadable, format!("the books cannot be read:\n  {}\n{}", problems.join("\n  "), unreadable_mend(&problems))))?;
         // The hashes the books hold are checks: the files must have them.
         let mut binaries: Vec<(String, String)> = books.documents.iter().map(|(h, d)| (d.path(h), h.clone())).collect();
         for id in 1..=books.entries.len() {
@@ -138,12 +170,29 @@ impl Store {
         self.write(n, also, &removed, what, argv)
     }
 
+    /// Two operations as one change, one commit, a line of the log each, as
+    /// the command of its part: a document filed and its bill booked, from
+    /// one form. Undo takes back both, as it takes back the commit.
+    pub fn change_pair(&mut self, first: &Op, second: &Op, also: &[(String, Vec<u8>)]) -> Result<Option<String>> {
+        self.changeable()?;
+        let n1 = model::apply(&self.books, first, today()?).map_err(Refused)?;
+        self.mends(&n1)?;
+        let n2 = model::apply(&n1, second, today()?).map_err(Refused)?;
+        self.mends(&n2)?;
+        let before = (crate::command::argv(first, &self.books, None), crate::command::subject(first, &self.books, &n1));
+        let argv = crate::command::argv(second, &n1, None);
+        let what = crate::command::subject(second, &n1, &n2);
+        // The commit's subject says both; each line of the log, its own.
+        let subject = format!("{}; {}", before.1, what.chars().next().map_or(String::new(), |c| c.to_lowercase().collect::<String>() + &what[c.len_utf8()..]));
+        self.write_lines(n2, also, &[], &subject, Some(before), what.as_str(), argv)
+    }
+
     /// Whether the books may be changed: not while a file holds a change no
     /// abo command made, which abo's commit would sign as its own. Problems
     /// the books hold do not stop a change; one it would bring does (`apply`).
     pub fn changeable(&self) -> Result<()> {
         if let Some(why) = self.hand_edit()? {
-            bail!("{why}");
+            return Err(amiss(AmissKind::HandEdit, why));
         }
         Ok(())
     }
@@ -195,19 +244,25 @@ impl Store {
         // change it unasked: tidying does it first, and says what it changes.
         let form: Vec<&String> = self.problems.iter().filter(|p| p.contains(": not as abo writes it") || p.ends_with(": says nothing abo would write")).collect();
         if !form.is_empty() {
-            bail!(
-                "the books are not written as abo writes them:\n  {}\nabo changes nothing until abo tidy has written them so, and said what it changed",
-                form.iter().map(|p| p.as_str()).collect::<Vec<_>>().join("\n  ")
-            );
+            return Err(amiss(
+                AmissKind::Problems,
+                format!(
+                    "the books are not written as abo writes them:\n  {}\nabo changes nothing until abo tidy has written them so, and said what it changed",
+                    form.iter().map(|p| p.as_str()).collect::<Vec<_>>().join("\n  ")
+                ),
+            ));
         }
         let held = model::check(&self.books);
         if !held.is_empty() && model::check(n).len() >= held.len() {
             let these: Vec<&String> = self.problems.iter().filter(|p| held.iter().any(|v| p.ends_with(&v.to_string()))).collect();
-            bail!(
-                "the books hold {} that this change does not mend, and abo adds nothing to them until they are mended:\n  {}\nabo check says how each is mended",
-                if held.len() == 1 { "a problem" } else { "problems" },
-                these.iter().map(|p| p.as_str()).collect::<Vec<_>>().join("\n  ")
-            );
+            return Err(amiss(
+                AmissKind::Problems,
+                format!(
+                    "the books hold {} that this change does not mend, and abo adds nothing to them until they are mended:\n  {}\nabo check says how each is mended",
+                    if held.len() == 1 { "a problem" } else { "problems" },
+                    these.iter().map(|p| p.as_str()).collect::<Vec<_>>().join("\n  ")
+                ),
+            ));
         }
         Ok(())
     }
@@ -252,6 +307,13 @@ impl Store {
     }
 
     fn write(&mut self, n: Books, also: &[(String, Vec<u8>)], removed: &[String], what: &str, argv: Vec<String>) -> Result<Option<String>> {
+        self.write_lines(n, also, removed, what, None, what, argv)
+    }
+
+    /// `write`, committed as `subject`, with a line of the log before the
+    /// change's own for an operation made in the same commit.
+    #[allow(clippy::too_many_arguments)]
+    fn write_lines(&mut self, n: Books, also: &[(String, Vec<u8>)], removed: &[String], subject: &str, before: Option<(Vec<String>, String)>, what: &str, argv: Vec<String>) -> Result<Option<String>> {
         let (old, new) = (model::render(&self.books), model::render(&n));
         let on_disk = text_files(&self.root)?;
         let mut paths: Vec<String> = new.iter().filter(|(k, v)| on_disk.get(*k) != Some(v)).map(|(k, _)| k.clone()).collect();
@@ -286,7 +348,7 @@ impl Store {
             if repo::git_in(&self.root, &staged).is_ok() {
                 return Ok(String::new());
             }
-            let mut commit = vec!["commit", "-q", "-m", what, "--"];
+            let mut commit = vec!["commit", "-q", "-m", subject, "--"];
             commit.extend(paths.iter().map(String::as_str));
             repo::git_env(&self.root, &commit, &stamp.env())?;
             Ok(repo::git_in(&self.root, &["rev-parse", "--short", "HEAD"])?.trim().to_string())
@@ -312,6 +374,9 @@ impl Store {
         self.books = n;
         if commit.is_empty() {
             return Ok(None);
+        }
+        if let Some((argv, what)) = &before {
+            log(&self.root, &stamp, argv, what, &commit, None);
         }
         log(&self.root, &stamp, &argv, what, &commit, entry);
         Ok(Some(commit))
@@ -508,7 +573,7 @@ impl Store {
             .context("running hledger")?;
         if !out.status.success() {
             if !self.problems.is_empty() {
-                bail!("the books hold problems, so hledger cannot report on them:\n  {}\nabo check says how each is mended", self.problems.join("\n  "));
+                return Err(amiss(AmissKind::Problems, format!("the books hold problems, so hledger cannot report on them:\n  {}\nabo check says how each is mended", self.problems.join("\n  "))));
             }
             bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
         }

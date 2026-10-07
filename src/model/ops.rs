@@ -576,11 +576,13 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
             });
         }
     }
-    // The same bill twice, but when said to be another: what is owed, on
-    // the same account, within a week either side, however the bill was
-    // split among expenses — a bill booked again on the day it came; or,
-    // whatever its date, under the same number of the supplier's.
-    if let (Op::Bill { again: false, .. }, Some(new), Some(e)) = (op, n.debt(n.entries.len()).filter(|_| added.is_some()), added) {
+    // The same bill twice. Under the same number of the supplier's, owing
+    // the same on the same account, whatever its date and whatever it is
+    // said to be: a supplier numbers each bill once. Without a number, what
+    // is owed on the same account within a week either side, however the
+    // bill was split among expenses — a bill booked again on the day it
+    // came — unless it is said to be another.
+    if let (Op::Bill { again, .. }, Some(new), Some(e)) = (op, n.debt(n.entries.len()).filter(|_| added.is_some()), added) {
         let standing = m.standing();
         let near = |d: Date| (d - e.date).get_days().abs() <= BILL_WEEK;
         let number = match &e.kind {
@@ -588,15 +590,17 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
             _ => "",
         };
         let same_number = |k: &Kind| matches!(k, Kind::Bill(_, more) if !number.is_empty() && more.number == number);
-        let alike = |id: EntryId| {
-            let x = &m.entries[id - 1];
-            standing[id] && matches!(x.kind, Kind::Bill(..)) && (near(x.date) || same_number(&x.kind)) && m.debt(id).as_ref() == Some(&new)
-        };
-        if let Some(id) = (1..=m.entries.len()).find(|&id| alike(id)) {
-            let mut q = new.owed.quantity;
-            q.rescale(m.places(&new.owed.commodity));
-            let by = if same_number(&m.entries[id - 1].kind) { format!(", under the supplier's number {number},") } else { String::new() };
-            no!("N8", "{}, dated {}{by} owes the same, {q} {}, on {}; to book another like it, say it is another", name(m, id), m.entries[id - 1].date, new.owed.commodity, new.account);
+        let owes_same = |id: EntryId| standing[id] && matches!(m.entries[id - 1].kind, Kind::Bill(..)) && m.debt(id).as_ref() == Some(&new);
+        let mut q = new.owed.quantity;
+        q.rescale(m.places(&new.owed.commodity));
+        if let Some(id) = (1..=m.entries.len()).find(|&id| owes_same(id) && same_number(&m.entries[id - 1].kind)) {
+            v.push(Violation {
+                code: "N8",
+                what: format!("{}, dated {}, under the supplier's number {number}, owes the same, {q} {}, on {}; a supplier numbers each bill once, so this is that bill", name(m, id), m.entries[id - 1].date, new.owed.commodity, new.account),
+                of: Subject::Field("number"),
+            });
+        } else if let Some(id) = (1..=m.entries.len()).find(|&id| !again && owes_same(id) && near(m.entries[id - 1].date)) {
+            no!("N8", "{}, dated {} owes the same, {q} {}, on {}; to book another like it, say it is another", name(m, id), m.entries[id - 1].date, new.owed.commodity, new.account);
         }
     }
     v

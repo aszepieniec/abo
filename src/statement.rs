@@ -20,14 +20,14 @@ pub struct Line {
     pub amounts: Vec<Amount>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 pub struct Section {
     pub title: String,
     pub lines: Vec<Line>,
     pub total: Vec<Amount>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 pub struct Statement {
     pub title: String,
     /// The period as given, an hledger period such as `2026q3`; empty for
@@ -167,7 +167,18 @@ fn days(period: &str) -> Result<(Option<String>, Option<String>)> {
     Ok((from.map(|d| d.to_string()), to.map(|d| d.to_string())))
 }
 
-fn checked_period(period: &str) -> Result<()> {
+/// A period as given, `ytd` among them: refused in words of its own when
+/// hledger cannot read it.
+pub(crate) fn period_ok(period: &str) -> Result<()> {
+    checked_period(&hledger_period(period)?)
+}
+
+/// A period as given, `ytd` among them: its first and last day.
+pub(crate) fn period_days(period: &str) -> Result<(Option<String>, Option<String>)> {
+    days(&hledger_period(period)?)
+}
+
+pub(crate) fn checked_period(period: &str) -> Result<()> {
     // Read against no books, so that books hledger cannot read are not
     // blamed on the period.
     let read = || std::process::Command::new("hledger").args(["--no-conf", "-f", "-", "balance", "-p", period]).stdin(std::process::Stdio::null()).output().is_ok_and(|o| o.status.success());
@@ -299,7 +310,7 @@ pub fn vat_return(s: &Store, period: &str) -> Result<Statement> {
                     bail!(
                         "box {code} includes {x} {c} in {account}, and the books have no {c} price \
                          in {currency} to value it with: declare one, dated on or before each posting \
-                         (under Declarations, or abo price add <date> {c} <price> {currency})"
+                         (under Accounts and currencies in the browser, or abo price add <date> {c} <price> {currency})"
                     );
                 }
             }

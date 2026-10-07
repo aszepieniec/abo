@@ -274,3 +274,18 @@ pub fn shell(words: &[&str]) -> String {
 fn a_command_is_shown_as_a_shell_takes_it() {
     assert_eq!(shell(&["pay", "9", "--cost=11 USD", "--to=a'b", ""]), "abo pay 9 '--cost=11 USD' '--to=a'\\''b' ''");
 }
+
+/// A change as done, from `what`, which names it as a commit does: its
+/// verb in the past, and what it was done to. `Book Rent, October` is
+/// (`Booked`, `Rent, October`).
+pub fn done(what: &str) -> (String, String) {
+    const VERBS: [(&str, &str); 16] = [
+        ("Declare ", "Declared"), ("Take out ", "Took out"), ("Record ", "Recorded"), ("Change ", "Changed"), ("Set ", "Set"),
+        ("Unset ", "Unset"), ("File ", "Filed"), ("Book the bill ", "Booked the bill"), ("Book ", "Booked"), ("Pay ", "Paid"), ("Write off ", "Wrote off"),
+        ("Revert ", "Reverted"), ("Add ", "Added"), ("Remove ", "Removed"), ("Undo ", "Undid"), ("Close ", "Closed"),
+    ];
+    VERBS
+        .iter()
+        .find_map(|(now, then)| what.strip_prefix(now).map(|rest| (then.to_string(), rest.to_string())))
+        .unwrap_or_else(|| (what.to_string(), String::new()))
+}

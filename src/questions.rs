@@ -272,7 +272,9 @@ pub static INIT: &[Q] = &[
     Q::Group {
         title: "Currency and VAT",
         icon: "coins",
-        note: "",
+        note: "VAT method: effective books the VAT charged to customers and the VAT paid on purchases apart, and \
+               owes the one less the other; flat remits a flat rate of gross turnover; none is for a company not VAT \
+               registered.",
         qs: &[
             Q::Text {
                 key: "currency",

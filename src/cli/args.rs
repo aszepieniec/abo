@@ -349,8 +349,9 @@ pub(crate) enum Cmd {
         /// The filed document it is the bill of, by its path or hash.
         #[arg(long)]
         document: Option<String>,
-        /// Book it though a bill owing the same is booked already, within a
-        /// week of it or under the same number: it is another just like it.
+        /// Book it though a bill owing the same is booked already within a
+        /// week of it: it is another just like it. Not under the same number
+        /// of the supplier's, which is that bill whatever is said.
         #[arg(long)]
         again: bool,
         /// The supplier's own number for it, as the bill prints it, if it
