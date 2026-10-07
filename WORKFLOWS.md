@@ -480,6 +480,39 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 ---
 
+## Fourth web run of 2026-10-07: found and fixed
+
+Agents again worked in the browser alone. Fixed, each with a test
+(tests/web.rs `fourth_web_run`):
+
+- A report refused because of a change made outside abo now gives, under
+  **For whoever runs abo**, the same remedy as the notice: take it out
+  (git checkout), or mend it and commit it. It no longer says "abo check
+  says how each is mended".
+- The companies list flags a company whose books hold problems or a change
+  abo did not make, in plain words, with a link to the company.
+- Write-off (B5): **To** leaves out `invoice.income` and every account an
+  invoice was booked to. Its hint names an account such as Income:Forgiven
+  to declare first, with a link to **Accounts and currencies**. N4 is
+  unchanged. A bill's or an invoice's page has a **Write off** button next
+  to **Pay**.
+- A refused posting to an account that a debt is on (I-P3) says where to go
+  instead, with links.
+- Every list of accounts offered for postings shows only leaves (I-A2): the
+  entry form, Pay, Reconcile, and a payment option's account.
+- Correct (F5): the new invoice form is filled in as the cancelled invoice
+  was given. A VAT rate or income account that came from the default is
+  left blank. Its note starts "Replaces invoice N, cancelled by credit
+  note M.", which can be edited.
+- Words:
+  - Books' tiles give accounts in full.
+  - The **Short name** hint no longer mentions the command line.
+  - Every period hint lists "last quarter" and "this year".
+  - Reconcile says what it is for under its heading. Before an account is
+    chosen, its amount and date labels fit both a statement and a count.
+    When nothing is left to clear, it says "The books agree: ... in the
+    books, as counted" (or "as the statement says").
+
 ## Third web run of 2026-10-07: found and fixed
 
 Agents again worked in the browser alone. Fixed, each with a test
