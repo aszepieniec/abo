@@ -302,15 +302,21 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Pl { period, pdf } => {
             let s = Store::open(&here)?;
-            statement(&s, statement::profit_and_loss(&s, &period)?, pdf, cli.json)
+            statement(&s, statement::profit_and_loss(&s, &period)?, pdf, cli.json)?;
+            still(&s);
+            Ok(())
         }
         Cmd::Bs { date, pdf } => {
             let s = Store::open(&here)?;
-            statement(&s, statement::balance_sheet(&s, &input::day(date.as_deref())?.to_string())?, pdf, cli.json)
+            statement(&s, statement::balance_sheet(&s, &input::day(date.as_deref())?.to_string())?, pdf, cli.json)?;
+            still(&s);
+            Ok(())
         }
         Cmd::Vat { period, pdf } => {
             let s = Store::open(&here)?;
-            statement(&s, statement::vat_return(&s, &period)?, pdf, cli.json)
+            statement(&s, statement::vat_return(&s, &period)?, pdf, cli.json)?;
+            still(&s);
+            Ok(())
         }
         Cmd::Log { last, since } => {
             let s = Store::open(&here)?;
@@ -347,8 +353,17 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Undo => {
             let mut s = Store::open(&here)?;
+            // What it takes back, as the log says it: an undo's own line names
+            // the commit it took back, whose change it makes again.
+            let lines = store::lines(&s.root);
+            let what = |l: &serde_json::Value| l["what"].as_str().unwrap_or_default().to_string();
+            let last = lines.last().map(what).unwrap_or_default();
+            let said = match last.strip_prefix("Undo ") {
+                Some(c) => format!("Made again: {}", lines.iter().find(|l| l["commit"].as_str() == Some(c)).map(what).unwrap_or(last.clone())),
+                None => format!("Took back: {last}"),
+            };
             let commit = s.undo()?;
-            emit(cli.json, &serde_json::json!({ "commit": commit }), || format!("Took back the last change. Committed {commit}."))
+            emit(cli.json, &serde_json::json!({ "commit": commit, "what": said }), || format!("{said}. Committed {commit}."))
         }
         Cmd::Company { name, address, country, tax_id } => {
             let mut s = Store::open(&here)?;
@@ -534,10 +549,13 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Tidy => {
             let mut s = Store::open(&here)?;
-            let commit = s.tidy()?;
+            let (commit, rewrote) = s.tidy()?;
             let left = if s.problems.is_empty() { String::new() } else { format!("\nThe books still hold problems tidying does not mend:\n  {}\n{}", s.problems.join("\n  "), mending(&s)) };
             emit(cli.json, &serde_json::json!({ "commit": commit, "problems": s.problems }), || match &commit {
                 Some(c) => format!("Rewrote the books as abo writes them. Committed {c}.{left}"),
+                // Written back as the last commit has them: a hand edit of what
+                // abo derives, which changed nothing, taken out.
+                None if !rewrote.is_empty() => format!("Wrote {} back as abo writes it, as the last commit has it: what was changed there is derived, and changed nothing.{left}", rewrote.join(", ")),
                 None => format!("Nothing to tidy.{left}"),
             })
         }
@@ -628,9 +646,22 @@ pub(crate) fn changed_from(s: &mut Store, op: &Op, file: Option<&str>, also: &[(
     let r = serde_json::json!({ "commit": commit, "entry": entry, "what": what });
     emit(json, &r, || match (&commit, entry, description) {
         (None, ..) => "Nothing to change: the books say that already.".to_string(),
+        // What moves money is said with its amount, as the log says it.
+        (Some(c), Some(id), Some(_)) if matches!(op, Op::Pay { .. } | Op::WriteOff { .. } | Op::Revert { .. }) => format!("{}: entry {id}.\nCommitted {c}.", past(what)),
         (Some(c), Some(id), Some(d)) => format!("Booked entry {id}: {d}.\nCommitted {c}."),
         (Some(c), ..) => format!("{}. Committed {c}.", past(what)),
-    })
+    })?;
+    still(s);
+    Ok(())
+}
+
+/// Problems the books hold, read afresh: a change may mend one, and goes
+/// ahead on the others, which are said, so that it does so knowingly.
+pub(crate) fn still(s: &Store) {
+    let n = Store::open(&s.root).map_or(0, |now| now.problems.len());
+    if n > 0 {
+        eprintln!("warning: the books hold {n} problem{}; abo check lists them", if n == 1 { "" } else { "s" });
+    }
 }
 
 
@@ -667,6 +698,7 @@ pub(crate) fn flat(v: &toml::Value, prefix: &str) -> Vec<(String, String)> {
 pub(crate) fn passthrough(here: &std::path::Path, cmd: &str, args: &[String], json: bool) -> Result<()> {
     let s = Store::open(here)?;
     print!("{}", report::run(&s, cmd, args, json)?);
+    still(&s);
     Ok(())
 }
 
@@ -718,6 +750,9 @@ pub(crate) fn hints(r: &store::Refused) -> Vec<String> {
             ("I-I1", Subject::Field("reason")) => "--vat-reason '<why no VAT is charged>'".into(),
             ("N7", Subject::Account(a)) => format!("abo unrecord --account {a}, which takes out its latest statement"),
             ("N8", _) => "--again, if it is another bill just like it".into(),
+            // A count or a statement the books disagree with: what it shows and
+            // the books lack is booked first, a shortage say.
+            ("I-S3", _) => "abo post what the statement shows and the books lack (a shortage, a fee) first; or leave out what it does not show".into(),
             _ => continue,
         };
         if !v.contains(&h) {

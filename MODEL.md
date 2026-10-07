@@ -554,7 +554,7 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | | Guarantee | Rules | Properties |
 |---|---|---|---|
 | G-B1 | Each document has a path of its own and is filed once; it keeps its bill while the bill stands, and follows it when it is booked again | I-B1 | `document_paths_are_distinct`, `documents_alike_are_refused`, `documents_keep_their_bill`, `a_document_follows_its_bill` |
-| G-B2 | A bill is not booked twice by mistake: one with the date and postings of a standing bill is booked only when said to be another | N8 | `bills_alike_are_refused_unless_another` |
+| G-B2 | A bill is not booked twice by mistake: one owing what a standing bill owes, on its day, is booked only when said to be another | N8 | `bills_alike_are_refused_unless_another` |
 
 ### Whoever runs a command
 
@@ -760,8 +760,10 @@ neither for an entry made long ago.
   dated on or before a statement of that account in that commodity. What a
   statement shows stays shown: a whole statement stays whole, and its
   assertion stays written.
-- **N8** A bill is not added with the date and the postings of a standing
-  bill, unless the operation says it is another (`again`).
+- **N8** A bill is not added that owes what a standing bill owes — the same
+  amount, in the same commodity, on the same account — on the same day,
+  unless the operation says it is another (`again`). How either is split
+  among expenses does not tell two bills apart: what is owed does.
 
 The conditions hold of every operation but `undo`, which takes back the last
 one and makes no change of its own: a period closed by mistake is reopened by

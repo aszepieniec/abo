@@ -751,7 +751,7 @@ fn paying_invoices() {
     assert_eq!(open(), ["0.00 EUR", "70.00 EUR", "0.00 EUR", "0.00 EUR", ""]);
     let v = json(&dir, &["invoices"]);
     let status: Vec<(&str, bool, &str)> = v.as_array().unwrap().iter().map(|i| (i["status"].as_str().unwrap(), i["overdue"].as_bool().unwrap(), i["credits"].as_str().unwrap_or(""))).collect();
-    assert_eq!(status, [("settled", false, ""), ("part paid", true, ""), ("settled", false, ""), ("cancelled", false, ""), ("credit note", false, "2026-0004")]);
+    assert_eq!(status, [("settled", false, ""), ("part paid", true, ""), ("written off", false, ""), ("cancelled", false, ""), ("credit note", false, "2026-0004")]);
     // And as a person reads them.
     let text = out(&abo(&dir, &["invoices"], ""));
     assert!(text.contains("part paid, 70.00 EUR open, overdue") && text.contains("credits 2026-0004"), "{text}");

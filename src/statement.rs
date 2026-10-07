@@ -159,7 +159,14 @@ pub fn profit_and_loss(s: &Store, period: &str) -> Result<Statement> {
         date: None,
         company: s.books.config.company.name.clone(),
         sections: vec![income, expenses],
-        bottom: Some(Line { code: None, label: "Profit for the period".into(), amounts: amounts(&s.books, &profit) }),
+        bottom: Some(match profit.values().all(|q| *q <= Decimal::ZERO) && profit.values().any(|q| !q.is_zero()) {
+            true => {
+                let mut loss = Bag::new();
+                add(&mut loss, &profit, Decimal::NEGATIVE_ONE);
+                Line { code: None, label: "Loss for the period".into(), amounts: amounts(&s.books, &loss) }
+            }
+            false => Line { code: None, label: "Profit for the period".into(), amounts: amounts(&s.books, &profit) },
+        }),
     })
 }
 
@@ -171,7 +178,9 @@ pub fn balance_sheet(s: &Store, date: &str) -> Result<Statement> {
         .to_string();
     // An exchange, booked at its cost, is equity's conversion, or the sheet
     // would not come out nil.
-    let extra = vec!["-H", "-e", end.as_str(), "--infer-equity"];
+    // At cost, so that what is held or owed in another commodity is in the
+    // company's currency, at what it was booked at (MODEL.md I-E4).
+    let extra = vec!["-H", "-e", end.as_str(), "--infer-equity", "-B"];
 
     let (assets, asset_total) = section(s, "Assets", "assets", &extra, false)?;
     let (liabilities, liability_total) = section(s, "Liabilities", "liabilities", &extra, true)?;

@@ -74,7 +74,8 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
         Op::Post { date, description, postings } => n.entries.push(entry(date, description, Kind::Plain(postings))),
         Op::File { sha256, date, name, ext, bill } => {
             if let Some(d) = m.documents.get(&sha256) {
-                return Err(format!("this document is filed already, as {}", d.path(&sha256)));
+                let booked = d.of.filter(|of| m.standing()[*of]).map(|of| format!(", the document of {}", super::explain::name(m, of))).unwrap_or_default();
+                return Err(format!("this document is filed already, as {}{booked}", d.path(&sha256)));
             }
             n.documents.insert(sha256, Document { date, name, ext, of: bill });
         }
@@ -529,16 +530,13 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
             }
         }
     }
-    // The same bill twice, but when said to be another.
-    if let Op::Bill { date, postings, again: false, .. } = op {
-        let key = |ps: &[Posting]| {
-            let mut k: Vec<String> = ps.iter().map(|p| format!("{} {} {:?}", p.account, p.amount.quantity.normalize(), p.cost.as_ref().map(|c| c.quantity.normalize()))).collect();
-            k.sort();
-            k
-        };
+    // The same bill twice, but when said to be another: what is owed, on
+    // the same account and day, however the bill was split among expenses.
+    if let (Op::Bill { again: false, .. }, Some(new)) = (op, n.debt(n.entries.len()).filter(|_| added.is_some())) {
+        let date = added.map(|e| e.date);
         let standing = m.standing();
-        if let Some(id) = (1..=m.entries.len()).find(|&id| standing[id] && matches!(&m.entries[id - 1].kind, Kind::Bill(ps) if m.entries[id - 1].date == *date && key(ps) == key(postings))) {
-            no!("N8", "{} has this date and these postings already; to book another just like it, say it is another", name(m, id));
+        if let Some(id) = (1..=m.entries.len()).find(|&id| standing[id] && matches!(m.entries[id - 1].kind, Kind::Bill(_)) && Some(m.entries[id - 1].date) == date && m.debt(id).as_ref() == Some(&new)) {
+            no!("N8", "{} owes the same, {} {}, on {} on the same day; to book another like it, say it is another", name(m, id), new.owed.quantity.normalize(), new.owed.commodity, new.account);
         }
     }
     v

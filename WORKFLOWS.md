@@ -185,9 +185,10 @@ a document, must be the document's date.
 
 ### B3. The same bill twice — Supported
 Filing a document already filed is refused; booking a document a standing
-bill has is refused (MODEL.md I-B1); so is a bill with the date and the
-postings of a standing one, document or not, unless it is said to be
-another — `abo bill --again`, or the checkbox on the form (N8).
+bill has is refused (MODEL.md I-B1); so is a bill owing what a standing
+one owes, on the same account and day, document or not and however it is
+split among expenses, unless it is said to be another — `abo bill
+--again`, or the checkbox on the form (N8).
 
 ### B4. Pay a bill, or receive an invoice's payment — Supported (browser, CLI)
 A payment names the one bill or invoice it pays, by its id; whether that is
@@ -213,7 +214,8 @@ on the Pay page, to an account chosen for it. CLI: `abo write-off <id>
 --to <account>`. An invoice is written off to an expense account, a bill to
 an income account; a write-off moves no money, so another account is refused
 (MODEL.md N4).
-**Done when** nothing is open, and what was open is in that account.
+**Done when** nothing is open, what was open is in that account, and the
+debt shows as written off, not settled.
 
 ---
 
@@ -305,9 +307,10 @@ the period, matching `hledger balance` over the same period. Downloading a PDF
 changes nothing in the books.
 
 ### E2. Balance sheet at a date — Supported
-**Done when** assets, liabilities and equity are listed, unclosed profit shows
-as an equity line, and the bottom line (assets less liabilities and equity) is
-nil.
+**Done when** assets, liabilities and equity are listed in the company's
+currency — what is held or owed in another at what it was booked at —
+unclosed profit shows as an equity line, and the bottom line (assets less
+liabilities and equity) is nil.
 
 ### E3. Tax return for a period — Supported once configured
 Needs a box for each on the form: `abo config set report.vat.<code> '{ label
@@ -412,7 +415,30 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 ---
 
-## CLI run of 2026-10-07: found and fixed, not yet run again
+## Second CLI run of 2026-10-07: found and fixed, not yet run again
+
+The same four scenarios' agents, afresh, on the fixes of the first. Not
+clean: three of four went round in a loop over a hand edit. Each fault has
+a test under "the second CLI run, 2026-10-07". Output held to ASCII.
+
+| Workflow | Found, fixed |
+|---|---|
+| (S26) | `abo check` said to declare an account; the hand edit not committed then refused that, naming no way out. The refusal now gives the git commands that commit or take out the edit. A change made on books holding a problem went ahead silently; it now warns that they hold problems. `tidy` wrote back a hand edit of an invoice's derived postings and said "Nothing to tidy"; it now says what it wrote back, and why. An unreadable file now says how to mend it |
+| B3 | The same bill split otherwise among expenses got past N8, which now compares what is owed, not every posting |
+| E2 | The balance sheet showed what is owed in USD in USD, beside hledger's conversion accounts; it is now at cost, in the company's currency |
+| B5 | A debt written off showed as settled; now "written off" |
+| B4, F2, D1 | pay, write-off and revert said "Booked entry N" and not the amount; undo said only "Took back the last change"; unrecord named no statement. Each now says what it did |
+| E1 | A loss was "Profit for the period" below nought; `pl` and `vat` took no `-p` |
+| A3 | A command run in a data directory named none of the companies there |
+| B3 | Filing a document twice did not say which bill it is the document of |
+
+Not abo's: messages init printed after the next question came from the run's
+own wrapper, which showed what abo wrote to stdout before what it wrote to
+stderr. Left as they are: a period's heading says `last quarter` without its
+dates; entry ids follow from their place (see below); a reverse-charge sale
+is booked to the same income account as any other.
+
+## CLI run of 2026-10-07: found and fixed
 
 The first run of SCENARIOS.md, the command line alone: four fresh agents
 with a shell, the books and no source, judged on the books afterwards. Not

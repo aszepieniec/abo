@@ -221,7 +221,8 @@ pub(crate) enum ConfigCmd {
 pub(crate) enum AccountCmd {
     /// The declared accounts. The same as no subcommand.
     List,
-    /// Declare an account: its first segment a class, Assets to Expenses.
+    /// Declare an account: its first segment a class, one of Assets,
+    /// Liabilities, Equity, Income and Expenses, as Expenses:Rent.
     Add { account: String },
     /// Take out an account nothing uses.
     Remove { account: String },
@@ -382,7 +383,7 @@ pub(crate) enum Cmd {
     Pl {
         /// An hledger period expression, e.g. 2026, 2026q1, "last month".
         /// Without one, all time.
-        #[arg(long, default_value = "")]
+        #[arg(short, long, default_value = "")]
         period: String,
         /// Also write a PDF here.
         #[arg(long)]
@@ -401,7 +402,7 @@ pub(crate) enum Cmd {
     Vat {
         /// An hledger period expression, e.g. 2026q3, "last quarter".
         /// Without one, all time.
-        #[arg(long, default_value = "")]
+        #[arg(short, long, default_value = "")]
         period: String,
         /// Also write a PDF here.
         #[arg(long)]

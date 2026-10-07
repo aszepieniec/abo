@@ -260,7 +260,7 @@ pub static INIT: &[Q] = &[
         title: "Where invoices ask to be paid",
         icon: "inbox",
         note: "None, one or several options. Choose a kind for each and answer its questions, or skip. \
-               They can be changed later, on the company page or with abo payment-options.",
+               They can be changed later.",
         qs: &[Q::Repeat {
             key: "p",
             item: OPTION,

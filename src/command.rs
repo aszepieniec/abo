@@ -129,7 +129,10 @@ pub fn subject(op: &Op, m: &Books, n: &Books) -> String {
         Op::WriteOff { debt: d, .. } => format!("Write off {}", name(m, *d)),
         Op::Revert { entry, .. } => format!("Revert {}", name(m, *entry)),
         Op::Record { account, date, .. } => format!("Record the statement of {account} on {date}"),
-        Op::Unrecord { account, .. } => format!("Take out the latest statement of {account}"),
+        Op::Unrecord { account, commodity } => match m.statements.keys().rfind(|k| &k.0 == account && &k.1 == commodity) {
+            Some(k) => format!("Take out the statement of {account} on {}", k.2),
+            None => format!("Take out the latest statement of {account}"),
+        },
         Op::ConfigSet { key, .. } => format!("Set {key}"),
         Op::ConfigUnset { key } => format!("Unset {key}"),
         Op::Company { .. } => "Change the company's details".into(),

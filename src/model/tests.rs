@@ -2064,8 +2064,12 @@ fn bills_alike_are_refused_unless_another(#[strategy(plan())] plan: Vec<Step>, b
     let Some(b) = pick(&bill, &bills) else { return Ok(()) };
     let e = &m.entries[b - 1];
     let Kind::Bill(postings) = &e.kind else { unreachable!() };
+    // Split otherwise among expenses, it owes the same: the same bill.
     let mut postings = postings.clone();
     postings.reverse();
+    if let Some(p) = postings.iter_mut().find(|p| p.account == "Expenses:Hosting") {
+        p.account = "Expenses:Other".into();
+    }
     let twice = |again| Op::Bill { date: e.date, description: "Again".into(), postings: postings.clone(), document: None, again };
     let once = apply(&m, &twice(false), today);
     prop_assert!(once.as_ref().is_err_and(|v| v.iter().any(|v| v.code == "N8")), "{:?}", once.map(|_| ()));

@@ -422,6 +422,8 @@ pub enum Status {
     Open,
     PartPaid,
     Settled,
+    /// Nothing open, and some of it written off rather than paid.
+    WrittenOff,
     Cancelled,
 }
 
@@ -432,6 +434,7 @@ impl Status {
             Status::Open => "open",
             Status::PartPaid => "part paid",
             Status::Settled => "settled",
+            Status::WrittenOff => "written off",
             Status::Cancelled => "cancelled",
         }
     }
@@ -699,6 +702,7 @@ impl Books {
         let open = self.open(d, standing);
         Some(match () {
             _ if !standing[d] => Status::Cancelled,
+            _ if open.is_zero() && self.payments(d, standing).iter().any(|&p| self.postings(p).iter().any(|x| matches!(class(&x.account), "Income" | "Expenses"))) => Status::WrittenOff,
             _ if open.is_zero() => Status::Settled,
             _ if open < owed => Status::PartPaid,
             _ => Status::Open,

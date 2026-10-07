@@ -85,9 +85,17 @@ pub(crate) fn text_files(root: &Path) -> Result<Files> {
 
 impl Store {
     pub fn open(dir: &Path) -> Result<Store> {
-        let root = repo::books_root(dir)?.with_context(|| format!("no abo.toml in {} or any parent directory", dir.display()))?;
+        let root = repo::books_root(dir)?.with_context(|| {
+            // A data directory: the companies in it, by their directories.
+            let mut here: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten().filter(|e| e.path().join("abo.toml").is_file()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+            here.sort();
+            match here.is_empty() {
+                true => format!("no abo.toml in {} or any parent directory", dir.display()),
+                false => format!("no abo.toml in {} or any parent directory; it holds the books of {}: cd into one, or give --dir", dir.display(), here.join(", ")),
+            }
+        })?;
         let (books, mut problems) = model::read(&text_files(&root)?);
-        let books = books.with_context(|| format!("the books cannot be read:\n  {}", problems.join("\n  ")))?;
+        let books = books.with_context(|| format!("the books cannot be read:\n  {}\nMend it by hand at the line named, or take the edit out with git checkout -- <file>; git diff shows what changed", problems.join("\n  ")))?;
         // The hashes the books hold are checks: the files must have them.
         let mut binaries: Vec<(String, String)> = books.documents.iter().map(|(h, d)| (d.path(h), h.clone())).collect();
         for id in 1..=books.entries.len() {
@@ -134,7 +142,7 @@ impl Store {
     /// the books hold do not stop a change; one it would bring does (`apply`).
     pub fn changeable(&self) -> Result<()> {
         if let Some(f) = self.edited()?.first() {
-            bail!("{f} has changes no abo command made; commit them, take them out, or tidy them, first");
+            bail!("{f} has changes no abo command made. Commit them (git commit -m 'By hand' -- {f}), take them out (git checkout -- {f}), or tidy them (abo tidy) first; abo check says what they break");
         }
         Ok(())
     }
@@ -149,7 +157,10 @@ impl Store {
     /// `abo tidy`: take in the files as they are, hand edits and all, and
     /// write them as `render` does — unless a hand edit brings a problem the
     /// last commit did not hold, which is said, with where it is.
-    pub fn tidy(&mut self) -> Result<Option<String>> {
+    /// The commit, if one was made, and the files written back as abo
+    /// writes them: some hold what the last commit holds, a hand edit of a
+    /// derived value — an invoice's postings — taken out.
+    pub fn tidy(&mut self) -> Result<(Option<String>, Vec<String>)> {
         let (before, _) = model::read(&head_files(&self.root)?);
         let before = before.map(|b| model::check(&b)).unwrap_or_default();
         let new: Vec<&String> = model::check(&self.books)
@@ -167,12 +178,12 @@ impl Store {
         let differ = render_on_disk(&self.root, &self.books)?;
         let edited: Vec<(String, Vec<u8>)> = self.edited()?.into_iter().filter(|f| !differ.contains(f)).filter_map(|f| std::fs::read(self.root.join(&f)).ok().map(|b| (f, b))).collect();
         if differ.is_empty() && edited.is_empty() {
-            return Ok(None);
+            return Ok((None, vec![]));
         }
         let books = self.books.clone();
         let commit = self.write(books, &edited, &[], "Tidy the books", vec!["tidy".into()])?;
         *self = Store::open(&self.root)?;
-        Ok(commit)
+        Ok((commit, differ))
     }
 
     fn write(&mut self, n: Books, also: &[(String, Vec<u8>)], removed: &[String], what: &str, argv: Vec<String>) -> Result<Option<String>> {
