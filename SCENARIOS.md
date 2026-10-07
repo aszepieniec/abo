@@ -207,6 +207,67 @@ Given to each person, with their scenarios.
 >
 > Last, say which finding you would want fixed first, and why.
 
+## Brief: web
+
+Given to each person, with their scenarios. S26 is not theirs to do: the
+person running the run makes each hand edit in their books, at the point
+S26 names, and tells them only that "someone changed the books outside abo";
+they then find out what the pages say, and whether they can put it right.
+
+> You keep the books of a small company, and you use **abo**, an accounting
+> program you have not used before, in a web browser. abo is running at
+> `$URL`. You have a browser and nothing else: no shell, no files but those
+> named in your scenarios, which you may upload. You drive the browser with
+> the `web` tool, one action a call:
+>
+> - `web go <url>` opens a page; `web back` goes back.
+> - `web read` shows the page as a person sees it: its title, its text, and
+>   every link, field and button, each numbered (`L3`, `F2`, `B1`), with a
+>   field's label, its value and, for a list, its choices.
+> - `web fill F2 'text'`, `web choose F4 'choice'`, `web tick F5`,
+>   `web upload F6 <file>` fill a field; `web click B1` or `web click L3`
+>   presses a button or follows a link, and shows the page it leads to.
+> - `web shot <file.png>` takes a picture of the page, which you may look at
+>   to see what `web read` cannot show: layout, colour, what stands out.
+>
+> Learn abo as a new user would: from its pages, what they say, and what
+> they say back. Do not look for abo's source, its documentation or its
+> files, and do not type addresses abo's pages do not lead to, but the one
+> you start at.
+>
+> Work through your scenarios in order. For each, report:
+>
+> - **Outcome**: done, done with trouble, or not done.
+> - **What you did**: every page, field and button, in order, the failed
+>   attempts too.
+> - **Findings**, each with the page and its words quoted verbatim:
+>   - where you got stuck, and how long it took to get unstuck;
+>   - what you misread at first, and what you took it to mean;
+>   - a refusal whose message did not tell you what to do instead;
+>   - a page that did not say what it is for, or what a field wants;
+>   - two pages that call the same thing by different names, or take it in
+>     different ways;
+>   - anything you could not find, or found only by guessing;
+>   - anything abo let you do that a bookkeeper would think wrong.
+>
+> Last, say which finding you would want fixed first, and why.
+
+## Setting up a web run
+
+For each person: a fresh copy of the books (the demo's, or an empty data
+directory for person 1), and `abo serve --dir <it> --port <their own>`,
+its output logged outside their reach. A headless Chrome of their own,
+started with `--remote-debugging-port`, and the `web` tool on their PATH:
+a short Python script that connects to that Chrome by Playwright over the
+DevTools protocol, does one action on its one tab, prints the page as
+`web read` does, and logs the action, the address and the answer outside
+their reach. Their shell is used only to call `web`; the brief forbids the
+rest, as the CLI brief forbade abo's source.
+
+The judging is as for the CLI: each scenario's books, journal and `git log`
+against WORKFLOWS.md. The web may use typography; the ASCII rule is the
+CLI's alone.
+
 ## Setting up a run
 
 For each person: a fresh directory under the scratchpad as `$HOME`, holding
