@@ -716,7 +716,14 @@ pub(crate) fn emit<T: serde::Serialize>(json: bool, value: &T, human: impl FnOnc
 /// How the problems `abo check` lists are mended, from what each is of.
 fn mending(s: &Store) -> String {
     let mut how: Vec<String> = vec![];
-    for v in model::check(&s.books) {
+    // What a hand edit not committed broke: that edit is taken out, or
+    // mended by hand; no abo command runs over it.
+    let by_hand = s.broken_by_hand().unwrap_or_default();
+    if !by_hand.is_empty() {
+        let these = s.edited().unwrap_or_default().join(" ");
+        how.push(format!("git checkout -- {these}, which takes out the hand edit not committed that brought {}; or mend it by hand, then abo tidy", if by_hand.len() == 1 { "the first" } else { "those above" }));
+    }
+    for v in model::check(&s.books).into_iter().filter(|v| !by_hand.iter().any(|p| p.ends_with(&v.to_string()))) {
         let line = match (&v.of, v.code) {
             (model::Subject::Account(a), "I-A1") => format!("abo account add {a}"),
             (model::Subject::Commodity(c), "I-A1") => format!("abo commodity add {c} <places>"),
@@ -729,7 +736,7 @@ fn mending(s: &Store) -> String {
     if s.problems.iter().any(|p| p.ends_with("not as abo writes it")) {
         how.push("abo tidy, for what is only not as abo writes it".into());
     }
-    if s.problems.len() > how.len() {
+    if s.problems.len() > how.len() + by_hand.len().saturating_sub(1) {
         let rest = if how.is_empty() { "" } else { ", for the rest" };
         how.push(format!("by hand, at the line named{rest}; git log -p shows what changed there"));
     }

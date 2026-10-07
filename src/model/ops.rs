@@ -536,7 +536,9 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
         let date = added.map(|e| e.date);
         let standing = m.standing();
         if let Some(id) = (1..=m.entries.len()).find(|&id| standing[id] && matches!(m.entries[id - 1].kind, Kind::Bill(_)) && Some(m.entries[id - 1].date) == date && m.debt(id).as_ref() == Some(&new)) {
-            no!("N8", "{} owes the same, {} {}, on {} on the same day; to book another like it, say it is another", name(m, id), new.owed.quantity.normalize(), new.owed.commodity, new.account);
+            let mut q = new.owed.quantity;
+            q.rescale(m.places(&new.owed.commodity));
+            no!("N8", "{} owes the same, {q} {}, on {} on the same day; to book another like it, say it is another", name(m, id), new.owed.commodity, new.account);
         }
     }
     v

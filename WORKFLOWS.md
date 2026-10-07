@@ -415,7 +415,27 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 ---
 
-## Second CLI run of 2026-10-07: found and fixed, not yet run again
+## Third CLI run of 2026-10-07: found and fixed, not yet run again
+
+Not clean, though no agent was stuck for long but over a hand edit, and
+what remains is mostly for a decision rather than a fix. Fixed, each with a
+test under "the second CLI run": `abo check`, for a hand edit not committed,
+still gave the abo command that the edit then held up, and the refusal's
+"commit them" led to committing broken books. The advice now follows from
+what the edit breaks: if nothing, `abo tidy` takes it in; if something, it
+is taken out with `git checkout`, or mended by hand. Also: the files an
+unreadable file's message names, `today` as a date, the help of
+`payment-options edit` and `remove`, an option's account declared with it as
+its help now says, N8 writing an amount to its places.
+
+Open, for a decision: a bill booked twice a few days apart is not caught
+(N8 is the same day); an entry's id is taken again after an undo; an issued
+invoice taken back by undo gives its number up again; a reversal dated today
+of what moved money leaves the bank with a movement no statement will show;
+a period's heading names no dates; reverse-charge sales share an income
+account with the rest.
+
+## Second CLI run of 2026-10-07: found and fixed
 
 The same four scenarios' agents, afresh, on the fixes of the first. Not
 clean: three of four went round in a loop over a hand edit. Each fault has

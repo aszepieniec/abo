@@ -1040,7 +1040,7 @@ fn abo_toml_is_checked_when_read() {
         let o = abo(&dir, &["check"]);
         assert!(!o.status.success() && String::from_utf8_lossy(&o.stdout).contains(says), "{says}: {}", String::from_utf8_lossy(&o.stdout));
         // Not committed, it holds every change up; abo would sign it.
-        refused(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"], "abo.toml has changes no abo command made");
+        refused(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"], "abo.toml: changed by hand");
     }
 }
 
@@ -1152,7 +1152,7 @@ fn file_and_book_files_nothing_it_cannot_book() {
                 --b0undary\r\nContent-Disposition: form-data; name=\"postings\"\r\n\r\nExpenses:General=1.00\nLiabilities:Payable=-1.00\r\n\
                 --b0undary\r\nContent-Disposition: form-data; name=\"token\"\r\n\r\nfb1\r\n--b0undary--\r\n";
     let (_, _, page) = send(&s, "POST", "/bill", "multipart/form-data; boundary=b0undary", body.as_bytes());
-    assert!(page.contains("changes no abo command made"), "{page}");
+    assert!(page.contains("changed by hand, by no abo command"), "{page}");
     assert!(!dir.join("bills").exists(), "the document was filed");
 }
 
@@ -1237,7 +1237,7 @@ fn an_undo_held_up_by_a_hand_edit_says_so() {
     let dir = books("undo-hand-edit", &[]);
     ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
     std::fs::write(dir.join("journal/2026.journal"), read(&dir, "journal/2026.journal").replace("Fees", "Fees, typed over")).unwrap();
-    refused(&dir, &["undo"], "journal/2026.journal has changes no abo command made");
+    refused(&dir, &["undo"], "journal/2026.journal: changed by hand");
 }
 
 #[test]
@@ -1895,8 +1895,26 @@ fn the_same_bill_split_otherwise_is_the_same_bill() {
 fn a_hand_edit_not_committed_is_refused_with_the_commands_that_clear_it() {
     let dir = books("dirty-advice", &[]);
     std::fs::write(dir.join("journal/accounts.journal"), read(&dir, "journal/accounts.journal").replace("account Expenses:General\n", "")).unwrap();
-    refused(&dir, &["account", "add", "Expenses:General"], "git commit -m 'By hand' -- journal/accounts.journal");
     refused(&dir, &["account", "add", "Expenses:General"], "git checkout -- journal/accounts.journal");
+    let o = abo(&dir, &["account", "add", "Expenses:General"]);
+    assert!(!err(&o).contains("git commit"), "{}", err(&o));
+}
+
+/// Third run: abo check still gave, for a hand edit not committed, the abo
+/// command its own refusal then refused; and "commit them" committed broken
+/// books. What an edit not committed breaks is now taken out, or mended by
+/// hand; one that breaks nothing, tidy takes in.
+#[test]
+fn check_mends_a_hand_edit_not_committed_by_taking_it_out() {
+    let dir = books("check-by-hand", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
+    std::fs::write(dir.join("journal/accounts.journal"), read(&dir, "journal/accounts.journal").replace("account Expenses:General\n", "")).unwrap();
+    let o = abo(&dir, &["check"]);
+    let said = String::from_utf8_lossy(&o.stdout);
+    assert!(said.contains("git checkout -- journal/accounts.journal") && !said.contains("abo account add"), "{said}");
+    git(&dir, &["checkout", "--", "journal/accounts.journal"]);
+    std::fs::write(dir.join("journal/2026.journal"), read(&dir, "journal/2026.journal").replace("Fees", "Bank fees")).unwrap();
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"], "It breaks nothing: abo tidy takes it in");
 }
 
 /// A change made on books holding a problem went ahead without a word.

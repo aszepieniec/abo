@@ -34,7 +34,7 @@ pub(crate) enum PaymentCmd {
         #[command(flatten)]
         parts: OptionParts,
     },
-    /// Change the option ID names, or starts, the id of. Without flags: the
+    /// Change the option whose id is ID, or starts with it. Without flags: the
     /// questions again, each answer on the line as it stands.
     Edit {
         id: String,
@@ -44,7 +44,7 @@ pub(crate) enum PaymentCmd {
         #[command(flatten)]
         parts: OptionParts,
     },
-    /// Remove the option ID names, or starts, the id of.
+    /// Remove the option whose id is ID, or starts with it.
     Remove { id: String },
 }
 
@@ -151,8 +151,9 @@ pub(crate) struct OptionParts {
     /// pay cash. Repeatable.
     #[arg(long = "details", alias = "detail")]
     pub(crate) details: Vec<String>,
-    /// The declared account money paid this way arrives in. Adding, it
-    /// defaults to Assets:Bank, Assets:Cash or Assets:Crypto by kind.
+    /// The account money paid this way arrives in, an asset; declared along
+    /// with the option if it is not yet. Adding, it defaults to Assets:Bank,
+    /// Assets:Cash or Assets:Crypto by kind.
     #[arg(long)]
     pub(crate) account: Option<String>,
 }

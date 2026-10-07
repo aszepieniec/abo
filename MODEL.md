@@ -1081,7 +1081,10 @@ no rules of its own: it is where the two differ.
   problem — declaring an account in use, say — goes ahead, as does one that
   leaves them as they are. The files it writes, it writes canonically.
 - **A hand edit not committed holds every operation up**, since abo's commit
-  would sign it as abo's own: it is committed, taken out, or tidied first.
+  would sign it as abo's own. One that brings no violation the last commit
+  did not hold, tidying takes in; one that does is taken out, or mended by
+  hand first. Committing a breaking edit is not advised: abo's commands on
+  top of it would not mend it, and the history would hold the break.
 - **`abo check`** lists the problems, each at its file and line — an entry at
   its date line, an account where it is first posted to, a statement at its
   own line — and says how each is mended: an undeclared account by declaring

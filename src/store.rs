@@ -95,7 +95,7 @@ impl Store {
             }
         })?;
         let (books, mut problems) = model::read(&text_files(&root)?);
-        let books = books.with_context(|| format!("the books cannot be read:\n  {}\nMend it by hand at the line named, or take the edit out with git checkout -- <file>; git diff shows what changed", problems.join("\n  ")))?;
+        let books = books.with_context(|| format!("the books cannot be read:\n  {}\n{}", problems.join("\n  "), unreadable_mend(&problems)))?;
         // The hashes the books hold are checks: the files must have them.
         let mut binaries: Vec<(String, String)> = books.documents.iter().map(|(h, d)| (d.path(h), h.clone())).collect();
         for id in 1..=books.entries.len() {
@@ -141,15 +141,38 @@ impl Store {
     /// abo command made, which abo's commit would sign as its own. Problems
     /// the books hold do not stop a change; one it would bring does (`apply`).
     pub fn changeable(&self) -> Result<()> {
-        if let Some(f) = self.edited()?.first() {
-            bail!("{f} has changes no abo command made. Commit them (git commit -m 'By hand' -- {f}), take them out (git checkout -- {f}), or tidy them (abo tidy) first; abo check says what they break");
+        let files = self.edited()?;
+        if files.is_empty() {
+            return Ok(());
         }
-        Ok(())
+        let these = files.join(" ");
+        let breaks = self.broken_by_hand()?;
+        if breaks.is_empty() {
+            bail!("{these}: changed by hand, by no abo command. It breaks nothing: abo tidy takes it in; git checkout -- {these} takes it out");
+        }
+        // Committed, a breaking edit would be the books' history; abo's own
+        // commands on top of it would not mend it. Taken out, or mended first.
+        bail!(
+            "{these}: changed by hand, by no abo command, and it breaks the books:\n  {}\nTake it out (git checkout -- {these}), or mend it by hand and then abo tidy",
+            breaks.join("\n  ")
+        );
+    }
+
+    /// The problems a hand edit not committed brings: those the books hold
+    /// that the last commit did not, each with its place.
+    pub fn broken_by_hand(&self) -> Result<Vec<String>> {
+        let (before, _) = model::read(&head_files(&self.root)?);
+        let before = before.map(|b| model::check(&b)).unwrap_or_default();
+        Ok(model::check(&self.books)
+            .iter()
+            .filter(|v| !before.iter().any(|b| b.code == v.code && b.what == v.what))
+            .filter_map(|v| self.problems.iter().find(|p| p.ends_with(&v.to_string())).cloned())
+            .collect())
     }
 
     /// The books' files that hold a change not committed: another file is
     /// not abo's to sign or to hold up.
-    fn edited(&self) -> Result<Vec<String>> {
+    pub fn edited(&self) -> Result<Vec<String>> {
         let ours = ["status", "--porcelain", "--untracked-files=no", "--", "abo.toml", "journal", "invoices", "bills", "templates"];
         Ok(repo::git_in(&self.root, &ours)?.lines().map(|l| l.get(3..).unwrap_or(l).to_string()).collect())
     }
@@ -161,17 +184,12 @@ impl Store {
     /// writes them: some hold what the last commit holds, a hand edit of a
     /// derived value — an invoice's postings — taken out.
     pub fn tidy(&mut self) -> Result<(Option<String>, Vec<String>)> {
-        let (before, _) = model::read(&head_files(&self.root)?);
-        let before = before.map(|b| model::check(&b)).unwrap_or_default();
-        let new: Vec<&String> = model::check(&self.books)
-            .iter()
-            .filter(|v| !before.iter().any(|b| b.code == v.code && b.what == v.what))
-            .filter_map(|v| self.problems.iter().find(|p| p.ends_with(&v.to_string())))
-            .collect();
+        let new = self.broken_by_hand()?;
         if !new.is_empty() {
+            let these = self.edited()?.join(" ");
             bail!(
-                "tidying takes in a hand edit only when it breaks nothing, and this one does:\n  {}\nMend it, or take it out with git checkout",
-                new.iter().map(|p| p.as_str()).collect::<Vec<_>>().join("\n  ")
+                "tidying takes in a hand edit only when it breaks nothing, and this one does:\n  {}\nMend it by hand, or take it out (git checkout -- {these})",
+                new.join("\n  ")
             );
         }
         // Edited by hand and written as abo writes it: committed as it is.
@@ -262,7 +280,8 @@ impl Store {
         }
         let dirty = repo::git_in(&self.root, &["status", "--porcelain"])?;
         if let Some(l) = dirty.lines().next() {
-            return Ok(Some(format!("{} has changes no abo command made; commit them, or take them out, first", l.get(3..).unwrap_or(l))));
+            let f = l.get(3..).unwrap_or(l);
+            return Ok(Some(format!("{f}: changed by hand, by no abo command; take it out (git checkout -- {f}), or abo tidy takes it in if it breaks nothing, first")));
         }
         if repo::git_in(&self.root, &["rev-parse", "--verify", "-q", "HEAD~1"]).is_err() {
             return Ok(Some("the last change opened the books; there is nothing before it to go back to".into()));
@@ -311,6 +330,14 @@ impl Store {
         *self = Store::open(&self.root)?;
         Ok(commit)
     }
+}
+
+/// How what cannot be read is mended: by hand at the line named, or the
+/// edit taken out of each file named.
+fn unreadable_mend(problems: &[String]) -> String {
+    let mut files: Vec<&str> = problems.iter().filter_map(|p| p.split(':').next()).collect();
+    files.dedup();
+    format!("Mend it by hand at the line named, or take the edit out (git checkout -- {}); git diff shows what changed", files.join(" "))
 }
 
 /// The text files `render` writes, as the last commit has them.
