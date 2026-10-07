@@ -468,6 +468,17 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 ---
 
+## After the eighth run: a hand edit's refusal says what and why
+
+What the agents ranked first in the eighth run was a rule kept: while the
+books' files hold a change abo did not make, abo runs no command, not even
+the one that would mend what the change broke. Kept, strict; its messages
+were not good enough, and now are: the refusal shows the change itself,
+line by line, what it breaks, why abo runs nothing while it is there (its
+commit would take the change in as abo's own), and the two ways out; `abo
+check` says the same first; `abo --help` and `abo check --help` state the
+rule.
+
 ## Eighth CLI run of 2026-10-07: clean but for decisions taken
 
 Every scenario done; every refusal met said what to do next; every hand

@@ -801,16 +801,8 @@ pub(crate) fn emit<T: serde::Serialize>(json: bool, value: &T, human: impl FnOnc
 fn mending(s: &Store) -> String {
     // Changes abo did not make come first: abo changes nothing while they
     // are there, so no abo command is a way out of them.
-    let edited = s.edited().unwrap_or_default();
-    if !edited.is_empty() {
-        let these = edited.join(" ");
-        // What breaks the books is not committed: taken out, or mended first.
-        let settle = if s.broken_by_hand().unwrap_or_default().is_empty() {
-            format!("commit them yourself (git commit -m '...' -- {these}), or take them out (git checkout -- {these})")
-        } else {
-            format!("they break the books, so take them out (git checkout -- {these}), or mend them by hand at the lines named and then commit them yourself")
-        };
-        return format!("To mend them:\n  {these}: changes abo did not make. Please settle them first: {settle}; abo changes nothing until then");
+    if let Ok(Some(why)) = s.hand_edit() {
+        return format!("To mend them, first:\n{why}");
     }
     let mut how: Vec<String> = vec![];
     for v in model::check(&s.books) {

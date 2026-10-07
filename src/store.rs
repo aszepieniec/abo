@@ -142,24 +142,49 @@ impl Store {
     /// abo command made, which abo's commit would sign as its own. Problems
     /// the books hold do not stop a change; one it would bring does (`apply`).
     pub fn changeable(&self) -> Result<()> {
+        if let Some(why) = self.hand_edit()? {
+            bail!("{why}");
+        }
+        Ok(())
+    }
+
+    /// What is to be said of changes abo did not make, if there are any:
+    /// the change itself, line by line, as git shows it; what it breaks;
+    /// why abo runs nothing while it is there, not even what would mend it;
+    /// and the two ways to settle it. One text, for every command that is
+    /// refused for it and for `abo check`.
+    pub fn hand_edit(&self) -> Result<Option<String>> {
         let files = self.edited()?;
         if files.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         let these = files.join(" ");
-        // abo leaves nothing uncommitted: these are someone else's, and theirs
-        // to settle. What they break is said, for information.
+        let mut diff = vec!["diff", "-U0", "--no-color", "--"];
+        diff.extend(files.iter().map(String::as_str));
+        let lines: Vec<String> = repo::git_in(&self.root, &diff)?
+            .lines()
+            .filter(|l| (l.starts_with('+') || l.starts_with('-')) && !l.starts_with("+++") && !l.starts_with("---"))
+            .map(String::from)
+            .collect();
+        let shown = match lines.len() {
+            0 => String::new(),
+            n if n <= 12 => format!("\n  {}", lines.join("\n  ")),
+            n => format!("\n  {}\n  ... and {} lines more (git diff shows them all)", lines[..12].join("\n  "), n - 12),
+        };
         let breaks = self.broken_by_hand()?;
-        let holds = if files.len() == 1 { "holds" } else { "hold" };
-        if breaks.is_empty() {
-            bail!("{these} {holds} changes abo did not make, and abo changes nothing while they are there. Please settle them first: commit them yourself (git commit -m '...' -- {these}), or take them out (git checkout -- {these}).");
-        }
-        // Committed, a change that breaks the books would be their history:
-        // it is taken out, or mended before it is committed.
-        bail!(
-            "{these} {holds} changes abo did not make, and they break the books:\n  {}\nabo changes nothing while they are there. Please take them out (git checkout -- {these}), or mend them by hand (git diff shows what changed) and then commit them yourself.",
-            breaks.join("\n  ")
-        );
+        let said = if breaks.is_empty() { String::new() } else { format!("\nIt breaks the books:\n  {}", breaks.join("\n  ")) };
+        let ways = if breaks.is_empty() {
+            format!("take it out (git checkout -- {these}), or commit it yourself (git commit -m '...' -- {these})")
+        } else {
+            // Committed, a change that breaks the books would be their history.
+            format!("take it out (git checkout -- {these}), which puts back what the last commit holds; or mend it by hand and then commit it yourself")
+        };
+        Ok(Some(format!(
+            "{these} {} a change abo did not make:{shown}{said}\n\
+             abo runs no command while it is there, not even one that would mend it: abo commits every change it makes, and its commit would take this one in as abo's own. \
+             Please {ways}.",
+            if files.len() == 1 { "holds" } else { "hold" }
+        )))
     }
 
     /// While the books break a rule, a change is made only if it mends one

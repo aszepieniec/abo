@@ -9,7 +9,12 @@ use rust_decimal::Decimal;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "abo", version, about = "accountant back office")]
+#[command(
+    name = "abo",
+    version,
+    about = "accountant back office",
+    after_help = "abo commits every change it makes. While the books' files hold a change it did not make (a file edited by hand, say), abo changes nothing, not even to mend what that change breaks: its commit would take the change in as abo's own. Take the change out with git checkout, or commit it yourself; abo check says which files, and what they break."
+)]
 pub(crate) struct Cli {
     /// Machine-readable output. This is the API schema.
     #[arg(long, global = true)]
@@ -632,7 +637,10 @@ pub(crate) enum Cmd {
         #[command(subcommand)]
         change: Option<PriceCmd>,
     },
-    /// What is wrong with the books, by file and line.
+    /// What is wrong with the books, by file and line, and how each is
+    /// mended. A change abo did not make (a file edited by hand) comes first:
+    /// while it is there abo changes nothing, so it is taken out or committed
+    /// by hand before any abo command mends the rest.
     Check,
     /// Rewrite the books as abo writes them, where they are not.
     Tidy,
