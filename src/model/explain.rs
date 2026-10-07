@@ -79,7 +79,7 @@ fn uses_account(m: &Books, a: &str) -> Vec<String> {
         v.push("a statement is recorded for it".to_string());
     }
     if m.config_accounts().iter().any(|x| x == a) {
-        v.push("abo.toml names it".to_string());
+        v.push("the company's settings name it (a payment option, the receivable, income or VAT)".to_string());
     }
     v
 }
@@ -105,7 +105,7 @@ fn uses_commodity(m: &Books, c: &str) -> Vec<String> {
         v.push("a statement is in it".to_string());
     }
     if m.config.company.currency == c {
-        v.push("abo.toml names it as the company's currency".to_string());
+        v.push("it is the company's currency".to_string());
     }
     v
 }

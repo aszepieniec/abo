@@ -55,8 +55,12 @@ pub(super) async fn booking(Books(s): Books, Path(id): Path<String>, Query(q): Q
                 @if let Some(n) = &number { " · " @if credit_note { "credit note " } @else { "invoice " } (n) }
             }
             @if let Kind::Invoice { content, .. } = &e.kind {
-                @let (rate, why, _) = views::vat_taken(b, content, q.get("vat").is_some_and(|v| v == "given"));
-                p { (rate) @if q.contains_key("vat") { " (" (why) ")" } @else if let model::InvoiceVat::Exempt { reason } = &content.vat { ": " (reason) } }
+                // Said alike whenever the page is opened: the rate and why, and
+                // at 0% the reason the invoice gives. Whether the rate was given
+                // is known at issue; later, from whether it is the default's.
+                @let given = match q.get("vat") { Some(v) => v == "given", None => views::vat_given(b, content) };
+                @let (rate, why, _) = views::vat_taken(b, content, given);
+                p { (rate) " (" (why) ")" @if let model::InvoiceVat::Exempt { reason } = &content.vat { ": " (reason) } }
             }
             @if let Some(r) = reversed {
                 div.flash.flash-info { (icon("info")) div { strong { "Reverted" } " by " a href={"/entry/" (r)} { (b.entries[r - 1].description) } } }
@@ -69,9 +73,16 @@ pub(super) async fn booking(Books(s): Books, Path(id): Path<String>, Query(q): Q
                     } @else {
                         table.list { tbody {
                             @for p in &paid_by {
+                                // What each took off, and whether it was paid or written off:
+                                // a write-off moves no money, to income or an expense.
+                                @let debt = b.debt(id);
+                                @let off = debt.as_ref().and_then(|d| b.takes_off(*p, d).map(|q| money_of(b, q, &d.owed.commodity)));
+                                @let written = b.postings(*p).iter().any(|x| matches!(model::class(&x.account), "Income" | "Expenses"));
                                 tr {
                                     td.date { (b.entries[p - 1].date) }
+                                    td { @if written { "Written off" } @else { "Paid" } }
                                     td { a href={"/entry/" (p)} { (b.entries[p - 1].description) } }
+                                    td.amt { (off.unwrap_or_default()) }
                                 }
                             }
                         } }
@@ -120,15 +131,16 @@ pub(super) async fn booking(Books(s): Books, Path(id): Path<String>, Query(q): Q
                     }
                 } @else if !credit_note {
                     @if reversed.is_none() {
-                        form method="post" action={"/entry/" (id) "/revert"} {
+                        form.inline method="post" action={"/entry/" (id) "/revert"} {
                             (token())
+                            label.field.inline { "Dated" input type="date" name="date" value=(store::today().map(|d| d.to_string()).unwrap_or_default()); }
                             button.btn-danger type="submit" disabled[!paid_by.is_empty()] { (icon("undo")) " Revert" }
                         }
                     }
                     span.muted.small {
                         @if reversed.is_some() { "Already reverted." }
                         @else if !paid_by.is_empty() { "Paid or written off, in part or in full: revert those first." }
-                        @else { "Books the opposite amounts as a new entry, dated today. This one stays." }
+                        @else { "Books the opposite amounts as a new entry, on the day given, today unless said. This one stays." }
                     }
                 }
                 span.nav { a.btn href=(back_to("/")) { (icon("left")) " Back" } }
@@ -219,7 +231,7 @@ pub(super) async fn entry_file(Books(mut s): Books, Path(id): Path<String>, mp: 
 /// A filed bill's document.
 pub(super) async fn bill_doc(Books(s): Books, Path(rest): Path<String>) -> Response {
     // A document the books name, and nothing else under bills/.
-    match s.document(&format!("bills/{rest}")).and_then(|b| store::sniff(&b).ok().map(|(_, mime)| (mime, b))) {
+    match s.document(&format!("bills/{rest}")).and_then(|b| store::kind_of(&b).ok().map(|(_, mime)| (mime, b))) {
         Some((mime, bytes)) => {
             let name = rest.rsplit('/').next().unwrap_or("document").to_string();
             ([("content-type", mime.to_string()), ("x-content-type-options", "nosniff".into()), ("content-disposition", format!("inline; filename=\"{name}\""))], bytes).into_response()
@@ -328,13 +340,15 @@ pub(super) async fn register(Books(s): Books, Query(q): Query<Fields>) -> Respon
     r
 }
 
-pub(super) async fn revert(Books(mut s): Books, Path(id): Path<String>, Form(f): Form<Once>) -> Response {
+pub(super) async fn revert(Books(mut s): Books, Path(id): Path<String>, Form(f): Form<Fields>) -> Response {
     // An entry by its id; anything else names none.
     let Ok(id) = id.parse::<usize>() else { return or_error(&s, "Not found", || Err(input::not_found(format!("there is no entry {id}")))) };
     let root = s.root.clone();
-    let r = once(Some(&root), &f.token, || {
-        let today = store::today()?;
-        change(&mut s, &Op::Revert { entry: id, date: today }, &[], &format!("/entry/{id}"))
+    let get = |k: &str| f.get(k).map_or("", |v| v.trim()).to_string();
+    let r = once(Some(&root), &get("token"), || {
+        // Dated as given, as `abo revert --date`; today unless said.
+        let date = if get("date").is_empty() { store::today()? } else { input::day(Some(&get("date")))? };
+        change(&mut s, &Op::Revert { entry: id, date }, &[], &format!("/entry/{id}"))
     });
     match r {
         Ok(to) => Redirect::to(&to).into_response(),

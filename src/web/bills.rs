@@ -189,7 +189,7 @@ pub(super) fn bill_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>) ->
                         label.field { "Date on the bill" input type="date" name="date" required value=(get("date")); }
                         label.field { "Issuer" span.hint { "Who sent it. The document is filed under this name and the date; without a document, not needed." } input type="text" name="issuer" value=(get("issuer")); }
                     }
-                    label.field { "Description" input type="text" name="description" required value=(get("description")); }
+                    label.field { "Description" span.hint { "Needed to book it; not to file the document alone, to book later." } input type="text" name="description" value=(get("description")); }
                     label.field { "The supplier's number for it" span.hint { "As the bill prints it, if it has one." } input type="text" name="number" value=(get("number")); }
                     label.field { "Due" span.hint { "If the bill says when." } input type="date" name="due" value=(get("due")); }
                     label.field { "Postings"
@@ -347,9 +347,10 @@ pub(super) async fn bill_submit(Books(mut s): Books, mp: Multipart) -> Response 
             Redirect::to(&to).into_response()
         }
         Err(e) => {
-            // Refused: the document is kept, and the form says so.
+            // Refused: the document is kept, and the form says so; not one
+            // cut short, which would be refused again.
             let mut f = f.clone();
-            if let Some(id) = held.as_deref().and_then(|b| keep(&root, b)) {
+            if let Some(id) = held.as_deref().filter(|b| store::sniff(b).is_ok()).and_then(|b| keep(&root, b)) {
                 f.insert("kept".into(), id);
             }
             again(&s, "Book a bill", || Ok(bill_page(&s, &f, Some(&e))))

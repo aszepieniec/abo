@@ -393,7 +393,7 @@ fn bills_page() {
     abo(&base, &["init", "Test Ltd", "--currency", "EUR", "--vat", "none", "--git-name", "Ann", "--git-email", "ann@example.invalid"]);
     let books = base.join("test-ltd");
     let scan = base.join("scan.pdf");
-    std::fs::write(&scan, b"%PDF-1.4\n% a bill\n").unwrap();
+    std::fs::write(&scan, b"%PDF-1.4\n% a bill\n%%EOF\n").unwrap();
     let filed = abo(&books, &["file", "--date", "2026-03-01", "--issuer", "Acme", &scan.to_string_lossy()]);
     let file = filed["what"].as_str().unwrap().strip_prefix("File ").unwrap().to_string();
     let s = serve(&books, &base);
@@ -436,7 +436,7 @@ fn bills_page() {
     let (_, _, refused) = http(&s, "POST", &format!("/entry/{hosting}/revert"), &[("token", "r1")]);
     assert!(refused.contains("I-R"), "{refused}");
     let scan2 = base.join("scan2.pdf");
-    std::fs::write(&scan2, b"%PDF-1.4\n% another bill\n").unwrap();
+    std::fs::write(&scan2, b"%PDF-1.4\n% another bill\n%%EOF\n").unwrap();
     let wrong = abo(&books, &["file", "--date", "2026-04-01", "--issuer", "Mistake", &scan2.to_string_lossy()]);
     let wrong = wrong["what"].as_str().unwrap().strip_prefix("File ").unwrap().to_string();
     let not_ours = abo(&books, &["bill", "--desc", "Not ours", "--document", &wrong, "Expenses:General=30.00", "Liabilities:Payable=-30.00"])["entry"].to_string();
@@ -453,7 +453,7 @@ fn bills_page() {
     let lost = abo(&books, &["bill", "--date", "2026-05-01", "--desc", "Lost", "Expenses:General=9.00", "Liabilities:Payable=-9.00"])["entry"].to_string();
     let (_, _, page) = http(&s, "GET", "/bills", &[]);
     assert!(page.contains(&format!("popovertarget=\"up-{lost}\"")) && page.contains(&format!("action=\"/entry/{lost}/file\"")) && page.contains("value=\"/bills\""), "{page}");
-    let body = "--b0undary\r\nContent-Disposition: form-data; name=\"document\"; filename=\"l.pdf\"\r\nContent-Type: application/pdf\r\n\r\n%PDF-1.4\n% lost\n\r\n\
+    let body = "--b0undary\r\nContent-Disposition: form-data; name=\"document\"; filename=\"l.pdf\"\r\nContent-Type: application/pdf\r\n\r\n%PDF-1.4\n% lost\n%%EOF\n\r\n\
                         --b0undary\r\nContent-Disposition: form-data; name=\"to\"\r\n\r\n/bills\r\n\
                         --b0undary\r\nContent-Disposition: form-data; name=\"token\"\r\n\r\nu1\r\n--b0undary--\r\n".to_string();
     let (status, to, page) = send(&s, "POST", &format!("/entry/{lost}/file"), "multipart/form-data; boundary=b0undary", body.as_bytes());
@@ -494,7 +494,7 @@ fn first_web_run() {
     assert!(page.contains("Accounts and currencies") && !page.contains(">Declarations<"), "{page}");
 
     // A bill filed alone, to book later: no booking.
-    let body = multipart(&[("token", "f1"), ("action", "file"), ("date", "2026-03-01"), ("issuer", "Acme")], Some(b"%PDF-1.4\n% one\n"));
+    let body = multipart(&[("token", "f1"), ("action", "file"), ("date", "2026-03-01"), ("issuer", "Acme")], Some(b"%PDF-1.4\n% one\n%%EOF\n"));
     let (status, to, page) = send(&s, "POST", "/bill", MP, &body);
     assert_eq!((status, to.starts_with("/bills?done=")), (303, true), "{page}");
     assert_eq!(last_argv(&books)[0], "file");
@@ -502,7 +502,7 @@ fn first_web_run() {
     // Filed and booked: one change, two lines in the log, one undo.
     let before = commits();
     let bill = [("token", "f2"), ("date", "2026-03-02"), ("issuer", "Hoster"), ("description", "Hosting"), ("number", "H-1"), ("postings", "Expenses:General=110.00\nLiabilities:Payable=-110.00")];
-    let (status, _, page) = send(&s, "POST", "/bill", MP, &multipart(&bill, Some(b"%PDF-1.4\n% two\n")));
+    let (status, _, page) = send(&s, "POST", "/bill", MP, &multipart(&bill, Some(b"%PDF-1.4\n% two\n%%EOF\n")));
     assert_eq!(status, 303, "{page}");
     assert_eq!(commits().trim().parse::<u32>().unwrap(), before.trim().parse::<u32>().unwrap() + 1);
     let log = std::fs::read_to_string(books.join(".abo/log.jsonl")).unwrap();
@@ -523,12 +523,12 @@ fn first_web_run() {
     // Same supplier number, said to be another: refused, in words, no code.
     let mut rebook = bill.to_vec();
     rebook[0] = ("token", "f2b");
-    let (status, _, _) = send(&s, "POST", "/bill", MP, &multipart(&rebook, Some(b"%PDF-1.4\n% two\n")));
+    let (status, _, _) = send(&s, "POST", "/bill", MP, &multipart(&rebook, Some(b"%PDF-1.4\n% two\n%%EOF\n")));
     assert_eq!(status, 303);
     let mut again = bill.to_vec();
     again[0] = ("token", "f3");
     again.push(("again", "on"));
-    let (status, _, page) = send(&s, "POST", "/bill", MP, &multipart(&again, Some(b"%PDF-1.4\n% three\n")));
+    let (status, _, page) = send(&s, "POST", "/bill", MP, &multipart(&again, Some(b"%PDF-1.4\n% three\n%%EOF\n")));
     assert_eq!(status, 422, "{page}");
     assert!(page.contains("so this is that bill") && page.contains("For whoever runs abo"), "{page}");
     assert!(!page.split("For whoever runs abo").next().unwrap().contains("N8"), "a code before the fold: {page}");
@@ -611,7 +611,7 @@ fn second_web_run() {
     assert_eq!(http(&s, "POST", "/post", &book).0, 303);
 
     // A refused bill keeps its document, and says every problem at once.
-    let (status, _, page) = send(&s, "POST", "/bill", MP, &multipart(&[("token", "b1"), ("action", "file"), ("date", "someday"), ("issuer", "")], Some(b"%PDF-1.4\n% kept\n")));
+    let (status, _, page) = send(&s, "POST", "/bill", MP, &multipart(&[("token", "b1"), ("action", "file"), ("date", "someday"), ("issuer", "")], Some(b"%PDF-1.4\n% kept\n%%EOF\n")));
     assert!(status == 422 && page.contains("name=\"kept\"") && page.contains("Kept from before"), "{page}");
     assert!(page.contains("not a date") && page.contains("an issuer is needed"), "both problems at once: {page}");
     let kept = page.split("name=\"kept\" value=\"").nth(1).and_then(|r| r.split('"').next()).unwrap().to_string();
@@ -690,4 +690,135 @@ fn second_web_run() {
     let page = http(&d, "GET", "/", &[]).2;
     assert!(page.contains("href=\"/c/test-ltd/\">Test Ltd</a>") && page.contains("cannot be read"), "{page}");
     git(&["checkout", "--", "abo.toml"]);
+}
+
+/// Found by the third web run, 2026-10-07: an invoice form that could not
+/// declare what it lacked, Revert dated today alone, a document cut short
+/// filed, figures of a statement taken out, a cash box given a statement,
+/// and an invoice's VAT said two ways.
+#[test]
+fn third_web_run() {
+    let base = std::env::temp_dir().join(format!("abo-web-run3-{}", std::process::id()));
+    let (books, s) = company_books(&base);
+    const MP: &str = "multipart/form-data; boundary=b0undary";
+    let outside = |page: &str, words: &str| page.split("<details").next().unwrap_or(page).contains(words);
+    let journal = || std::fs::read_dir(books.join("journal")).unwrap().flatten().map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).collect::<String>();
+
+    // An invoice in a currency not declared: declared from the form, which
+    // comes back as it was.
+    let invoice = [("token", "i1"), ("to", "Customer One\n1 Road"), ("items", "1|100.00|Advice"), ("date", "2026-04-02"), ("currency", "USD")];
+    let (status, _, page) = http(&s, "POST", "/invoice", &invoice);
+    assert!(status == 422 && page.contains("name=\"declare_commodity\" value=\"USD\""), "{page}");
+    let mut declare = invoice.to_vec();
+    declare[0] = ("token", "i2");
+    declare.extend([("declare_commodity", "USD"), ("places", "2")]);
+    let (status, _, page) = http(&s, "POST", "/invoice", &declare);
+    assert!(status == 200 && page.contains("Declared USD") && page.contains("1|100.00|Advice") && page.contains("value=\"USD\""), "{page}");
+    // Lacking its price, priced from the form, then issued.
+    let mut issue = invoice.to_vec();
+    issue[0] = ("token", "i3");
+    let (status, _, page) = http(&s, "POST", "/invoice", &issue);
+    assert!(status == 422 && page.contains("name=\"add_price\" value=\"USD\""), "{page}");
+    let mut price = invoice.to_vec();
+    price[0] = ("token", "i4");
+    price.extend([("add_price", "USD"), ("price_worth", "0.90 EUR"), ("price_date", "2026-04-02")]);
+    let (status, _, page) = http(&s, "POST", "/invoice", &price);
+    assert!(status == 200 && page.contains("Added the price of USD"), "{page}");
+    issue[0] = ("token", "i5");
+    let (status, _, page) = http(&s, "POST", "/invoice", &issue);
+    assert_eq!(status, 303, "{page}");
+
+    // A refusal says what the settings name in words, not the file's name.
+    let (status, _, page) = http(&s, "POST", "/declarations", &[("token", "d1"), ("action", "add-account"), ("value", "Assets:Receivable:Old")]);
+    assert!(status == 422 && page.contains("the company's settings name it") && !outside(&page, "abo.toml"), "{page}");
+
+    // Revert on the day given.
+    let (status, _, _) = http(&s, "POST", "/post", &[("token", "e1"), ("date", "2026-03-01"), ("description", "Fees"), ("postings", "Expenses:General=5.00\nAssets:Bank=-5.00")]);
+    assert_eq!(status, 303);
+    let page = http(&s, "GET", "/account?name=Expenses:General", &[]).2;
+    let id = page.split("href=\"/entry/").nth(1).and_then(|r| r.split(|c: char| !c.is_ascii_digit()).next()).unwrap().to_string();
+    let page = http(&s, "GET", &format!("/entry/{id}"), &[]).2;
+    assert!(page.contains("name=\"date\""), "{page}");
+    assert_eq!(http(&s, "POST", &format!("/entry/{id}/revert"), &[("token", "v1"), ("date", "2026-03-15")]).0, 303);
+    assert!(journal().contains("2026-03-15"), "{}", journal());
+
+    // A document cut short is refused.
+    let (status, _, page) = send(&s, "POST", "/bill", MP, &multipart(&[("token", "b1"), ("action", "file"), ("date", "2026-03-01"), ("issuer", "Acme")], Some(b"%PDF-1.4\n% half")));
+    assert!(status == 422 && page.contains("Not a whole PDF") && !page.contains("Kept from before"), "{page}");
+
+    // A bill's description, needed to book it, not to file the document.
+    let page = http(&s, "GET", "/bill", &[]).2;
+    assert!(page.contains("Needed to book it") && !page.contains("name=\"description\" required"), "{page}");
+
+    // A bill's page lists its payments with what each took off.
+    let (status, _, page) = send(&s, "POST", "/bill", MP, &multipart(&[("token", "b2"), ("date", "2026-03-03"), ("description", "Chairs"), ("postings", "Expenses:General=300.00\nLiabilities:Payable=-300.00")], None));
+    assert_eq!(status, 303, "{page}");
+    let page = http(&s, "GET", "/bills", &[]).2;
+    let n = page.split("bill ").nth(1).and_then(|r| r.split(|c: char| !c.is_ascii_digit()).next()).unwrap().to_string();
+    let (status, _, page) = http(&s, "POST", "/pay", &[("token", "p1"), ("debt", &n), ("date", "2026-03-04"), ("amount", "120.00"), ("from", "Assets:Bank")]);
+    assert_eq!(status, 303, "{page}");
+    let page = http(&s, "GET", &format!("/entry/{n}"), &[]).2;
+    assert!(page.contains(">Paid<") && page.contains("120.00"), "{page}");
+
+    // Reconcile lists the accounts money moves through; a statement taken
+    // out takes its figures with it.
+    let page = http(&s, "GET", "/reconcile", &[]).2;
+    assert!(!page.contains("value=\"Assets:Receivable\"") && page.contains("value=\"Assets:Bank\""), "{page}");
+    let (status, _, page) = http(&s, "POST", "/reconcile", &[("token", "r1"), ("action", "record"), ("account", "Assets:Bank"), ("commodity", "EUR"), ("date", "2026-03-31"), ("balance", "999.00")]);
+    assert!(status == 422 && page.contains("cash over or short"), "{page}");
+    assert_eq!(http(&s, "POST", "/reconcile", &[("token", "r2"), ("action", "record"), ("account", "Assets:Bank"), ("commodity", "EUR"), ("date", "2026-03-31"), ("balance", "0.00")]).0, 303);
+    let to = http(&s, "POST", "/reconcile", &[("token", "r3"), ("action", "unrecord"), ("account", "Assets:Bank"), ("commodity", "EUR"), ("balance", "0.00")]).1;
+    assert!(!to.contains("balance="), "{to}");
+    let page = http(&s, "GET", &to, &[]).2;
+    assert!(!page.contains("Per the statement"), "{page}");
+
+    // A cash box is counted.
+    assert_eq!(http(&s, "POST", "/post", &[("token", "e2"), ("date", "2026-03-05"), ("description", "Float"), ("postings", "Assets:Cash=50.00\nAssets:Bank=-50.00")]).0, 303);
+    let page = http(&s, "GET", "/reconcile?account=Assets:Cash", &[]).2;
+    assert!(page.contains("Counted") && page.contains("Record the count") && !page.contains("Closing balance on the statement"), "{page}");
+    let ticked = page.split("name=\"ref\" value=\"").nth(1).and_then(|r| r.split('"').next()).unwrap().to_string();
+    let to = http(&s, "POST", "/reconcile", &[("token", "r4"), ("action", "record"), ("account", "Assets:Cash"), ("commodity", "EUR"), ("date", "2026-03-31"), ("balance", "50.00"), ("ref", &ticked)]).1;
+    let page = http(&s, "GET", &to, &[]).2;
+    assert!(page.contains("Count of Assets:Cash"), "{page}");
+
+    // Payment terms labelled; no tax return for a company without VAT.
+    let page = http(&s, "GET", "/company", &[]).2;
+    assert!(page.contains("Days a customer has to pay") && !page.contains("/company/tax-return"), "{page}");
+
+    // The Log's diff a fold further.
+    let page = http(&s, "GET", "/log", &[]).2;
+    assert!(page.contains("Show the change to the files"), "{page}");
+    drop(s);
+
+    // A VAT-registered company: an invoice's page says its VAT one way,
+    // opened after issuing or later, and its correction keeps the reason.
+    let o = Command::new(env!("CARGO_BIN_EXE_abo"))
+        .args(["init", "Vat Co", "--currency", "EUR", "--vat", "effective", "--sales-rate", "21", "--tax-id", "NL123456789B01", "--git-name", "Ann", "--git-email", "ann@example.invalid"])
+        .current_dir(&base)
+        .env("HOME", &base)
+        .env("XDG_CONFIG_HOME", &base)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let s = serve(&base.join("vat-co"), &base);
+    let (status, to, page) = http(&s, "POST", "/invoice", &[("token", "v1"), ("to", "Kunde GmbH\nStrasse 1"), ("items", "1|100.00|Advice"), ("date", "2026-04-02"), ("customer_tax_id", "DE123456789"), ("vat_reason", "Reverse charge")]);
+    assert_eq!(status, 303, "{page}");
+    let first = http(&s, "GET", &to, &[]).2;
+    let later = http(&s, "GET", to.split('?').next().unwrap(), &[]).2;
+    let vat = |p: &str| p.split("<p>no VAT").nth(1).and_then(|r| r.split("</p>").next()).map(String::from);
+    assert!(vat(&first).is_some_and(|v| v.contains("Reverse charge")), "{first}");
+    assert_eq!(vat(&first), vat(&later));
+    let number = first.split("/invoice/").nth(1).unwrap().split(".pdf").next().unwrap().to_string();
+    let to = http(&s, "POST", &format!("/invoice/{number}/correct"), &[("token", "c1")]).1;
+    let page = http(&s, "GET", &to, &[]).2;
+    assert!(page.contains("name=\"vat_reason\" value=\"Reverse charge\""), "{page}");
+    drop(s);
+
+    // A new company VAT-registered says the rate it charges.
+    let d = serve(&base, &base);
+    let (status, _, page) = http(&d, "POST", "/new", &[("token", "n1"), ("p.n", "0"), ("name", "Rateless"), ("currency", "EUR"), ("method", "effective"), ("sales_rate", "")]);
+    assert!(status == 422 && page.contains("A rate is needed"), "{page}");
+    assert!(!base.join("rateless").exists());
+    drop(d);
+    std::fs::remove_dir_all(&base).unwrap();
 }

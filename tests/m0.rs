@@ -644,8 +644,8 @@ fn refile_missing_document() {
     let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n\n\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
     let (found, other) = (base.join("found.pdf"), base.join("other.pdf"));
-    std::fs::write(&found, b"%PDF-1.4\n% found\n").unwrap();
-    std::fs::write(&other, b"%PDF-1.4\n% other\n").unwrap();
+    std::fs::write(&found, b"%PDF-1.4\n% found\n%%EOF\n").unwrap();
+    std::fs::write(&other, b"%PDF-1.4\n% other\n%%EOF\n").unwrap();
 
     let bill = json(&dir, &["bill", "--date", "2026-02-14", "--desc", "Hosting", "Expenses:General=10.00", "Liabilities:Payable=-10.00"])["entry"].to_string();
     let journal = || std::fs::read_to_string(dir.join("journal/2026.journal")).unwrap();

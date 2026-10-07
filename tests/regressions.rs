@@ -122,7 +122,7 @@ fn clean(dir: &Path) {
 /// A document filed, not booked: its path.
 fn file(dir: &Path, issuer: &str, date: &str) -> String {
     let scan = dir.parent().unwrap().join(format!("{issuer}-{date}.pdf"));
-    std::fs::write(&scan, format!("%PDF-1.4\n% {issuer} {date}\n")).unwrap();
+    std::fs::write(&scan, format!("%PDF-1.4\n% {issuer} {date}\n%%EOF\n")).unwrap();
     filed(dir, &["file", "--date", date, "--issuer", issuer, &scan.to_string_lossy()])
 }
 
@@ -295,7 +295,7 @@ fn undoing_a_years_first_entry_takes_its_file() {
 fn a_document_that_looks_like_text_is_undone() {
     let dir = books("undo-document", &[]);
     let scan = dir.parent().unwrap().join("scan.pdf");
-    let mut bytes = b"%PDF-1.7\r\n%\xe2\xe3\xcf\xd3\r\n1 0 obj\r\n<< /Length 5 >>\rstream\r\n\xff\xfe abc\r\nendstream\r".to_vec();
+    let mut bytes = b"%PDF-1.7\r\n%\xe2\xe3\xcf\xd3\r\n1 0 obj\r\n<< /Length 5 >>\rstream\r\n\xff\xfe abc\r\nendstream\r\n%%EOF\n".to_vec();
     bytes.extend(b"\r\n%%EOF");
     std::fs::write(&scan, &bytes).unwrap();
     let path = filed(&dir, &["file", "--date", "2026-03-01", "--issuer", "Acme", &scan.to_string_lossy()]);
@@ -373,7 +373,7 @@ fn no_bill_is_booked_in_a_closed_period() {
     // Nor is its document filed, nor taken out.
     refused(&dir, &["unfile", &path], "N2");
     let late = dir.parent().unwrap().join("late.pdf");
-    std::fs::write(&late, b"%PDF-1.4\nlate").unwrap();
+    std::fs::write(&late, b"%PDF-1.4\nlate\n%%EOF\n").unwrap();
     refused(&dir, &["file", late.to_str().unwrap(), "--date", "2026-06-01", "--issuer", "Late"], "N2");
     assert!(!read(&dir, "journal/2026.journal").contains("Acme"));
     clean(&dir);
@@ -641,7 +641,7 @@ fn a_document_filed_for_a_booking_is_not_booked_again() {
     let dir = books("refile-hash", &[]);
     let lost = entry(&dir, &["bill", "--date", "2026-03-01", "--desc", "Lost", "Expenses:General=9.00", "Liabilities:Payable=-9.00"]);
     let found = dir.parent().unwrap().join("found.pdf");
-    std::fs::write(&found, b"%PDF-1.4\n% found\n").unwrap();
+    std::fs::write(&found, b"%PDF-1.4\n% found\n%%EOF\n").unwrap();
     let path = filed(&dir, &["file", "--date", "2026-03-01", "--issuer", "Lost", "--for", &lost, &found.to_string_lossy()]);
     assert!(read(&dir, "bills/index").contains(&format!("{path} {lost}")), "{}", read(&dir, "bills/index"));
     refused(&dir, &["bill", "--desc", "Twice", "--document", &path, "Expenses:General=9.00", "Liabilities:Payable=-9.00"], "which stands");
@@ -675,7 +675,7 @@ fn bill_amounts_are_stated_to_their_places() {
 fn a_stray_file_under_bills_is_not_filed() {
     let dir = books("stray", &[]);
     std::fs::create_dir_all(dir.join("bills/2026")).unwrap();
-    std::fs::write(dir.join("bills/2026/stray.pdf"), b"%PDF-1.4\n").unwrap();
+    std::fs::write(dir.join("bills/2026/stray.pdf"), b"%PDF-1.4\n%%EOF\n").unwrap();
     let s = serve(&dir);
     for path in ["/bill", "/bills"] {
         let (_, _, page) = http(&s, "GET", path, &[]);
@@ -798,7 +798,7 @@ fn no_name_holds_a_line_break() {
     // An issuer is a document's name in its path, which holds none.
     let dir = books("ctrl-issuer", &[]);
     let scan = dir.parent().unwrap().join("scan.pdf");
-    std::fs::write(&scan, b"%PDF-1.4\n").unwrap();
+    std::fs::write(&scan, b"%PDF-1.4\n%%EOF\n").unwrap();
     let path = filed(&dir, &["file", "--date", "2026-03-01", "--issuer", "a\nb", &scan.to_string_lossy()]);
     assert!(path.starts_with("bills/2026/2026-03-01-a-b-"), "{path}");
 }
@@ -977,7 +977,7 @@ fn no_text_hides_or_turns_its_letters() {
     refused(&dir, &["invoice", "--to", "C", "--item", "1|10|Con\u{202E}sulting", "--date", "2026-03-01"], "I-I1");
     // An issuer is a name in a path, of a-z, 0-9 and '-': what turns letters is left out.
     let scan = dir.parent().unwrap().join("scan.pdf");
-    std::fs::write(&scan, b"%PDF-1.4\n").unwrap();
+    std::fs::write(&scan, b"%PDF-1.4\n%%EOF\n").unwrap();
     let path = filed(&dir, &["file", "--date", "2026-03-01", "--issuer", "Ac\u{202E}me", &scan.to_string_lossy()]);
     assert!(path.starts_with("bills/2026/2026-03-01-acme-"), "{path}");
 }
@@ -1132,7 +1132,7 @@ fn a_date_is_read_as_a_date_before_anything_else() {
     let dir = books("dates-first", &[]);
     close(&dir, "2026-06-30");
     let scan = dir.parent().unwrap().join("scan.pdf");
-    std::fs::write(&scan, b"%PDF-1.4\n% a\n").unwrap();
+    std::fs::write(&scan, b"%PDF-1.4\n% a\n%%EOF\n").unwrap();
     for date in ["2026-1-5", "26-9-1"] {
         refused(&dir, &["file", "--date", date, "--issuer", "Early", &scan.to_string_lossy()], "not a date");
         refused(&dir, &["invoice", "--to", "C", "--item", "1|10|x", "--date", date], "not a date");
@@ -1146,7 +1146,7 @@ fn file_and_book_files_nothing_it_cannot_book() {
     ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
     std::fs::write(dir.join("journal/2026.journal"), read(&dir, "journal/2026.journal").replace("Fees", "Fees, typed over")).unwrap();
     let s = serve(&dir);
-    let body = "--b0undary\r\nContent-Disposition: form-data; name=\"document\"; filename=\"b.pdf\"\r\nContent-Type: application/pdf\r\n\r\n%PDF-1.4\n% b\n\r\n\
+    let body = "--b0undary\r\nContent-Disposition: form-data; name=\"document\"; filename=\"b.pdf\"\r\nContent-Type: application/pdf\r\n\r\n%PDF-1.4\n% b\n%%EOF\n\r\n\
                 --b0undary\r\nContent-Disposition: form-data; name=\"date\"\r\n\r\n2026-03-05\r\n\
                 --b0undary\r\nContent-Disposition: form-data; name=\"issuer\"\r\n\r\nAcme\r\n\
                 --b0undary\r\nContent-Disposition: form-data; name=\"description\"\r\n\r\nAcme\r\n\
@@ -1542,7 +1542,7 @@ fn a_document_uploaded_later_is_named_for_its_issuer() {
     let id = entry(&dir, &["bill", "--date", "2026-03-01", "--desc", "No document yet", "Expenses:General=5.00", "Liabilities:Payable=-5.00"]);
     let s = serve(&dir);
     let body = "--b\r\nContent-Disposition: form-data; name=\"token\"\r\n\r\nup\r\n--b\r\nContent-Disposition: form-data; name=\"issuer\"\r\n\r\nNodoc AG\r\n\
-         --b\r\nContent-Disposition: form-data; name=\"document\"; filename=\"x.pdf\"\r\nContent-Type: application/pdf\r\n\r\n%PDF-1.4\nlater\r\n--b--\r\n".to_string();
+         --b\r\nContent-Disposition: form-data; name=\"document\"; filename=\"x.pdf\"\r\nContent-Type: application/pdf\r\n\r\n%PDF-1.4\nlater\n%%EOF\r\n--b--\r\n".to_string();
     let (status, _, page) = send(&s, "POST", &format!("/entry/{id}/file"), "multipart/form-data; boundary=b", body.as_bytes());
     assert_eq!(status, 303, "{page}");
     assert!(read(&dir, "bills/index").contains("nodoc-ag"), "{}", read(&dir, "bills/index"));
@@ -1556,7 +1556,7 @@ fn a_document_filed_for_a_bill_is_dated_as_the_bill() {
     let id = entry(&dir, &["bill", "--date", "2026-03-01", "--desc", "Acme", "Expenses:General=5.00", "Liabilities:Payable=-5.00"]);
     close(&dir, "2026-06-30");
     let scan = dir.parent().unwrap().join("late-scan.pdf");
-    std::fs::write(&scan, b"%PDF-1.4\nlate scan").unwrap();
+    std::fs::write(&scan, b"%PDF-1.4\nlate scan\n%%EOF\n").unwrap();
     refused(&dir, &["file", scan.to_str().unwrap(), "--date", "2026-10-01", "--issuer", "Acme", "--for", &id], "I-B1");
     refused(&dir, &["file", scan.to_str().unwrap(), "--date", "2026-03-01", "--issuer", "Acme", "--for", &id], "N2");
 }
@@ -1803,7 +1803,7 @@ fn bills_lists_every_bill_and_what_waits_to_be_booked() {
     let dir = books("bills-list", &[]);
     let id = entry(&dir, &["bill", "--date", "2026-03-03", "--desc", "Chairs", "Expenses:General=400.00", "Liabilities:Payable=-400.00"]);
     ok(&dir, &["pay", &id, "--amount", "100.00", "--date", "2026-03-04"]);
-    std::fs::write(dir.join("scan.pdf"), b"%PDF-1.4 waiting").unwrap();
+    std::fs::write(dir.join("scan.pdf"), b"%PDF-1.4 waiting\n%%EOF\n").unwrap();
     ok(&dir, &["file", "--date", "2026-03-05", "--issuer", "Telecom", "scan.pdf"]);
     let said = ok(&dir, &["bills"]);
     assert!(said.contains(&format!("{id:>5}  2026-03-03                Chairs")) && said.contains("no document") && said.contains("part paid, 300.00 EUR open") && said.contains("bills/2026/2026-03-05-telecom-"), "{said}");
@@ -2332,7 +2332,7 @@ fn text_not_as_abo_writes_it_holds_changes_up_until_tidied() {
 #[test]
 fn a_document_is_named_by_its_own_file_too() {
     let dir = books("doc-path", &[]);
-    std::fs::write(dir.join("../scan.pdf"), b"%PDF-1.4 mine").unwrap();
+    std::fs::write(dir.join("../scan.pdf"), b"%PDF-1.4 mine\n%%EOF\n").unwrap();
     let scan = dir.join("../scan.pdf").display().to_string();
     ok(&dir, &["file", "--date", "2026-03-05", "--issuer", "Shop", &scan]);
     ok(&dir, &["unfile", &scan]);
@@ -2515,4 +2515,30 @@ fn the_same_supplier_number_is_that_bill_whatever_is_said() {
     ok(&dir, &bill);
     let o = abo(&dir, &[&bill[..], &["--again"]].concat());
     assert!(!o.status.success() && err(&o).contains("N8") && err(&o).contains("so this is that bill") && !err(&o).contains("--again"), "{}", err(&o));
+}
+
+// ---- found by the third web run, 2026-10-07 ----
+
+/// A document cut short, as a download stopped half way leaves it, was
+/// filed: a PDF must end as a PDF does.
+#[test]
+fn a_document_cut_short_is_refused() {
+    let dir = books("cut-short", &["--vat", "none"]);
+    let scan = dir.join("../half.pdf");
+    std::fs::write(&scan, b"%PDF-1.4\n1 0 obj << /Type /Catalog >>\n").unwrap();
+    refused(&dir, &["file", "--date", "2026-03-01", "--issuer", "Acme", &scan.to_string_lossy()], "not a whole PDF");
+    std::fs::write(&scan, b"%PDF-1.4\n1 0 obj << /Type /Catalog >>\n%%EOF\n").unwrap();
+    ok(&dir, &["file", "--date", "2026-03-01", "--issuer", "Acme", &scan.to_string_lossy()]);
+}
+
+/// A VAT-registered company opened with no rate charged: invoices then
+/// charged 0% by default, with nothing said.
+#[test]
+fn a_vat_registered_company_says_its_rate() {
+    let base = std::env::temp_dir().join(format!("abo-reg-no-rate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let o = abo(&base, &["init", "Test Ltd", "--currency", "EUR", "--vat", "effective", "--git-name", "t", "--git-email", "t@example.invalid"]);
+    assert!(!o.status.success() && err(&o).contains("A rate is needed"), "{}", err(&o));
+    assert!(!base.join("test-ltd").exists());
 }

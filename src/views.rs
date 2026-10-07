@@ -263,6 +263,18 @@ pub fn entries(b: &Books, words: &[String]) -> Vec<EntryRow> {
 /// is not registered, by the tax numbers, or the configured rate. And
 /// whether the rate is one abo chose, which another may then be given for.
 /// Words for any reader; each interface adds how another rate is given.
+/// Whether an invoice's rate was given rather than the default's, read back
+/// from what the default would be: none to a customer abroad by tax number,
+/// the configured rate otherwise.
+pub fn vat_given(b: &Books, c: &model::Content) -> bool {
+    let rate = match &c.vat {
+        model::InvoiceVat::Charged { rate } => *rate,
+        _ => Decimal::ZERO,
+    };
+    let default = if b.untaxed(&c.customer_tax_id).is_some() { Decimal::ZERO } else { b.config.invoice.vat_rate };
+    rate != default
+}
+
 pub fn vat_taken(b: &Books, c: &model::Content, given: bool) -> (String, String, bool) {
     let rate = match &c.vat {
         model::InvoiceVat::Charged { rate } => format!("VAT {}%", rate.normalize()),

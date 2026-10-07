@@ -76,6 +76,13 @@ pub fn today() -> Result<model::Date> {
 /// What a document's first bytes say it is — its extension and type — as
 /// the bills a person files are: a PDF, or a photograph.
 pub fn sniff(bytes: &[u8]) -> Result<(&'static str, &'static str)> {
+    whole(bytes)?;
+    kind_of(bytes)
+}
+
+/// What a filed document is, by its first bytes alone: to serve one filed
+/// already, whole or not.
+pub fn kind_of(bytes: &[u8]) -> Result<(&'static str, &'static str)> {
     Ok(match bytes {
         [0x25, 0x50, 0x44, 0x46, ..] => ("pdf", "application/pdf"),
         [0xFF, 0xD8, 0xFF, ..] => ("jpg", "image/jpeg"),
@@ -83,6 +90,24 @@ pub fn sniff(bytes: &[u8]) -> Result<(&'static str, &'static str)> {
         [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => ("webp", "image/webp"),
         _ => bail!("not a PDF, JPEG, PNG or WebP"),
     })
+}
+
+/// A document to be filed ends as its kind does: one cut short, or no
+/// document at all but its first bytes, is not filed as one.
+fn whole(bytes: &[u8]) -> Result<()> {
+    let tail = |n: usize| &bytes[bytes.len().saturating_sub(n)..];
+    let holds = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).any(|w| w == needle);
+    let (whole, what) = match bytes {
+        [0x25, 0x50, 0x44, 0x46, ..] => (holds(tail(1024), b"%%EOF"), "PDF"),
+        [0xFF, 0xD8, 0xFF, ..] => (holds(tail(64), &[0xFF, 0xD9]), "JPEG"),
+        [0x89, b'P', b'N', b'G', ..] => (holds(tail(16), b"IEND"), "PNG"),
+        [b'R', b'I', b'F', b'F', a, b, c, d, b'W', b'E', b'B', b'P', ..] => (u32::from_le_bytes([*a, *b, *c, *d]) as usize + 8 == bytes.len(), "WebP"),
+        _ => bail!("not a PDF, JPEG, PNG or WebP"),
+    };
+    if !whole {
+        bail!("not a whole {what}: it ends before a {what} does, so it may have been cut short");
+    }
+    Ok(())
 }
 
 pub fn sha256(bytes: &[u8]) -> String {

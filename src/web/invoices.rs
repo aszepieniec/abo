@@ -108,6 +108,27 @@ fn with_pdf(op: &Op, hash: String) -> Op {
 
 pub(super) async fn invoice_submit(Books(mut s): Books, Form(f): Form<Fields>) -> Response {
     let get = |k: &str| f.get(k).map_or("", |v| v.trim()).to_string();
+    // Declare what the invoice lacked and come back, as Entry and the bill
+    // form do: an account, a currency, or a currency's price.
+    if let Some((op, what)) = lacked(&s.books, &f) {
+        let root = s.root.clone();
+        let mut back = f.clone();
+        for k in ["declare", "declare_commodity", "places", "add_price", "price_date", "price_worth"] {
+            back.remove(k);
+        }
+        let r = op.and_then(|op| {
+            once(Some(&root), &get("token"), || {
+                s.change(&op, &[])?;
+                Ok(String::new())
+            })
+        });
+        return match r {
+            Ok(_) => or_error(&s, "Issue an invoice", || {
+                Ok(html! { div.flash.flash-ok { (icon("success")) div { strong { (what) } " Your invoice is as you left it: issue it now." } } (invoice_page(&s, &back, None)) })
+            }),
+            Err(e) => again(&s, "Issue an invoice", || Ok(invoice_page(&s, &f, Some(&e)))),
+        };
+    }
     // A preview issues nothing, so spends no token: its PDF, marked PREVIEW.
     if get("preview") == "1" {
         let r = (|| -> Result<Vec<u8>> {
@@ -149,6 +170,63 @@ pub(super) async fn invoice_pdf(Books(s): Books, Path(number): Path<String>) -> 
     }
 }
 
+/// What a refused invoice form asks to declare before coming back: the
+/// operation, and what to say once it is done.
+fn lacked(b: &Model, f: &Fields) -> Option<(Result<Op>, String)> {
+    let get = |k: &str| f.get(k).map_or("", |v| v.trim()).to_string();
+    if !get("declare").is_empty() {
+        let a = get("declare");
+        return Some((Ok(Op::AccountAdd(a.clone())), format!("Declared {a}.")));
+    }
+    if !get("declare_commodity").is_empty() {
+        let c = get("declare_commodity");
+        let places = get("places").parse::<u32>().map_err(|_| anyhow::anyhow!("the places of {c} are a whole number, 0 to 8: 2 for most currencies"));
+        return Some((places.map(|p| Op::CommodityAdd(c.clone(), p)), format!("Declared {c}.")));
+    }
+    if !get("add_price").is_empty() {
+        let c = get("add_price");
+        let op = (|| -> Result<Op> {
+            let date = input::day(Some(&get("price_date")))?;
+            let price = input::amount(b, &get("price_worth"))?;
+            Ok(Op::PriceAdd { of: c.clone(), date, price })
+        })();
+        return Some((op, format!("Added the price of {c}.")));
+    }
+    None
+}
+
+/// Inside a refused invoice form: what it lacked, declared or priced right
+/// there, and the form back as it was. No JavaScript.
+fn lacking(b: &Model, f: &Fields, e: Option<&anyhow::Error>) -> Markup {
+    let get = |k: &str| f.get(k).cloned().unwrap_or_default();
+    let Some(r) = e.and_then(|e| e.downcast_ref::<store::Refused>()) else { return html! {} };
+    let today = store::today().map(|d| d.to_string()).unwrap_or_default();
+    let date = if get("date").is_empty() { today } else { get("date") };
+    html! {
+        @for v in &r.0 {
+            @match (v.code, &v.of) {
+                ("I-A1", model::Subject::Account(a)) => {
+                    div.actions { button type="submit" name="declare" value=(a) formnovalidate { (icon("plus")) " Declare " code { (a) } " and come back to this" } }
+                }
+                ("I-A1", model::Subject::Commodity(c)) => {
+                    div.box-body {
+                        label.field { "Places of " (c) span.hint { "Digits after the point: 2 for most currencies, 0 for some." } input type="number" name="places" min="0" max="8" value="2"; }
+                        button type="submit" name="declare_commodity" value=(c) formnovalidate { (icon("plus")) " Declare " (c) " and come back to this" }
+                    }
+                }
+                ("I-E4", model::Subject::Commodity(c)) => {
+                    div.box-body {
+                        label.field { "What one " (c) " was worth" span.hint { "In " (b.config.company.currency) ", such as " code { "0.92 " (b.config.company.currency) } "." } input type="text" name="price_worth"; }
+                        label.field { "On" input type="date" name="price_date" value=(date); }
+                        button type="submit" name="add_price" value=(c) formnovalidate { (icon("plus")) " Add the price of " (c) " and come back to this" }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 pub(super) fn invoice_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>) -> Markup {
     let get = |k: &str| f.get(k).cloned().unwrap_or_default();
     let year = store::today().map(|d| d.year()).unwrap_or_default();
@@ -158,6 +236,7 @@ pub(super) fn invoice_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>)
         @if let Some(e) = error { (refused(e)) }
         form method="post" action="/invoice" {
             (token())
+            (lacking(&s.books, f, error))
             div.box {
                 div.box-header { (icon("outbox")) "Invoice " (next) }
                 div.box-body {

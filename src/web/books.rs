@@ -177,8 +177,8 @@ pub(super) fn change_said(s: &Store, line: &serde_json::Value) -> Option<String>
         ["pay", ..] => format!("Payment booked: {}", after("Pay ")),
         ["write-off", ..] => format!("Written off: {}", after("Write off ")),
         ["revert", ..] => format!("Reverted: {}", after("Revert ")),
-        ["record", ..] => format!("{} recorded", sentence_start(&after("Record the "))),
-        ["unrecord", ..] => format!("{} taken out", sentence_start(&after("Take out the "))),
+        ["record", ..] => counted(s, &argv, format!("{} recorded", sentence_start(&after("Record the ")))),
+        ["unrecord", ..] => counted(s, &argv, format!("{} taken out", sentence_start(&after("Take out the ")))),
         ["company", ..] => "Company's details saved".into(),
         ["payment-options", verb, ..] => {
             let id = what.rsplit(' ').next().unwrap_or_default();
@@ -204,6 +204,15 @@ pub(super) fn change_said(s: &Store, line: &serde_json::Value) -> Option<String>
         ["init", ..] => what.to_string(),
         _ => return None,
     })
+}
+
+/// A statement of a cash box is its count, and said so.
+fn counted(s: &Store, argv: &[&str], said: String) -> String {
+    let account = argv.iter().find_map(|a| a.strip_prefix("--account=")).unwrap_or_default();
+    match super::reconcile::is_cash(&s.books, account) {
+        true => said.replace("Statement", "Count").replace("statement", "count"),
+        false => said,
+    }
 }
 
 /// `s` with its first letter a capital.
@@ -247,8 +256,11 @@ pub(super) async fn activity(Books(s): Books, Query(q): Query<Fields>) -> Respon
                                             h2 { "The command that makes it" }
                                             pre { (crate::command::shell(&words)) }
                                             @if let Some(h) = commit {
-                                                h2 { "What it changed in the files" }
-                                                pre { (s.diff(h).unwrap_or_else(|e| e.to_string())) }
+                                                // The files themselves, a fold further: for whoever checks them.
+                                                details {
+                                                    summary { "Show the change to the files" }
+                                                    pre { (s.diff(h).unwrap_or_else(|e| e.to_string())) }
+                                                }
                                             }
                                         }
                                     }
@@ -273,12 +285,6 @@ pub(super) async fn activity(Books(s): Books, Query(q): Query<Fields>) -> Respon
 
 pub(super) fn is_hash(s: &str) -> bool {
     (4..=40).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
-}
-
-#[derive(serde::Deserialize)]
-pub(super) struct Once {
-    #[serde(default)]
-    pub(super) token: String,
 }
 
 /// Take back the last change, from its success notice or the Log, and go back

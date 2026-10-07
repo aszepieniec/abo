@@ -144,7 +144,7 @@ fn command(op: &Op, m: &Books, src: &Path) -> (Vec<String>, Option<Op>) {
         Op::File { sha256, date, name, ext, bill } => {
             // A PDF's header, then what makes it this one; one file to each
             // document, so a logged `file` reads its own again.
-            let bytes = [b"%PDF-1.4\n".as_slice(), sha256.as_bytes()].concat();
+            let bytes = [b"%PDF-1.4\n%%EOF\n".as_slice(), sha256.as_bytes()].concat();
             let path = src.join(format!("doc-{}.{ext}", &store::sha256(sha256.as_bytes())[..16]));
             std::fs::write(&path, &bytes).unwrap();
             let slug = crate::repo::slug(name);
@@ -723,7 +723,7 @@ fn record_all_clears_everything(#[strategy(plan())] plan: Vec<Step>) {
 
 /// `abo file --for BILL`: the document names the bill.
 #[proptest(cases(12))]
-fn a_document_filed_for_a_bill_names_it(#[strategy(plan())] plan: Vec<Step>, bill: proptest::sample::Index, #[strategy("%PDF-1.4\n[a-z0-9]{8,24}")] bytes: String) {
+fn a_document_filed_for_a_bill_names_it(#[strategy(plan())] plan: Vec<Step>, bill: proptest::sample::Index, #[strategy("%PDF-1.4\n[a-z0-9]{8,24}\n%%EOF")] bytes: String) {
     let (_parent, books, today) = after(&plan);
     let m = store::Store::open(&books).unwrap().books;
     let bills: Vec<usize> = (1..=m.entries.len()).filter(|&d| matches!(m.entries[d - 1].kind, model::Kind::Bill(..))).collect();

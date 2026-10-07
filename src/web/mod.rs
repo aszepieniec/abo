@@ -219,7 +219,7 @@ fn hint(v: &model::Violation) -> Option<Markup> {
         ("I-I1", Subject::Field("reason")) => html! { "Say why under " em { "Why no VAT" } ", or give a VAT rate." },
         ("I-A2", Subject::Account(a)) => html! { "An account in use takes no accounts under it: declare the new one beside it, or first move what names " code { (a) } " under it, such as a payment option's account on the " a href="/company" { "Company" } " page." },
         ("I-B2", _) => html! { "Add a line crediting what is owed, such as " code { "Liabilities:Payable=-440.00" } "." },
-        ("I-S3", _) => html! { "Book first what the statement shows and the books lack, a fee say, under " a href="/post" { "Entry" } "; or leave out what it does not show." },
+        ("I-S3", _) => html! { "Book first what the statement shows and the books lack under " a href="/post" { "Entry" } ": a fee, say, or for a count of cash the difference, as cash over or short; or leave out what it does not show." },
         ("N7", Subject::Account(_)) => html! { "Date it after the statement, or take the statement out on " a href="/reconcile" { "Reconcile" } " first." },
         ("N8", Subject::Field("number")) => return None,
         ("N8", _) => html! { "If it is another bill just like it, tick " em { "Another just like one booked already" } "." },

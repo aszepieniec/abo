@@ -170,7 +170,8 @@ fn editing() {
             (METHOD, &format!("{UP} ")),
             ("Flat rate", "5\r"),
             ("VAT account: ", "\r"),
-            ("VAT rate charged", "\r"),
+            // Needed now: a VAT-registered company says what it charges.
+            ("VAT rate charged", "10\r"),
             ("git user.name", "\r"),
             ("git user.email", "\r"),
         ],
@@ -209,8 +210,8 @@ fn vat_method_list() {
             (METHOD, keys.as_str()),
         ];
         match method {
-            "flat" => steps.extend([("Flat rate", "5\r"), blank("VAT account"), blank("VAT rate charged")]),
-            "effective" => steps.extend([blank("Input VAT"), blank("Output VAT"), blank("VAT rate charged")]),
+            "flat" => steps.extend([("Flat rate", "5\r"), blank("VAT account"), ("VAT rate charged", "10\r")]),
+            "effective" => steps.extend([blank("Input VAT"), blank("Output VAT"), ("VAT rate charged", "10\r")]),
             _ => {}
         }
         steps.extend([blank("git user.name"), blank("git user.email")]);

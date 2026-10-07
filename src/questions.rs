@@ -299,7 +299,7 @@ pub static INIT: &[Q] = &[
             Q::When {
                 key: "method",
                 is: &["effective", "flat"],
-                qs: &[percent("sales_rate", "VAT rate charged to customers, percent", Offer::Value("0"))],
+                qs: &[percent("sales_rate", "VAT rate charged to customers, percent", Offer::None)],
             },
         ],
     },
@@ -419,7 +419,17 @@ fn liability(s: &str, env: &Env) -> Result<String, String> {
 }
 
 const fn percent(key: &'static str, label: &'static str, offer: Offer) -> Q {
-    Q::Text { key, label, hint: "", offer, check: Check::By(|s, _| answer::percent(s).map(|d| d.to_string())) }
+    Q::Text {
+        key,
+        label,
+        hint: "",
+        offer,
+        // Needed: a VAT-registered company says what it charges, 0 included.
+        check: Check::By(|s, _| match s.trim().is_empty() {
+            true => Err("A rate is needed, such as 21 or 5.5; 0 if none is charged.".into()),
+            false => answer::percent(s).map(|d| d.to_string()),
+        }),
+    }
 }
 
 fn blank_or(s: &str, check: fn(&str) -> Result<String, String>) -> Result<String, String> {

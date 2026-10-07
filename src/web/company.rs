@@ -79,8 +79,8 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
                     tr { td { "Payment terms" } td {
                         form.inline method="post" action="/company/terms" {
                             (token())
-                            input type="number" name="days" min="0" required value=(cfg.invoice.terms_days) style="width:6em";
-                            " days, unless an invoice says otherwise "
+                            label { "Days a customer has to pay " input type="number" name="days" min="0" required value=(cfg.invoice.terms_days) style="width:6em"; " days, unless an invoice says otherwise" }
+                            " "
                             button.small type="submit" { (icon("check")) " Save" }
                         }
                     } }
@@ -88,7 +88,10 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
             }
             div.box-body { p.muted.small {
                 "Accounts, currencies and prices: " a href="/declarations" { "Accounts and currencies" } ". "
-                "The tax return's boxes: " a href="/company/tax-return" { "the tax return" } "."
+                // A company not VAT registered files no VAT return.
+                @if !matches!(cfg.vat, model::Vat::None) {
+                    "The tax return's boxes: " a href="/company/tax-return" { "the tax return" } "."
+                }
             } }
         }
         form method="post" action="/company/close" {
