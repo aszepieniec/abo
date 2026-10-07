@@ -132,7 +132,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             let sha256 = input::filed(&s.books, &document)?;
             changed(&mut s, &Op::Unfile { sha256 }, &[], cli.json)
         }
-        Cmd::Bill { date, description, document, postings } => {
+        Cmd::Bill { date, description, document, again, postings } => {
             let mut s = Store::open(&here)?;
             let document = document.map(|d| input::filed(&s.books, &d)).transpose()?;
             // Dated as its document, unless said; the model refuses another
@@ -142,7 +142,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 (d, _) => input::day(d)?,
             };
             let postings = postings.iter().map(|p| input::posting(&s.books, p)).collect::<Result<_>>()?;
-            let op = Op::Bill { date, description, postings, document };
+            let op = Op::Bill { date, description, postings, document, again };
             changed(&mut s, &op, &[], cli.json)
         }
         Cmd::Invoice { to, items, date, due_days, vat_rate, currency, reference, pay_to, note, customer_tax_id, vat_reason } => {
@@ -483,7 +483,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Check => {
             let s = Store::open(&here)?;
-            emit(cli.json, &s.problems, || if s.problems.is_empty() { "No problems.".into() } else { s.problems.join("\n") })?;
+            emit(cli.json, &s.problems, || if s.problems.is_empty() { "No problems.".into() } else { format!("{}\n{}", s.problems.join("\n"), mending(&s)) })?;
             if !s.problems.is_empty() {
                 bail!("the books hold {} problem{}", s.problems.len(), if s.problems.len() == 1 { "" } else { "s" });
             }
@@ -492,9 +492,10 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         Cmd::Tidy => {
             let mut s = Store::open(&here)?;
             let commit = s.tidy()?;
-            emit(cli.json, &serde_json::json!({ "commit": commit }), || match &commit {
-                Some(c) => format!("Rewrote the books as abo writes them. Committed {c}."),
-                None => "Nothing to tidy.".into(),
+            let left = if s.problems.is_empty() { String::new() } else { format!("\nThe books still hold problems tidying does not mend:\n  {}\n{}", s.problems.join("\n  "), mending(&s)) };
+            emit(cli.json, &serde_json::json!({ "commit": commit, "problems": s.problems }), || match &commit {
+                Some(c) => format!("Rewrote the books as abo writes them. Committed {c}.{left}"),
+                None => format!("Nothing to tidy.{left}"),
             })
         }
         Cmd::Bal { args } => passthrough(&here, "balance", &args, cli.json),
@@ -636,3 +637,26 @@ pub(crate) fn emit<T: serde::Serialize>(json: bool, value: &T, human: impl FnOnc
     Ok(())
 }
 
+
+/// How the problems `abo check` lists are mended, from what each is of.
+fn mending(s: &Store) -> String {
+    let mut how: Vec<String> = vec![];
+    for v in model::check(&s.books) {
+        let line = match (&v.of, v.code) {
+            (model::Subject::Account(a), "I-A1") => format!("abo account add {a}"),
+            (model::Subject::Commodity(c), "I-A1") => format!("abo commodity add {c} <places>"),
+            _ => continue,
+        };
+        if !how.contains(&line) {
+            how.push(line);
+        }
+    }
+    if s.problems.iter().any(|p| p.ends_with("not as abo writes it")) {
+        how.push("abo tidy, for what is only not as abo writes it".into());
+    }
+    if s.problems.len() > how.len() {
+        let rest = if how.is_empty() { "" } else { ", for the rest" };
+        how.push(format!("by hand, at the line named{rest}; git log -p shows what changed there"));
+    }
+    format!("To mend them:\n  {}", how.join("\n  "))
+}

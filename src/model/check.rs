@@ -27,6 +27,10 @@ pub enum Subject {
     /// A payment option, by its id, and the field of it that is wrong, as
     /// its question names it.
     Option(String, &'static str),
+    /// An entry, by its id: where `read` finds it in the files.
+    Entry(EntryId),
+    /// A statement, by its account and date.
+    Statement(Account, Date),
 }
 
 impl Violation {
@@ -136,10 +140,10 @@ fn numbers(m: &Books) -> Vec<Decimal> {
                 for l in &content.lines {
                     v.extend([l.quantity, l.unit_price]);
                 }
-                if let InvoiceVat::Charged { rate, home } = &content.vat {
+                if let InvoiceVat::Charged { rate } = &content.vat {
                     v.push(*rate);
-                    v.extend(home.as_ref().map(|h| h.price.quantity));
                 }
+                v.extend(content.home.as_ref().map(|h| h.price.quantity));
             }
             Kind::CreditNote { .. } | Kind::Reversal { .. } => {}
         }
@@ -159,9 +163,7 @@ fn dates(m: &Books) -> Vec<Date> {
     for e in &m.entries {
         if let Kind::Invoice { content, .. } = &e.kind {
             v.push(content.due);
-            if let InvoiceVat::Charged { home: Some(h), .. } = &content.vat {
-                v.push(h.date);
-            }
+            v.extend(content.home.as_ref().map(|h| h.date));
         }
     }
     v.extend(m.prices.keys().map(|k| k.1));
@@ -235,7 +237,7 @@ pub fn check(m: &Books) -> Vec<Violation> {
     }
     for e in &m.entries {
         if let Kind::Invoice { content, .. } = &e.kind {
-            if let InvoiceVat::Charged { rate, .. } = content.vat {
+            if let InvoiceVat::Charged { rate } = content.vat {
                 rates.push(rate);
             }
         }
@@ -246,7 +248,8 @@ pub fn check(m: &Books) -> Vec<Violation> {
     // What is owed is paid in amounts, so it is bounded as they are.
     for (i, e) in m.entries.iter().enumerate() {
         if let Kind::Invoice { content, .. } = &e.kind {
-            if m.checked_totals(content).is_none_or(|(net, _, total)| net.abs() >= Decimal::from(BOUND) || total.abs() >= Decimal::from(BOUND)) {
+            let big = |q: Decimal| q.abs() >= Decimal::from(BOUND);
+            if m.checked_totals(content).is_none_or(|(net, _, total)| big(net) || big(total)) || m.checked_home_totals(content).is_none_or(|(net, vat)| big(net) || big(vat) || big(net + vat)) {
                 return vec![Violation { code: "I-K3", what: format!("invoice {}'s total is not below {BOUND} in magnitude", i + 1), of: Subject::Total(i + 1) }];
             }
         }
@@ -291,7 +294,7 @@ pub fn check(m: &Books) -> Vec<Violation> {
     for e in &m.entries {
         if let Kind::Invoice { content, .. } = &e.kind {
             used.insert(&content.commodity);
-            if let InvoiceVat::Charged { home: Some(h), .. } = &content.vat {
+            if let Some(h) = &content.home {
                 used.insert(&h.price.commodity);
             }
         }
@@ -326,7 +329,7 @@ pub fn check(m: &Books) -> Vec<Violation> {
     for (i, e) in m.entries.iter().enumerate() {
         let id = i + 1;
         if !description_ok(&e.description) {
-            no!("I-E0", "entry {id}'s description {:?} cannot be written on its date line", e.description);
+            no!(@of Subject::Entry(id), "I-E0", "entry {id}'s description {:?} cannot be written on its date line", e.description);
         }
         let ps = m.postings(id);
         let mut sums: BTreeMap<&str, Decimal> = BTreeMap::new();
@@ -337,17 +340,21 @@ pub fn check(m: &Books) -> Vec<Violation> {
                 let same_sign = (c.quantity > Decimal::ZERO && p.amount.quantity > Decimal::ZERO)
                     || (c.quantity < Decimal::ZERO && p.amount.quantity < Decimal::ZERO);
                 if c.commodity == p.amount.commodity || !same_sign {
-                    no!("I-E2", "entry {id}: a cost is in another commodity, with the amount's sign");
+                    no!(@of Subject::Entry(id), "I-E2", "entry {id}: a cost is in another commodity, with the amount's sign");
                 }
             }
         }
         if ps.len() < 2 || sums.values().any(|s| !s.is_zero()) {
-            no!("I-E1", "entry {id} does not balance");
+            no!(@of Subject::Entry(id), "I-E1", "entry {id} does not balance");
+        }
+        let home = &m.config.company.currency;
+        if let Some(p) = ps.iter().find(|p| matches!(class(&p.account), "Income" | "Expenses") && p.amount.commodity != *home) {
+            no!(@of Subject::Entry(id), "I-E4", "entry {id} posts {} {} to {}; income and expenses are in the company currency, {home}", p.amount.quantity, p.amount.commodity, p.account);
         }
         if let Some(of) = e.kind.names() {
             match m.entry(of) {
                 Some(n) if of < id && n.date <= e.date => {}
-                _ => no!("I-E3", "entry {id} names {of}, which is not an earlier entry dated on or before it"),
+                _ => no!(@of Subject::Entry(id), "I-E3", "entry {id} names {of}, which is not an earlier entry dated on or before it"),
             }
         }
     }
@@ -375,7 +382,7 @@ pub fn check(m: &Books) -> Vec<Violation> {
     }
     for (i, e) in m.entries.iter().enumerate() {
         if matches!(e.kind, Kind::Bill(_)) && m.debt(i + 1).is_none() {
-            no!("I-B2", "bill {} credits not exactly one liability", i + 1);
+            no!(@of Subject::Entry(i + 1), "I-B2", "bill {} credits not exactly one liability", i + 1);
         }
     }
 
@@ -388,11 +395,11 @@ pub fn check(m: &Books) -> Vec<Violation> {
                 let (_, vat, total) = m.totals(c);
                 let charged = matches!(c.vat, InvoiceVat::Charged { .. });
                 let texts = c.lines.iter().map(|l| l.description.as_str()).chain([c.reference.as_str()]).chain(c.pay_to.iter().flat_map(|p| p.lines.iter().chain([&p.label]).map(String::as_str)));
-                let home_ok = match &c.vat {
-                    InvoiceVat::Charged { home: Some(h), .. } => h.price.quantity > Decimal::ZERO && h.price.commodity != c.commodity,
+                let reason_ok = match &c.vat {
                     InvoiceVat::Exempt { reason } => !reason.trim().is_empty() && text_ok(reason),
                     _ => true,
                 };
+                let home_ok = c.home.as_ref().is_none_or(|h| h.price.quantity > Decimal::ZERO && h.price.commodity != c.commodity);
                 let accounts_ok = class(&c.accounts.receivable) == "Assets"
                     && class(&c.accounts.income) == "Income"
                     && c.accounts.output.as_ref().is_none_or(|o| class(o) == "Liabilities" && charged);
@@ -404,14 +411,16 @@ pub fn check(m: &Books) -> Vec<Violation> {
                     // A rate so small its VAT rounds away is nought, which needs a reason.
                     (charged && vat <= Decimal::ZERO, "charges a VAT of nought; at 0% say why no VAT"),
                     (c.due < e.date, "is due before its date"),
-                    (!home_ok, "is at 0% without saying why, or converts at no price"),
+                    (!reason_ok, "is at 0% without saying why"),
+                    (!home_ok, "converts at a price not above nought, or in its own commodity"),
+                    (c.home.is_some() && !total.is_zero() && { let (n, v) = m.home_totals(c); (n + v).is_zero() }, "comes to nought in the company currency at its price"),
                     (!accounts_ok, "books to accounts of the wrong class"),
                     (!hash_ok(pdf), "has a PDF hash that is not a SHA-256"),
                     (!lines_ok(&c.customer) || c.customer.lines().next().is_none_or(|l| l.trim().is_empty()), "has no customer, or a hidden character in it"),
                     (!text_ok(&c.customer_tax_id) || !lines_ok(&c.note) || !texts.into_iter().all(text_ok), "holds a hidden character"),
                 ];
                 if let Some((_, why)) = wrong.iter().find(|(bad, _)| *bad) {
-                    no!("I-I1", "invoice {id} {why}");
+                    no!(@of Subject::Entry(id), "I-I1", "invoice {id} {why}");
                 }
             }
             Kind::CreditNote { of, note, pdf } => {
@@ -427,7 +436,7 @@ pub fn check(m: &Books) -> Vec<Violation> {
         }
         // The last of its own year: one of another year may come between.
         if last.get(&e.date.year()).is_some_and(|l| *l > e.date) {
-            no!("I-I2", "invoice {id} is dated before the one numbered before it");
+            no!(@of Subject::Entry(id), "I-I2", "invoice {id} is dated before the one numbered before it");
         }
         last.insert(e.date.year(), e.date);
     }
@@ -442,10 +451,10 @@ pub fn check(m: &Books) -> Vec<Violation> {
         match m.debt(of) {
             Some(d) if standing[of] => {
                 if !m.takes_off(id, &d).is_some_and(|q| q > Decimal::ZERO) {
-                    no!("I-P1", "payment {id} takes nothing off {of}");
+                    no!(@of Subject::Entry(id), "I-P1", "payment {id} takes nothing off {of}");
                 }
             }
-            _ => no!("I-P1", "payment {id} names {of}, which is not a debt that stands"),
+            _ => no!(@of Subject::Entry(id), "I-P1", "payment {id} names {of}, which is not a debt that stands"),
         }
     }
     for id in 1..=m.entries.len() {
@@ -468,7 +477,7 @@ pub fn check(m: &Books) -> Vec<Violation> {
         };
         let there: Vec<Posting> = m.postings(id).into_iter().filter(|p| on.contains(&p.account)).collect();
         if there.len() > 1 || there.iter().any(|p| own.as_ref().is_none_or(|d| d.account != p.account)) {
-            no!("I-P3", "entry {id} posts to an account a debt is on, and is not that debt or its payment");
+            no!(@of Subject::Entry(id), "I-P3", "entry {id} posts to an account a debt is on, and is not that debt or its payment");
         }
     }
 
@@ -508,15 +517,15 @@ pub fn check(m: &Books) -> Vec<Violation> {
         for r in &s.clears {
             match lookup.get(r) {
                 Some((d, p)) if p.account == key.0 && p.amount.commodity == key.1 && *d <= key.2 => {}
-                _ => no!("I-S2", "the statement of {} on {} clears {}.{}, not a posting to it on or before then", key.0, key.2, r.entry, r.n),
+                _ => no!(@of Subject::Statement(key.0.clone(), key.2), "I-S2", "the statement of {} on {} clears {}.{}, not a posting to it on or before then", key.0, key.2, r.entry, r.n),
             }
             if let Some(other) = by_ref.insert(*r, (&key.0, &key.1, key.2)) {
-                no!("I-S2", "{}.{} is cleared by the statements of {} on {} and {}", r.entry, r.n, key.0, other.2, key.2);
+                no!(@of Subject::Statement(key.0.clone(), key.2), "I-S2", "{}.{} is cleared by the statements of {} on {} and {}", r.entry, r.n, key.0, other.2, key.2);
             }
         }
         let sum: Decimal = m.cleared_through(key).iter().filter_map(|r| lookup.get(r)).map(|(_, p)| p.amount.quantity).sum();
         if sum != s.balance {
-            no!("I-S3", "the statement of {} on {} says {} {}; what it and earlier ones clear sums to {sum}", key.0, key.2, s.balance, key.1);
+            no!(@of Subject::Statement(key.0.clone(), key.2), "I-S3", "the statement of {} on {} says {} {}; what it and earlier ones clear sums to {sum}", key.0, key.2, s.balance, key.1);
         }
     }
 

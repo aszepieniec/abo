@@ -133,15 +133,18 @@ fn period_flags(period: &str) -> Vec<&str> {
 }
 
 /// A period hledger reads, refused in words of its own when it does not.
-fn checked_period(s: &Store, period: &str) -> Result<()> {
-    if !period.is_empty() && s.hledger(&["accounts", "-p", period]).is_err() {
+fn checked_period(period: &str) -> Result<()> {
+    // Read against no books, so that books hledger cannot read are not
+    // blamed on the period.
+    let read = || std::process::Command::new("hledger").args(["--no-conf", "-f", "-", "balance", "-p", period]).stdin(std::process::Stdio::null()).output().is_ok_and(|o| o.status.success());
+    if !period.is_empty() && !read() {
         bail!("{period:?} is not a period; give one such as 2026, 2026q1, 2026-08 or last month");
     }
     Ok(())
 }
 
 pub fn profit_and_loss(s: &Store, period: &str) -> Result<Statement> {
-    checked_period(s, period)?;
+    checked_period(period)?;
     let extra = period_flags(period);
     let (income, income_total) = section(s, "Income", "income", &extra, true)?;
     let (expenses, expense_total) = section(s, "Expenses", "expenses", &extra, false)?;
@@ -224,7 +227,7 @@ pub fn vat_return(s: &Store, period: &str) -> Result<Statement> {
              (on a terminal: abo config set report.vat.<code> '{{ label = \"...\", query = \"...\" }}')"
         );
     }
-    checked_period(s, period)?;
+    checked_period(period)?;
     let currency = s.books.config.company.currency.clone();
     let places = s.books.places(&currency);
     // A return is filed in one currency. Anything else is valued in it at the

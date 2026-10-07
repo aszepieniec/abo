@@ -273,9 +273,15 @@ pub(crate) fn op(d: &Draw, m: &Books, today: Date) -> Option<Op> {
             let c = usd(u);
             let vat = net.checked_mul(Decimal::new(81, 3)).map(|v| round(v, 2)).unwrap_or_default();
             let total = net.checked_add(vat).unwrap_or(net);
-            let postings = vec![Posting::new("Expenses:Hosting", net, c), Posting::new(if to_output { OUTPUT } else { INPUT }, vat, c), Posting::new(PAYABLE, -total, c)];
+            // Expenses in the company's currency (I-E4); owed in USD, at a
+            // cost of one EUR a dollar.
+            let mut owed = Posting::new(PAYABLE, -total, c);
+            if u {
+                owed.cost = Some(Amount { quantity: -total, commodity: "EUR".into() });
+            }
+            let postings = vec![Posting::new("Expenses:Hosting", net, "EUR"), Posting::new(if to_output { OUTPUT } else { INPUT }, vat, "EUR"), owed];
             let loose: Vec<Hash> = m.documents.iter().filter(|(_, x)| x.of.is_none_or(|b| !standing[b])).map(|(h, _)| h.clone()).collect();
-            Op::Bill { date: when.at(today), description, postings, document: document.and_then(|i| pick(&i, &loose)) }
+            Op::Bill { date: when.at(today), description, postings, document: document.and_then(|i| pick(&i, &loose)), again: false }
         }
         Draw::Invoice { lines, rate, usd: u, customer, pdf, when } => {
             let (rate, reason) = match rate {
@@ -868,14 +874,21 @@ fn invoices_post_what_they_say(#[strategy(plan())] plan: Vec<Step>) {
             let ps = n.postings(i + 1);
             let to = |a: &str| -> Decimal { ps.iter().filter(|p| p.account == a).map(|p| p.amount.quantity).sum() };
             prop_assert_eq!(to(&c.accounts.receivable), total);
+            // Income and VAT in the company's currency: at the home price.
+            let (net, vat) = n.home_totals(c);
             match &c.accounts.output {
                 Some(out) => {
                     prop_assert_eq!(to(out), -vat);
                     prop_assert_eq!(to(&c.accounts.income), -net);
                 }
-                None => prop_assert_eq!(to(&c.accounts.income), -total),
+                None => prop_assert_eq!(to(&c.accounts.income), -(net + vat)),
             }
-            prop_assert!(ps.iter().all(|p| p.amount.commodity == c.commodity && p.cost.is_none()));
+            // In another commodity, the receivable is in it at its cost in
+            // the company's currency, and income and VAT are in that.
+            let home = c.home.as_ref().map_or(&c.commodity, |h| &h.price.commodity);
+            let (hn, hv) = n.home_totals(c);
+            prop_assert!(ps[0].amount.commodity == c.commodity && ps[0].cost.as_ref().map(|x| x.quantity) == c.home.as_ref().map(|_| hn + hv).filter(|q| !q.is_zero()));
+            prop_assert!(ps[1..].iter().all(|p| p.amount.commodity == *home && p.cost.is_none()));
         }
         Ok(())
     })?;
@@ -1321,7 +1334,7 @@ fn a_commodity_is_removable_iff_unused(#[strategy(plan())] plan: Vec<Step>, comm
     for e in &m.entries {
         if let Kind::Invoice { content, .. } = &e.kind {
             used.insert(content.commodity.clone());
-            if let InvoiceVat::Charged { home: Some(h), .. } = &content.vat {
+            if let Some(h) = &content.home {
                 used.insert(h.price.commodity.clone());
             }
         }
@@ -1418,6 +1431,7 @@ fn a_document_follows_its_bill(#[strategy(plan())] plan: Vec<Step>, #[strategy("
         description: "Acme AG, hosting".into(),
         postings: vec![Posting::new("Expenses:Hosting", Decimal::new(1000, 2), "EUR"), Posting::new(PAYABLE, Decimal::new(-1000, 2), "EUR")],
         document: Some(doc.into()),
+        again: false,
     };
     let fail = |what: &'static str| move |v: Vec<Violation>| TestCaseError::fail(format!("{what}: {v:?}"));
     let file = Op::File { sha256: h.clone(), date: today, name: "acme-ag".into(), ext: "pdf".into(), bill: None };
@@ -1502,12 +1516,12 @@ fn issuing_follows_the_configuration(#[strategy(plan())] plan: Vec<Step>, usd: b
         (Vat::None, InvoiceVat::NotRegistered) => {}
         (Vat::None, v) => prop_assert!(false, "not registered, and the invoice says {:?}", v),
         (_, InvoiceVat::Exempt { .. }) => prop_assert!(cfg.invoice.vat_rate.is_zero()),
-        (method, InvoiceVat::Charged { rate, home }) => {
+        (method, InvoiceVat::Charged { rate }) => {
             prop_assert_eq!(*rate, cfg.invoice.vat_rate);
             let apart = matches!(method, Vat::Effective { .. });
             prop_assert_eq!(c.accounts.output.is_some(), apart);
             let latest = m.prices.range((commodity.to_string(), Date::MIN)..=(commodity.to_string(), today)).rev().find(|(_, p)| p.commodity == cfg.company.currency).map(|((_, d), p)| Price { date: *d, price: p.clone() });
-            prop_assert_eq!(home, &if commodity == cfg.company.currency { None } else { latest });
+            prop_assert_eq!(&c.home, &if commodity == cfg.company.currency { None } else { latest });
         }
         (_, v) => prop_assert!(false, "registered, and the invoice says {:?}", v),
     }
@@ -1627,7 +1641,7 @@ fn rename_op(op: &Op, f: &dyn Fn(&str) -> String) -> Op {
     let ps = |ps: &[Posting]| ps.iter().map(|p| Posting { account: f(&p.account), ..p.clone() }).collect();
     match op.clone() {
         Op::Post { date, description, postings } => Op::Post { date, description, postings: ps(&postings) },
-        Op::Bill { date, description, postings, document } => Op::Bill { date, description, postings: ps(&postings), document },
+        Op::Bill { date, description, postings, document, again } => Op::Bill { date, description, postings: ps(&postings), document, again },
         Op::Pay { debt, date, amount, from, cost } => Op::Pay { debt, date, amount, from: f(&from), cost },
         Op::WriteOff { debt, date, to } => Op::WriteOff { debt, date, to: f(&to) },
         Op::Record { account, commodity, date, balance, clears } => Op::Record { account: f(&account), commodity, date, balance, clears },
@@ -2000,4 +2014,56 @@ fn hledger_reads_these_characters() {
         }
         panic!("hledger_changes is not what hledger does, at {} places, such as {:?}; hledger does the above", wrong.len(), &wrong[..wrong.len().min(10)]);
     }
+}
+
+/// I-E4: income and expenses are in the company's currency, so a profit is
+/// one amount; what is owed or paid in another is there at its cost.
+#[proptest]
+fn income_and_expenses_are_in_the_company_currency(#[strategy(plan())] plan: Vec<Step>) {
+    walk(&plan, |_, _, n| {
+        let home = &n.config.company.currency;
+        for (_, _, p) in n.all_postings() {
+            if matches!(class(&p.account), "Income" | "Expenses") {
+                prop_assert_eq!(&p.amount.commodity, home, "{:?}", p);
+            }
+        }
+        Ok(())
+    })?;
+}
+
+/// N7: what a statement shows stays shown. Nothing is added to its account,
+/// in its commodity, on or before its date; so a whole statement stays whole.
+#[proptest]
+fn statements_stay_whole(#[strategy(plan())] plan: Vec<Step>) {
+    walk(&plan, |m, op, n| {
+        if op.is_none() {
+            return Ok(());
+        }
+        for key in m.statements.keys().filter(|k| n.statements.contains_key(*k)) {
+            if m.whole(key) {
+                prop_assert!(n.whole(key), "{:?} was whole, and is not after {:?}", key, op);
+            }
+        }
+        Ok(())
+    })?;
+}
+
+/// N8: a bill with the date and the postings of one standing is refused,
+/// unless said to be another; said so, it is booked.
+#[proptest]
+fn bills_alike_are_refused_unless_another(#[strategy(plan())] plan: Vec<Step>, bill: Index) {
+    let (m, today) = end(&plan);
+    let standing = m.standing();
+    let bills: Vec<EntryId> = (1..=m.entries.len()).filter(|&b| standing[b] && matches!(m.entries[b - 1].kind, Kind::Bill(_))).collect();
+    let Some(b) = pick(&bill, &bills) else { return Ok(()) };
+    let e = &m.entries[b - 1];
+    let Kind::Bill(postings) = &e.kind else { unreachable!() };
+    let mut postings = postings.clone();
+    postings.reverse();
+    let twice = |again| Op::Bill { date: e.date, description: "Again".into(), postings: postings.clone(), document: None, again };
+    let once = apply(&m, &twice(false), today);
+    prop_assert!(once.as_ref().is_err_and(|v| v.iter().any(|v| v.code == "N8")), "{:?}", once.map(|_| ()));
+    // Said to be another, N8 is not why it is refused, if it is.
+    let again = apply(&m, &twice(true), today);
+    prop_assert!(again.as_ref().err().is_none_or(|v| v.iter().all(|v| v.code != "N8")));
 }

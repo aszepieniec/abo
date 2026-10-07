@@ -12,7 +12,8 @@ pub enum Op {
     Post { date: Date, description: String, postings: Vec<Posting> },
     File { sha256: Hash, date: Date, name: String, ext: String, bill: Option<EntryId> },
     Unfile { sha256: Hash },
-    Bill { date: Date, description: String, postings: Vec<Posting>, document: Option<Hash> },
+    /// `again`: booked though a standing bill has its date and postings (N8).
+    Bill { date: Date, description: String, postings: Vec<Posting>, document: Option<Hash>, again: bool },
     /// `rate`: the configured one when none. Nought charges none, and needs
     /// `reason`.
     Invoice { date: Date, customer: String, commodity: Commodity, lines: Vec<Line>, rate: Option<Decimal>, reason: String, reference: String, note: String, pdf: Hash, more: InvoiceMore },
@@ -52,7 +53,10 @@ pub struct InvoiceMore {
 
 pub fn apply(m: &Books, op: &Op, today: Date) -> Result<Books, Vec<Violation>> {
     let n = build(m, op).map_err(|what| vec![Violation::new("OP", what)])?;
-    let mut v = check(&n);
+    // What the books held before is not the change's to answer for: a change
+    // that mends one problem of several goes ahead (MODEL.md §8).
+    let before = check(m);
+    let mut v: Vec<Violation> = check(&n).into_iter().filter(|x| !before.iter().any(|b| b.code == x.code && b.what == x.what)).collect();
     v.extend(conditions(m, &n, op, today));
     if v.is_empty() {
         Ok(n)
@@ -80,7 +84,7 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
             Some(d) => return Err(format!("{} is the document of {}; revert the bill first", d.path(&sha256), name(m, d.of.unwrap_or_default()))),
             None => return Err("no document is filed with this hash".into()),
         },
-        Op::Bill { date, description, postings, document } => {
+        Op::Bill { date, description, postings, document, .. } => {
             n.entries.push(entry(date, description, Kind::Bill(postings)));
             if let Some(h) = document {
                 let standing = m.standing();
@@ -98,22 +102,22 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
                 (Vat::None, r) if r.is_zero() => InvoiceVat::NotRegistered,
                 (Vat::None, _) => return Err("the company is not VAT registered, so an invoice charges none".into()),
                 (_, r) if r.is_zero() => InvoiceVat::Exempt { reason },
-                (_, rate) => {
-                    // Undeclared, it is I-A1's to refuse, not the price's.
-                    let home = (commodity != c.company.currency && m.commodities.contains_key(&commodity))
-                        .then(|| {
-                            let from = (commodity.clone(), Date::MIN);
-                            m.prices
-                                .range(from..=(commodity.clone(), date))
-                                .rev()
-                                .find(|(_, p)| p.commodity == c.company.currency)
-                                .map(|((_, d), p)| Price { date: *d, price: p.clone() })
-                                .ok_or(format!("no price of {commodity} in {} on or before {date}", c.company.currency))
-                        })
-                        .transpose()?;
-                    InvoiceVat::Charged { rate, home }
-                }
+                (_, rate) => InvoiceVat::Charged { rate },
             };
+            // Booked in the company's currency (I-E4), at the latest price on
+            // or before its date. Undeclared, it is I-A1's to refuse, not the
+            // price's.
+            let home = (commodity != c.company.currency && m.commodities.contains_key(&commodity))
+                .then(|| {
+                    let from = (commodity.clone(), Date::MIN);
+                    m.prices
+                        .range(from..=(commodity.clone(), date))
+                        .rev()
+                        .find(|(_, p)| p.commodity == c.company.currency)
+                        .map(|((_, d), p)| Price { date: *d, price: p.clone() })
+                        .ok_or(format!("no price of {commodity} in {} on or before {date}", c.company.currency))
+                })
+                .transpose()?;
             let output = match (&c.vat, &vat) {
                 (Vat::Effective { output, .. }, InvoiceVat::Charged { .. }) => Some(output.clone()),
                 _ => None,
@@ -131,7 +135,7 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
             let pay_to = ids.into_iter().map(|id| c.payment[id].printed()).collect();
             let accounts = InvoiceAccounts { receivable: c.invoice.receivable.clone(), income: c.invoice.income.clone(), output };
             let first = customer.lines().next().unwrap_or("").trim().to_string();
-            let content = Content { customer, customer_tax_id: more.customer_tax_id, commodity, lines, vat, due, pay_to, reference, note, accounts };
+            let content = Content { customer, customer_tax_id: more.customer_tax_id, commodity, home, lines, vat, due, pay_to, reference, note, accounts };
             n.entries.push(entry(date, String::new(), Kind::Invoice { content: Box::new(content), pdf }));
             // The number first: a name may begin with what the date line
             // reads as a status or a code, `*` or `(`; and `;` would begin a
@@ -153,7 +157,15 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
                     false => gone(m, debt),
                 });
             }
-            n.entries.push(payment(m, debt, date, open, &to, None, "Write off")?);
+            // In another commodity, at the debt's own cost of it: what it was
+            // booked at in the company's currency (I-E4).
+            let cost = m.debt(debt).and_then(|d| {
+                let own = m.postings(debt).into_iter().find(|p| p.account == d.account)?;
+                let c = own.cost?;
+                let places = m.places(&c.commodity);
+                Some(Amount { quantity: round(open * c.quantity.abs() / own.amount.quantity.abs(), places), commodity: c.commodity })
+            });
+            n.entries.push(payment(m, debt, date, open, &to, cost, "Write off")?);
         }
         Op::Revert { entry: id, date } => n.entries.push(entry(date, format!("Revert {}", about(id)?), Kind::Reversal { of: id })),
         Op::Record { account, commodity, date, balance, clears } => {
@@ -507,7 +519,29 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
     }
     if let Some(c) = closed_through {
         if n.config.company.closed_through.is_none_or(|nc| nc < c) {
-            no!("N6", "the books are closed through {c}, and stay closed");
+            no!("N6", "the books are closed through {c}; a closing date only moves forward, but undo takes it back while it is the last change");
+        }
+    }
+    // What a statement shows stays shown: nothing is added before it.
+    if let Some(e) = added {
+        for p in n.postings(n.entries.len()) {
+            let (a, c) = (p.account.clone(), p.amount.commodity.clone());
+            if let Some(((_, _, d), _)) = m.statements.range((a.clone(), c.clone(), e.date)..=(a, c, Date::MAX)).next_back() {
+                no!("N7", "{} has a statement on {d}, and this is dated {}, on or before it; date it after {d}, or take the statement out first", p.account, e.date);
+                break;
+            }
+        }
+    }
+    // The same bill twice, but when said to be another.
+    if let Op::Bill { date, postings, again: false, .. } = op {
+        let key = |ps: &[Posting]| {
+            let mut k: Vec<String> = ps.iter().map(|p| format!("{} {} {:?}", p.account, p.amount.quantity.normalize(), p.cost.as_ref().map(|c| c.quantity.normalize()))).collect();
+            k.sort();
+            k
+        };
+        let standing = m.standing();
+        if let Some(id) = (1..=m.entries.len()).find(|&id| standing[id] && matches!(&m.entries[id - 1].kind, Kind::Bill(ps) if m.entries[id - 1].date == *date && key(ps) == key(postings))) {
+            no!("N8", "{} has this date and these postings already; to book another just like it, say it is another", name(m, id));
         }
     }
     v

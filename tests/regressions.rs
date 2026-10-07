@@ -532,6 +532,7 @@ fn a_commodity_in_the_wrong_case_is_refused() {
 fn an_invoice_takes_its_commoditys_places() {
     let dir = books("places", &["--vat", "none"]);
     ok(&dir, &["commodity", "add", "BTC", "8"]);
+    ok(&dir, &["price", "add", "2026-03-01", "BTC", "60000", "EUR"]);
     let v = json(&dir, &["invoice", "--to", "C", "--item", "1|0.00123456|Tiny", "--currency", "BTC", "--date", "2026-03-01"]);
     assert_eq!((&v["total"]["quantity"], &v["total"]["commodity"]), (&"0.00123456".into(), &"BTC".into()), "{v}");
 }
@@ -915,7 +916,7 @@ fn the_demo_books_take_commits_from_a_terminal() {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_abo"));
     cmd.args(["demo", "--dir"]).arg(base.join("abo-demo")).env("TMPDIR", &base).env("HOME", &home).env("XDG_CONFIG_HOME", &home);
     let _s = start(cmd);
-    let o = Command::new(env!("CARGO_BIN_EXE_abo")).args(["post", "--date", "2026-09-30", "--desc", "T", "Expenses:General=1.00", "Assets:Bank=-1.00"])
+    let o = Command::new(env!("CARGO_BIN_EXE_abo")).args(["post", "--desc", "T", "Expenses:General=1.00", "Assets:Bank=-1.00"])
         .current_dir(base.join("abo-demo")).env("HOME", &home).env("XDG_CONFIG_HOME", &home).env("GIT_CONFIG_NOSYSTEM", "1")
         .stdin(Stdio::null()).output().unwrap();
     assert!(o.status.success(), "{}", err(&o));
@@ -1038,7 +1039,8 @@ fn abo_toml_is_checked_when_read() {
         std::fs::write(dir.join("abo.toml"), toml.replace(from, to)).unwrap();
         let o = abo(&dir, &["check"]);
         assert!(!o.status.success() && String::from_utf8_lossy(&o.stdout).contains(says), "{says}: {}", String::from_utf8_lossy(&o.stdout));
-        refused(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"], says);
+        // Not committed, it holds every change up; abo would sign it.
+        refused(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"], "abo.toml has changes no abo command made");
     }
 }
 
@@ -1172,6 +1174,7 @@ fn a_correction_starts_from_where_the_invoice_asked_to_be_paid_and_its_lines() {
     let dir = books("correct-filled", &["--vat", "none", "--payment", "{ kind = \"bank\", iban = \"CH9300762011623852957\" }",
                                         "--payment", "{ kind = \"cash\", details = \"Till\" }"]);
     ok(&dir, &["commodity", "add", "BTC", "8"]);
+    ok(&dir, &["price", "add", "2026-03-01", "BTC", "60000", "EUR"]);
     ok(&dir, &["invoice", "--to", "C", "--item", "1|10|x", "--date", "2026-03-01", "--pay-to", "cash"]);
     ok(&dir, &["invoice", "--to", "C", "--item", "1|0.0123|x", "--date", "2026-03-02", "--currency", "BTC"]);
     let s = serve(&dir);
@@ -1627,4 +1630,124 @@ fn an_entry_that_is_no_number_is_not_found() {
     let s = serve(&dir);
     let (status, _, page) = http(&s, "GET", "/entry/abc", &[]);
     assert!(status == 404 && page.contains("Not found") && !page.contains("u64"), "{page}");
+}
+
+// ---- found by the CLI run of 2026-10-07 ----
+
+fn git(dir: &Path, args: &[&str]) {
+    assert!(Command::new("git").args(args).current_dir(dir).output().unwrap().status.success(), "git {args:?}");
+}
+
+/// `abo tidy` committed an entry that did not balance, typed by hand, and
+/// said only that it had rewritten the books.
+#[test]
+fn tidy_does_not_take_in_a_hand_edit_that_breaks_the_books() {
+    let dir = books("tidy-broken", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
+    let head = read(&dir, "journal/2026.journal");
+    std::fs::write(dir.join("journal/2026.journal"), head.replace("5.00 EUR", "6.00 EUR").replacen("-6.00 EUR", "-5.00 EUR", 1)).unwrap();
+    refused(&dir, &["tidy"], "journal/2026.journal:1: I-E1");
+    let log = Command::new("git").args(["log", "--oneline"]).current_dir(&dir).output().unwrap();
+    assert!(!String::from_utf8_lossy(&log.stdout).contains("Tidy"));
+}
+
+/// Mended by hand, a file abo would write as it is said "Nothing to tidy",
+/// and every change stayed refused for the edit.
+#[test]
+fn tidy_takes_in_a_hand_edit_abo_would_have_written() {
+    let dir = books("tidy-mended", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
+    std::fs::write(dir.join("journal/2026.journal"), read(&dir, "journal/2026.journal").replace("Fees", "Bank fees")).unwrap();
+    let said = ok(&dir, &["tidy"]);
+    assert!(said.contains("Committed"), "{said}");
+    ok(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"]);
+}
+
+/// With an account in use taken out of the declarations, declaring it again
+/// was refused: the books held a problem, the one it mends.
+#[test]
+fn a_change_that_mends_a_problem_goes_ahead() {
+    let dir = books("mend", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
+    std::fs::write(dir.join("journal/accounts.journal"), read(&dir, "journal/accounts.journal").replace("account Expenses:General\n", "")).unwrap();
+    git(&dir, &["commit", "-qam", "By hand"]);
+    let o = abo(&dir, &["check"]);
+    let said = String::from_utf8_lossy(&o.stdout);
+    assert!(said.contains("journal/2026.journal:") && said.contains("I-A1") && said.contains("abo account add Expenses:General"), "{said}");
+    ok(&dir, &["account", "add", "Expenses:General"]);
+    ok(&dir, &["check"]);
+}
+
+/// On books hledger could not read, a report blamed the period it was given.
+#[test]
+fn a_report_on_broken_books_names_the_problem_not_the_period() {
+    let dir = books("broken-report", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
+    std::fs::write(dir.join("journal/2026.journal"), read(&dir, "journal/2026.journal").replace("-5.00 EUR", "-4.00 EUR")).unwrap();
+    git(&dir, &["commit", "-qam", "By hand"]);
+    let o = abo(&dir, &["pl", "--period", "2026q1"]);
+    assert!(!o.status.success() && err(&o).contains("the books hold problems") && !err(&o).contains("not a period") && !err(&o).contains("-O json"), "{}", err(&o));
+}
+
+/// `abo.toml` unreadable was said without its line.
+#[test]
+fn an_unreadable_abo_toml_is_said_with_its_line() {
+    let dir = books("toml-line", &[]);
+    std::fs::write(dir.join("abo.toml"), read(&dir, "abo.toml").replace("currency = \"EUR\"", "currency = \"EUR")).unwrap();
+    refused(&dir, &["check"], "abo.toml:");
+    let o = abo(&dir, &["check"]);
+    assert!(err(&o).split("abo.toml:").nth(1).is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit())), "{}", err(&o));
+}
+
+/// An invoice in dollars was booked in dollars: profit and loss came out in
+/// two currencies, while the tax return converted.
+#[test]
+fn an_invoice_in_another_currency_is_booked_in_the_companys() {
+    let dir = books("fx-invoice", &[]);
+    ok(&dir, &["commodity", "add", "USD", "2"]);
+    ok(&dir, &["price", "add", "2026-03-01", "USD", "0.92", "EUR"]);
+    ok(&dir, &["invoice", "--to", "Hudson", "--item", "1|1500|Consulting", "--currency", "USD", "--date", "2026-03-01", "--vat-rate", "0", "--vat-reason", "Export"]);
+    let j = read(&dir, "journal/2026.journal");
+    assert!(j.contains("1500.00 USD @@ 1380.00 EUR") && j.contains("-1380.00 EUR"), "{j}");
+    let pl = json(&dir, &["pl", "--period", "2026"]);
+    assert!(!pl.to_string().contains("USD"), "{pl}");
+    // So is a bill: its expense in the company's currency.
+    refused(&dir, &["bill", "--date", "2026-03-01", "--desc", "Licence", "Expenses:General=250.00 USD", "Liabilities:Payable=-250.00 USD"], "I-E4");
+    ok(&dir, &["bill", "--date", "2026-03-01", "--desc", "Licence", "Expenses:General=230.00", "Liabilities:Payable=-250.00 USD @@ 230.00 EUR"]);
+}
+
+/// A reversal dated back to May slipped under two recorded statements, and
+/// quietly took the assertion off the earlier one.
+#[test]
+fn nothing_is_booked_under_a_statement() {
+    let dir = books("under-statement", &[]);
+    let id = entry(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
+    ok(&dir, &["record", "--date", "2026-03-31", "--balance", "-5.00", &format!("{id}.1")]);
+    refused(&dir, &["revert", &id, "--date", "2026-03-01"], "N7");
+    refused(&dir, &["post", "--date", "2026-03-31", "--desc", "Late", "Expenses:General=1.00", "Assets:Bank=-1.00"], "N7");
+    ok(&dir, &["post", "--date", "2026-04-01", "--desc", "After", "Expenses:General=1.00", "Assets:Bank=-1.00"]);
+    assert!(read(&dir, "journal/2026.journal").contains("= -5.00 EUR"));
+}
+
+/// The same bill, without its document, was booked twice without a word.
+#[test]
+fn the_same_bill_twice_is_booked_only_when_said_to_be_another() {
+    let dir = books("bill-twice", &[]);
+    let bill = ["bill", "--date", "2026-03-03", "--desc", "Chairs", "Expenses:General=400.00", "Liabilities:Payable=-400.00"];
+    ok(&dir, &bill);
+    refused(&dir, &bill, "N8");
+    ok(&dir, &[&bill[..], &["--again"]].concat());
+    assert!(read(&dir, ".abo/log.jsonl").contains("--again"));
+}
+
+/// A refusal of reopening a closed period said it stays closed; undo
+/// reopens it, while it is the last change.
+#[test]
+fn a_closed_period_says_undo_takes_it_back() {
+    let dir = books("closed-undo", &[]);
+    ok(&dir, &["config", "set", "company.closed_through", "2026-06-30"]);
+    refused(&dir, &["config", "unset", "company.closed_through"], "undo takes it back");
+    ok(&dir, &["undo"]);
+    let o = abo(&dir, &["config", "get", "company.closed_through"]);
+    assert!(!o.status.success());
 }

@@ -620,8 +620,8 @@ fn reports_read_the_books_as_the_model_does(#[strategy(plan())] plan: Vec<Step>)
 }
 
 /// §8 through the commands: after a hand edit, `abo check` fails exactly
-/// when the books hold a problem, and no change is made until it is mended;
-/// `abo tidy` mends what is only not as abo writes it.
+/// when the books hold a problem, and a change made on top of it brings no
+/// problem of its own; `abo tidy` mends what is only not as abo writes it.
 #[proptest(cases(24))]
 fn hand_edits_are_checked_and_tidied(#[strategy(plan())] plan: Vec<Step>, file: proptest::sample::Index, edit: mt::Edit) {
     let (_parent, books, today) = after(&plan);
@@ -642,7 +642,13 @@ fn hand_edits_are_checked_and_tidied(#[strategy(plan())] plan: Vec<Step>, file: 
         return Ok(());
     }
     let post = abo(&books, today, &args(&["post", "--desc", "After", "Assets:Bank=1 EUR", "Equity:Opening=-1 EUR"]));
-    prop_assert!(!post.ok, "a change was made on top of {:?}", problems);
+    if post.ok {
+        let held = state.as_ref().map(model::check).unwrap_or_default();
+        let now = model::check(&store::Store::open(&books).unwrap().books);
+        let new: Vec<_> = now.iter().filter(|v| !held.iter().any(|h| h.code == v.code && h.what == v.what)).collect();
+        prop_assert!(new.is_empty(), "a change on top of {:?} brought {:?}", problems, new);
+        crate::repo::git_in(&books, &["reset", "-q", "--hard", "HEAD~1"]).unwrap();
+    }
     let tidy = abo(&books, today, &args(&["tidy"]));
     let only_layout = state.as_ref().is_some_and(|s| model::check(s).is_empty());
     if only_layout && opens.is_ok() {

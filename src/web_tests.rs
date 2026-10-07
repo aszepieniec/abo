@@ -159,11 +159,14 @@ fn request(op: &Op, m: &Books, today: Date) -> Option<(Post, Op)> {
             let p = urlencoded("/post", vec![("date", date.to_string()), ("description", description.clone()), ("postings", lines)]);
             (p, Op::Post { date, description: t(&description), postings })
         }
-        Op::Bill { date, description, postings, document } => {
+        Op::Bill { date, description, postings, document, again } => {
             if !one_line(&description) || postings.iter().any(|p| !one_line(&posting(p))) {
                 return None;
             }
             let mut fields = vec![("date", date.to_string()), ("issuer", "Acme AG".into()), ("description", description.clone()), ("postings", postings.iter().map(posting).collect::<Vec<_>>().join("\n")), ("token", token())];
+            if again {
+                fields.push(("again", "on".into()));
+            }
             let date = match &document {
                 // The form books a filed document dated as it is.
                 Some(h) => {
@@ -174,7 +177,7 @@ fn request(op: &Op, m: &Books, today: Date) -> Option<(Post, Op)> {
                 None => date,
             };
             let (ctype, body) = multipart(&fields, None);
-            (Post { path: "/bill".into(), ctype, body }, Op::Bill { date, description: t(&description), postings, document })
+            (Post { path: "/bill".into(), ctype, body }, Op::Bill { date, description: t(&description), postings, document, again })
         }
         Op::Unfile { sha256 } => {
             let file = m.documents.get(&sha256).map_or(sha256.clone(), |d| d.path(&sha256));

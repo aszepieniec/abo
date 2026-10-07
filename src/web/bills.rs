@@ -166,6 +166,7 @@ pub(super) fn bill_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>) ->
                         span.hint { "One per line, " code { "account=amount" } ", every amount written; one credits what is owed." }
                         textarea name="postings" rows="5" required placeholder="Expenses:Hosting=100.00\nLiabilities:Payable=-100.00" { (get("postings")) }
                     }
+                    label.choice { input type="checkbox" name="again" checked[get("again") == "on"]; " Another just like one booked already: the same date and postings" }
                     div.actions { button.btn-primary type="submit" { (icon("check")) @if filed.is_empty() { " File and book it" } @else { " Book it" } } }
                 }
             }
@@ -208,14 +209,14 @@ pub(super) async fn bill_submit(Books(mut s): Books, mp: Multipart) -> Response 
                     let sha256 = sha256.clone();
                     let mut trial = s.books.clone();
                     trial.documents.insert(sha256.clone(), model::Document { date, name: crate::repo::slug(&get("issuer")), ext: path.rsplit('.').next().unwrap_or_default().into(), of: None });
-                    model::apply(&trial, &Op::Bill { date, description: get("description"), postings: lines.clone(), document: Some(sha256.clone()) }, store::today()?).map_err(store::Refused)?;
+                    model::apply(&trial, &Op::Bill { date, description: get("description"), postings: lines.clone(), document: Some(sha256.clone()), again: get("again") == "on" }, store::today()?).map_err(store::Refused)?;
                     s.change(&op, &[file])?;
                     (Some(sha256), date)
                 }
                 None => (None, date),
             }
         };
-        change(&mut s, &Op::Bill { date, description: get("description"), postings: lines, document }, &[], "/bills")
+        change(&mut s, &Op::Bill { date, description: get("description"), postings: lines, document, again: get("again") == "on" }, &[], "/bills")
     });
     match r {
         Ok(to) => Redirect::to(&to).into_response(),

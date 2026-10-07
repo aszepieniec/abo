@@ -330,6 +330,7 @@ follow.
 struct Content {
     customer:  Lines,                 // name, then address
     commodity: Commodity,
+    home:      Option<Price>,         // in another commodity: what one unit was worth in the company's
     lines:     Vec<Line>,
     vat:       InvoiceVat,
     due:       Date,
@@ -351,9 +352,8 @@ enum InvoiceVat {
     NotRegistered,
     /// Registered, charging none — an export, an exempt supply — and why.
     Exempt { reason: Text },
-    /// Charged at `rate` percent. In another commodity than the company's,
-    /// the price its VAT was stated at in the company's.
-    Charged { rate: Decimal, home: Option<Price> },
+    /// Charged at `rate` percent.
+    Charged { rate: Decimal },
 }
 
 struct Price { date: Date, price: Amount }
@@ -365,6 +365,16 @@ The amounts, each rounded half away from nought to the commodity's places:
     net          = Σ amount(line)
     vat          = net × rate / 100    when Charged, else nought
     total        = net + vat
+
+In another commodity than the company's, net and VAT are also taken at the
+home price, each rounded to the company currency's places:
+
+    net_home     = net × home.price
+    vat_home     = vat × home.price
+
+and the entry is booked in the company's currency (I-E4): the receivable in
+the invoice's commodity at a cost of `net_home + vat_home`, income and output
+VAT at `net_home` and `vat_home`. The PDF states the VAT at `vat_home` too.
 
 Everything an invoice depends on that can change later — the configured
 accounts, the VAT rate, the payment options, a price — it holds as it was when
@@ -500,7 +510,7 @@ not in the books.
 | G-F2 | An edit to the files is never read as the same state with no problem | §7, §8 | `edits_are_noticed` |
 | G-F3 | Reading never fails, whatever the text: it gives a state, or problems | §8 | `edits_are_noticed` |
 | G-F4 | `abo tidy`, which is `render(parse(f))`, gives text read as the same state, and tidying it again changes nothing | §7, §8 | `tidying_is_idempotent` |
-| G-F5 | Books holding a problem — a hand edit, a file changed — are read, and not changed until it is mended; `abo check` fails exactly while one is there, and `abo tidy` mends what is only not as abo writes it | §8 | `hand_edits_are_checked_and_tidied` |
+| G-F5 | Books holding a problem — a hand edit, a file changed — are read, and a change made on them brings no problem of its own; `abo check` fails exactly while one is there, and `abo tidy` mends what is only not as abo writes it | §8 | `hand_edits_are_checked_and_tidied` |
 
 ### Debts
 
@@ -528,6 +538,7 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | | Guarantee | Rules | Properties |
 |---|---|---|---|
 | G-S1 | A posting is cleared by one statement at most; a statement's balance is what it and the account's earlier ones clear, and a whole one is the account's balance | I-S2, I-S3 | `whole_statements_are_the_balance`, `clearing_everything_makes_a_statement_whole`, `unrecording_and_recording_again_restores` |
+| G-S2 | A statement once recorded is not undermined: nothing is added before it that it would have shown, so a whole one stays whole | N7 | `statements_stay_whole` |
 
 ### The tax return, and periods filed
 
@@ -535,6 +546,7 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 |---|---|---|---|
 | G-P1 | Nothing dated on or before `closed_through` changes, and it never moves back | N2, N6 | `closed_periods_stay_closed`, `closed_dates_are_refused` |
 | G-P2 | Nothing is dated after the day it is added | N1 | `nothing_is_dated_after_today` |
+| G-P4 | Income and expenses are in the company's currency, so profit and loss, and the balance sheet's unclosed profit, are one amount each | I-E4 | `income_and_expenses_are_in_the_company_currency` |
 | G-P3 | VAT accounts are posted to only as the VAT method in force allows: input VAT by bills, output VAT by invoices, a flat rate's account by neither; each also by plain entries, and by reversals and credit notes, which undo what was booked under the method of its day; none by a payment or a write-off | N3, I-C3 | `vat_accounts_move_as_the_method_says` |
 
 ### A bill's document
@@ -542,6 +554,7 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | | Guarantee | Rules | Properties |
 |---|---|---|---|
 | G-B1 | Each document has a path of its own and is filed once; it keeps its bill while the bill stands, and follows it when it is booked again | I-B1 | `document_paths_are_distinct`, `documents_alike_are_refused`, `documents_keep_their_bill`, `a_document_follows_its_bill` |
+| G-B2 | A bill is not booked twice by mistake: one with the date and postings of a standing bill is booked only when said to be another | N8 | `bills_alike_are_refused_unless_another` |
 
 ### Whoever runs a command
 
@@ -647,6 +660,11 @@ not reused: those missing below were rules about a value now derived.
   are above nought or both below.
 - **I-E3** An entry that names another names one with a smaller id, and is
   dated on or after it.
+- **I-E4** Every posting to an income or an expense account is in the
+  company's currency. What is owed, paid or held in another commodity is in
+  it, at its cost in the company's currency (I-E1 then balances it there), so
+  that a profit is one amount, and a report in the company's currency needs
+  no price.
 
 ### 4.3 Bills
 
@@ -663,7 +681,7 @@ not reused: those missing below were rules about a value now derived.
   and a due date on or after its own. It books output VAT only when it charges
   VAT, and VAT it charges comes to more than nought once rounded to the
   commodity's places; its receivable is an asset, its income an income account,
-  its output VAT a liability. An exempt invoice says why. A home price is above nought and in
+  its output VAT a liability. An exempt invoice says why. Its total does not come to nought at its home price. A home price is above nought and in
   another commodity. A credit note's `of` is an invoice.
 - **I-I2** Within a year, invoices and credit notes are dated in the order of
   their ids, so their numbers follow their dates.
@@ -738,6 +756,12 @@ neither for an entry made long ago.
   to an expense account, and a bill to an income account.
 - **N5** is now I-P3.
 - **N6** `closed_through` only moves forward: a period closed stays closed.
+- **N7** No entry is added with a posting to an account, in a commodity,
+  dated on or before a statement of that account in that commodity. What a
+  statement shows stays shown: a whole statement stays whole, and its
+  assertion stays written.
+- **N8** A bill is not added with the date and the postings of a standing
+  bill, unless the operation says it is another (`again`).
 
 The conditions hold of every operation but `undo`, which takes back the last
 one and makes no change of its own: a period closed by mistake is reopened by
@@ -1049,11 +1073,21 @@ no rules of its own: it is where the two differ.
 
 - **Reading never stops on a problem.** Pages and reports show the books, and
   every page says that the books hold problems, with a link to the list.
-- **No operation writes on top of a problem it would touch.** One that touches
-  none of the places named goes ahead; one that would is refused, naming them.
-- **`abo check`** lists the problems; **`abo tidy`** rewrites what is merely not
-  canonical — spacing, order, amount places, lower-case tag names — into
-  canonical form, as one commit, and leaves the rest for a person to resolve.
+- **An operation brings no problem of its own.** It is refused for a
+  violation the books after it hold and the books before it did not; those
+  held before are not its to answer for. So an operation that mends a
+  problem — declaring an account in use, say — goes ahead, as does one that
+  leaves them as they are. The files it writes, it writes canonically.
+- **A hand edit not committed holds every operation up**, since abo's commit
+  would sign it as abo's own: it is committed, taken out, or tidied first.
+- **`abo check`** lists the problems, each at its file and line — an entry at
+  its date line, an account where it is first posted to, a statement at its
+  own line — and says how each is mended: an undeclared account by declaring
+  it, what is not canonical by tidying, the rest by hand at the line named.
+- **`abo tidy`** takes the files in as they are and writes them canonically,
+  as one commit; a hand edit not committed is taken in only when it brings no
+  violation the last commit did not hold. Otherwise it is refused, naming
+  what the edit broke, and where. What tidying cannot mend, it says remains.
 
 This replaces both today's refusal to read an `abo.toml` it would not have
 written, and its sweeping a hand edit into its own commit.

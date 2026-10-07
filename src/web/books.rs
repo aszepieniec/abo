@@ -61,7 +61,7 @@ pub(super) async fn index(Books(s): Books) -> Response {
             @if !s.problems.is_empty() {
                 div.flash.flash-error { (icon("error")) div {
                     strong { "The books hold problems" }
-                    " Nothing is changed until they are mended. " code { "abo check" } " lists them; " code { "abo tidy" } " mends what is only not as abo writes it."
+                    " A change goes ahead only if it brings no problem of its own. " code { "abo check" } " lists them, and how each is mended; " code { "abo tidy" } " mends what is only not as abo writes it."
                     ul { @for p in &s.problems { li { code { (p) } } } }
                 } }
             }

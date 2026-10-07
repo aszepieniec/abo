@@ -104,11 +104,11 @@ fn entry(m: &Books, id: EntryId, e: &Entry, f: &mut Files) -> String {
                 short(&mut l.quantity);
                 short(&mut l.unit_price);
             }
-            if let InvoiceVat::Charged { rate, home } = &mut content.vat {
+            if let InvoiceVat::Charged { rate } = &mut content.vat {
                 short(rate);
-                if let Some(h) = home {
-                    short(&mut h.price.quantity);
-                }
+            }
+            if let Some(h) = &mut content.home {
+                short(&mut h.price.quantity);
             }
             let file = InvoiceFile { content, pdf: pdf.clone() };
             f.insert(json(&number), serde_json::to_string_pretty(&file).unwrap() + "\n");
@@ -150,7 +150,11 @@ pub fn parse(f: &Files) -> Result<Books, Vec<String>> {
     let mut errs = vec![];
     let config = match f.get("abo.toml").map(|t| toml::from_str::<Config>(t)) {
         Some(Ok(c)) => c,
-        Some(Err(e)) => return Err(vec![format!("abo.toml: {}", e.message())]),
+        Some(Err(e)) => {
+            let text = &f["abo.toml"];
+            let line = e.span().map_or(1, |r| text[..r.start.min(text.len())].matches('\n').count() + 1);
+            return Err(vec![format!("abo.toml:{line}: {}", e.message())]);
+        }
         None => return Err(vec!["abo.toml: missing".into()]),
     };
     let mut m = Books::new(config);
@@ -319,7 +323,7 @@ pub fn read(f: &Files) -> (Option<Books>, Vec<String>) {
         Err(e) => return (None, e),
     };
     let violations = check(&m);
-    let mut problems: Vec<String> = violations.iter().map(Violation::to_string).collect();
+    let mut problems: Vec<String> = violations.iter().map(|v| place(f, &v.of).map_or_else(|| v.to_string(), |at| format!("{at}: {v}"))).collect();
     // A number or date out of range is reported alone: rendering computes
     // with them.
     if violations.iter().any(|v| matches!(v.code, "I-K3" | "I-D1")) {
@@ -340,4 +344,38 @@ pub fn read(f: &Files) -> (Option<Books>, Vec<String>) {
         }
     }
     (Some(m), problems)
+}
+
+/// Where in the files a violation is: an entry's date line, or the first
+/// line that posts to an account, records a statement of it, or names it in
+/// abo.toml.
+fn place(f: &Files, of: &super::check::Subject) -> Option<String> {
+    use super::check::Subject;
+    let journals = || f.iter().filter(|(k, _)| k.starts_with("journal/") && *k != "journal/accounts.journal" && *k != "journal/main.journal");
+    match of {
+        Subject::Entry(id) => {
+            let tag = format!("    ; id: {id}");
+            journals().find_map(|(name, text)| {
+                let lines: Vec<&str> = text.lines().collect();
+                let at = lines.iter().position(|l| *l == tag)?;
+                // The date line: the last before it that is not indented.
+                let start = (0..at).rev().find(|&i| !lines[i].starts_with(' ')).unwrap_or(at);
+                Some(format!("{name}:{}", start + 1))
+            })
+        }
+        Subject::Account(a) => journals()
+            .find_map(|(name, text)| {
+                let i = text.lines().position(|l| l.strip_prefix("    ").and_then(|l| l.strip_prefix(a.as_str())).is_some_and(|rest| rest.starts_with("  ") || rest.is_empty()))?;
+                Some(format!("{name}:{}", i + 1))
+            })
+            .or_else(|| {
+                let i = f.get("abo.toml")?.lines().position(|l| l.contains(&format!("\"{a}\"")))?;
+                Some(format!("abo.toml:{}", i + 1))
+            }),
+        Subject::Statement(a, d) => {
+            let head = format!("{d} Statement of {a}");
+            journals().find_map(|(name, text)| Some(format!("{name}:{}", text.lines().position(|l| l == head)? + 1)))
+        }
+        _ => None,
+    }
 }

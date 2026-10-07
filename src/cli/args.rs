@@ -310,6 +310,10 @@ pub(crate) enum Cmd {
         /// The filed document it is the bill of, by its path or hash.
         #[arg(long)]
         document: Option<String>,
+        /// Book it though a bill with this date and these postings is booked
+        /// already: it is another just like it.
+        #[arg(long)]
+        again: bool,
         /// As `abo post` takes them.
         postings: Vec<String>,
     },

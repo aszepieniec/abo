@@ -132,6 +132,10 @@ pub struct Content {
     #[serde(default)]
     pub customer_tax_id: String,
     pub commodity: Commodity,
+    /// In another commodity than the company's: the price it is booked at
+    /// in the company's, and its VAT stated at (I-E4).
+    #[serde(default)]
+    pub home: Option<Price>,
     pub lines: Vec<Line>,
     pub vat: InvoiceVat,
     pub due: Date,
@@ -157,9 +161,8 @@ pub enum InvoiceVat {
     NotRegistered,
     /// Registered, charging none, and why.
     Exempt { reason: String },
-    /// Charged at `rate` percent. In another commodity than the company's,
-    /// the price its VAT was stated at in the company's.
-    Charged { rate: Decimal, home: Option<Price> },
+    /// Charged at `rate` percent.
+    Charged { rate: Decimal },
 }
 
 /// One unit of the invoice's commodity was worth `price` on `date`.
@@ -584,13 +587,41 @@ impl Books {
         Some((net, vat, net.checked_add(vat)?))
     }
 
+    /// Net and VAT in the company's currency: at the home price, each
+    /// rounded to its places, in another commodity; as they are, in its own.
+    pub fn home_totals(&self, c: &Content) -> (Decimal, Decimal) {
+        self.checked_home_totals(c).unwrap_or_default()
+    }
+
+    /// None where a product does not fit, which I-K3 refuses.
+    pub fn checked_home_totals(&self, c: &Content) -> Option<(Decimal, Decimal)> {
+        let (net, vat, _) = self.checked_totals(c)?;
+        match &c.home {
+            Some(h) => {
+                let p = self.places(&h.price.commodity);
+                let (n, v) = (round(net.checked_mul(h.price.quantity)?, p), round(vat.checked_mul(h.price.quantity)?, p));
+                n.checked_add(v)?;
+                Some((n, v))
+            }
+            None => Some((net, vat)),
+        }
+    }
+
     /// The receivable debited with the total; income credited with the net
     /// and output VAT with the VAT, or income with the total where the VAT
-    /// is not booked apart.
+    /// is not booked apart. In another commodity, the receivable is in it at
+    /// its cost in the company's currency, and income and VAT are in that.
     fn invoice_postings(&self, c: &Content) -> Vec<Posting> {
-        let (net, vat, total) = self.totals(c);
-        let p = |a: &str, q| Posting::new(a, q, &c.commodity);
-        let mut v = vec![p(&c.accounts.receivable, total)];
+        let (_, _, total) = self.totals(c);
+        let (net, vat) = self.home_totals(c);
+        let home = c.home.as_ref().map_or(&c.commodity, |h| &h.price.commodity);
+        let p = |a: &str, q| Posting::new(a, q, home);
+        let mut receivable = Posting::new(&c.accounts.receivable, total, &c.commodity);
+        // Nought, it is no cost: I-I1 refuses the invoice for it.
+        if c.home.is_some() && !(net + vat).is_zero() {
+            receivable.cost = Some(Amount { quantity: net + vat, commodity: home.clone() });
+        }
+        let mut v = vec![receivable];
         match &c.accounts.output {
             Some(out) => {
                 v.push(p(&c.accounts.income, -net));
@@ -598,7 +629,7 @@ impl Books {
                     v.push(p(out, -vat));
                 }
             }
-            None => v.push(p(&c.accounts.income, -total)),
+            None => v.push(p(&c.accounts.income, -(net + vat))),
         }
         v
     }

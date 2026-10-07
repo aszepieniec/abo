@@ -26,10 +26,13 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
             a.extend([s("--"), file.map_or(filed, String::from)]);
         }
         Op::Unfile { sha256 } => a = vec![s("unfile"), s("--"), m.documents.get(sha256).map_or(sha256.clone(), |d| d.path(sha256))],
-        Op::Bill { date, description, postings, document } => {
+        Op::Bill { date, description, postings, document, again } => {
             a = vec![s("bill"), flag("date", date), flag("desc", description)];
             if let Some(d) = document {
                 a.push(flag("document", d));
+            }
+            if *again {
+                a.push(s("--again"));
             }
             a.push(s("--"));
             a.extend(postings.iter().map(posting));

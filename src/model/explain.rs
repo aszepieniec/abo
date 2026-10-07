@@ -90,7 +90,7 @@ fn uses_commodity(m: &Books, c: &str) -> Vec<String> {
         v.push("entries post amounts in it".to_string());
     }
     if m.entries.iter().any(|e| match &e.kind {
-        Kind::Invoice { content, .. } => content.commodity == c || matches!(&content.vat, InvoiceVat::Charged { home: Some(h), .. } if h.price.commodity == c),
+        Kind::Invoice { content, .. } => content.commodity == c || content.home.as_ref().is_some_and(|h| h.price.commodity == c),
         _ => false,
     }) {
         v.push("an invoice is in it".to_string());
@@ -196,8 +196,10 @@ pub fn explain(m: &Books, op: &Op, n: &Books, v: Vec<Violation>) -> Vec<Violatio
             "I-P3" => has("N4") || has("I-B2"),
             "I-P1" => (!pay && has("I-R3")) || (has("N4") && !paid_nothing),
             "I-R3" => pay && has("I-P1"),
-            "I-E2" => pay && has("I-P1"),
-            "I-E0" => matches!(op, Op::Invoice { .. }) && has("I-I1"),
+            "I-E2" => (pay && has("I-P1")) || (matches!(op, Op::Invoice { .. }) && has("I-I1")),
+            "I-E0" | "I-E1" => matches!(op, Op::Invoice { .. }) && has("I-I1"),
+            // An invoice in a commodity not declared has no price to be booked at.
+            "I-E4" => matches!(op, Op::Invoice { .. }) && (has("I-I1") || has("I-A1")),
             _ => false,
         }
     });
@@ -337,6 +339,18 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
             }
             None => vec![],
         },
+        "I-E4" => {
+            let home = &m.config.company.currency;
+            match (op, given_postings(op)) {
+                (_, Some(ps)) => ps
+                    .iter()
+                    .filter(|p| matches!(class(&p.account), "Income" | "Expenses") && p.amount.commodity != *home)
+                    .map(|p| format!("{} is posted {}; income and expenses are in the company currency, {home}: post it in {home}, and what is owed or paid in {} at its cost in {home}", p.account, amount(m, p.amount.quantity, &p.amount.commodity), p.amount.commodity))
+                    .collect(),
+                (Op::WriteOff { debt, .. }, _) => vec![format!("{} is owed in another commodity than {home}, at no cost in {home}, so what is written off cannot be put in {home}", name(m, *debt))],
+                _ => vec![],
+            }
+        }
         "I-E2" => {
             let mut v = vec![];
             match op {

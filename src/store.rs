@@ -107,9 +107,8 @@ impl Store {
 
     /// Apply `op`, write what changed, with `also` — documents and PDFs, by
     /// their path — and commit, logged as the command that makes it.
-    /// Refused, nothing is written.
-    /// ponytail: any problem refuses every change, where §8 refuses only one
-    /// that would touch it; narrow it when books with problems are common.
+    /// Refused, nothing is written: a change may not bring a problem the
+    /// books did not hold, and makes the files it writes as abo writes them.
     /// None where the change changes nothing: no commit, no line.
     pub fn change(&mut self, op: &Op, also: &[(String, Vec<u8>)]) -> Result<Option<String>> {
         self.change_from(op, None, also)
@@ -130,30 +129,50 @@ impl Store {
         self.write(n, also, &removed, what, argv)
     }
 
-    /// Whether the books may be changed: not while they hold a problem, nor
-    /// while a file holds a change no abo command made, which abo's commit
-    /// would sign as its own.
+    /// Whether the books may be changed: not while a file holds a change no
+    /// abo command made, which abo's commit would sign as its own. Problems
+    /// the books hold do not stop a change; one it would bring does (`apply`).
     pub fn changeable(&self) -> Result<()> {
-        if !self.problems.is_empty() {
-            bail!("the books hold problems, so they are not changed until those are mended:\n  {}\nWhat is only not as abo writes it, tidying mends: on a terminal, abo tidy", self.problems.join("\n  "));
-        }
-        // The books' files alone: another file is not abo's to sign or to hold up.
-        let ours = ["status", "--porcelain", "--untracked-files=no", "--", "abo.toml", "journal", "invoices", "bills", "templates"];
-        let dirty = repo::git_in(&self.root, &ours)?;
-        if let Some(l) = dirty.lines().next() {
-            bail!("{} has changes no abo command made; commit them, take them out, or tidy them (on a terminal, abo tidy), first", l.get(3..).unwrap_or(l));
+        if let Some(f) = self.edited()?.first() {
+            bail!("{f} has changes no abo command made; commit them, take them out, or tidy them, first");
         }
         Ok(())
     }
 
-    /// Rewrite the files as `render` writes them: `abo tidy`.
+    /// The books' files that hold a change not committed: another file is
+    /// not abo's to sign or to hold up.
+    fn edited(&self) -> Result<Vec<String>> {
+        let ours = ["status", "--porcelain", "--untracked-files=no", "--", "abo.toml", "journal", "invoices", "bills", "templates"];
+        Ok(repo::git_in(&self.root, &ours)?.lines().map(|l| l.get(3..).unwrap_or(l).to_string()).collect())
+    }
+
+    /// `abo tidy`: take in the files as they are, hand edits and all, and
+    /// write them as `render` does — unless a hand edit brings a problem the
+    /// last commit did not hold, which is said, with where it is.
     pub fn tidy(&mut self) -> Result<Option<String>> {
-        let ours = render_on_disk(&self.root, &self.books)?;
-        if ours.is_empty() {
+        let (before, _) = model::read(&head_files(&self.root)?);
+        let before = before.map(|b| model::check(&b)).unwrap_or_default();
+        let new: Vec<&String> = model::check(&self.books)
+            .iter()
+            .filter(|v| !before.iter().any(|b| b.code == v.code && b.what == v.what))
+            .filter_map(|v| self.problems.iter().find(|p| p.ends_with(&v.to_string())))
+            .collect();
+        if !new.is_empty() {
+            bail!(
+                "tidying takes in a hand edit only when it breaks nothing, and this one does:\n  {}\nMend it, or take it out with git checkout",
+                new.iter().map(|p| p.as_str()).collect::<Vec<_>>().join("\n  ")
+            );
+        }
+        // Edited by hand and written as abo writes it: committed as it is.
+        let differ = render_on_disk(&self.root, &self.books)?;
+        let edited: Vec<(String, Vec<u8>)> = self.edited()?.into_iter().filter(|f| !differ.contains(f)).filter_map(|f| std::fs::read(self.root.join(&f)).ok().map(|b| (f, b))).collect();
+        if differ.is_empty() && edited.is_empty() {
             return Ok(None);
         }
         let books = self.books.clone();
-        self.write(books, &[], &[], "Tidy the books", vec!["tidy".into()])
+        let commit = self.write(books, &edited, &[], "Tidy the books", vec!["tidy".into()])?;
+        *self = Store::open(&self.root)?;
+        Ok(commit)
     }
 
     fn write(&mut self, n: Books, also: &[(String, Vec<u8>)], removed: &[String], what: &str, argv: Vec<String>) -> Result<Option<String>> {
@@ -283,6 +302,16 @@ impl Store {
     }
 }
 
+/// The text files `render` writes, as the last commit has them.
+fn head_files(root: &Path) -> Result<Files> {
+    let names = repo::git_in(root, &["ls-tree", "-r", "--name-only", "HEAD", "--", "abo.toml", "journal", "invoices", "bills/index"])?;
+    let mut f = Files::new();
+    for rel in names.lines().filter(|n| *n == "abo.toml" || *n == "bills/index" || n.ends_with(".journal") || n.ends_with(".json")) {
+        f.insert(rel.to_string(), repo::git_in(root, &["show", &format!("HEAD:{rel}")])?);
+    }
+    Ok(f)
+}
+
 /// The files of `m` whose text on disk is not as `render` writes it.
 fn render_on_disk(root: &Path, m: &Books) -> Result<Vec<String>> {
     let on_disk = text_files(root)?;
@@ -367,7 +396,10 @@ impl Store {
             .output()
             .context("running hledger")?;
         if !out.status.success() {
-            bail!("hledger {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
+            if !self.problems.is_empty() {
+                bail!("the books hold problems, so hledger cannot report on them:\n  {}", self.problems.join("\n  "));
+            }
+            bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }

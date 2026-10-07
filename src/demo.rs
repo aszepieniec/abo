@@ -87,7 +87,7 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
                 None
             }
         };
-        s.change(&Op::Bill { date: ago(days), description: description.into(), postings, document }, &[])?;
+        s.change(&Op::Bill { date: ago(days), description: description.into(), postings, document, again: false }, &[])?;
         Ok(s.books.entries.len())
     };
     let pay = |s: &mut Store, days: i64, debt: usize, amount: &str| -> Result<()> {
@@ -132,7 +132,9 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
         pay(&mut s, 15, three, "500.00")?;
     }
     // Owed in another currency: the open total has a line of its own for it.
-    bill(&mut s, 44, "Devtools Inc", "Devtools Inc, annual licence", vec![p("Expenses:General", "250.00", "USD"), p("Liabilities:Payable", "-250.00", "USD")])?;
+    let mut owed = p("Liabilities:Payable", "-250.00", "USD");
+    owed.cost = Some(model::Amount { quantity: d("-230.00"), commodity: "EUR".into() });
+    bill(&mut s, 44, "Devtools Inc", "Devtools Inc, annual licence", vec![p("Expenses:General", "230.00", "EUR"), owed])?;
     bill(&mut s, 32, "Acme Hosting AG", "Acme Hosting AG, hosting", vec![p("Expenses:Hosting", "100.00", "EUR"), p("Assets:VAT:Input", "10.00", "EUR"), p("Liabilities:Payable", "-110.00", "EUR")])?;
     // Filed, not booked yet.
     let lines = [p("Expenses:General", "59.00", "EUR")];

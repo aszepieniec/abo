@@ -106,7 +106,7 @@ pub fn pdf_of(root: &Path, m: &crate::model::Books, id: usize) -> Result<(Vec<u8
     let (rate, reason, home) = match &c.vat {
         InvoiceVat::NotRegistered => (Decimal::ZERO, String::new(), None),
         InvoiceVat::Exempt { reason } => (Decimal::ZERO, reason.clone(), None),
-        InvoiceVat::Charged { rate, home } => (*rate, String::new(), home.as_ref().filter(|_| !vat.is_zero())),
+        InvoiceVat::Charged { rate } => (*rate, String::new(), c.home.as_ref().filter(|_| !vat.is_zero())),
     };
     let currency = &m.config.company.currency;
     let co = &m.config.company;
@@ -136,7 +136,7 @@ pub fn pdf_of(root: &Path, m: &crate::model::Books, id: usize) -> Result<(Vec<u8
         credits_date: if credit { inv.date.to_string() } else { String::new() },
         customer_tax_id: c.customer_tax_id.clone(),
         vat_reason: reason,
-        vat_home: home.map(|h| stated(vat * h.price.quantity * sign, m.places(currency), currency)).unwrap_or_default(),
+        vat_home: home.map(|_| stated(m.home_totals(c).1 * sign, m.places(currency), currency)).unwrap_or_default(),
         vat_home_currency: home.map(|_| currency.clone()).unwrap_or_default(),
         vat_home_price: home.map(|h| format!("1 {} = {} {}, {}", c.commodity, price(h.price.quantity, m.places(&h.price.commodity), &h.price.commodity), h.price.commodity, h.date)).unwrap_or_default(),
     };
