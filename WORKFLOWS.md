@@ -187,8 +187,9 @@ a document, must be the document's date.
 ### B3. The same bill twice — Supported
 Filing a document already filed is refused; booking a document a standing
 bill has is refused (MODEL.md I-B1); so is a bill owing what a standing
-one owes, on the same account and day, document or not and however it is
-split among expenses, unless it is said to be another — `abo bill
+one owes, on the same account, dated within 7 days of it either side,
+document or not and however it is split among expenses, unless it is said
+to be another — `abo bill
 --again`, or the checkbox on the form (N8).
 
 ### B4. Pay a bill, or receive an invoice's payment — Supported (browser, CLI)
@@ -378,8 +379,13 @@ page and **Revert**. CLI: `abo revert <id>`, dated today unless `--date` says
 otherwise.
 **Done when** a new entry carries the opposite amounts and names the one it
 reverses, which stays. Refused: one already reversed, one a standing payment
-pays (revert that first), an invoice (corrected by a credit note, F5) and a
-credit note.
+pays (revert that first), an invoice (corrected by a credit note, F5), a
+credit note, and one a recorded statement shows (N9): a salary paid from
+the bank and on its statement moved as booked, and its opposite would be a
+payment the bank never made. Booked in the wrong period, it is corrected
+on the other side with `abo post` — the expense moved from one period to
+the other — or, if the statement was wrong, the statement is taken out
+first.
 
 ### F5. Correct an issued invoice — Supported (browser, CLI)
 An issued invoice is a document the customer has; it is corrected by a credit

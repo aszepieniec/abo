@@ -2043,3 +2043,26 @@ fn a_question_shows_what_a_blank_answer_takes() {
         assert!(said.contains(q), "{q}: {said}\n{}", err(&o));
     }
 }
+
+/// The same bill booked again dated the day it came, two days after the
+/// date on it, without its document, got past N8, which took one day alone.
+#[test]
+fn the_same_bill_within_a_week_is_the_same_bill() {
+    let dir = books("bill-week", &[]);
+    ok(&dir, &["bill", "--date", "2026-03-03", "--desc", "Chairs", "Expenses:General=400.00", "Assets:VAT:Input=40.00", "Liabilities:Payable=-440.00"]);
+    refused(&dir, &["bill", "--date", "2026-03-05", "--desc", "Chairs", "Expenses:General=400.00", "Assets:VAT:Input=40.00", "Liabilities:Payable=-440.00"], "N8");
+    // A month on, the same amount is next month's bill.
+    ok(&dir, &["bill", "--date", "2026-04-02", "--desc", "Chairs", "Expenses:General=400.00", "Assets:VAT:Input=40.00", "Liabilities:Payable=-440.00"]);
+}
+
+/// A salary paid from the bank, on the bank's statement, was reverted to
+/// fix its period: the books then held a payment back the bank never made.
+#[test]
+fn an_entry_a_statement_shows_is_not_reverted() {
+    let dir = books("revert-cleared", &[]);
+    ok(&dir, &["account", "add", "Expenses:Salary"]);
+    let id = entry(&dir, &["post", "--date", "2026-05-05", "--desc", "Salary", "Expenses:Salary=6000.00", "Assets:Bank=-6000.00"]);
+    ok(&dir, &["record", "--date", "2026-05-31", "--balance", "-6000.00", "--all"]);
+    refused(&dir, &["revert", &id], "N9");
+    refused(&dir, &["revert", &id], "abo post");
+}

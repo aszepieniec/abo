@@ -544,6 +544,7 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 |---|---|---|---|
 | G-S1 | A posting is cleared by one statement at most; a statement's balance is what it and the account's earlier ones clear, and a whole one is the account's balance | I-S2, I-S3 | `whole_statements_are_the_balance`, `clearing_everything_makes_a_statement_whole`, `unrecording_and_recording_again_restores` |
 | G-S2 | A statement once recorded is not undermined: nothing is added before it that it would have shown, so a whole one stays whole | N7 | `statements_stay_whole` |
+| G-S3 | What a statement shows is not reversed: an entry whose posting it clears is not reverted, so the books hold no movement the bank never made | N9 | `cleared_entries_are_not_reverted` |
 
 ### The tax return, and periods filed
 
@@ -559,7 +560,7 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | | Guarantee | Rules | Properties |
 |---|---|---|---|
 | G-B1 | Each document has a path of its own and is filed once; it keeps its bill while the bill stands, and follows it when it is booked again | I-B1 | `document_paths_are_distinct`, `documents_alike_are_refused`, `documents_keep_their_bill`, `a_document_follows_its_bill` |
-| G-B2 | A bill is not booked twice by mistake: one owing what a standing bill owes, on its day, is booked only when said to be another | N8 | `bills_alike_are_refused_unless_another` |
+| G-B2 | A bill is not booked twice by mistake: one owing what a standing bill owes, within a week of it, is booked only when said to be another | N8 | `bills_alike_are_refused_unless_another` |
 
 ### Whoever runs a command
 
@@ -766,10 +767,17 @@ neither for an entry made long ago.
   dated on or before a statement of that account in that commodity. What a
   statement shows stays shown: a whole statement stays whole, and its
   assertion stays written.
+- **N9** An entry is not reverted while a statement clears a posting of it:
+  the statement shows that the money moved as booked, so the opposite would
+  book a movement that never was. What was wrong is corrected on the other
+  side, by an entry of its own — an expense moved to the right period — or
+  the statement is taken out first, if it was wrong.
 - **N8** A bill is not added that owes what a standing bill owes — the same
-  amount, in the same commodity, on the same account — on the same day,
-  unless the operation says it is another (`again`). How either is split
-  among expenses does not tell two bills apart: what is owed does.
+  amount, in the same commodity, on the same account — dated within 7 days
+  of it either side, unless the operation says it is another (`again`). How
+  either is split among expenses does not tell two bills apart, nor a day or
+  two between the date on it and the day it came: what is owed does. A bill
+  that comes monthly, for the same amount, is a month apart.
 
 The conditions hold of every operation but `undo`, which takes back the last
 one and makes no change of its own: a period closed by mistake is reopened by

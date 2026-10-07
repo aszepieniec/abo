@@ -471,6 +471,9 @@ fn config_edited(c: &Config, key: &str, value: Option<&str>) -> Result<Config, S
     root.try_into().map_err(|_: toml::de::Error| format!("{shown_key}: abo.toml would not be read with it"))
 }
 
+/// How many days apart two bills owing the same are taken for one (N8).
+pub const BILL_WEEK: i32 = 7;
+
 /// N1 to N6; N5 is now the invariant I-P3. Said of the operation already:
 /// `explain` leaves them as they are.
 fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
@@ -551,15 +554,27 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
             }
         }
     }
+    // What a statement shows moved as booked: reversing it would book a
+    // movement no bank made. The other side is corrected instead.
+    if let Op::Revert { entry, .. } = op {
+        if let Some(((a, _, d), _)) = m.statements.iter().find(|(_, s)| s.clears.iter().any(|r| r.entry == *entry)) {
+            v.push(Violation {
+                code: "N9",
+                what: format!("{} moved money the statement of {a} on {d} shows, as it was booked: reverting it would book a movement that never was. Correct the other side by an entry of its own, moving an expense to the right period, say; or take the statement out first, if it was wrong", name(m, *entry)),
+                of: Subject::Account(a.clone()),
+            });
+        }
+    }
     // The same bill twice, but when said to be another: what is owed, on
-    // the same account and day, however the bill was split among expenses.
-    if let (Op::Bill { again: false, .. }, Some(new)) = (op, n.debt(n.entries.len()).filter(|_| added.is_some())) {
-        let date = added.map(|e| e.date);
+    // the same account, within a week either side, however the bill was
+    // split among expenses — a bill booked again on the day it came.
+    if let (Op::Bill { again: false, .. }, Some(new), Some(e)) = (op, n.debt(n.entries.len()).filter(|_| added.is_some()), added) {
         let standing = m.standing();
-        if let Some(id) = (1..=m.entries.len()).find(|&id| standing[id] && matches!(m.entries[id - 1].kind, Kind::Bill(_)) && Some(m.entries[id - 1].date) == date && m.debt(id).as_ref() == Some(&new)) {
+        let near = |d: Date| (d - e.date).get_days().abs() <= BILL_WEEK;
+        if let Some(id) = (1..=m.entries.len()).find(|&id| standing[id] && matches!(m.entries[id - 1].kind, Kind::Bill(_)) && near(m.entries[id - 1].date) && m.debt(id).as_ref() == Some(&new)) {
             let mut q = new.owed.quantity;
             q.rescale(m.places(&new.owed.commodity));
-            no!("N8", "{} owes the same, {q} {}, on {} on the same day; to book another like it, say it is another", name(m, id), new.owed.commodity, new.account);
+            no!("N8", "{}, dated {}, owes the same, {q} {}, on {}; to book another like it, say it is another", name(m, id), m.entries[id - 1].date, new.owed.commodity, new.account);
         }
     }
     v

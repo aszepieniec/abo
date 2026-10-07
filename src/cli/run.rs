@@ -757,6 +757,7 @@ pub(crate) fn hints(r: &store::Refused) -> Vec<String> {
             ("I-E4", Subject::Commodity(c)) => format!("abo price add <date> {c} <price> <company currency>"),
             ("I-I1", Subject::Field("reason")) => "--vat-reason '<why no VAT is charged>'".into(),
             ("N7", Subject::Account(a)) => format!("abo unrecord --account {a}, which takes out its latest statement"),
+            ("N9", Subject::Account(a)) => format!("abo post, with the other side moved where it belongs; or abo unrecord --account {a}, if the statement was wrong"),
             ("N8", _) => "--again, if it is another bill just like it".into(),
             // A count or a statement the books disagree with: what it shows and
             // the books lack is booked first, a shortage say.

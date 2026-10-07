@@ -1396,7 +1396,9 @@ fn payments_are_reverted_first(#[strategy(plan())] plan: Vec<Step>, debt: Index)
     let today = last_day.max(m.config.company.closed_through.unwrap_or(last_day)).tomorrow().unwrap();
     let standing = m.standing();
     let pays = |d: EntryId| -> Vec<EntryId> { (1..=m.entries.len()).filter(|&p| standing[p] && matches!(m.entries[p - 1].kind, Kind::Payment { of, .. } if of == d)).collect() };
-    let paid: Vec<EntryId> = (1..=m.entries.len()).filter(|&d| standing[d] && m.debt(d).is_some() && !pays(d).is_empty()).collect();
+    // What a statement shows is not reverted (N9): those are left out.
+    let cleared = |id: EntryId| m.statements.values().any(|s| s.clears.iter().any(|r| r.entry == id));
+    let paid: Vec<EntryId> = (1..=m.entries.len()).filter(|&d| standing[d] && m.debt(d).is_some() && !pays(d).is_empty() && !cleared(d) && !pays(d).into_iter().any(cleared)).collect();
     let Some(d) = pick(&debt, &paid) else { return Ok(()) };
     let cancel = match m.entries[d - 1].kind {
         Kind::Invoice { .. } => Op::Credit { invoice: d, date: today, note: "Wrong".into(), pdf: "0".repeat(64) },
@@ -2063,10 +2065,11 @@ fn statements_stay_whole(#[strategy(plan())] plan: Vec<Step>) {
     })?;
 }
 
-/// N8: a bill with the date and the postings of one standing is refused,
-/// unless said to be another; said so, it is booked.
+/// N8: a bill owing what a standing bill owes, on its account, dated within
+/// a week of it either side, is refused, unless said to be another; said
+/// so, N8 is not why it is refused. Further apart, it is not N8's.
 #[proptest]
-fn bills_alike_are_refused_unless_another(#[strategy(plan())] plan: Vec<Step>, bill: Index) {
+fn bills_alike_are_refused_unless_another(#[strategy(plan())] plan: Vec<Step>, bill: Index, #[strategy(0i64..30)] apart: i64) {
     let (m, today) = end(&plan);
     let standing = m.standing();
     let bills: Vec<EntryId> = (1..=m.entries.len()).filter(|&b| standing[b] && matches!(m.entries[b - 1].kind, Kind::Bill(_))).collect();
@@ -2079,12 +2082,14 @@ fn bills_alike_are_refused_unless_another(#[strategy(plan())] plan: Vec<Step>, b
     if let Some(p) = postings.iter_mut().find(|p| p.account == "Expenses:Hosting") {
         p.account = "Expenses:Other".into();
     }
-    let twice = |again| Op::Bill { date: e.date, description: "Again".into(), postings: postings.clone(), document: None, again };
+    let date = e.date.checked_sub(jiff::Span::new().days(apart)).unwrap();
+    let owes = m.debt(b);
+    let alike = bills.iter().any(|&o| m.debt(o) == owes && (m.entries[o - 1].date - date).get_days().abs() <= BILL_WEEK);
+    let twice = |again| Op::Bill { date, description: "Again".into(), postings: postings.clone(), document: None, again };
     let once = apply(&m, &twice(false), today);
-    prop_assert!(once.as_ref().is_err_and(|v| v.iter().any(|v| v.code == "N8")), "{:?}", once.map(|_| ()));
-    // Said to be another, N8 is not why it is refused, if it is.
-    let again = apply(&m, &twice(true), today);
-    prop_assert!(again.as_ref().err().is_none_or(|v| v.iter().all(|v| v.code != "N8")));
+    let n8 = |r: &Outcome| r.as_ref().is_err_and(|v| v.iter().any(|v| v.code == "N8"));
+    prop_assert_eq!(n8(&once), alike, "{:?}", once.map(|_| ()));
+    prop_assert!(!n8(&apply(&m, &twice(true), today)));
 }
 
 /// §2.3 and §5.3: an id once given names that entry, or a gap, ever after:
@@ -2116,4 +2121,16 @@ fn issued_invoices_are_not_undone(#[strategy(plan())] plan: Vec<Step>) {
         }
         Ok(())
     })?;
+}
+
+/// N9: an entry a statement clears a posting of is not reverted; one it
+/// clears none of, N9 lets be.
+#[proptest]
+fn cleared_entries_are_not_reverted(#[strategy(plan())] plan: Vec<Step>, entry: Index) {
+    let (m, today) = end(&plan);
+    let ids: Vec<EntryId> = (1..=m.entries.len()).filter(|&id| m.entry(id).is_some()).collect();
+    let Some(id) = pick(&entry, &ids) else { return Ok(()) };
+    let cleared = m.statements.values().any(|s| s.clears.iter().any(|r| r.entry == id));
+    let r = apply(&m, &Op::Revert { entry: id, date: today }, today);
+    prop_assert_eq!(r.as_ref().is_err_and(|v| v.iter().any(|v| v.code == "N9")), cleared);
 }

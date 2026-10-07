@@ -551,7 +551,12 @@ pub(crate) enum Cmd {
     Entries {
         words: Vec<String>,
     },
-    /// Book the opposite of an entry, by its id, or an invoice's number.
+    /// Book the opposite of an entry, by its id. Not an invoice, which a
+    /// credit note cancels; and not an entry a recorded statement shows, a
+    /// payment from the bank say: that money moved as booked, and reverting
+    /// it would book a movement the bank never made. Correct the other side
+    /// with abo post instead, moving an expense to the right period, say; or
+    /// take the statement out first, if it was wrong.
     Revert {
         /// Defaults to today.
         #[arg(long)]
