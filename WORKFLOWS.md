@@ -37,7 +37,8 @@ method needs — for `effective` the input and the output VAT accounts, for
 the method is `none`, the rate charged to customers; and last git's
 `user.name` and `user.email` for the new repository, offering the global
 ones. Blank
-takes the default shown in brackets. A wrong answer is asked again with what
+takes the default shown in brackets; without a terminal, where the default
+cannot be put on the line to edit, every question that has one shows it so. A wrong answer is asked again with what
 was wrong: a currency must be three letters or more (`eur` is taken as EUR), a VAT method
 may be the start of one (`e`, `f`, `n`), a rate must be a number from 0 up to
 100. Refused before any question is asked: a
@@ -300,8 +301,11 @@ Any asset account and any commodity.
 ## E. Reports
 
 ### E1. Profit and loss for a period — Supported (browser, CLI)
-**Reports**, Profit and loss, a period (`2026`, `2026q1`, `last month`).
-CLI: `abo pl --period …`, with `--json` or `--pdf`.
+**Reports**, Profit and loss, a period (`2026`, `2026q1`, `last month`, or
+`ytd`, 1 January through today). CLI: `abo pl --period …` (or `-p`), with
+`--json` or `--pdf`. The heading names the period's first and last day, as
+hledger reads it: `Profit and loss, last quarter (2026-07-01 to 2026-09-30)`;
+so does the tax return's.
 **Done when** income and expenses are listed with totals and the profit for
 the period, matching `hledger balance` over the same period. Downloading a PDF
 changes nothing in the books.

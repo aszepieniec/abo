@@ -33,6 +33,10 @@ pub struct Statement {
     /// The period as given, an hledger period such as `2026q3`; empty for
     /// all time, and for a balance sheet.
     pub period: String,
+    /// The period's first and last day, as hledger reads it; none for all
+    /// time, and for a balance sheet.
+    pub from: Option<String>,
+    pub to: Option<String>,
     /// A balance sheet's day.
     pub date: Option<String>,
     pub company: String,
@@ -65,7 +69,10 @@ pub fn when(st: &Statement) -> String {
     match (&st.date, st.period.as_str()) {
         (Some(d), _) => format!("as at {d}"),
         (None, "") => "all time".into(),
-        (None, p) => p.to_string(),
+        (None, p) => match (&st.from, &st.to) {
+            (Some(f), Some(t)) => format!("{p} ({f} to {t})"),
+            _ => p.to_string(),
+        },
     }
 }
 
@@ -133,19 +140,47 @@ fn period_flags(period: &str) -> Vec<&str> {
 }
 
 /// A period hledger reads, refused in words of its own when it does not.
+/// The period as hledger takes it: `ytd`, the year to date, is 1 January of
+/// this year through today; any other, as given.
+fn hledger_period(period: &str) -> Result<String> {
+    if period.trim() == "ytd" {
+        let today = crate::store::today()?;
+        return Ok(format!("from {}-01-01 to {}", today.year(), today.tomorrow()?));
+    }
+    Ok(period.to_string())
+}
+
+/// A period's first and last day, as hledger reads it: of a report by day,
+/// the first day's start and the last day's end, which hledger gives as the
+/// next day. None for all time.
+fn days(period: &str) -> Result<(Option<String>, Option<String>)> {
+    if period.is_empty() {
+        return Ok((None, None));
+    }
+    let out = std::process::Command::new("hledger").args(["--no-conf", "-f", "-", "balance", "-D", "-O", "json", "-p", period]).stdin(std::process::Stdio::null()).output().context("running hledger")?;
+    let v: Value = serde_json::from_slice(&out.stdout).context("hledger's dates of the period")?;
+    let dates = v["prDates"].as_array().cloned().unwrap_or_default();
+    let day = |d: &Value| d["contents"].as_str().and_then(|s| s.parse::<jiff::civil::Date>().ok());
+    let from = dates.first().and_then(|d| day(&d[0]));
+    let to = dates.last().and_then(|d| day(&d[1])).and_then(|d| d.yesterday().ok());
+    Ok((from.map(|d| d.to_string()), to.map(|d| d.to_string())))
+}
+
 fn checked_period(period: &str) -> Result<()> {
     // Read against no books, so that books hledger cannot read are not
     // blamed on the period.
     let read = || std::process::Command::new("hledger").args(["--no-conf", "-f", "-", "balance", "-p", period]).stdin(std::process::Stdio::null()).output().is_ok_and(|o| o.status.success());
     if !period.is_empty() && !read() {
-        bail!("{period:?} is not a period; give one such as 2026, 2026q1, 2026-08 or last month");
+        bail!("{period:?} is not a period; give one such as 2026, 2026q1, 2026-08, last month or ytd");
     }
     Ok(())
 }
 
 pub fn profit_and_loss(s: &Store, period: &str) -> Result<Statement> {
-    checked_period(period)?;
-    let extra = period_flags(period);
+    let hp = hledger_period(period)?;
+    checked_period(&hp)?;
+    let (from, to) = days(&hp)?;
+    let extra = period_flags(&hp);
     let (income, income_total) = section(s, "Income", "income", &extra, true)?;
     let (expenses, expense_total) = section(s, "Expenses", "expenses", &extra, false)?;
 
@@ -156,6 +191,8 @@ pub fn profit_and_loss(s: &Store, period: &str) -> Result<Statement> {
     Ok(Statement {
         title: "Profit and loss".into(),
         period: period.to_string(),
+        from,
+        to,
         date: None,
         company: s.books.config.company.name.clone(),
         sections: vec![income, expenses],
@@ -213,6 +250,8 @@ pub fn balance_sheet(s: &Store, date: &str) -> Result<Statement> {
     Ok(Statement {
         title: "Balance sheet".into(),
         period: String::new(),
+        from: None,
+        to: None,
         date: Some(date.to_string()),
         company: s.books.config.company.name.clone(),
         sections: vec![assets, liabilities, equity],
@@ -236,13 +275,15 @@ pub fn vat_return(s: &Store, period: &str) -> Result<Statement> {
              (abo config set report.vat.<code> '{{ label = \"...\", query = \"...\" }}')"
         );
     }
-    checked_period(period)?;
+    let hp = hledger_period(period)?;
+    checked_period(&hp)?;
+    let (from, to) = days(&hp)?;
     let currency = s.books.config.company.currency.clone();
     let places = s.books.places(&currency);
     // A return is filed in one currency. Anything else is valued in it at the
     // price on the day of each posting, from the books' own prices.
     let value = format!("--value=then,{currency}");
-    let mut extra = period_flags(period);
+    let mut extra = period_flags(&hp);
     extra.push(&value);
     let mut lines = Vec::new();
     for (code, b) in spec {
@@ -271,6 +312,8 @@ pub fn vat_return(s: &Store, period: &str) -> Result<Statement> {
     Ok(Statement {
         title: "Tax return".into(),
         period: period.to_string(),
+        from,
+        to,
         date: None,
         company: s.books.config.company.name.clone(),
         sections: vec![Section { title: String::new(), lines, total: vec![] }],

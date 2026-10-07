@@ -2013,3 +2013,33 @@ fn an_issued_invoice_is_not_undone() {
     refused(&dir, &["undo"], "abo credit 2026-0001");
     assert!(dir.join("invoices/2026/2026-0001.pdf").is_file());
 }
+
+/// A report's heading said "last quarter" and not which days that was.
+#[test]
+fn a_reports_heading_gives_its_days() {
+    let dir = books("heading-days", &[]);
+    ok(&dir, &["post", "--date", "2027-02-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
+    assert!(ok(&dir, &["pl", "-p", "2027q1"]).contains("Profit and loss, 2027q1 (2027-01-01 to 2027-03-31)"));
+    // The year to date: 1 January through today, ABO_TODAY here.
+    assert!(ok(&dir, &["pl", "-p", "ytd"]).contains("Profit and loss, ytd (2027-01-01 to 2027-06-30)"));
+    let v = json(&dir, &["pl", "-p", "ytd"]);
+    assert_eq!((v["from"].as_str(), v["to"].as_str()), (Some("2027-01-01"), Some("2027-06-30")));
+    assert!(ok(&dir, &["pl"]).contains("Profit and loss, all time"));
+}
+
+/// Without a terminal, a question whose default is worked out from the
+/// answers before it showed nothing, though a blank answer took it.
+#[test]
+fn a_question_shows_what_a_blank_answer_takes() {
+    let dir = books("defaults", &[]);
+    let mut c = Command::new(env!("CARGO_BIN_EXE_abo"));
+    c.args(["payment-options", "add"]).current_dir(&dir).env("ABO_TODAY", TODAY).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    use std::io::Write as _;
+    child.stdin.take().unwrap().write_all(b"cash\n\nAt the office\n\n\n\n\n").unwrap();
+    let o = child.wait_with_output().unwrap();
+    let said = String::from_utf8_lossy(&o.stdout);
+    for q in ["Name on invoices [Cash]: ", "Id, for abo commands [cash]: ", "Account the money arrives in [Assets:Cash]: "] {
+        assert!(said.contains(q), "{q}: {said}\n{}", err(&o));
+    }
+}

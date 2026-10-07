@@ -382,8 +382,8 @@ pub(crate) enum Cmd {
     },
     /// Profit and loss for a period.
     Pl {
-        /// An hledger period expression, e.g. 2026, 2026q1, "last month".
-        /// Without one, all time.
+        /// An hledger period expression, e.g. 2026, 2026q1, "last month", or
+        /// ytd, the year to date. Without one, all time.
         #[arg(short, long, default_value = "")]
         period: String,
         /// Also write a PDF here.
@@ -401,8 +401,8 @@ pub(crate) enum Cmd {
     },
     /// Tax return for a period, from the report.vat boxes of abo.toml.
     Vat {
-        /// An hledger period expression, e.g. 2026q3, "last quarter".
-        /// Without one, all time.
+        /// An hledger period expression, e.g. 2026q3, "last quarter", or
+        /// ytd, the year to date. Without one, all time.
         #[arg(short, long, default_value = "")]
         period: String,
         /// Also write a PDF here.

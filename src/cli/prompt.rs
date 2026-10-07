@@ -55,7 +55,10 @@ pub(crate) fn read(question: &str, default: &str) -> Result<Option<String>> {
 /// line, so there a blank answer keeps `now`.
 pub(crate) fn read_over(question: &str, now: &str) -> Result<Option<String>> {
     use std::io::IsTerminal as _;
-    let s = match line(&format!("{question}: "), now) {
+    // Without a terminal, `now` cannot be put on the line: it is shown, as
+    // what a blank answer takes.
+    let prompt = if std::io::stdin().is_terminal() || now.is_empty() { format!("{question}: ") } else { format!("{question} [{now}]: ") };
+    let s = match line(&prompt, now) {
         Err(rustyline::error::ReadlineError::Eof) => return ran_out(question),
         r => r?,
     };
