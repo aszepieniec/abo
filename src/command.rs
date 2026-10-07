@@ -49,6 +49,9 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
             if let Some(d) = more.due_days {
                 a.push(flag("due-days", &d));
             }
+            // Written out, so that the command books where it booked, however
+            // invoice.income is set by then.
+            a.push(flag("income", more.income.as_ref().unwrap_or(&m.config.invoice.income)));
             for (k, v) in [("vat-reason", reason), ("reference", reference), ("note", note), ("customer-tax-id", &more.customer_tax_id)] {
                 if !v.is_empty() {
                     a.push(flag(k, v));

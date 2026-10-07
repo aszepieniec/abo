@@ -145,7 +145,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             let op = Op::Bill { date, description, postings, document, again };
             changed(&mut s, &op, &[], cli.json)
         }
-        Cmd::Invoice { to, items, date, due_days, vat_rate, currency, reference, pay_to, note, customer_tax_id, vat_reason } => {
+        Cmd::Invoice { to, items, date, due_days, vat_rate, currency, reference, pay_to, note, customer_tax_id, income, vat_reason } => {
             let mut s = Store::open(&here)?;
             let lines: Vec<model::Line> = items.iter().enumerate().map(|(n, raw)| input::line(n + 1, raw)).collect::<Result<_>>()?;
             let commodity = currency.unwrap_or_else(|| s.books.config.company.currency.clone());
@@ -157,7 +157,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                     _ => id,
                 })
                 .collect();
-            let more = model::InvoiceMore { customer_tax_id, due_days, pay_to };
+            let more = model::InvoiceMore { customer_tax_id, income, due_days, pay_to };
             let date = input::day(date.as_deref())?;
             // A line each; `\n` within one, as logs written before take it.
             let customer = to.iter().map(|l| l.replace("\\n", "\n")).collect::<Vec<_>>().join("\n");

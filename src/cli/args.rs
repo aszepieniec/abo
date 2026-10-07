@@ -375,6 +375,12 @@ pub(crate) enum Cmd {
         /// The customer's tax registration number, printed under their address.
         #[arg(long, default_value = "")]
         customer_tax_id: String,
+        /// The income account it books to, a declared Income account, such
+        /// as Income:Exports for exports or reverse-charge sales, so that a
+        /// box of the tax return can read them apart. Defaults to
+        /// invoice.income.
+        #[arg(long)]
+        income: Option<String>,
         /// Why no VAT is charged: needed at 0% unless the company is not VAT
         /// registered.
         #[arg(long, default_value = "")]

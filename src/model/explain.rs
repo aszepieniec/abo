@@ -463,6 +463,8 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                     "a customer is needed".into()
                 } else if !lines_ok(&c.customer) {
                     "the customer's name or address holds a hidden character".into()
+                } else if class(&c.accounts.income) != "Income" {
+                    format!("{} is not an income account, as what an invoice earns is booked to", c.accounts.income)
                 } else if !text_ok(&c.customer_tax_id) || !lines_ok(&c.note) || !texts.into_iter().all(text_ok) {
                     "a line, the reference, the note or the customer's tax number holds a hidden character".into()
                 } else {

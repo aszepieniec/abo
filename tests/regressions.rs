@@ -2066,3 +2066,22 @@ fn an_entry_a_statement_shows_is_not_reverted() {
     refused(&dir, &["revert", &id], "N9");
     refused(&dir, &["revert", &id], "abo post");
 }
+
+/// Reverse-charge sales went to the one income account with the rest, so a
+/// box of the tax return could not read them apart.
+#[test]
+fn an_invoice_names_its_income_account() {
+    let dir = books("income-account", &[]);
+    refused(&dir, &["invoice", "--to", "C", "--item", "1|100|x", "--date", "2026-03-01", "--income", "Income:Exports"], "abo account add Income:Exports");
+    refused(&dir, &["invoice", "--to", "C", "--item", "1|100|x", "--date", "2026-03-01", "--income", "Expenses:General"], "is not an income account");
+    ok(&dir, &["account", "add", "Income:Exports"]);
+    ok(&dir, &["invoice", "--to", "Brightside Ltd", "--item", "1|2000|Consulting", "--date", "2026-03-01", "--vat-rate", "0", "--vat-reason", "Reverse charge", "--income", "Income:Exports"]);
+    ok(&dir, &["credit", "2026-0001", "--date", "2026-03-02"]);
+    let j = read(&dir, "journal/2026.journal");
+    let at = |q: &str| j.lines().any(|l| l.trim_start().starts_with("Income:Exports") && l.trim_end().ends_with(q));
+    assert!(at(" -2000.00 EUR") && at(" 2000.00 EUR"), "{j}");
+    assert!(read(&dir, ".abo/log.jsonl").contains("--income=Income:Exports"));
+    // Unsaid, the configured one, written out.
+    ok(&dir, &["invoice", "--to", "C", "--item", "1|100|x", "--date", "2026-03-03"]);
+    assert!(read(&dir, ".abo/log.jsonl").contains("--income=Income:Sales"));
+}

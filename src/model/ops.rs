@@ -47,6 +47,9 @@ pub enum Op {
 #[derive(Clone, Debug, Default)]
 pub struct InvoiceMore {
     pub customer_tax_id: String,
+    /// The income account it books to: the configured, unless said, as
+    /// for a reverse-charge sale or an export, which a VAT box reads apart.
+    pub income: Option<Account>,
     pub due_days: Option<i64>,
     pub pay_to: Vec<String>,
 }
@@ -126,7 +129,7 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
             // In the order of their ids, as the list shows them, however given.
             let ids: Vec<&String> = c.payment.keys().filter(|k| more.pay_to.is_empty() || more.pay_to.contains(k)).collect();
             let pay_to = ids.into_iter().map(|id| c.payment[id].printed()).collect();
-            let accounts = InvoiceAccounts { receivable: c.invoice.receivable.clone(), income: c.invoice.income.clone(), output };
+            let accounts = InvoiceAccounts { receivable: c.invoice.receivable.clone(), income: more.income.clone().unwrap_or_else(|| c.invoice.income.clone()), output };
             let first = customer.lines().next().unwrap_or("").trim().to_string();
             let content = Content { customer, customer_tax_id: more.customer_tax_id, commodity, home, lines, vat, due, pay_to, reference, note, accounts };
             n.entries.push(entry(date, String::new(), Kind::Invoice { content: Box::new(content), pdf }));

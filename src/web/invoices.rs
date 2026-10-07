@@ -12,6 +12,7 @@ pub(super) async fn invoice_form(Books(s): Books, Query(q): Query<Fields>) -> Re
             f.insert("to".into(), c.customer.clone());
             f.insert("items".into(), c.lines.iter().map(|l| format!("{}|{}|{}", l.quantity, l.unit_price, l.description)).collect::<Vec<_>>().join("\n"));
             f.insert("customer_tax_id".into(), c.customer_tax_id.clone());
+            f.insert("income".into(), c.accounts.income.clone());
             f.insert("reference".into(), c.reference.clone());
             f.insert("note".into(), c.note.clone());
             match &c.vat {
@@ -67,7 +68,8 @@ pub(super) async fn invoice_submit(Books(mut s): Books, Form(f): Form<Fields>) -
         let commodity = if get("currency").is_empty() { s.books.config.company.currency.clone() } else { get("currency") };
         let pay_to: Vec<String> = f.keys().filter_map(|k| k.strip_prefix("pay-")).map(String::from).collect();
         let customer = f.get("to").cloned().unwrap_or_default().replace("\r\n", "\n");
-        let more = model::InvoiceMore { customer_tax_id: get("customer_tax_id"), due_days: None, pay_to };
+        let income = Some(get("income")).filter(|i| !i.is_empty());
+        let more = model::InvoiceMore { customer_tax_id: get("customer_tax_id"), income, due_days: None, pay_to };
         let op = |pdf: String| Op::Invoice {
             date,
             customer: customer.clone(),
@@ -122,6 +124,7 @@ pub(super) fn invoice_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>)
                     label.field { "VAT rate" span.hint { "Percent. Blank for the configured rate; 0 for an export or an exempt supply." } input type="text" name="vat_rate" value=(get("vat_rate")); }
                     label.field { "Currency" span.hint { "Blank for " (s.books.config.company.currency) "." } input type="text" name="currency" value=(get("currency")); }
                     label.field { "Their tax number" span.hint { "Printed under their address; cross-border invoices to businesses usually need it." } input type="text" name="customer_tax_id" value=(get("customer_tax_id")); }
+                    label.field { "Income account" span.hint { "Blank for " (s.books.config.invoice.income) ". Exports and reverse-charge sales may go to their own, which a box of the tax return reads apart." } input type="text" name="income" value=(get("income")); }
                     label.field { "Why no VAT" span.hint { "Needed at 0%: an export, an exempt supply, reverse charge. Printed on the invoice." } input type="text" name="vat_reason" value=(get("vat_reason")); }
                     @if !s.books.config.payment.is_empty() {
                         fieldset.field {

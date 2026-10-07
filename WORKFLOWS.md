@@ -227,9 +227,14 @@ debt shows as written off, not settled.
 **Issue an invoice**: customer (`--to` a line each, name first), one line per item
 (`quantity|unit price|description`), optionally date, VAT rate, commodity,
 the customer's tax number (printed under their address), why no VAT is
-charged, which payment options it prints, their reference and a note. CLI:
-`abo invoice`, with `--customer-tax-id`, `--vat-reason` and `--pay-to <id>`,
-repeatable. With no option chosen it prints them all. With
+charged, the income account, which payment options it prints, their
+reference and a note. CLI: `abo invoice`, with `--customer-tax-id`,
+`--vat-reason`, `--income` and `--pay-to <id>`, repeatable. The income
+account is `invoice.income` unless said: an export or a reverse-charge sale
+may go to an account of its own, `Income:Exports` say, declared first, so
+that a box of the tax return reads them apart (`acct:^Income:Exports`); a
+credit note takes back what its invoice booked, there. One that is no
+income account is refused. With no option chosen it prints them all. With
 none it says only when to pay; with one or more, "to the following" or "to
 any of the following" and each option's name and details, side by side.
 An invoice is stated to the places its commodity is declared with (A2).
