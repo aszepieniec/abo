@@ -480,6 +480,39 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 ---
 
+## Third web run of 2026-10-07: found and fixed
+
+Agents again worked in the browser alone. Fixed, each with a test
+(tests/web.rs `third_web_run`, tests/regressions.rs):
+
+- Gaps left by the second run. The invoice form can now declare a missing
+  currency or account, or add a currency's missing price, and then come
+  back as it was left, as the entry and bill forms do. The Pay page needed
+  none: it names only accounts that are already declared. A refusal keeps
+  "abo check", `abo.toml` and other file names under **For whoever runs
+  abo**; above it, the settings are "the company's settings".
+- **Revert** takes a date (today unless one is given), as `abo revert
+  --date` does.
+- A PDF, JPEG, PNG or WebP that was cut short is refused, in the terminal
+  too: it must end the way its kind of file ends. The bill form does not
+  keep such a document for the next try.
+- A VAT-registered company has to give the rate it charges, both on the
+  terminal and in the form. A blank rate had charged 0% without saying so.
+- Reconcile lists only the accounts money moves through. When a statement
+  is taken out, its figures go with it.
+- An invoice's page now words its VAT the same way however it is opened:
+  the rate, why that rate, and at 0% the reason given. A corrected invoice
+  keeps the reason, such as reverse charge.
+- Words:
+  - A cash box is counted. Reconcile says **Counted**, "the count", and
+    "Count of ... recorded", and the advice for a difference covers cash
+    over or short.
+  - Payment terms have a label.
+  - A company that charges no VAT has no tax-return boxes.
+  - A bill's description is needed only to book it, not to file it.
+  - A bill's page lists its payments and write-offs with their amounts.
+  - The Log keeps the diff behind **Show the change to the files**.
+
 ## Second web run of 2026-10-07: found and fixed
 
 Agents again worked in the browser alone. Fixed, each with a test
