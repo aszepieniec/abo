@@ -301,7 +301,7 @@ Two things are decided here rather than by hledger:
 - **Unclosed profit is equity.** A balance sheet drawn from a journal does not
   balance until the year's result is counted, because nothing has closed income
   and expenses into equity. So the equity section carries a computed
-  "Retained earnings, not yet closed" line, and the bottom line —
+  "Net income" line (income less expenses, not yet closed), and the bottom line —
   assets less liabilities and equity — is nil. Without it the difference looks
   like a bug rather than the year's profit.
 

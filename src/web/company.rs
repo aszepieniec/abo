@@ -50,7 +50,7 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
                 "Some answers need another look; each says why under it."
             } }
         }
-        form method="post" action="/company" {
+        form.edits method="post" action="/company" {
             (token())
             div.box {
                 div.box-header { (icon("book")) "Details" }
@@ -77,7 +77,7 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
                         tr { td { "VAT rate charged" } td { (cfg.invoice.vat_rate.normalize()) "%, unless an invoice says otherwise" } }
                     }
                     tr { td { "Payment terms" } td {
-                        form.inline method="post" action="/company/terms" {
+                        form.inline.edits method="post" action="/company/terms" {
                             (token())
                             label { "Days a customer has to pay " input type="number" name="days" min="0" required value=(cfg.invoice.terms_days) style="width:6em"; " days, unless an invoice says otherwise" }
                             " "
@@ -87,7 +87,7 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
                 }
             }
             div.box-body { p.muted.small {
-                "Accounts, currencies and prices: " a href="/declarations" { "Accounts and currencies" } ". "
+                "Accounts, currencies and prices: " a href="/declarations" { "Accounts" } ". "
                 // A company not VAT registered files no VAT return.
                 @if !matches!(cfg.vat, model::Vat::None) {
                     "The tax return's boxes: " a href="/company/tax-return" { "the tax return" } "."
@@ -235,7 +235,7 @@ pub(super) fn option_page(s: &Store, f: &Fields, problems: &Problems, refused: O
         }
         style { (PreEscaped(css.join("\n"))) }
         datalist #accounts { @for a in &accounts { option value=(a) {} } }
-        form method="post" action="/company/payment" {
+        form.edits[!was.is_empty()] method="post" action="/company/payment" {
             (token())
             input type="hidden" name="was" value=(was);
             div.box { div.box-body {
@@ -340,7 +340,7 @@ pub(super) fn tax_return_page(s: &Store, f: &Fields, error: Option<&anyhow::Erro
                 }
             }
         }
-        form method="post" action="/company/tax-return" {
+        form.edits[!was.is_empty()] method="post" action="/company/tax-return" {
             (token())
             input type="hidden" name="was" value=(was);
             div.box {

@@ -36,6 +36,10 @@ pub enum Op {
     ConfigUnset { key: String },
     AccountAdd(Account),
     AccountRemove(Account),
+    /// `from` and every account under it, under `to` in their stead: each
+    /// declared there, its balance moved by one entry dated `date`, the
+    /// configuration naming the new; the old taken out where nothing names it.
+    AccountMove { from: Account, to: Account, date: Date },
     CommodityAdd(Commodity, u32),
     CommodityRemove(Commodity),
     PriceAdd { of: Commodity, date: Date, price: Amount },
@@ -223,6 +227,61 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
         Op::AccountRemove(a) => {
             if !n.accounts.remove(&a) {
                 return Err(format!("{} is not declared", shown(&a)));
+            }
+        }
+        Op::AccountMove { from, to, date } => {
+            let under = |a: &str, b: &str| a == b || a.strip_prefix(b).is_some_and(|r| r.starts_with(':'));
+            let moved: Vec<Account> = m.accounts.iter().filter(|a| under(a, &from)).cloned().collect();
+            if moved.is_empty() {
+                return Err(format!("no account is declared at or under {}", shown(&from)));
+            }
+            if class(&from) == from {
+                return Err(format!("{from} is a class; it moves under nothing"));
+            }
+            if class(&to) != class(&from) {
+                return Err(format!("{from} is in {}; an account keeps its class, as its balance says what it is", class(&from)));
+            }
+            if under(&to, &from) {
+                return Err(format!("{to} is {from} or under it"));
+            }
+            let new = |a: &str| format!("{to}{}", &a[from.len()..]);
+            // Onto one that holds nothing, as the old name a move left: back
+            // where it was, say. Onto one that holds something, never.
+            let balances = m.balances();
+            if let Some(a) = moved.iter().map(|a| new(a)).find(|a| balances.keys().any(|(b, _)| b == a)) {
+                return Err(format!("{a} is declared already, and holds a balance"));
+            }
+            // A payment takes off the debt's own account: one moved would
+            // be posted to again.
+            let standing = m.standing();
+            if let Some(d) = (1..=m.entries.len()).find(|d| m.debt(*d).is_some_and(|x| under(&x.account, &from)) && m.open(*d, &standing) > Decimal::ZERO) {
+                return Err(format!("{} is owed on {}; pay or write it off first", name(m, d), m.debt(d).unwrap().account));
+            }
+            n.accounts.extend(moved.iter().map(|a| new(a)));
+            let postings: Vec<Posting> = balances
+                .into_iter()
+                .filter(|((a, _), _)| under(a, &from))
+                .flat_map(|((a, c), q)| [Posting::new(&new(&a), q, &c), Posting::new(&a, -q, &c)])
+                .collect();
+            if !postings.is_empty() {
+                n.entries.push(entry(date, format!("Move {from} to {to}"), Kind::Plain(postings)));
+            }
+            let c = &mut n.config;
+            let mut named: Vec<&mut Account> = vec![&mut c.invoice.receivable, &mut c.invoice.income];
+            match &mut c.vat {
+                Vat::None => {}
+                Vat::Flat { account, .. } => named.push(account),
+                Vat::Effective { input, output } => named.extend([input, output]),
+            }
+            named.extend(c.payment.values_mut().map(|o| &mut o.account));
+            for a in named.into_iter().filter(|a| under(a, &from)) {
+                *a = new(a);
+            }
+            // ponytail: an hledger query of a VAT box is left as written;
+            // one naming a moved account is the bookkeeper's to set again.
+            let posted: BTreeSet<Account> = n.all_postings().into_iter().map(|(_, _, p)| p.account).chain(n.statements.keys().map(|k| k.0.clone())).collect();
+            for a in moved.iter().filter(|a| !posted.contains(*a)) {
+                n.accounts.remove(a);
             }
         }
         Op::CommodityAdd(c, p) => {

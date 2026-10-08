@@ -92,6 +92,52 @@ table.list td + td, table.list th + th { padding-left: 0; }
 table.list code { color: var(--sub); }
 table.list td.date { color: var(--muted); width: 7rem; white-space: nowrap; font-size: 13px; }
 table.list td.amt { text-align: right; white-space: nowrap; font-size: 13px; }
+
+/* the accounts, as their names nest them; lines show what is under what */
+ul.tree, ul.tree ul { list-style: none; margin: 0; padding: 0; }
+ul.tree { padding: 4px 20px 12px; }
+ul.tree ul { margin-left: 12px; }
+ul.tree ul > li { position: relative; padding-left: 16px; }
+ul.tree ul > li::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; border-left: 1px solid var(--muted); opacity: .45; }
+ul.tree ul > li:last-child::before { bottom: auto; height: 21px; }
+ul.tree ul > li::after { content: ""; position: absolute; left: 0; top: 21px; width: 12px; border-top: 1px solid var(--muted); opacity: .45; }
+ul.tree li[data-name] > details > summary { display: flex; align-items: center; gap: 6px; min-height: 42px; padding: 4px 6px; list-style: none; cursor: pointer;
+  border-bottom: 1px solid var(--card-border); }
+ul.tree summary::-webkit-details-marker { display: none; }
+ul.tree li[data-name] > details > summary:hover { background: var(--hover); }
+ul.tree li.moved > details > summary { background: var(--focus); }
+ul.tree li.gone > details > summary .name, ul.tree li.gone > details > summary .name a { color: var(--muted); }
+ul.tree li.gone > details > summary .name::after { content: " (moved away)"; font-size: 12px; }
+ul.tree .grip-gap { width: 16px; flex: none; }
+ul.tree summary.over { background: var(--focus); outline: 2px dashed var(--accent); outline-offset: -2px; }
+ul.tree .chev { width: 12px; flex: none; color: var(--muted); }
+ul.tree .chev::before { content: "\25B8"; }
+ul.tree details[open] > summary .chev::before { content: "\25BE"; }
+ul.tree details:has(> ul:empty) > summary .chev { visibility: hidden; }
+ul.tree .grip { display: inline-flex; color: var(--muted); cursor: grab; }
+ul.tree .grip.stuck { opacity: .35; cursor: not-allowed; }
+ul.tree .bal { margin-left: auto; white-space: nowrap; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }
+ul.tree .act { flex: none; min-width: 34px; margin-left: 20px; display: flex; justify-content: flex-end; }
+button.icon-only { padding: 0 8px; }
+ul.tree button.btn-danger[disabled], ul.tree button.btn-danger[disabled]:hover { color: var(--muted); background: var(--inset); border-color: var(--btn-border); opacity: 1; }
+ul.tree > li > details > summary .name { font-weight: 600; }
+ul.tree li.moved > details > summary .name::after { content: " (moved)"; color: var(--muted); font-size: 12px; font-weight: 400; }
+ul.tree li.add { padding-top: 8px; padding-bottom: 8px; }
+ul.tree li.add .kept { display: inline-flex; }
+ul.tree li.add button[disabled] { color: var(--muted); }
+ul.tree li.add > details > summary, details.add > summary { display: inline-flex; list-style: none; color: var(--muted); }
+ul.tree li.add > details > summary::-webkit-details-marker, details.add > summary::-webkit-details-marker { display: none; }
+ul.tree li.add > details[open] > summary, details.add[open] > summary { margin-bottom: 12px; }
+.one-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.one-row label.field { flex: 1 1 10rem; margin: 0; }
+div.one-row + div.one-row { margin-top: 12px; }
+/* a field changed and not yet saved */
+label.changed input, label.changed textarea, label.changed select, input.changed { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
+label.field.changed::before, label.choice.changed::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--accent); vertical-align: middle; }
+form.range { max-width: 34rem; margin-bottom: 20px; }
+.box-body > h2:first-child { margin-top: 0; }
+#move-list { margin: 0 0 12px; padding-left: 20px; }
+@media (max-width: 600px) { ul.tree { padding: 4px 12px 12px; } }
 pre { overflow-x: auto; margin: 0; padding: 12px 16px; background: var(--inset);
   border: 1px solid var(--card-border); border-radius: 8px; font-size: 12px; line-height: 1.5; }
 .box .box-body > pre { border: 0; border-radius: 0; margin: -16px -20px; }
@@ -208,12 +254,20 @@ table.figures td:last-child { text-align: right; white-space: nowrap; font-size:
 table.figures tr.total td { border-top: 1px solid var(--card-border); font-weight: 600; }
 table.figures tr.grand td { border-top: 2px solid var(--muted); font-weight: 600; font-size: 16px; padding: 12px 20px; }
 table.figures + table.figures thead th { border-top: 1px solid var(--card-border); }
+table.figures + table.figures.less thead th { border-top: 2px solid var(--muted); }
+table.figures td.tree-cell { padding: 0; font-family: inherit; font-size: inherit; text-align: left; white-space: normal; }
+ul.tree.sums { padding: 0 20px; }
+ul.tree.sums li[data-name] > details > summary { min-height: 36px; padding: 4px 0; }
+ul.tree.sums > li > details > summary .name { font-weight: 400; }
+ul.tree.sums details[open]:not(:has(> ul:empty)) > summary .bal { color: var(--muted); }
 
 /* rows: a header colour, two alternating body colours, and a third under the pointer */
 thead th, ul.items li.cols { background: var(--head); color: var(--sub); font-size: 12px; font-weight: 600; text-align: left; }
 th.amt, ul.items li.cols .amt { text-align: right; }
 tbody tr:nth-child(even), ul.items li:nth-child(odd):not(.cols) { background: var(--stripe); }
 tbody tr:hover, tfoot tr:hover, ul.items li:not(.cols):hover { background: var(--hover); }
+/* The tree is one row of the table: its accounts light up one at a time. */
+tbody tr:has(> td.tree-cell), tbody tr:has(> td.tree-cell):hover { background: none; }
 
 /* checkbox rows */
 ul.items { list-style: none; margin: 0; padding: 0; }
@@ -297,3 +351,6 @@ ul.accounts li { padding: 2px 0; }
   table.list.options .btn, table.list.options button { min-height: 32px; padding: 0 10px; font-size: 13px; }
 }
 form.inline { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.period { margin-bottom: 16px; }
+.period .pair { display: flex; gap: 8px; }
+.period .pair select { width: auto; flex: 1 1 0; min-width: 5.5rem; }

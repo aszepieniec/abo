@@ -2569,9 +2569,9 @@ fn the_fifth_web_run_pages() {
     ok(&dir, &["post", "--date", "2026-04-01", "--desc", "Taxi", "Expenses:General=50.00", "Assets:Cash=-50.00"]);
     let s = serve(&dir);
     let (_, _, page) = http(&s, "GET", "/reconcile?account=Assets:Cash&commodity=EUR&date=2026-04-02&balance=-50.00", &[]);
-    assert!(page.contains("checked") && page.contains("Per the count, less what is cleared"), "{page}");
+    assert!(page.contains(" checked") && page.contains("Per the count, less what is cleared"), "{page}");
     let (_, _, page) = http(&s, "GET", "/reconcile?account=Assets:Bank&commodity=EUR&date=2026-04-02", &[]);
-    assert!(!page.contains("checked"), "{page}");
+    assert!(!page.contains(" checked"), "{page}");
     let (_, _, page) = http(&s, "GET", "/log?since=2999-01-01", &[]);
     assert!(page.contains("Nothing changed since 2999-01-01"), "{page}");
     let (_, _, page) = http(&s, "GET", "/log?since=2000-01-01", &[]);

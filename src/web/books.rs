@@ -228,25 +228,42 @@ fn sentence_start(s: &str) -> String {
 pub(super) async fn activity(Books(s): Books, Query(q): Query<Fields>) -> Response {
     or_error(&s, "Log", || {
         let all = store::lines(&s.root);
-        // As `abo log --since`: every change made on or after a day.
-        let since = q.get("since").map(|d| d.trim()).filter(|d| !d.is_empty()).map(|d| input::day(Some(d))).transpose()?.map(|d| d.to_string());
-        let shown = if q.contains_key("all") || since.is_some() { all.len() } else { 50 };
+        // As `abo log --since`: every change made on or after a day, and on
+        // or before `until`.
+        let day = |k: &str| q.get(k).map(|d| d.trim()).filter(|d| !d.is_empty()).map(|d| input::day(Some(d))).transpose().map(|d| d.map(|d| d.to_string()));
+        let (since, until) = (day("since")?, day("until")?);
+        let ranged = since.is_some() || until.is_some();
+        let shown = if q.contains_key("all") || ranged { all.len() } else { 50 };
         let skip = all.len().saturating_sub(shown);
+        let on = |l: &serde_json::Value| l["at"].as_str().unwrap_or_default().get(..10).unwrap_or_default().to_string();
         let lines: Vec<(usize, &serde_json::Value)> = all
             .iter()
             .enumerate()
             .skip(skip)
-            .filter(|(_, l)| since.as_ref().is_none_or(|d| l["at"].as_str().unwrap_or_default().get(..10).is_some_and(|at| at >= d.as_str())))
+            .filter(|(_, l)| since.as_ref().is_none_or(|d| on(l) >= *d) && until.as_ref().is_none_or(|d| on(l) <= *d))
             .map(|(i, l)| (i + 1, l))
             .collect();
+        // Unless given, the days of what is shown: from the first change
+        // listed, to today.
+        let today = store::today().ok().map(|d| d.to_string());
+        let from = since.clone().or_else(|| lines.first().map(|(_, l)| on(l)));
+        let to = until.clone().or_else(|| today.clone());
         Ok(html! {
             h1 { "Log" }
-            form.inline method="get" action="/log" {
-                label.field { "Since" span.hint { "Every change made on or after this day." } input type="date" name="since" value=(since.clone().unwrap_or_default()); }
-                div.actions { button type="submit" { (icon("chart")) " Show" } }
+            form.one-row.range method="get" action="/log" {
+                label.field { "From" input type="date" name="since" value=[from.as_ref()] max=[today.as_ref()]; }
+                label.field { "To" input type="date" name="until" value=[to.as_ref()] max=[today.as_ref()]; }
+                button type="submit" { (icon("chart")) " Show" }
             }
-            @if lines.is_empty() && since.is_some() {
-                div.flash.flash-info { (icon("info")) div { "Nothing changed since " (since.as_deref().unwrap_or_default()) "." } }
+            @if lines.is_empty() && ranged {
+                div.flash.flash-info { (icon("info")) div { "Nothing changed "
+                    @match (&since, &until) {
+                        (Some(a), Some(b)) => { "from " (a) " to " (b) "." }
+                        (Some(a), None) => { "since " (a) "." }
+                        (None, Some(b)) => { "until " (b) "." }
+                        (None, None) => {}
+                    }
+                } }
             } @else if lines.is_empty() {
                 div.flash.flash-info { (icon("info")) div { "Nothing changed yet. Every change to the books is listed here, as it is made." } }
             } @else {

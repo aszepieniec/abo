@@ -498,7 +498,7 @@ fn first_web_run() {
 
     // The sidebar names the company and the accounts plainly.
     let (_, _, page) = http(&s, "GET", "/", &[]);
-    assert!(page.contains("Accounts and currencies") && !page.contains(">Declarations<"), "{page}");
+    assert!(page.contains("Accounts") && !page.contains(">Declarations<"), "{page}");
 
     // A bill filed alone, to book later: no booking.
     let body = multipart(&[("token", "f1"), ("action", "file"), ("date", "2026-03-01"), ("issuer", "Acme")], Some(b"%PDF-1.4\n% one\n%%EOF\n"));
@@ -854,7 +854,7 @@ fn fourth_web_run() {
     // Written off to income, not to sales; the hint links where to declare.
     let page = http(&s, "GET", &format!("/pay?debt={n}"), &[]).2;
     let off = page.split("id=\"write-off\"").nth(1).unwrap();
-    assert!(off.contains("value=\"Income:Forgiven\"") && !off.contains("value=\"Income:Sales\"") && off.contains("href=\"/declarations\">Accounts and currencies</a>"), "{off}");
+    assert!(off.contains("value=\"Income:Forgiven\"") && !off.contains("value=\"Income:Sales\"") && off.contains("href=\"/declarations\">Accounts</a>"), "{off}");
     // Leaves alone: Assets:Bank has Assets:Bank:Savings under it.
     assert!(!page.contains("value=\"Assets:Bank\"") && page.contains("value=\"Assets:Bank:Savings\""), "{page}");
     let page = http(&s, "GET", "/post", &[]).2;
@@ -869,7 +869,12 @@ fn fourth_web_run() {
     assert!(status == 422 && page.contains("href=\"/bill\"") && page.contains("href=\"/bills\""), "{page}");
 
     // Wording: tiles in full, periods, the option's short name, Reconcile.
-    for path in ["/report/pl", "/account?name=Expenses:General"] {
+    let page = http(&s, "GET", "/report/pl", &[]).2;
+    assert!(page.contains("year to date (") && page.contains("name=\"fq\""), "quarters, the year to date at first: {page}");
+    let (status, _, page) = http(&s, "GET", "/report/pl?fy=2026&fq=3&ty=2026&tq=1", &[]);
+    assert!(status == 422 && page.contains("The period ends before it begins."), "{page}");
+    assert!(http(&s, "GET", "/report/pl?fy=2026&fq=1&ty=2026&tq=1", &[]).2.contains("2026q1 (2026-01-01 to 2026-03-31)"), "one quarter");
+    for path in ["/account?name=Expenses:General"] {
         let page = http(&s, "GET", path, &[]).2;
         assert!(page.contains("last quarter") && page.contains("this year"), "{path}: {page}");
     }
@@ -880,6 +885,9 @@ fn fourth_web_run() {
     assert_eq!(http(&s, "POST", "/post", &[("token", "e2"), ("date", "2026-03-05"), ("description", "Float"), ("postings", "Assets:Cash=50.00\nAssets:Bank:Savings=-50.00")]).0, 303);
     let page = http(&s, "GET", "/", &[]).2;
     assert!(page.contains(">Assets:Cash<"), "tiles in full: {page}");
+    let page = http(&s, "GET", "/report/bs", &[]).2;
+    assert!(page.contains("<li data-name=\"Assets:Bank\"><details open><summary title=\"Assets:Bank\"><span class=\"chev\"></span><span class=\"name\">Bank</span>") && page.contains("<li data-name=\"Assets:Bank:Savings\">"), "accounts as a tree: {page}");
+    assert!(page.contains("<li data-name=\"Net income\">") && page.contains("<li data-name=\"Net income:Expenses:General\">"), "net income, of what: {page}");
     let page = http(&s, "GET", "/reconcile?account=Assets:Cash", &[]).2;
     let ticked = page.split("name=\"ref\" value=\"").nth(1).and_then(|r| r.split('"').next()).unwrap().to_string();
     let to = http(&s, "POST", "/reconcile", &[("token", "r1"), ("action", "record"), ("account", "Assets:Cash"), ("commodity", "EUR"), ("date", "2026-03-31"), ("balance", "50.00"), ("ref", &ticked)]).1;

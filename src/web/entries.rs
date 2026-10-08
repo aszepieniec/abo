@@ -449,7 +449,7 @@ pub(super) fn form(s: &Store, f: &Fields, error: Option<&anyhow::Error>) -> Mark
 pub(super) fn accounts_box(b: &Model) -> Markup {
     html! {
         div.box {
-            div.box-header { (icon("book")) "Accounts to post to" span.spacer { a.small href="/declarations" { "Accounts and currencies" } } }
+            div.box-header { (icon("book")) "Accounts to post to" span.spacer { a.small href="/declarations" { "Accounts" } } }
             // Leaves alone: one with accounts under it takes no postings.
             div.box-body { ul.accounts { @for a in b.accounts.iter().filter(|a| b.postable(a)) { li { code { (a) } } } } }
         }

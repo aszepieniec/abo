@@ -233,6 +233,12 @@ pub(crate) enum Draw {
         String,
     ),
     AccountRemove(Index),
+    AccountMove {
+        which: Index,
+        #[strategy("(Assets|Liabilities|Expenses|Income)(:[A-Z][a-z]{1,6}){1,2}")]
+        to: String,
+        when: When,
+    },
     CommodityAdd(#[strategy(prop_oneof!["[A-Z]{3,4}", "[A-Za-z]{1,4}", arb::<String>()])] String, #[strategy(0u32..20)] u32),
     CommodityRemove(Index),
     PriceAdd { #[strategy(money())] q: Decimal, when: When },
@@ -380,6 +386,7 @@ pub(crate) fn op(d: &Draw, m: &Books, today: Date) -> Option<Op> {
         },
         Draw::AccountAdd(a) => Op::AccountAdd(a),
         Draw::AccountRemove(i) => Op::AccountRemove(pick(&i, &m.accounts.iter().cloned().collect::<Vec<_>>()).unwrap_or_default()),
+        Draw::AccountMove { which, to, when } => Op::AccountMove { from: pick(&which, &m.accounts.iter().cloned().collect::<Vec<_>>()).unwrap_or_default(), to, date: when.at(today) },
         Draw::CommodityAdd(c, p) => Op::CommodityAdd(c, p),
         Draw::CommodityRemove(i) => Op::CommodityRemove(pick(&i, &m.commodities.keys().cloned().collect::<Vec<_>>()).unwrap_or_default()),
         Draw::PriceAdd { q, when } => Op::PriceAdd { of: "USD".into(), date: when.at(today), price: eur(q) },
@@ -644,6 +651,9 @@ fn each_operation_changes_only_its_part(#[strategy(plan())] plan: Vec<Step>) {
             }
             Op::AccountAdd(_) => (&["accounts"], grows(m.accounts.len(), n.accounts.len())),
             Op::AccountRemove(_) => (&["accounts"], -grows(m.accounts.len(), n.accounts.len())),
+            // The new declared, the balances moved by one entry if any, the
+            // old taken out where unnamed: back onto an old name, perhaps none.
+            Op::AccountMove { .. } => (&["accounts", "entries", "config"], 1),
             Op::CommodityAdd(..) => (&["commodities"], grows(m.commodities.len(), n.commodities.len())),
             Op::CommodityRemove(_) => (&["commodities"], -grows(m.commodities.len(), n.commodities.len())),
             Op::PriceAdd { .. } => (&["prices"], grows(m.prices.len(), n.prices.len())),
@@ -756,7 +766,7 @@ fn given_texts(m: &Books, op: &Op) -> Vec<String> {
         Op::Post { description, postings: ps, .. } => v.extend([vec![description.clone()], postings(ps)].concat()),
         Op::File { sha256, name, ext, .. } => v.extend([sha256.clone(), name.clone(), ext.clone()]),
         Op::Unfile { sha256 } => v.push(sha256.clone()),
-        Op::Bill { description, postings: ps, document, .. } => v.extend([vec![description.clone()], postings(ps), document.iter().cloned().collect()].concat()),
+        Op::Bill { description, postings: ps, document, more, .. } => v.extend([vec![description.clone(), more.number.clone()], postings(ps), document.iter().cloned().collect()].concat()),
         Op::Invoice { customer, commodity, lines, reason, reference, note, pdf, more, .. } => {
             v.extend([customer.clone(), commodity.clone(), reason.clone(), reference.clone(), note.clone(), pdf.clone(), more.customer_tax_id.clone()]);
             v.extend(lines.iter().map(|l| l.description.clone()));
@@ -770,6 +780,7 @@ fn given_texts(m: &Books, op: &Op) -> Vec<String> {
         Op::ConfigUnset { key } => v.push(key.clone()),
         Op::Company { .. } | Op::OptionAdd { .. } | Op::OptionEdit { .. } | Op::OptionRemove { .. } | Op::Revert { .. } => {}
         Op::AccountAdd(a) | Op::AccountRemove(a) | Op::CommodityAdd(a, _) | Op::CommodityRemove(a) => v.push(a.clone()),
+        Op::AccountMove { from, to, .. } => v.extend([from.clone(), to.clone()]),
         Op::PriceAdd { of, price, .. } => v.extend([of.clone(), price.commodity.clone()]),
         Op::PriceRemove { of, .. } => v.push(of.clone()),
     }
@@ -1688,6 +1699,7 @@ fn rename_op(op: &Op, f: &dyn Fn(&str) -> String) -> Op {
         Op::Unrecord { account, commodity } => Op::Unrecord { account: f(&account), commodity },
         Op::AccountAdd(a) => Op::AccountAdd(f(&a)),
         Op::AccountRemove(a) => Op::AccountRemove(f(&a)),
+        Op::AccountMove { from, to, date } => Op::AccountMove { from: f(&from), to: f(&to), date },
         Op::OptionAdd { id, option } => Op::OptionAdd { id, option: PayOption { account: f(&option.account), ..option } },
         Op::OptionEdit { id, new_id, change } => Op::OptionEdit { id, new_id, change: OptionChange { account: change.account.as_deref().map(f), ..change } },
         other => other,
@@ -1732,7 +1744,12 @@ fn names_mean_nothing(
     let (ours, theirs) = (apply(&m, &op, today), apply(&r, &rename_op(&op, &f), today));
     prop_assert_eq!(codes(&ours), codes(&theirs), "{:?}", op);
     if let (Ok(n), Ok(nr)) = (ours, theirs) {
-        prop_assert_eq!(rename(&n, &f), nr);
+        let mut renamed = rename(&n, &f);
+        // A move's entry says what it moved, by name.
+        if let (Op::AccountMove { from, to, .. }, Some(e)) = (&op, renamed.entries.get_mut(m.entries.len())) {
+            e.description = format!("Move {} to {}", f(from), f(to));
+        }
+        prop_assert_eq!(renamed, nr);
     }
 }
 

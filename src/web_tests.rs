@@ -227,7 +227,7 @@ fn request(op: &Op, m: &Books, today: Date) -> Option<(Post, Op)> {
         Op::CommodityAdd(c, p) if one_line(&c) => (urlencoded("/declarations", vec![("action", "add-commodity".into()), ("value", c.clone()), ("places", p.to_string())]), Op::CommodityAdd(t(&c), p)),
         Op::CommodityRemove(c) if one_line(&c) => (urlencoded("/declarations", vec![("action", "remove-commodity".into()), ("value", c.clone())]), Op::CommodityRemove(t(&c))),
         Op::PriceAdd { of, date, price } if one_line(&of) => {
-            let fields = vec![("action", "add-price".into()), ("value", of.clone()), ("date", date.to_string()), ("price", format!("{} {}", price.quantity, price.commodity))];
+            let fields = vec![("action", "add-price".into()), ("value", of.clone()), ("date", date.to_string()), ("price", price.quantity.to_string()), ("price_in", price.commodity.clone())];
             (urlencoded("/declarations", fields), Op::PriceAdd { of: t(&of), date, price })
         }
         // The company form, every field sent: what the op does not give, as

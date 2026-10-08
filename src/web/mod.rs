@@ -154,6 +154,7 @@ async fn not_found(Books(s): Books) -> Response {
 fn installable() -> Markup {
     html! {
         link rel="manifest" href="/manifest.webmanifest";
+        link rel="icon" type="image/png" href="/icon-192.png";
         link rel="apple-touch-icon" href="/apple-touch-icon.png";
         meta name="theme-color" content="#4338CA";
     }
@@ -251,9 +252,9 @@ fn sentence(s: &str) -> String {
 fn hint(v: &model::Violation) -> Option<Markup> {
     use model::Subject;
     Some(match (v.code, &v.of) {
-        ("I-A1", Subject::Account(a)) => html! { "Declare " code { (a) } " under " a href="/declarations" { "Accounts and currencies" } " first." },
-        ("I-A1", Subject::Commodity(c)) => html! { "Declare " code { (c) } " under " a href="/declarations" { "Accounts and currencies" } " first, with its places." },
-        ("I-E4", Subject::Commodity(c)) => html! { "Add a price of " (c) " under " a href="/declarations" { "Accounts and currencies" } ", Prices." },
+        ("I-A1", Subject::Account(a)) => html! { "Declare " code { (a) } " under " a href="/declarations" { "Accounts" } " first." },
+        ("I-A1", Subject::Commodity(c)) => html! { "Declare " code { (c) } " under " a href="/declarations" { "Accounts" } " first, with its places." },
+        ("I-E4", Subject::Commodity(c)) => html! { "Add a price of " (c) " under " a href="/declarations" { "Accounts" } ", Prices." },
         ("I-I1", Subject::Field("reason")) => html! { "Say why under " em { "Why no VAT" } ", or give a VAT rate." },
         ("I-A2", Subject::Account(a)) => html! { "An account in use takes no accounts under it: declare the new one beside it, or first move what names " code { (a) } " under it, such as a payment option's account on the " a href="/company" { "Company" } " page." },
         // An account a debt is on moves through the debt's own pages.
@@ -315,10 +316,13 @@ fn or_error(s: &Store, title: &str, body: impl FnOnce() -> Result<Markup>) -> Re
     match body() {
         Ok(m) => page(s, title, m).into_response(),
         Err(e) => {
-            error!(%e, "request failed");
             let back = BACK.try_with(Clone::clone).ok().flatten();
             // What is not there is not found; anything else was refused.
             let missing = LOOKS.try_with(|l| *l).unwrap_or(false) && e.downcast_ref::<input::NotFound>().is_some();
+            // The request line already says 404; only a refusal is worth an error.
+            if !missing {
+                error!(%e, "request failed");
+            }
             let unreportable = e.downcast_ref::<store::Amiss>().is_some_and(|a| a.kind == store::AmissKind::Unreportable);
             let (status, heading) = match () {
                 _ if missing => (StatusCode::NOT_FOUND, "Not found"),
@@ -393,7 +397,7 @@ fn page_with(s: &Store, title: &str, body: Markup, with_banner: bool) -> Html<St
         ("/reconcile", "checks", "Reconcile", "/reconcile"),
         ("/report/pl", "chart", "Reports", "/report"),
         ("/post", "plus", "Entry", "/post"),
-        ("/declarations", "coins", "Accounts and currencies", "/declarations"),
+        ("/declarations", "coins", "Accounts", "/declarations"),
         ("/company", "pencil", "Company", "/company"),
         ("/log", "clock", "Log", "/log"),
     ];
@@ -430,12 +434,40 @@ fn page_with(s: &Store, title: &str, body: Markup, with_banner: bool) -> Html<St
                         @if let Some(t) = QUERY.try_with(|q| q.split('&').find_map(|kv| kv.strip_prefix("done=")?.parse::<usize>().ok())).ok().flatten().and_then(|n| toast(s, n)) { (t) }
                         (body)
                     }
+                    script { (PreEscaped(EDITS)) }
                 }
             }
         }
         .into_string(),
     )
 }
+
+/// A form that edits what is saved: its Save button coloured, and pressable,
+/// once a field differs from what the page was served with, and each such
+/// field marked. Not after a refusal: what it shows is not what is saved.
+const EDITS: &str = r#"
+document.querySelector(".flash-error") || document.querySelectorAll("form.edits").forEach((f) => {
+  const save = f.querySelector('button[type="submit"]');
+  const fields = [...f.elements].filter((e) => e.name && !["hidden", "submit"].includes(e.type));
+  const differs = (e) => e.type === "checkbox" ? e.checked !== e.defaultChecked
+    : e.type === "radio" ? e.checked && !e.defaultChecked
+    : e.tagName === "SELECT" ? [...e.options].some((o) => o.selected !== o.defaultSelected)
+    : e.value !== e.defaultValue;
+  const look = () => {
+    let any = false;
+    for (const e of fields) {
+      const d = differs(e);
+      (e.closest("label.field, label.choice") || e).classList.toggle("changed", d);
+      any = any || d;
+    }
+    save.disabled = !any;
+    save.classList.toggle("btn-primary", any);
+  };
+  f.addEventListener("input", look);
+  f.addEventListener("change", look);
+  look();
+});
+"#;
 
 async fn shutdown() {
     let ctrl_c = async {
@@ -685,6 +717,7 @@ fn icon(name: &str) -> Markup {
         "outbox" => &["M2 9.5v3a1.5 1.5 0 0 0 1.5 1.5h9a1.5 1.5 0 0 0 1.5-1.5v-3",
                       "M8 9.5V2", "M5 5 8 2 11 5"],
         "checks" => &["M2.5 2.5h11v11h-11z", "M5 8.2 7 10.2 11 5.8"],
+        "grip" => &["M6 4v0", "M10 4v0", "M6 8v0", "M10 8v0", "M6 12v0", "M10 12v0"],
         "chart" => &["M2 14h12", "M4.5 11.5v-4", "M8 11.5v-7", "M11.5 11.5v-2.5"],
         "plus" => &["M8 3.5v9", "M3.5 8h9"],
         "check" => &["M3.5 8.5 6.5 11.5 12.5 4.5"],

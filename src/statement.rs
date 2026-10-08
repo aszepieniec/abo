@@ -25,6 +25,10 @@ pub struct Section {
     pub title: String,
     pub lines: Vec<Line>,
     pub total: Vec<Amount>,
+    /// What a balance sheet's net income line is the sum of: each income
+    /// and expense account, signed as it adds in, so an expense negative.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub net: Vec<Line>,
 }
 
 #[derive(Serialize, Default)]
@@ -133,7 +137,7 @@ fn section(s: &Store, title: &str, account: &str, extra: &[&str], invert: bool) 
         lines.push(Line { code: None, label: name, amounts: amounts(&s.books, &shown) });
     }
     let t = amounts(&s.books, &total);
-    Ok((Section { title: title.into(), lines, total: t }, total))
+    Ok((Section { title: title.into(), lines, total: t, net: vec![] }, total))
 }
 
 fn period_flags(period: &str) -> Vec<&str> {
@@ -219,6 +223,9 @@ pub fn profit_and_loss(s: &Store, period: &str) -> Result<Statement> {
     })
 }
 
+/// A balance sheet's equity line for income less expenses not yet closed.
+pub const NET_INCOME: &str = "Net income";
+
 pub fn balance_sheet(s: &Store, date: &str) -> Result<Statement> {
     // -H gives the running balance, and -e is exclusive, so ask for the day after.
     let end = jiff::civil::Date::strptime("%Y-%m-%d", date)
@@ -239,17 +246,22 @@ pub fn balance_sheet(s: &Store, date: &str) -> Result<Statement> {
     // this line a balance sheet drawn from a journal simply does not balance,
     // and the difference looks like a bug rather than the year's result.
     let mut retained = Bag::new();
+    let mut net = Vec::new();
     for account in ["income", "expenses"] {
-        for (_, bag) in balances(s, &top(account), &extra)? {
+        for (name, bag) in balances(s, &top(account), &extra)? {
             add(&mut retained, &bag, Decimal::NEGATIVE_ONE);
+            let mut part = Bag::new();
+            add(&mut part, &bag, Decimal::NEGATIVE_ONE);
+            net.push(Line { code: None, label: name, amounts: amounts(&s.books, &part) });
         }
     }
     if retained.values().any(|v| !v.is_zero()) {
         equity.lines.push(Line {
             code: None,
-            label: "Retained earnings, not yet closed".into(),
+            label: NET_INCOME.into(),
             amounts: amounts(&s.books, &retained),
         });
+        equity.net = net;
         add(&mut equity_total, &retained, Decimal::ONE);
         equity.total = amounts(&s.books, &equity_total);
     }
@@ -269,7 +281,7 @@ pub fn balance_sheet(s: &Store, date: &str) -> Result<Statement> {
         sections: vec![assets, liabilities, equity],
         bottom: Some(Line {
             code: None,
-            label: "Assets less liabilities and equity (should be nil)".into(),
+            label: "Difference (should be nil)".into(),
             amounts: amounts(&s.books, &difference),
         }),
     })
@@ -310,7 +322,7 @@ pub fn vat_return(s: &Store, period: &str) -> Result<Statement> {
                     bail!(
                         "box {code} includes {x} {c} in {account}, and the books have no {c} price \
                          in {currency} to value it with: declare one, dated on or before each posting \
-                         (under Accounts and currencies in the browser, or abo price add <date> {c} <price> {currency})"
+                         (under Accounts in the browser, or abo price add <date> {c} <price> {currency})"
                     );
                 }
             }
@@ -328,7 +340,7 @@ pub fn vat_return(s: &Store, period: &str) -> Result<Statement> {
         to,
         date: None,
         company: s.books.config.company.name.clone(),
-        sections: vec![Section { title: String::new(), lines, total: vec![] }],
+        sections: vec![Section { title: String::new(), lines, total: vec![], net: vec![] }],
         bottom: None,
     })
 }

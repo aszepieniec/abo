@@ -239,6 +239,16 @@ pub(crate) enum AccountCmd {
     Add { account: String },
     /// Take out an account nothing uses.
     Remove { account: String },
+    /// Rename an account and those under it, as Expenses:Office:Rent to
+    /// Expenses:Rent: each is declared anew and its balance moved there by
+    /// one entry; the old stays where entries post to it. Within its class.
+    Move {
+        /// Defaults to today.
+        #[arg(long)]
+        date: Option<String>,
+        from: String,
+        to: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -548,6 +558,10 @@ pub(crate) enum Cmd {
         /// --since 2026-10-07. Then --last is not counted.
         #[arg(long)]
         since: Option<String>,
+        /// Only the changes made on or before this day. Then --last is not
+        /// counted either.
+        #[arg(long)]
+        until: Option<String>,
     },
     /// Take back abo's last change, while nothing has happened since; again,
     /// and it is made again.

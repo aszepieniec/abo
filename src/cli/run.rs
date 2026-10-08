@@ -376,16 +376,18 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             still(&s);
             Ok(())
         }
-        Cmd::Log { last, since } => {
+        Cmd::Log { last, since, until } => {
             let s = Store::open(&here)?;
             let all = store::lines(&s.root);
-            let since = since.map(|d| input::day(Some(&d))).transpose()?.map(|d| d.to_string());
-            let skip = if since.is_some() { 0 } else { all.len().saturating_sub(last) };
+            let day = |d: Option<String>| d.map(|d| input::day(Some(&d))).transpose().map(|d| d.map(|d| d.to_string()));
+            let (since, until) = (day(since)?, day(until)?);
+            let skip = if since.is_some() || until.is_some() { 0 } else { all.len().saturating_sub(last) };
+            let on = |l: &serde_json::Value| l["at"].as_str().unwrap_or_default().get(..10).unwrap_or_default().to_string();
             let rows: Vec<serde_json::Value> = all
                 .iter()
                 .enumerate()
                 .skip(skip)
-                .filter(|(_, l)| since.as_ref().is_none_or(|d| l["at"].as_str().unwrap_or_default().get(..10).is_some_and(|at| at >= d.as_str())))
+                .filter(|(_, l)| since.as_ref().is_none_or(|d| on(l) >= *d) && until.as_ref().is_none_or(|d| on(l) <= *d))
                 .map(|(i, l)| {
                     let mut l = l.clone();
                     l["line"] = (i + 1).into();
@@ -561,6 +563,10 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 }
                 Some(AccountCmd::Add { account }) => changed(&mut s, &Op::AccountAdd(account.clone()), &[], cli.json),
                 Some(AccountCmd::Remove { account }) => changed(&mut s, &Op::AccountRemove(account.clone()), &[], cli.json),
+                Some(AccountCmd::Move { date, from, to }) => {
+                    let date = input::day(date.as_deref())?;
+                    changed(&mut s, &Op::AccountMove { from: from.clone(), to: to.clone(), date }, &[], cli.json)
+                }
             }
         }
         Cmd::Commodity { change } => {

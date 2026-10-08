@@ -863,12 +863,15 @@ are, and listed and removed the same way:
 
 ```
 abo account   add <Account>                list   remove <Account>
+abo account   move [--date=<date>] <from> <to>
 abo commodity add <CODE> <places>          list   remove <CODE>
 abo price     add <date> <CODE> <amount>   list   remove <date> <CODE>
 ```
 
-In the browser, one page lists the accounts, the commodities and the prices,
-each with Add and Remove. What each refuses is what the invariants refuse:
+In the browser, one page lists the accounts, as their paths nest them, each
+with its balance; the commodities; and the prices, each with Add and Remove.
+An account dragged onto another of its class is moved under it, once the
+rearrangement is confirmed: a move each, in the order made. What each refuses is what the invariants refuse:
 
 | Refused | Because |
 |---|---|
@@ -878,12 +881,21 @@ each with Add and Remove. What each refuses is what the invariants refuse:
 | `commodity add eur 2` | three or more capital letters (I-K0) |
 | `commodity remove` of one in use | I-A1 |
 | `price add` or `price remove` dated on or before `closed_through` | N2 |
+| `account move` of a class, into another class, or under itself | a balance says what its class is |
+| `account move` onto an account that holds a balance | the two would be one; onto one at nought, such as the name it had before, it goes |
+| `account move` of an account a standing debt is owed on | a payment takes off the debt's own account |
 
-There is no edit and no rename. An account's name is in every posting to it,
-and entries never change; a commodity's places are in every amount written in
-it. So an account that holds postings keeps its name, and a commodity in use
-keeps its places; one not yet used is removed and added again, and a balance
-is moved to another account by an entry. A price removed changes no invoice:
+There is no edit, and no rename in place. An account's name is in every
+posting to it, and entries never change; a commodity's places are in every
+amount written in it. So an account that holds postings keeps its name, and a
+commodity in use keeps its places; one not yet used is removed and added
+again. `account move from to` is the move by an entry: `from` and every
+account under it are declared under `to` in their stead, one entry dated
+`date` moves each balance there, and the configuration names the new
+accounts; each old one stays where an entry or a statement names it, at
+nought, and is taken out where nothing does. Earlier periods and statements
+keep the old names. A VAT box's query is left as written: one naming a moved
+account is set again. A price removed changes no invoice:
 each holds the price it used.
 
 ### 5.2 Configuration

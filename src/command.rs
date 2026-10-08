@@ -114,6 +114,7 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
         Op::OptionRemove { id } => a = vec![s("payment-options"), s("remove"), id.clone()],
         Op::AccountAdd(x) => a = vec![s("account"), s("add"), s("--"), x.clone()],
         Op::AccountRemove(x) => a = vec![s("account"), s("remove"), s("--"), x.clone()],
+        Op::AccountMove { from, to, date } => a = vec![s("account"), s("move"), flag("date", date), s("--"), from.clone(), to.clone()],
         Op::CommodityAdd(c, p) => a = vec![s("commodity"), s("add"), s("--"), c.clone(), p.to_string()],
         Op::CommodityRemove(c) => a = vec![s("commodity"), s("remove"), s("--"), c.clone()],
         Op::PriceAdd { of, date, price } => a = vec![s("price"), s("add"), s("--"), date.to_string(), of.clone(), price.quantity.to_string(), price.commodity.clone()],
@@ -151,6 +152,7 @@ pub fn subject(op: &Op, m: &Books, n: &Books) -> String {
         Op::OptionRemove { id } => format!("Remove the payment option {id}"),
         Op::AccountAdd(x) | Op::CommodityAdd(x, _) => format!("Declare {x}"),
         Op::AccountRemove(x) | Op::CommodityRemove(x) => format!("Take out {x}"),
+        Op::AccountMove { from, to, .. } => format!("Move {from} to {to}"),
         Op::PriceAdd { of, date, .. } => format!("Add the price of {of} on {date}"),
         Op::PriceRemove { of, date } => format!("Take out the price of {of} on {date}"),
     }
