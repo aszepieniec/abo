@@ -15,6 +15,8 @@ Status: M0-M4 built — `abo init`, `post`, `file`, `bill`, `invoice`,
 `reconcile`, `clear`, `revert`, `undo`, `company`, `payment-options`, `pl`, `bs`,
 `vat`, `balance`, `register`, `log`, `serve`, `demo`. M5 half built: a data
 directory serves each of its companies under `/c/<dir>/`; users are next.
+M6 built: each company installs as an app; not yet tried on a real phone
+(WORKFLOWS.md G1).
 
 ---
 
@@ -659,7 +661,12 @@ Not legal advice, but none of this is controversial.
   on a data directory hands `/c/<dir>/…` to that company's own router with
   the prefix taken off, and puts it back on every link, form and redirect in
   the answer, so no page knows where it is served. Users are not.
-- **M6** — PWA manifest, or the JSON API if native has been chosen.
+- **M6** — PWA manifest, or the JSON API if native has been chosen. **Done**
+  as a manifest, one per company: relative URLs, so under `/c/<dir>/` its
+  scope is that company's alone. Chrome finds it installable
+  (`tests/installable.mjs`). **Open:** adding it to a real phone's home
+  screen, and on an iPhone whether a PDF opened in the app leaves a way back
+  (WORKFLOWS.md G1).
 
 Reconciliation was not in the original list of workflows and is the one that
 recurs most: bills arrive a few at a time, the statement arrives all at once and
