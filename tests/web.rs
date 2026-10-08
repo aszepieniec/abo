@@ -171,6 +171,13 @@ fn new_company() {
     assert_eq!(status, 200, "{page}");
     assert!(page.contains("href=\"/c/test-sons-ltd/invoices\"") && page.contains("href=\"/c/\""), "{page}");
     assert!(!page.contains("href=\"/invoices\""), "{page}");
+    // Installable as that company's app alone (tests/installable.mjs asks Chrome).
+    assert!(page.contains("<link rel=\"manifest\" href=\"/c/test-sons-ltd/manifest.webmanifest\">"), "{page}");
+    let (status, _, manifest) = http(&s, "GET", "/c/test-sons-ltd/manifest.webmanifest", &[]);
+    assert_eq!(status, 200);
+    assert!(manifest.contains("\"name\":\"Test & Sons Ltd · abo\"") && manifest.contains("\"start_url\":\"./\""), "{manifest}");
+    let (status, _, _) = http(&s, "GET", "/c/test-sons-ltd/icon-512.png", &[]);
+    assert_eq!(status, 200);
     let (status, _, _) = http(&s, "GET", "/c/no-such-ltd/", &[]);
     assert_eq!(status, 404);
 

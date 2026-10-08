@@ -463,9 +463,14 @@ it back, for a date typed wrong, as the refusal to move it back says.
 
 ### G1. Photograph and book a bill on a phone — Partial
 The pages work at phone width, and the upload offers the camera, the photo
-library or a file.
-**Gap:** no web app manifest yet, so it cannot be installed to the home screen
-(DESIGN M6).
+library or a file. Each company's pages carry a web app manifest of their own
+(DESIGN M6), so each set of books installs as its own app, named for the
+company. Chrome finds them installable with no errors, for one company served
+alone and for each company of a data directory (`node tests/installable.mjs
+<url>`). An iPhone takes the icon from `apple-touch-icon`.
+**Open:** not yet added to a real phone's home screen, on Android or on an
+iPhone. A phone offers to install only over HTTPS, so try it behind the TLS
+that `abo serve` expects in front of it.
 
 ---
 

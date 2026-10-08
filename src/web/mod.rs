@@ -110,6 +110,10 @@ fn company_app(root: PathBuf) -> Router {
         .route("/company/terms", post(terms))
         .route("/company/tax-return", get(tax_return).post(tax_return_submit))
         .route("/bills/{*rest}", get(bill_doc))
+        .route("/manifest.webmanifest", get(manifest))
+        .route("/icon-192.png", get(|| async { png(include_bytes!("icon-192.png")) }))
+        .route("/icon-512.png", get(|| async { png(include_bytes!("icon-512.png")) }))
+        .route("/apple-touch-icon.png", get(|| async { png(include_bytes!("apple-touch-icon.png")) }))
         .fallback(not_found)
         // A scanned bill is much bigger than a form post.
         .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
@@ -143,6 +147,40 @@ fn money_of(b: &Model, q: Decimal, commodity: &str) -> String {
 /// A page no route serves: said as a page, with the way back.
 async fn not_found(Books(s): Books) -> Response {
     or_error(&s, "Not found", || Err(input::not_found("there is no such page".into())))
+}
+
+/// What lets a phone add the company's books to its home screen: one app
+/// per company, as each is served under its own path.
+fn installable() -> Markup {
+    html! {
+        link rel="manifest" href="/manifest.webmanifest";
+        link rel="apple-touch-icon" href="/apple-touch-icon.png";
+        meta name="theme-color" content="#4338CA";
+    }
+}
+
+/// Relative throughout: under `/c/<dir>/` the app is that company's alone.
+/// Books that cannot be read still install, as "abo".
+async fn manifest(axum::extract::State(root): axum::extract::State<Arc<PathBuf>>) -> Response {
+    let company = Store::open(&root).map(|s| s.books.config.company.name).ok();
+    let body = serde_json::json!({
+        "name": company.as_ref().map_or("abo".into(), |c| format!("{c} · abo")),
+        "short_name": company.as_deref().unwrap_or("abo"),
+        "start_url": "./",
+        "scope": "./",
+        "display": "standalone",
+        "background_color": "#F7F6F2",
+        "theme_color": "#4338CA",
+        "icons": [
+            { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+            { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+        ],
+    });
+    ([("content-type", "application/manifest+json")], body.to_string()).into_response()
+}
+
+fn png(bytes: &'static [u8]) -> Response {
+    ([("content-type", "image/png"), ("cache-control", "max-age=86400")], bytes).into_response()
 }
 
 /// A PDF, named for saving: a browser keeps the name and its extension.
@@ -240,6 +278,7 @@ fn unreadable(e: &anyhow::Error) -> Response {
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
+                (installable())
                 title { "The books cannot be read · abo" }
                 style { (PreEscaped(STYLE)) }
             }
@@ -367,6 +406,7 @@ fn page_with(s: &Store, title: &str, body: Markup, with_banner: bool) -> Html<St
                 head {
                     meta charset="utf-8";
                     meta name="viewport" content="width=device-width, initial-scale=1";
+                    (installable())
                     title { (title) " · abo" }
                     // PreEscaped: maud escapes interpolated text, and an escaped `>` in a
                     // child combinator silently kills the rule.
