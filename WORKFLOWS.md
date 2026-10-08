@@ -468,9 +468,14 @@ library or a file. Each company's pages carry a web app manifest of their own
 company. Chrome finds them installable with no errors, for one company served
 alone and for each company of a data directory (`node tests/installable.mjs
 <url>`). An iPhone takes the icon from `apple-touch-icon`.
+Behind TLS under a real host name it installs too; over plain HTTP there,
+Chrome refuses it (`not-from-secure-origin`).
 **Open:** not yet added to a real phone's home screen, on Android or on an
 iPhone. A phone offers to install only over HTTPS, so try it behind the TLS
-that `abo serve` expects in front of it.
+that `abo serve` expects in front of it. On the iPhone, see whether an
+invoice's PDF or a bill's document, opened from the app, leaves a way back:
+they open in the same window, and an app on the home screen has no back
+button there.
 
 ---
 
