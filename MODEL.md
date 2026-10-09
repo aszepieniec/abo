@@ -20,9 +20,11 @@ a test is what says which.
 
 **The representation** is a function `render: Books → Files`, from a state
 to the contents of the text files in the books' directory: `abo.toml`, the
-journal, each invoice's `.json`, and `bills/index`. It is injective: two
+journal, each invoice's `.json`, `partners.toml`, `bills/index` and
+`agreements/index`. It is injective: two
 different states render to different files. The image of `render` is the set
-of *canonical* files. The binary files — bills' documents, invoices' PDFs —
+of *canonical* files. The binary files — bills' and agreements' documents,
+invoices' PDFs —
 are not rendered but kept as they came or were made; the state holds the hash
 of each (§2.5).
 
@@ -99,7 +101,9 @@ struct Books {
     prices:      Map<(Commodity, Date), Amount>,              // what one unit was worth, in another
     entries:     Vec<Entry>,                                  // in the order added; never changed
     statements:  Map<(Account, Commodity, Date), Statement>,  // from the bank
-    documents:   Map<Hash, Document>,                         // bills' documents, by their hash
+    documents:   Map<Hash, Document>,                         // bills' and agreements' documents, by their hash
+    partners:    Map<Id, Partner>,                            // whom invoices go to and bills come from (§2.9)
+    agreements:  Map<Id, Agreement>,                          // contracts with partners, in versions (§2.9)
 }
 ```
 
@@ -258,12 +262,15 @@ is and when it is due; either, both or neither, as the bill gives them:
 
 ```rust
 struct BillMore {
-    number: Text,          // as the bill prints it; empty where it has none
-    due:    Option<Date>,  // on or after the bill's date
+    number:  Text,          // as the bill prints it; empty where it has none
+    due:     Option<Date>,  // on or after the bill's date
+    partner: Option<Id>,    // who sent it (§2.9)
 }
 ```
 
-They are inputs, said by whoever books the bill. A bill with something open
+They are inputs, said by whoever books the bill. The partner is said when
+the bill is booked, or never: the entry does not change after. A bill booked
+without one, or with the wrong one, is reverted and booked again. A bill with something open
 past its due date is overdue, as an invoice is.
 
 `postings(e)` is the entry's own postings for `Plain`, `Bill` and `Payment`.
@@ -310,20 +317,29 @@ Two kinds of file sit beside the journal, and have almost nothing in common:
 So they are not two kinds of one thing, and the model does not make them one.
 
 **A bill's document** is a file under `bills/`, kept as it came, and known by
-its hash:
+its hash; **an agreement's**, a contract or an amendment as signed, likewise
+under `agreements/` (§2.9):
 
 ```rust
 struct Document {
     date: Date,
     name: Text,              // the issuer, as the path says it: a-z, 0-9 and '-'
     ext:  Text,              // pdf, jpg: a-z and 0-9
-    of:   Option<EntryId>,   // the bill it is the document of, once booked
+    of:   Option<Of>,        // what it is the document of; none: a bill not booked yet
+}
+
+enum Of {
+    Bill(EntryId),           // the bill it is the document of, once booked
+    Version(Id, usize),      // an agreement, and the place of the version it is of
 }
 ```
 
 Its path follows from these and its hash:
-`bills/<year>/<date>-<name>-<first 8 digits of the hash>.<ext>`. The hash is a
-check: the file at that path has it, or `parse` reports it (§8).
+`bills/<year>/<date>-<name>-<first 8 digits of the hash>.<ext>`, or, of a
+version of agreement `<id>`, `agreements/<id>/<date>-<name>-<first 8 digits
+of the hash>.<ext>`. The hash is a check: the file at that path has it, or
+`parse` reports it (§8). One map holds both, so a file is filed once, as a
+bill's document or as an agreement's, not as both.
 
 The document names its bill, not the bill its document: a booking and its
 document come in either order, and the one that comes second records the link
@@ -340,11 +356,21 @@ postings it clears. What the set of documents says:
   that a bill booked wrongly, reverted, and booked again keeps its document.
 - **Duplicates:** filing a document whose hash is filed already is refused.
 
+An agreement's document is filed with the version it is of, in one
+operation, and so is never without one: a document without one is a bill
+not booked yet, and the Bills page lists it as one. It names its version and
+the version does not name it, so a contract's scan is filed for version 1
+after version 3 is added, and no version changes. It is not taken out: the
+agreement is kept as a record, and its documents with it. Filed by mistake,
+it is taken back by undo while nothing has happened since.
+
 **An invoice's content** is what it says. Its amounts are not in it: they
 follow.
 
 ```rust
 struct Content {
+    to:        Option<To>,            // the partner, or the agreement, it is issued under (§2.9)
+    period:    Option<Period>,        // what it is for, when it is for a period
     customer:  Lines,                 // name, then address
     commodity: Commodity,
     home:      Option<Price>,         // in another commodity: what one unit was worth in the company's
@@ -375,7 +401,21 @@ enum InvoiceVat {
 }
 
 struct Price { date: Date, price: Amount }
+
+enum To { Partner(Id), Agreement(Id) }
+
+struct Period { from: Date, to: Date }   // both days included
 ```
+
+`to` names the partner the invoice is issued to, or, for a period of an
+agreement, the agreement, whose partner it is issued to: one or the other,
+so the partner is held once. `customer` and `customer_tax_id` are what the
+invoice printed, copied from the partner when it was issued and kept as
+printed: the partner's address may change after, and the invoice does not.
+An invoice issued before partners were, or to someone who is not one, has
+no `to`. `period` is what the invoice is for — the period of an agreement it
+bills, or of any other supply — and is printed on it, as an invoice must
+say when its supply was made.
 
 The amounts, each rounded half away from nought to the commodity's places:
 
@@ -413,8 +453,9 @@ invoice issued elsewhere — before abo, or by other software — is not an
 invoice to the model; should books ever need to hold one, that is the time to
 model it.
 
-**Supporting documents** — a receipt, a bank's confirmation — are left out of
-the model. Should they be wanted, they would be kept as bills' documents are.
+**Other supporting documents** — a receipt, a bank's confirmation — are left
+out of the model. Should they be wanted, they would be kept as bills' and
+agreements' documents are.
 
 ### 2.6 Statements
 
@@ -458,6 +499,13 @@ what September's statement clears (I-S3).
 | `settled(d)` | `d` stands, and `open(d)` is nought |
 | `cleared(p)` | some statement clears posting `p` |
 | `whole(s)` | every posting to the statement's account, in its commodity, dated on or before it, is cleared by it or an earlier statement: its balance is then the account's, and hledger checks it too (§7.3) |
+| `partner(e)` | of a bill, its `partner`; of an invoice, the partner its `to` names, or its agreement's; of a credit note or a payment, that of the entry it names; else none |
+| `customer(p)`, `supplier(p)` | an invoice, a bill, has `partner` p |
+| `in_force(a, d)` | the last added of `a`'s versions whose `from` is on or before `d` (§2.9) |
+| `periods(a)` | §2.9 |
+| `invoiced(a, P)` | a standing invoice names `a` and has period `P` |
+| `to_issue(a, d)` | the periods of `a` that can be issued by `d`, and are not invoiced (§2.9) |
+| `owed_to(p, c)`, `owed_by(p, c)` | the sum of `open(d)` over the standing invoices, the standing bills, `d` in commodity `c` with `partner(d) = p` |
 
 `reversed` and `standing` are defined by each other; since a reverser has a
 greater id than what it reverses (I-E3), they are defined by induction on the
@@ -480,6 +528,105 @@ payment options, by id; and the tax return's boxes, by code. Its invariants
 are in §4.8. It is part of the state, so changing it is an operation like any
 other (§5.2).
 
+### 2.9 Partners and agreements
+
+*Specified ahead of the code (2026-10-10): this section, and the rules,
+guarantees and operations that name it, are not built yet.*
+
+A **partner** is someone the company invoices or is billed by, held so that
+what an invoice prints of them is said once:
+
+```rust
+struct Partner {
+    lines:  Lines,   // name, then address, as an invoice prints them
+    tax_id: Text,    // as an invoice prints it; empty where they have none
+}
+```
+
+A partner has no role. Whether one is a customer, a supplier or both is what
+names them: an invoice, a bill (§2.7). An `Id` is a-z, 0-9 and `-`, as a
+document's name: it is written in the journal as a tag's value, which
+hledger ends at a comma, and typed on the command line. An id is not
+changed, since invoices and bills name it and they do not change. A
+partner's details are changed at any time; what an invoice printed of them is
+in its content, and does not change with them. A partner is removed only
+while nothing names them: an id removed and added again would otherwise name
+another person on the first one's invoices and bills.
+
+An **agreement** is a contract with a partner, held as the list of its
+versions. A change to it adds a version; the versions before stay as they
+were, the record of what was agreed when.
+
+```rust
+struct Agreement {
+    partner:  Id,
+    versions: Vec<Version>,    // in the order added; never changed
+}
+
+struct Version {
+    from:    Date,             // when it takes effect: the 1st of a month
+    until:   Option<Date>,     // the agreement's last day, if it ends
+    billing: Option<Billing>,  // what the company invoices under it, and when
+}
+
+struct Billing {
+    every:  Months,            // the length of each period, 1 or more
+    billed: Billed,
+    draft:  Fields,            // the invoice form's fields, as each invoice starts from them
+}
+
+enum Billed { InAdvance, InArrears }
+```
+
+A version's number is its place in the list, from 1: `acme-hosting/2`. The
+partner is the agreement's, not a version's: a contract with another partner
+is another agreement. A version without billing is a contract on record — a
+lease, a supplier's terms, a contract invoiced by hand; a version with
+billing is also a schedule of invoices. Neither posts anything: no balance
+depends on partners or agreements.
+
+**The version in force** on a day is the last added of those whose `from` is
+on or before it. Two versions may have the same `from`: the later is in
+force, and the earlier stays as the record of what it replaced — a mistake
+corrected, or terms changed again before they took effect. The agreement
+ends on the `until` of the version in force, if it has one; to end an
+agreement is to add a version with an `until`.
+
+**Periods.** Of a version with billing, period k, counting from 0, runs from
+`from + k × every` months to the day before period k + 1. Since `from` is the
+1st of a month, every period is a whole number of months, and its first day a
+date that exists. The agreement's periods are those of each version with
+billing that begin before the next version's `from` and end on or before
+the agreement's last day. The next version takes effect at one of their
+starts, and `until` is the last day of one of them (I-T3), so no period is
+cut short.
+
+A period is **invoiced** while a standing invoice names the agreement and
+that period: one credited is not, and is invoiced again. A period can be
+issued from its first day when billed in advance, from the day after its last
+when billed in arrears. **To issue**, on a day, is every period of the
+agreement that can be issued by then and is not invoiced. abo issues nothing
+of its own accord. Invoice numbers follow dates (I-I2) and nothing is dated
+after the day it is added (N1), so a period missed is issued on the day it is
+noticed, and the period printed on it says what it is for. The draft fills
+in the invoice form; the person issuing says what changes — this month's
+hours — and issues it.
+
+The draft is the form's fields, not an invoice. It is checked as any text is
+(I-C1), and for nothing it names: an account moved or a payment option
+removed since leaves it naming one that is not there, and issuing from it is
+refused as the form refuses one typed. It is corrected in the form, and in a
+new version.
+
+**What was invoiced stays as invoiced.** The version an invoice was issued
+under is derived — the version in force on its period's first day — so it
+must stay the one in force: a version is not added that takes effect on or
+before the last day of an invoiced period (N10). A change of price, of terms
+or of period begins after what has been invoiced.
+
+An agreement's documents — the contract, each amendment — are kept as bills'
+documents are, each naming its version (§2.5).
+
 ---
 
 ## 3. Guarantees
@@ -488,7 +635,7 @@ A **guarantee** is a property of the books that something reading them relies
 on. The readers are hledger; the files on disk and whoever reads or edits
 them; the record of what each debt owes; an invoice and the customer who
 received it; the bank statement; the tax return and the periods filed with it; a bill's
-document; and whoever runs a command. The list below is closed: it is what
+document; a partner and their agreements; and whoever runs a command. The list below is closed: it is what
 the books promise, and nothing else is promised.
 
 Three rules tie it to the rest of this document:
@@ -574,8 +721,17 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | | Guarantee | Rules | Properties |
 |---|---|---|---|
 | G-B1 | Each document has a path of its own and is filed once; it keeps its bill while the bill stands, and follows it when it is booked again | I-B1 | `document_paths_are_distinct`, `documents_alike_are_refused`, `documents_keep_their_bill`, `a_document_follows_its_bill` |
-| G-B2 | A bill is not booked twice by mistake: one owing what a standing bill owes, within a week of it or under the same number of the supplier's, is booked only when said to be another; one under a standing bill's number of the supplier's, owing the same, never | N8 | `bills_alike_are_refused_unless_another` |
-| G-B3 | What a bill says of itself besides its postings, the supplier's number and when it is due, is read back as said, by abo and by hledger alike, and a due date is never before the bill | I-B3 | `files_say_the_state`, `hledger_reads_entries_as_written` |
+| G-B2 | A bill is not booked twice by mistake: one owing what a standing bill owes, within a week of it or under the same number of the supplier's, is booked only when said to be another; one under a standing bill's number of the supplier's, owing the same, never; one from a partner under a number of theirs a standing bill of theirs has, never, whatever either owes | N8 | `bills_alike_are_refused_unless_another` |
+| G-B3 | What a bill says of itself besides its postings, the supplier's number, when it is due and who sent it, is read back as said, by abo and by hledger alike, and a due date is never before the bill | I-B3 | `files_say_the_state`, `hledger_reads_entries_as_written` |
+
+### A partner, and their agreements
+
+| | Guarantee | Rules | Properties |
+|---|---|---|---|
+| G-T1 | Whatever names a partner or an agreement — an invoice, a bill, an agreement, a document — names one there is; one is removed exactly when nothing names it | I-T1, I-T2 | `a_partner_is_removable_iff_unnamed`, `an_agreement_is_removable_iff_unnamed` |
+| G-T2 | An agreement is kept as a record: a version once added never changes, and is not removed, nor is a document of one, but by undo | I-T3, §5 | `versions_are_kept` |
+| G-T3 | A period of an agreement is invoiced once while its invoice stands, and the version in force on it stays the one it was issued under | I-T4, N10 | `periods_are_invoiced_once`, `invoices_keep_their_version` |
+| G-T4 | What a partner owes, and is owed, in each commodity, is what their debts have open | I-T2, I-P1 | `partners_owe_what_their_debts_have_open` |
 
 ### Whoever runs a command
 
@@ -692,8 +848,9 @@ not reused: those missing below were rules about a value now derived.
 
 - **I-B1** A document's name and extension are well formed, and no two
   documents have one path — which takes two of one issuer and day whose hashes
-  share their first 32 bits; its `of` names a `Bill` entry dated as the
-  document, and no two documents name the same one.
+  share their first 32 bits. Its `of`, when a bill, names a `Bill` entry
+  dated as the document, and no two documents name the same bill; when a
+  version, one the agreement has (I-T2).
 - **I-B2** A bill's booking credits exactly one liability account.
 - **I-B3** A bill's number of the supplier's is one line, trimmed, with nothing
   hidden and no comma — hledger ends a tag's value at a comma — and its due
@@ -703,7 +860,8 @@ not reused: those missing below were rules about a value now derived.
 
 - **I-I1** An invoice has a line or more, each saying what it is for, a total
   above nought, a customer named on the first line,
-  and a due date on or after its own. It books output VAT only when it charges
+  and a due date on or after its own; its period, if it has one, ends on
+  or after the day it begins. It books output VAT only when it charges
   VAT, and VAT it charges comes to more than nought once rounded to the
   commodity's places; its receivable is an asset, its income an income account,
   its output VAT a liability. An exempt invoice says why. Its total does not come to nought at its home price. A home price is above nought and in
@@ -768,8 +926,9 @@ neither for an entry made long ago.
 - **N1** No entry, statement, document or price is dated after the day it is
   added.
 - **N2** On or before `closed_through`, no entry is added, no statement
-  recorded or removed, no document filed or taken out, and no price added or
-  removed.
+  recorded or removed, no bill's document filed or taken out, and no price
+  added or removed. An agreement's document changes no figure of a period,
+  so a contract signed in a period closed is filed when it is scanned.
 - **N3** VAT accounts are posted to only as the VAT method allows (DESIGN §6):
   a bill posts nothing to output VAT, nor, under a flat rate, to the flat
   rate's account; a payment or a write-off posts nothing to any VAT account —
@@ -800,11 +959,36 @@ neither for an entry made long ago.
   added that owes what a standing bill owes under the same number of the
   supplier's, whatever the dates of the two, and whether or not the
   operation says it is another: a supplier numbers each bill once, so it is
-  that bill.
+  that bill. Where both bills name the same partner, the number alone says
+  so, whatever either owes; where they name two, their numbers say nothing
+  of each other.
+- **N10** No version is added to an agreement that takes effect on or before
+  the last day of a period a standing invoice names: the invoice was issued
+  under the version then in force, which is derived, and so must stay in
+  force (§2.9). Not built yet.
 
 The conditions hold of every operation but `undo`, which takes back the last
 one and makes no change of its own: a period closed by mistake is reopened by
 undo, while nothing has happened since.
+
+### 4.10 Partners and agreements
+
+Not built yet (§2.9).
+
+- **I-T1** Partner and agreement ids are well formed: one or more of a-z, 0-9
+  and `-`. A partner is named on their first line, and their tax number is
+  one line.
+- **I-T2** What names a partner or an agreement names one there is: a bill's
+  partner, an invoice's `to`, an agreement's partner, a document's version.
+- **I-T3** An agreement has a version or more. A version's `from` is the 1st
+  of a month, and on or after the `from` of the version added before it,
+  and, when that version has billing, the first day of one of its periods.
+  Its `until`, if it has one, is on or after its `from`, and with billing
+  the last day of one of its periods. A billing's `every` is 1 or more, and
+  its draft holds nothing I-C1 refuses in a text.
+- **I-T4** An invoice that names an agreement has a period, and it is one of
+  the agreement's periods; no two standing invoices name the same agreement
+  and period.
 
 ---
 
@@ -832,10 +1016,10 @@ Violations the books held before the operation are kept as `check` says them.
 | Operation | Adds or changes |
 |---|---|
 | `post(date, description, postings)` | a `Plain` entry |
-| `file(bytes, date, issuer, for)` | a `Document`, by the bytes' hash; `for`, when given, a `Bill` entry it is the document of |
-| `unfile(document)` | removes a `Document` that names no standing bill: one filed by mistake, or a reverted bill's |
-| `bill(document, description, postings)` | a `Bill` entry; `document`, when given — filed already, naming no bill or a reversed one — now names it |
-| `invoice(customer, lines, rate, …)` | an `Invoice` entry with its content and its PDF's hash; the accounts, terms, payment options and, in another commodity, the price, as configured and declared now. `rate`, when not given: nought to a customer whose tax number names another country than the company's does (a country's code, then a digit, or `ATU`, `CHE`); the configured rate otherwise, whatever commodity the invoice is in, which says nothing of where the customer is |
+| `file(bytes, date, issuer, for)` | a `Document`, by the bytes' hash; `for`, when given, a `Bill` entry or an agreement's version it is the document of |
+| `unfile(document)` | removes a `Document` that names no standing bill and no version: one filed by mistake, or a reverted bill's |
+| `bill(document, description, postings)` | a `Bill` entry, its partner, when given, among what it says besides; `document`, when given — filed already, naming no bill or a reversed one — now names it |
+| `invoice(customer, lines, rate, …)` | an `Invoice` entry with its content and its PDF's hash; `to` and `period`, when given, in its content, and the customer and their tax number, when not given, copied from the partner `to` names; the accounts, terms, payment options and, in another commodity, the price, as configured and declared now. `rate`, when not given: nought to a customer whose tax number names another country than the company's does (a country's code, then a digit, or `ATU`, `CHE`); the configured rate otherwise, whatever commodity the invoice is in, which says nothing of where the customer is |
 | `credit(invoice, note)` | a `CreditNote` entry, reversing the invoice, and its PDF |
 | `pay(debt, date, amount, from, cost)` | a `Payment` entry, from a money account; `cost`, what was paid, when in another commodity |
 | `write_off(debt, date, to)` | a `Payment` entry of what is open, from the account `to` |
@@ -850,11 +1034,19 @@ Violations the books held before the operation are kept as `check` says them.
 | `account_add(account)`, `account_remove(account)` | `accounts` |
 | `commodity_add(commodity, places)`, `commodity_remove(commodity)` | `commodities` |
 | `price_add(date, commodity, amount)`, `price_remove(date, commodity)` | `prices` |
+| `partner_add(id, lines, tax_id)` | a `Partner`; refused if the id is taken |
+| `partner_edit(id, lines?, tax_id?)` | the partner's details given; no invoice changes |
+| `partner_remove(id)` | the partner, while nothing names them (I-T2) |
+| `agreement_add(id, partner, version)` | an `Agreement` of one version; refused if the id is taken |
+| `amend(agreement, version)` | a version, added after the agreement's last |
+| `agreement_remove(id)` | an agreement nothing names: one added by mistake |
 | `undo()` | the state before the last operation (§5.3) |
 
-No operation changes an entry once added. Every one adds something; removes a
-document that names no bill, or an account's latest statement; links a
-document to its bill; or changes the configuration or the declarations.
+No operation changes an entry once added, nor an agreement's version. Every
+one adds something; removes a document that names no bill, an account's
+latest statement, or a partner or agreement nothing names; links a document
+to its bill; or changes the configuration, the declarations or a partner's
+details.
 
 ### 5.1 Declarations
 
@@ -967,6 +1159,35 @@ operation's command; undo takes back both, as the change was one. The
 browser's **File and book it** is the one such pair: a `file` and the
 `bill` that names its document.
 
+### 5.5 Partners and agreements
+
+Not built yet (§2.9). Partners and agreements are kept by commands, as
+declarations are:
+
+```
+abo partner   add <id>                    edit <id>    list   remove <id>
+abo agreement add <id> --partner=<id> --from=<date> [--until=<date>]
+                       [--every=<months> --in-advance|--in-arrears --draft-from=<invoice>]
+abo agreement amend <id> ...              show <id>    list   remove <id>
+abo agreement file <id>/<n> <file>
+abo invoice --partner=<id> ...
+abo invoice --agreement=<id> --period=<from>..<to> ...
+```
+
+`partner add` and `edit` ask for the lines and the tax number as `abo
+company` asks for the company's. `amend` takes what `add` takes, and what it
+is not given it keeps from the version in force. `--draft-from` fills the
+draft from an issued invoice's content, as **Issue again** fills the form.
+An invoice issued with `--partner` or `--agreement` is logged with the
+customer and tax number it copied, written out: run again after the
+partner's address has changed, it issues the same invoice (G-O8).
+
+In the browser, **Partners** lists each partner with what they owe and are
+owed, their invoices, bills and agreements; an agreement's page, its
+versions, documents and periods. **Invoices** lists what is to issue above
+the invoices, each opening the form filled in from its draft and period,
+dated today. Each invoice has **Issue again**, the form filled in from it.
+
 ---
 
 ## 6. What changes for workflows
@@ -1008,13 +1229,18 @@ journal/2026.journal         # the year's entries and statements
 invoices/2026/2026-0017.json # invoice 2026-0017's content and its PDF's hash, written by render
 invoices/2026/2026-0017.pdf  # made at issue, kept as made
 bills/2026/…                 # bills' documents, kept as they came; known by their hash
-bills/index                  # every document: its hash, path and bill, written by render
+bills/index                  # every bill's document: its hash, path and bill, written by render
+partners.toml                # partners and agreements, written by render
+agreements/acme-hosting/…    # an agreement's documents, kept as they came; known by their hash
+agreements/index             # every agreement's document: its hash, path and version, written by render
 templates/…                  # the company's, not the model's (§10)
 ```
 
 `render` writes the text files: `abo.toml`, the journal, each invoice's and
-credit note's `.json`, and `bills/index` — a line for each document,
-`<hash> <path> <entry id or ->`, in the order of the hashes. An invoice's
+credit note's `.json`, `partners.toml`, and the two indexes: `bills/index`, a
+line for each bill's document, `<hash> <path> <entry id or ->`, and
+`agreements/index`, a line for each agreement's, `<hash> <path>
+<agreement>/<version>`, each in the order of the hashes. An invoice's
 `.json` holds its content and its PDF's hash; a credit note's, its note and its
 PDF's hash. The two kinds of binary file are not rendered — a bill's document
 is kept as it came, an invoice's PDF as it was made — and the state holds the
@@ -1054,8 +1280,8 @@ The kind is written as tags, and read back from them:
 | Kind | Tags |
 |---|---|
 | `Plain` | none |
-| `Bill` | `bill:`, then `number: <text>` and `due: <date>` where given |
-| `Invoice` | `invoice: <number>`, its content in its `.json` |
+| `Bill` | `bill:`, then `number: <text>`, `due: <date>` and `partner: <id>` where given |
+| `Invoice` | `invoice: <number>`, then `partner: <id>` where it has one; its content in its `.json` |
 | `CreditNote` | `invoice: <number>`, `credits: <id>` |
 | `Payment` | `pays: <id>` |
 | `Reversal` | `reverses: <id>` |
@@ -1124,6 +1350,38 @@ in their canonical forms (an IBAN in groups of four, a BIC in capitals). In
 abo writes it: every change goes through `abo config`, `abo company` and `abo
 payment-options`; a comment written in it by hand, like any other hand edit,
 is a problem `parse` reports (§8), and holds every change up until mended.
+
+### 7.6 partners.toml
+
+Not built yet (§2.9). Written by `render`: partners, then agreements, each
+in the order of their ids; an agreement's versions in the order added; the
+draft's fields in a fixed order, those blank left out.
+
+```toml
+[partner.acme]
+lines  = "Acme GmbH\nHauptstrasse 1\n10115 Berlin\nGermany"
+tax_id = "DE123456789"
+
+[agreement.acme-hosting]
+partner = "acme"
+
+[[agreement.acme-hosting.version]]
+from   = 2026-01-01
+every  = 1
+billed = "in-advance"
+draft  = { items = "1|110|Hosting", reference = "PO 4471" }
+
+[[agreement.acme-hosting.version]]
+from   = 2027-01-01
+every  = 3
+billed = "in-advance"
+draft  = { items = "1|320|Hosting, a quarter", reference = "PO 4471" }
+```
+
+A version without billing has `from` and, if it ends, `until`, and nothing
+else. An invoice's `partner:` tag is derived, written for hledger and a
+person reading the journal, so that `hledger reg tag:partner=acme` lists a
+partner's bills and invoices; a bill's is what the bill says (§2.4).
 
 ---
 

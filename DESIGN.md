@@ -757,7 +757,6 @@ Each with the trigger for revisiting.
 | JSON API | A native phone client is chosen (§7). |
 | Dated / versioned VAT config | The company switches methods and an old period must be reproduced. |
 | Currency conversion | Never at booking time. For reporting, `hledger -X`. |
-| A customer list | You retype the same address a third time. Past invoices are already in the journal. |
 | QR or structured payment codes on invoices | A customer asks for one. It is a template change plus a QR crate, not an abo change. |
 | Statutory rates in code | Never. They are `[invoice] vat_rate` and `--vat-rate`. |
 | Auth in the application | Users exist (§8). |
