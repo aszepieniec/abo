@@ -65,6 +65,10 @@ company-books/
   invoices/2026/2026-0017.pdf
   invoices/2026/2026-0017.json   # what the invoice says, and its PDF's hash
   bills/index             # every document: its hash, path and bill
+  partners.toml           # whom invoices go to, bills come from, salaries are paid to
+  contracts/acme-hosting.toml   # an agreement: parties, status, versions
+  contracts/acme-hosting/…      # its signed contract and amendments
+  contracts/index         # every contract document: its hash, path and version
   .abo/                   # gitignored: the log, typst's scratch files
 ```
 
@@ -88,6 +92,19 @@ An entry carries its id and its kind as tags:
   invoice's negated.
 - `pays:` on a payment names the one debt it pays, by id. Whether a debt is
   settled is what the amounts say, never a tag.
+- `partner:` names who a bill, an invoice or an entry is with. An invoice or
+  an entry made for a period of an agreement — a month's hosting, a month's
+  salary — also carries `agreement:` and `period:`, so that a period is done
+  once (MODEL.md §2.9).
+
+Partners and agreements are specified, not built yet. A partner is a name,
+with an address and a tax number where something prints them; an employee is
+a partner. An agreement is a contract with one or more partners, held as
+versions only added, and active until terminated or subsumed by another on a
+day. A version may carry a schedule: every so many months, in advance or in
+arrears, invoice, pay or receive, from a draft that fills the form. Periods
+are whole months but for the first and last, which are cut to the days the
+contract runs. abo lists what is due and makes nothing of its own accord.
 
 Account naming: CamelCase segments, acronyms in capitals: `Assets:Bank`,
 `Expenses:Telecom`, `Liabilities:VAT:Output`. If your accountant wants a
@@ -725,17 +742,22 @@ Three things to get right, because they are where payroll goes wrong:
   prior runs for this employee supplies it, the same way invoice numbering reads
   `max(invoice:)` instead of keeping a counter. No payroll state file.
 
+Until then, payroll is booked, not computed (MODEL.md §10): an employee is a
+partner, their contract an agreement under `contracts/` whose schedule pays
+them monthly, and its draft holds the salary entry's postings — gross,
+withholding, net — which whoever runs payroll corrects each month from the
+payslip.
+
 Open questions, to settle before this becomes a milestone:
 
-- **Where employees live.** `payroll.toml` in the books repository is consistent
-  with everything else and gets versioning and history for free. But it puts
-  names and salaries in the repository — already half true of the journal, and
-  fully true once payslips are committed. That is a §8 question, and it is the
-  first thing in the design with a reason to be readable by some people and not
-  others.
+- **Who may read the repository.** Employees and their salaries live in
+  `partners.toml` and `contracts/`, versioned with everything else — and so
+  does every name and salary, in the repository, for whoever can read it.
+  That is a §8 question, and it is the first thing in the design with a
+  reason to be readable by some people and not others.
 - **Progressive withholding.** A flat rate per deduction covers contributions
   but not banded income tax. Either a bracket table in the same config, or
-  withholding is entered per employee and abo only books it.
+  withholding stays entered per employee, as booking it does today.
 - **Whether payslips are committed.** Same question as a rendered report, with
   more force: a payslip is a document the employee is owed, so probably yes,
   under `payslips/<year>/`, and then §8 grows a reason to care who can read the
