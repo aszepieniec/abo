@@ -116,6 +116,8 @@ pub(super) fn render(qs: &[Q], prefix: &str, f: &Fields, problems: &Problems, om
         let m = match q {
             // Who keeps the books: asked in words of the page's own, folded
             // away, as a blank answer takes what the computer is set up with.
+            // Behind a gateway, the person signed in is who keeps them.
+            Q::Group { title: "git", .. } if crate::repo::AUTHOR.try_with(|_| ()).is_ok() => html! {},
             Q::Group { title: "git", qs, .. } => html! {
                 details.box {
                     summary.box-header { (icon("pencil")) "Who keeps the books (optional)" }

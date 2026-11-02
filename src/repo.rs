@@ -22,7 +22,7 @@ pub struct Stamp {
 impl Stamp {
     /// Whoever and whenever git would put on a commit made in `dir` now.
     pub fn now(dir: &Path) -> Result<Stamp> {
-        let ident = git_in(dir, &["var", "GIT_AUTHOR_IDENT"])?;
+        let ident = git_env(dir, &["var", "GIT_AUTHOR_IDENT"], &author_env())?;
         // `Name <email> 1727431200 +0200`
         let parse = || -> Option<Stamp> {
             let (name, rest) = ident.trim().rsplit_once(" <")?;
@@ -59,6 +59,20 @@ impl Stamp {
             .map(|t| t.to_zoned(offset.to_time_zone()).strftime("%Y-%m-%dT%H:%M:%S%:z").to_string())
             .unwrap_or_default()
     }
+}
+
+tokio::task_local! {
+    /// Who a web request comes from, by the gateway's `X-Gateway-*` headers: a name,
+    /// and an email if the gateway gave one. Unset, git's own identity stands.
+    pub static AUTHOR: (String, Option<String>);
+}
+
+/// The author as git takes it from the environment, over its config.
+fn author_env() -> Vec<(&'static str, String)> {
+    let Ok((name, email)) = AUTHOR.try_with(Clone::clone) else { return vec![] };
+    let mut env = vec![("GIT_AUTHOR_NAME", name)];
+    env.extend(email.map(|e| ("GIT_AUTHOR_EMAIL", e)));
+    env
 }
 
 pub fn git_in(dir: &Path, args: &[&str]) -> Result<String> {

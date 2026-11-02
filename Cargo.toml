@@ -24,6 +24,8 @@ toml_edit = "0.22"
 # Already built for axum: `oneshot`, to hand a request to one company's router.
 tower = { version = "0.5", default-features = false, features = ["util"] }
 unicode-general-category = "1.1.0"
+# Already built for axum: the gateway percent-encodes its X-Gateway-* headers.
+percent-encoding = "2"
 
 # Already built for rustyline; used directly for the key-by-key VAT method
 # list, and by tests/tty.rs for a terminal to press keys on.

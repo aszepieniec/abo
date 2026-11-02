@@ -53,13 +53,23 @@ fn http(s: &Server, method: &str, path: &str, form: &[(&str, &str)]) -> (u16, St
     send(s, method, path, "application/x-www-form-urlencoded", body.as_bytes())
 }
 
+/// `http`, with `headers` (each line ending in CRLF) as the gateway adds them.
+fn http_as(s: &Server, headers: &str, method: &str, path: &str, form: &[(&str, &str)]) -> (u16, String, String) {
+    let body: String = form.iter().map(|(k, v)| format!("{}={}", enc(k), enc(v))).collect::<Vec<_>>().join("&");
+    send_with(s, headers, method, path, "application/x-www-form-urlencoded", body.as_bytes())
+}
+
 fn send(s: &Server, method: &str, path: &str, content_type: &str, body: &[u8]) -> (u16, String, String) {
+    send_with(s, "", method, path, content_type, body)
+}
+
+fn send_with(s: &Server, headers: &str, method: &str, path: &str, content_type: &str, body: &[u8]) -> (u16, String, String) {
     let host = format!("127.0.0.1:{}", s.port);
     let mut c = TcpStream::connect(&host).unwrap();
     write!(
         c,
         "{method} {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nConnection: close\r\n\
-         Content-Type: {content_type}\r\nContent-Length: {}\r\n\r\n",
+         {headers}Content-Type: {content_type}\r\nContent-Length: {}\r\n\r\n",
         body.len()
     )
     .unwrap();
@@ -211,6 +221,41 @@ fn new_company() {
 /// The same answers, typed at `abo init` and posted to `/new`, open the same
 /// books: both ask `questions::INIT`, and this is what says they mean the
 /// same by it.
+/// Behind a gateway, the person signed in is the author of what they change
+/// (the gateway's app contract, item 9): their full name, else their user name,
+/// percent-decoded; their email, else git's. The form asks no git identity.
+/// A garbled header is refused, not taken for none.
+#[test]
+fn behind_a_gateway_the_person_is_the_author() {
+    let base = std::env::temp_dir().join(format!("abo-web-the gateway-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let (data, home) = (base.join("data"), base.join("home"));
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    // git's own email, for whoever the gateway gives none.
+    std::fs::write(home.join(".gitconfig"), "[user]\n\temail = git@example.invalid\n").unwrap();
+    let s = serve(&data, &home);
+    let zoe = "X-Gateway-User: zoe\r\nX-Gateway-Name: Zo%C3%AB M%C3%BCller\r\nX-Gateway-Email: zoe@example.invalid\r\nX-Gateway-Role: admin\r\n";
+    let (_, _, page) = http_as(&s, zoe, "GET", "/new", &[]);
+    assert!(page.contains("name=\"currency\"") && !page.contains("git_name"), "{page}");
+    let new = [("token", "t1"), ("name", "The gateway Ltd"), ("address", "1 Street"), ("p0.kind", "skip"), ("p.n", "1"), ("currency", "CHF"), ("method", "none")];
+    let (status, to, page) = http_as(&s, zoe, "POST", "/new", &new);
+    assert_eq!((status, to.as_str()), (303, "/?opened=other-ltd"), "{page}");
+    // No full name, no email: the user name, and git's email.
+    let bob = "X-Gateway-User: bob\r\nX-Gateway-Role: write\r\n";
+    let post = [("token", "t2"), ("date", "2026-03-01"), ("description", "Opening"), ("postings", "Assets:Bank=5 CHF\nEquity:Opening=-5 CHF")];
+    let (status, _, page) = http_as(&s, bob, "POST", "/c/other-ltd/post", &post);
+    assert_eq!(status, 303, "{page}");
+    for bad in ["X-Gateway-User: a\r\nX-Gateway-User: b\r\n", "X-Gateway-User: %FF\r\n", "X-Gateway-User: bob\r\nX-Gateway-Name: %0A\r\n", "X-Gateway-User: bob\r\nX-Gateway-Email: a%3Eb\r\n"] {
+        let post = [("token", "t3"), ("date", "2026-03-01"), ("description", "Never"), ("postings", "Assets:Bank=5 CHF\nEquity:Opening=-5 CHF")];
+        assert_eq!(http_as(&s, bad, "POST", "/c/other-ltd/post", &post).0, 400, "{bad:?}");
+    }
+    let log = Command::new("git").args(["log", "--format=%an <%ae> | %cn"]).current_dir(data.join("other-ltd")).env("HOME", &home).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&log.stdout), "bob <git@example.invalid> | bob\nZoë Müller <zoe@example.invalid> | Zoë Müller\n");
+    drop(s);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 #[test]
 fn terminal_and_form_agree() {
     let base = std::env::temp_dir().join(format!("abo-parity-{}", std::process::id()));

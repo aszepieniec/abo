@@ -544,7 +544,35 @@ async fn scope(req: axum::extract::Request, next: axum::middleware::Next) -> Res
     let query = req.uri().query().unwrap_or_default().to_string();
     let prefix = req.headers().get(PREFIX_HEADER).and_then(|v| v.to_str().ok()).map(str::to_string);
     let looks = req.method() == axum::http::Method::GET;
-    PATH.scope(path, BACK.scope(back, QUERY.scope(query, PREFIX.scope(prefix, LOOKS.scope(looks, next.run(req)))))).await
+    let who = author(req.headers());
+    let run = PATH.scope(path, BACK.scope(back, QUERY.scope(query, PREFIX.scope(prefix, LOOKS.scope(looks, next.run(req))))));
+    match who {
+        Ok(Some(a)) => crate::repo::AUTHOR.scope(a, run).await,
+        Ok(None) => run.await,
+        // Garbled is not taken for absent, which would make git's identity the author.
+        Err(h) => (StatusCode::BAD_REQUEST, format!("a garbled {h} header")).into_response(),
+    }
+}
+
+/// The author of what a request changes, from a gateway's headers (its app
+/// contract, item 9): the person's full name, else their user name; their
+/// email, if given, else git's. None without `X-Gateway-User`: abo is then not
+/// behind a gateway, and git's own identity stands. A header there but garbled
+/// (twice, not percent-encoded UTF-8, blank, a control character, or `<` or
+/// `>`, which end a git identity's parts) is the header's name as an error.
+fn author(h: &HeaderMap) -> std::result::Result<Option<(String, Option<String>)>, &'static str> {
+    let get = |n: &'static str| -> std::result::Result<Option<String>, &'static str> {
+        let mut all = h.get_all(n).iter();
+        let Some(v) = all.next() else { return Ok(None) };
+        let v = (all.next().is_none()).then_some(v).and_then(|v| v.to_str().ok());
+        let v = v.and_then(|v| percent_encoding::percent_decode_str(v).decode_utf8().ok());
+        v.map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty() && !v.contains(|c: char| c.is_control() || c == '<' || c == '>'))
+            .map(Some)
+            .ok_or(n)
+    };
+    let (user, name, email) = (get("x-gateway-user")?, get("x-gateway-name")?, get("x-gateway-email")?);
+    Ok(user.map(|u| (name.unwrap_or(u), email)))
 }
 
 async fn log(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
