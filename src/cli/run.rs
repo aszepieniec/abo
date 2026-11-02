@@ -27,7 +27,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             );
         }
     }
-    // A data directory may start out empty, so serve may make it. Every other
+    // The directory serve opens new books in may not be there yet, so serve may make it. Every other
     // command needs books that are already there.
     if let Some(d) = cli.dir.as_ref().filter(|d| !d.exists() && matches!(cli.cmd, Cmd::Serve { .. })) {
         if !confirm(&format!("{} does not exist. Create it?", d.display()), 5)? {
@@ -633,11 +633,11 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 bail!("{} is not a directory", here.display());
             }
             logging(&missing);
-            // Inside a company's books, that company alone; anywhere else, a
-            // data directory holding any number of them.
+            // One company: its books, or an empty directory to open them in.
             match repo::books_root(&here)? {
                 Some(root) => web::serve(root, port).await,
-                None => web::serve_data(here.canonicalize()?, port).await,
+                None if std::fs::read_dir(&here)?.next().is_none() => web::serve(here.canonicalize()?, port).await,
+                None => bail!("{} holds no books and is not empty: serve a company's books, or an empty directory to open them in", here.display()),
             }
         }
         Cmd::Demo { port } => {

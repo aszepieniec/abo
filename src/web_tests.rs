@@ -400,9 +400,9 @@ fn cross_site_posts_are_refused(#[strategy(prop_oneof![Just("/post"), Just("/und
     prop_assert_eq!((head(&books), store::text_files(&books).unwrap()), before);
 }
 
-/// The data directory's form, init's questions asked in the browser: books
-/// that read with no problem, named as answered; or the form again, and
-/// nothing made.
+/// The opening form of an empty directory, init's questions asked in the
+/// browser: books there that read with no problem, named as answered; or
+/// the form again, and nothing made.
 #[proptest(cases(16))]
 fn a_new_company_opens_like_init(
     #[strategy(prop_oneof![3 => "[A-Z][a-z]{1,8}( [A-Z][a-z]{1,8}){0,2}", 1 => crate::cli_tests::arg_text()])] name: String,
@@ -428,14 +428,12 @@ fn a_new_company_opens_like_init(
         ("token", token()),
     ];
     let a = send(server.port, "POST", "/new", "application/x-www-form-urlencoded", &form(&fields), None);
-    let made: Vec<_> = std::fs::read_dir(&data.0).unwrap().flatten().filter(|e| e.path().join("abo.toml").is_file()).collect();
     if a.status == 303 {
-        prop_assert_eq!(made.len(), 1);
-        let s = store::Store::open(&made[0].path()).unwrap();
+        let s = store::Store::open(&data.0).unwrap();
         prop_assert_eq!(s.problems, Vec::<String>::new());
         prop_assert_eq!(&s.books.config.company.name, name.trim());
     } else {
         prop_assert_eq!(a.status, 422);
-        prop_assert!(made.is_empty(), "refused, and books were made");
+        prop_assert!(std::fs::read_dir(&data.0).unwrap().next().is_none(), "refused, and books were made");
     }
 }

@@ -554,7 +554,6 @@ pub fn option_answers(id: &str, o: &PayOption) -> Answers {
 
 /// New books as `INIT`'s answers give them.
 pub struct NewBooks {
-    pub slug: String,
     pub config: model::Config,
     pub author: Option<(String, String)>,
 }
@@ -572,7 +571,6 @@ pub fn books(a: &Answers) -> NewBooks {
     let payment = (0..n).filter(|i| a.contains_key(&format!("p{i}.kind"))).map(|i| option(a, &format!("p{i}."))).collect();
     let (git_name, git_email) = (get("git_name"), get("git_email"));
     NewBooks {
-        slug: crate::repo::slug(&get("name")),
         config: model::Config {
             company: model::Company {
                 name: get("name"),

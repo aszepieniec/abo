@@ -51,8 +51,8 @@ With any flag, `abo init` asks nothing: `--address` (a line each),
 and `--payment '{ kind = "bank", iban = "..." }'` per payment option. What is
 not given is what the question offers; what is given is checked as a typed
 answer is, and a wrong one is refused.
-In the browser, `abo serve` on a data directory offers the same questions as
-one form at `/new`: both are drawn from one description of them
+In the browser, `abo serve` on an empty directory offers the same questions as
+one form, at `/` and `/new`, and opens the books in that directory itself: both are drawn from one description of them
 (`src/questions.rs`), so they come in the same order, with the same checks and
 the same defaults for a blank answer, and the same answers open the same books. The fields of a payment option's kind and of the
 VAT method show once it is chosen (CSS, no script); another payment option
@@ -83,22 +83,18 @@ or of more than 8 places, a removal of one in use, and a price on or before
 the closing date. There is no edit and no rename.
 
 ### A3. Start the web interface — Supported
-`abo serve [--dir x]` serves one company when `x` (default: the working
-directory) is inside its books; otherwise `x` is a data directory, and the
-front page lists the companies in it, each name a link to that company's own
-pages under `/c/<its directory>/` — the same pages, every link and form
-among them kept under that prefix, with **All companies** in the sidebar to
-come back. A missing `x` is created after a y/n
+`abo serve [--dir x]` serves one company: the one whose books `x` (default:
+the working directory) is inside; or, when `x` is empty, the form that opens
+the books in it (A1), and from then on that company. A directory that holds
+no books and is not empty is refused. A missing `x` is created after a y/n
 question that counts down five seconds and takes silence as no. `abo demo`
 serves throwaway toy books. A missing `git` or `hledger` stops startup with a message naming
 what it is for; a missing `typst` is a warning. The server reads `abo.toml` and
 the journal afresh on every request, so an edit to either — a closed period, a
 new rate, a declared account — applies without a restart.
 **Done when** the front page shows the company, its balances and recent
-entries; for a data directory, the name and directory of each company in it,
-and a button to open the books for a new one (A1); and a change made in one
-company's pages lands in that company's books alone. A directory that holds
-no books, or a name that is no directory init would make, is "not found".
+entries; on an empty directory, the form that opens the books (A1), and once
+it has, the company at the same address.
 
 ### A3b. Change the company's details — Supported
 Name, address, country and tax registration number: what invoices print about
@@ -466,7 +462,7 @@ The pages work at phone width, and the upload offers the camera, the photo
 library or a file. Each company's pages carry a web app manifest of their own
 (DESIGN M6), so each set of books installs as its own app, named for the
 company. Chrome finds them installable with no errors, for one company served
-alone and for each company of a data directory (`node tests/installable.mjs
+under a prefix too (`node tests/installable.mjs
 <url>`). An iPhone takes the icon from `apple-touch-icon`.
 Behind TLS under a real host name it installs too; over plain HTTP there,
 Chrome refuses it (`not-from-secure-origin`).

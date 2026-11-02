@@ -659,7 +659,9 @@ pub(crate) enum Cmd {
     Check,
     /// Rewrite the books as abo writes them, where they are not.
     Tidy,
-    /// Serve the web interface on localhost. Put nginx in front for TLS.
+    /// Serve one company's web interface on localhost: the books here, or, in an
+    /// empty directory, the form that opens them in it. The gateway, in front, adds
+    /// TLS and people.
     Serve {
         #[arg(long, default_value_t = 8801)]
         port: u16,

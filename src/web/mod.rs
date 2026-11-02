@@ -6,11 +6,11 @@
 mod bills;
 mod books;
 mod company;
-mod data_dir;
 mod declarations;
 mod entries;
 mod forms;
 mod invoices;
+mod opening;
 mod pay;
 mod reconcile;
 mod reports;
@@ -18,7 +18,6 @@ mod reports;
 use bills::*;
 use books::*;
 use company::*;
-pub use data_dir::serve_data;
 use declarations::*;
 use entries::*;
 use forms::*;
@@ -36,7 +35,7 @@ use axum::extract::{DefaultBodyLimit, Form, Multipart, Path, Query};
 use axum::http::header::{HOST, ORIGIN, REFERER};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::{any, get, post};
+use axum::routing::{get, post};
 use axum::Router;
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 use rust_decimal::Decimal;
@@ -70,7 +69,9 @@ impl axum::extract::FromRequestParts<Arc<PathBuf>> for Books {
 
 pub async fn serve(root: PathBuf, port: u16) -> Result<()> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let company = Store::open(&root)?.books.config.company.name;
+    // No books yet: the form that opens them, until it has.
+    // Books that cannot be read are served too: their pages say so.
+    let company = Store::open(&root).map(|s| s.books.config.company.name).unwrap_or_default();
     let app = company_app(root.clone()).layer(axum::middleware::from_fn(csrf)).layer(axum::middleware::from_fn(log));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     // As bound: asked for port 0, the system's choice.
@@ -115,6 +116,7 @@ fn company_app(root: PathBuf) -> Router {
         .route("/icon-512.png", get(|| async { png(include_bytes!("icon-512.png")) }))
         .route("/apple-touch-icon.png", get(|| async { png(include_bytes!("apple-touch-icon.png")) }))
         .fallback(not_found)
+        .layer(axum::middleware::from_fn_with_state(Arc::new(root.clone()), opening::opening))
         // A scanned bill is much bigger than a form post.
         .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
         .layer(axum::middleware::from_fn(scope))
@@ -160,7 +162,8 @@ fn installable() -> Markup {
     }
 }
 
-/// Relative throughout: under `/c/<dir>/` the app is that company's alone.
+/// Relative throughout: served under a prefix (the gateway's `/<owner>/<project>/`),
+/// the app is that prefix's alone.
 /// Books that cannot be read still install, as "abo".
 async fn manifest(axum::extract::State(root): axum::extract::State<Arc<PathBuf>>) -> Response {
     let company = Store::open(&root).map(|s| s.books.config.company.name).ok();
@@ -286,11 +289,7 @@ fn unreadable(e: &anyhow::Error) -> Response {
             body {
                 aside.side {
                     span.brand { span.mark { "abo" } }
-                    nav {
-                        @if PREFIX.try_with(Clone::clone).ok().flatten().is_some() {
-                            a href="/c/" { (icon("left")) span { "All companies" } }
-                        }
-                    }
+                    nav {}
                 }
                 main.content {
                     h1 { "The books cannot be read" }
@@ -423,10 +422,6 @@ fn page_with(s: &Store, title: &str, body: Markup, with_banner: bool) -> Html<St
                             @for (href, ic, label, section) in nav {
                                 a href=(href) class=[current(section).then_some("current")] { (icon(ic)) span { (label) } }
                             }
-                            // Served from a data directory: the way back to the others.
-                            @if PREFIX.try_with(Clone::clone).ok().flatten().is_some() {
-                                a href="/c/" { (icon("left")) span { "All companies" } }
-                            }
                         }
                     }
                     main.content {
@@ -495,14 +490,10 @@ tokio::task_local! {
     /// The query string, for `?done=<n>`, which any page answers with the
     /// success notice for line n of the log.
     static QUERY: String;
-    /// `/c/<dir>` when the company is served from a data directory.
-    static PREFIX: Option<String>;
     /// Whether the request only looks: what it asks for is then not found,
     /// where a change naming it is refused.
     static LOOKS: bool;
 }
-
-const PREFIX_HEADER: &str = "x-abo-prefix";
 
 /// The path of a same-site Referer, or None. Anything from another host is
 /// ignored, so a refusal page never links off-site.
@@ -536,16 +527,14 @@ fn back_from(referer: Option<String>, here: &str, fallback: &str) -> String {
 }
 
 /// The request's path, where it came from and its query, for the pages to
-/// read; for a company served from a data directory, as that company's own
-/// router sees them, its prefix taken off.
+/// read, and who it comes from, for the commits it makes.
 async fn scope(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
     let path = req.uri().path().to_string();
     let back = referer_path(req.headers());
     let query = req.uri().query().unwrap_or_default().to_string();
-    let prefix = req.headers().get(PREFIX_HEADER).and_then(|v| v.to_str().ok()).map(str::to_string);
     let looks = req.method() == axum::http::Method::GET;
     let who = author(req.headers());
-    let run = PATH.scope(path, BACK.scope(back, QUERY.scope(query, PREFIX.scope(prefix, LOOKS.scope(looks, next.run(req))))));
+    let run = PATH.scope(path, BACK.scope(back, QUERY.scope(query, LOOKS.scope(looks, next.run(req)))));
     match who {
         Ok(Some(a)) => crate::repo::AUTHOR.scope(a, run).await,
         Ok(None) => run.await,
@@ -611,9 +600,7 @@ async fn csrf(req: axum::extract::Request, next: axum::middleware::Next) -> Resp
 fn once(root: Option<&std::path::Path>, token: &str, act: impl FnOnce() -> Result<String>) -> Result<String> {
     static DONE: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
         std::sync::Mutex::new(std::collections::BTreeMap::new());
-    // Each company's own: one server answers for all of a data directory.
-    let prefix = PREFIX.try_with(Clone::clone).ok().flatten().unwrap_or_default();
-    let key = format!("{prefix}\0{token}");
+    let key = token.to_string();
     if let Some(to) = DONE.lock().unwrap().get(&key).filter(|_| !token.is_empty()) {
         return Ok(to.clone());
     }

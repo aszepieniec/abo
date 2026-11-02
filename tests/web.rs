@@ -1,5 +1,5 @@
-//! Opening the books for a new company from the browser: `abo serve` on a
-//! data directory, spoken to over plain HTTP as a browser would.
+//! The web pages of one company's books, and the form that opens them in an
+//! empty directory: `abo serve`, spoken to over plain HTTP as a browser would.
 
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
@@ -101,9 +101,11 @@ fn new_company() {
     std::fs::create_dir_all(&data).unwrap();
     let s = serve(&data, &base);
 
+    // An empty directory: the form, at / and at /new; anything else goes to /.
     let (status, _, page) = http(&s, "GET", "/", &[]);
     assert_eq!(status, 200);
-    assert!(page.contains("No companies yet.") && page.contains("href=\"/new\""), "{page}");
+    assert!(page.contains("action=\"/new\""), "{page}");
+    assert_eq!(http(&s, "GET", "/invoices", &[]).1, "/");
     let (_, _, page) = http(&s, "GET", "/new", &[]);
     assert!(page.contains("<select name=\"p0.kind\"><option value=\"bank\" selected>"), "{page}");
     assert!(!page.contains("name=\"p1.kind\""), "a second option before one was asked for");
@@ -135,7 +137,6 @@ fn new_company() {
     );
     assert_eq!(status, 422);
     for says in [
-        "has no letters or digits",
         "check digits do not match",
         "An address is needed",
         "is not a currency code",
@@ -170,28 +171,23 @@ fn new_company() {
         ("git_email", "ann@example.invalid"),
     ];
     let (status, to, _) = http(&s, "POST", "/new", &good);
-    assert_eq!((status, to.as_str()), (303, "/?opened=test-sons-ltd"));
+    assert_eq!((status, to.as_str()), (303, "/"));
     // Sent twice, one company.
     let (status, to, _) = http(&s, "POST", "/new", &good);
-    assert_eq!((status, to.as_str()), (303, "/?opened=test-sons-ltd"));
-    let (_, _, page) = http(&s, "GET", "/?opened=test-sons-ltd", &[]);
-    assert!(page.contains("Books opened") && page.contains("<a href=\"/c/test-sons-ltd/\">Test &amp; Sons Ltd</a>"), "{page}");
-    // Its pages are served from here, every link under its directory.
-    let (status, _, page) = http(&s, "GET", "/c/test-sons-ltd/", &[]);
+    assert_eq!((status, to.as_str()), (303, "/"));
+    // Opened in the directory itself, and served from it by the same server.
+    let (status, _, page) = http(&s, "GET", "/", &[]);
     assert_eq!(status, 200, "{page}");
-    assert!(page.contains("href=\"/c/test-sons-ltd/invoices\"") && page.contains("href=\"/c/\""), "{page}");
-    assert!(!page.contains("href=\"/invoices\""), "{page}");
-    // Installable as that company's app alone (tests/installable.mjs asks Chrome).
-    assert!(page.contains("<link rel=\"manifest\" href=\"/c/test-sons-ltd/manifest.webmanifest\">"), "{page}");
-    let (status, _, manifest) = http(&s, "GET", "/c/test-sons-ltd/manifest.webmanifest", &[]);
+    assert!(page.contains("Test &amp; Sons Ltd") && page.contains("href=\"/invoices\""), "{page}");
+    // Installable (tests/installable.mjs asks Chrome).
+    assert!(page.contains("<link rel=\"manifest\" href=\"/manifest.webmanifest\">"), "{page}");
+    let (status, _, manifest) = http(&s, "GET", "/manifest.webmanifest", &[]);
     assert_eq!(status, 200);
     assert!(manifest.contains("\"name\":\"Test & Sons Ltd · abo\"") && manifest.contains("\"start_url\":\"./\""), "{manifest}");
-    let (status, _, _) = http(&s, "GET", "/c/test-sons-ltd/icon-512.png", &[]);
+    let (status, _, _) = http(&s, "GET", "/icon-512.png", &[]);
     assert_eq!(status, 200);
-    let (status, _, _) = http(&s, "GET", "/c/no-such-ltd/", &[]);
-    assert_eq!(status, 404);
 
-    let books = data.join("test-sons-ltd");
+    let books = data.clone();
     let c: toml::Value = toml::from_str(&std::fs::read_to_string(books.join("abo.toml")).unwrap()).unwrap();
     assert_eq!(c["company"]["address"].as_str(), Some("1 Street\n3000 City"));
     assert_eq!(c["company"]["currency"].as_str(), Some("CHF"));
@@ -208,11 +204,10 @@ fn new_company() {
     let log = Command::new("git").args(["log", "--format=%an <%ae>"]).current_dir(&books).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&log.stdout), "Ann <ann@example.invalid>\n");
 
-    // The same name again is refused, under the name.
+    // Once the books are there, the form goes to them and opens nothing.
     let again: Vec<_> = good.iter().map(|&(k, v)| if k == "token" { (k, "again") } else { (k, v) }).collect();
-    let (status, _, page) = http(&s, "POST", "/new", &again);
-    assert_eq!(status, 422);
-    assert!(page.contains("test-sons-ltd already exists here"), "{page}");
+    let (status, to, _) = http(&s, "POST", "/new", &again);
+    assert_eq!((status, to.as_str()), (303, "/"));
 
     drop(s);
     std::fs::remove_dir_all(&base).unwrap();
@@ -240,18 +235,36 @@ fn behind_a_gateway_the_person_is_the_author() {
     assert!(page.contains("name=\"currency\"") && !page.contains("git_name"), "{page}");
     let new = [("token", "t1"), ("name", "The gateway Ltd"), ("address", "1 Street"), ("p0.kind", "skip"), ("p.n", "1"), ("currency", "CHF"), ("method", "none")];
     let (status, to, page) = http_as(&s, zoe, "POST", "/new", &new);
-    assert_eq!((status, to.as_str()), (303, "/?opened=other-ltd"), "{page}");
+    assert_eq!((status, to.as_str()), (303, "/"), "{page}");
     // No full name, no email: the user name, and git's email.
     let bob = "X-Gateway-User: bob\r\nX-Gateway-Role: write\r\n";
     let post = [("token", "t2"), ("date", "2026-03-01"), ("description", "Opening"), ("postings", "Assets:Bank=5 CHF\nEquity:Opening=-5 CHF")];
-    let (status, _, page) = http_as(&s, bob, "POST", "/c/other-ltd/post", &post);
+    let (status, _, page) = http_as(&s, bob, "POST", "/post", &post);
     assert_eq!(status, 303, "{page}");
     for bad in ["X-Gateway-User: a\r\nX-Gateway-User: b\r\n", "X-Gateway-User: %FF\r\n", "X-Gateway-User: bob\r\nX-Gateway-Name: %0A\r\n", "X-Gateway-User: bob\r\nX-Gateway-Email: a%3Eb\r\n"] {
         let post = [("token", "t3"), ("date", "2026-03-01"), ("description", "Never"), ("postings", "Assets:Bank=5 CHF\nEquity:Opening=-5 CHF")];
-        assert_eq!(http_as(&s, bad, "POST", "/c/other-ltd/post", &post).0, 400, "{bad:?}");
+        assert_eq!(http_as(&s, bad, "POST", "/post", &post).0, 400, "{bad:?}");
     }
-    let log = Command::new("git").args(["log", "--format=%an <%ae> | %cn"]).current_dir(data.join("other-ltd")).env("HOME", &home).output().unwrap();
+    let log = Command::new("git").args(["log", "--format=%an <%ae> | %cn"]).current_dir(&data).env("HOME", &home).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&log.stdout), "bob <git@example.invalid> | bob\nZoë Müller <zoe@example.invalid> | Zoë Müller\n");
+    drop(s);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Opening fails, here for want of anyone to name on its commit: the
+/// directory served is left as it was, there and empty.
+#[test]
+fn a_failed_opening_leaves_the_directory_empty() {
+    let base = std::env::temp_dir().join(format!("abo-web-nobody-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let (data, home) = (base.join("data"), base.join("home"));
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    let s = serve(&data, &home);
+    let new = [("token", "t1"), ("name", "Nobody Ltd"), ("address", "1 Street"), ("p0.kind", "skip"), ("p.n", "1"), ("currency", "CHF"), ("method", "none")];
+    let (status, _, page) = http(&s, "POST", "/new", &new);
+    assert!(status == 422 && page.contains("has no name and email"), "{page}");
+    assert!(std::fs::read_dir(&data).unwrap().next().is_none(), "left behind: {:?}", std::fs::read_dir(&data).unwrap().flatten().map(|e| e.file_name()).collect::<Vec<_>>());
     drop(s);
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -315,12 +328,13 @@ fn terminal_and_form_agree() {
         ("git_email", "ann@example.invalid"),
     ];
     let (status, to, page) = http(&s, "POST", "/new", &form);
-    assert_eq!((status, to.as_str()), (303, "/?opened=parity-ltd"), "{page}");
+    assert_eq!((status, to.as_str()), (303, "/"), "{page}");
     drop(s);
 
     for file in ["abo.toml", "journal/accounts.journal", "journal/main.journal", ".gitignore"] {
-        let read = |d: &Path| std::fs::read_to_string(d.join("parity-ltd").join(file)).unwrap();
-        assert_eq!(read(&typed), read(&posted), "{file} differs");
+        // init names a directory after the company; the form opens them where it is served.
+        let (t, p) = (std::fs::read_to_string(typed.join("parity-ltd").join(file)).unwrap(), std::fs::read_to_string(posted.join(file)).unwrap());
+        assert_eq!(t, p, "{file} differs");
     }
     let config = std::fs::read_to_string(typed.join("parity-ltd/abo.toml")).unwrap();
     for has in ["[payment.bank]", "iban = \"CH93 0076 2011 6238 5295 7\"", "[payment.crypto]", "account = \"Assets:Crypto\"", "rate = \"5.3\""] {
@@ -733,15 +747,18 @@ fn second_web_run() {
     let page = http(&s, "GET", "/", &[]).2;
     assert!(!page.contains("Changed outside abo"), "{page}");
 
-    // Books that cannot be read are listed by the company's name, linked.
+    // Books that cannot be read are served, and say so.
     let toml = std::fs::read_to_string(books.join("abo.toml")).unwrap();
     std::fs::write(books.join("abo.toml"), toml.replacen("name = \"Test Ltd\"", "name = \"Test Ltd", 1)).unwrap();
-    let d = serve(&base, &base);
-    let new = http(&d, "GET", "/new", &[]).2;
-    assert!(new.contains("As charged and paid (effective)"), "the VAT method by one name: {new}");
+    let d = serve(&books, &base);
     let page = http(&d, "GET", "/", &[]).2;
-    assert!(page.contains("href=\"/c/test-ltd/\">Test Ltd</a>") && page.contains("cannot be read"), "{page}");
+    assert!(page.contains("The books cannot be read"), "{page}");
+    drop(d);
     git(&["checkout", "--", "abo.toml"]);
+    let empty = base.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let new = http(&serve(&empty, &base), "GET", "/new", &[]).2;
+    assert!(new.contains("As charged and paid (effective)"), "the VAT method by one name: {new}");
 }
 
 /// Found by the third web run, 2026-10-07: an invoice form that could not
@@ -867,10 +884,12 @@ fn third_web_run() {
     drop(s);
 
     // A new company VAT-registered says the rate it charges.
-    let d = serve(&base, &base);
+    let empty = base.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let d = serve(&empty, &base);
     let (status, _, page) = http(&d, "POST", "/new", &[("token", "n1"), ("p.n", "0"), ("name", "Rateless"), ("currency", "EUR"), ("method", "effective"), ("sales_rate", "")]);
     assert!(status == 422 && page.contains("A rate is needed"), "{page}");
-    assert!(!base.join("rateless").exists());
+    assert!(std::fs::read_dir(&empty).unwrap().next().is_none());
     drop(d);
     std::fs::remove_dir_all(&base).unwrap();
 }
@@ -939,17 +958,12 @@ fn fourth_web_run() {
     let page = http(&s, "GET", &to, &[]).2;
     assert!(page.contains("The books agree: 50.00 EUR in the books, as counted."), "{page}");
 
-    // Changed by hand: a report's fold gives the remedy every page gives,
-    // and the companies list flags it.
+    // Changed by hand: a report's fold gives the remedy every page gives.
     let j = std::fs::read_to_string(books.join("journal/2026.journal")).unwrap();
     std::fs::write(books.join("journal/2026.journal"), j.replacen("300.00 EUR", "305.00 EUR", 1)).unwrap();
     let page = http(&s, "GET", "/report/pl?period=2026", &[]).2;
     assert!(page.contains("git checkout") && !page.contains("abo check says how each is mended"), "{page}");
     drop(s);
-    let d = serve(&base, &base);
-    let page = http(&d, "GET", "/", &[]).2;
-    assert!(page.contains("href=\"/c/test-ltd/\">Test Ltd</a>") && page.replace("&#39;", "'").contains("changed its books' files outside abo"), "{page}");
-    drop(d);
     git(&["checkout", "--", "."]);
 
     // A correction filled in as given: blanks blank, and what it replaces.

@@ -198,13 +198,6 @@ fn serve(dir: &Path) -> Server {
     start(cmd)
 }
 
-/// `abo serve --dir data`: every company of a data directory.
-fn serve_data(data: &Path) -> Server {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_abo"));
-    cmd.args(["serve", "--dir"]).arg(data);
-    start(cmd)
-}
-
 /// (status, the Location header, the whole answer)
 fn http(s: &Server, method: &str, path: &str, form: &[(&str, &str)]) -> (u16, String, String) {
     let body: String = form.iter().map(|(k, v)| format!("{}={}", enc(k), enc(v))).collect::<Vec<_>>().join("&");
@@ -686,20 +679,6 @@ fn a_stray_file_under_bills_is_not_filed() {
 // ---- found by the verification run of 2026-10-01 ----
 
 #[test]
-fn a_company_of_a_data_directory_serves_its_pages_with_values_in_the_path() {
-    let dir = books("data-dir-paths", &[]);
-    let fees = entry(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
-    let s = serve_data(dir.parent().unwrap());
-    for path in ["/c/test-ltd/report/pl?period=2026", &format!("/c/test-ltd/entry/{fees}"), "/c/test-ltd/account?name=Assets%3ABank"] {
-        let (status, _, page) = http(&s, "GET", path, &[]);
-        assert!(status == 200 && (page.contains("Fees") || page.contains("Expenses:General")), "{path}: {page}");
-    }
-    let (status, to, page) = http(&s, "POST", "/c/test-ltd/undo", &[("token", "u1")]);
-    assert_eq!((status, to.starts_with("/c/test-ltd/")), (303, true), "{page}");
-    assert!(!read(&dir, "journal/2026.journal").contains("Fees"));
-}
-
-#[test]
 fn init_without_a_git_identity_leaves_nothing_behind() {
     let base = std::env::temp_dir().join(format!("abo-reg-noident-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
@@ -982,20 +961,6 @@ fn no_text_hides_or_turns_its_letters() {
     assert!(path.starts_with("bills/2026/2026-03-01-acme-"), "{path}");
 }
 
-#[test]
-fn a_token_is_one_companys_alone() {
-    let dir = books("token-company", &[]);
-    let base = dir.parent().unwrap();
-    ok(base, &["init", "Other Ltd", "--currency", "EUR", "--vat", "none", "--git-name", "t", "--git-email", "t@example.invalid"]);
-    let s = serve_data(base);
-    for company in ["test-ltd", "other-ltd"] {
-        let (status, _, page) = http(&s, "POST", &format!("/c/{company}/post"), &[("token", "same"), ("date", "2026-03-01"), ("description", "Fees"),
-            ("postings", "Expenses:General=5.00\nAssets:Bank=-5.00")]);
-        assert_eq!(status, 303, "{company}: {page}");
-    }
-    assert!(read(&base.join("other-ltd"), "journal/2026.journal").contains("Fees"), "the second company's booking was taken for the first's");
-}
-
 // ---- known from reading the code, then tested ----
 
 #[test]
@@ -1207,12 +1172,24 @@ fn an_answer_of_spaces_is_no_answer() {
     refused(&dir, &["payment-options", "add", "t", "--kind", "cash", "--detail", " "], "needs lines saying where and when");
 }
 
+/// One company, or an empty directory to open it in: a directory holding
+/// anything else, a data directory of several say, is not served.
+#[test]
+fn serve_refuses_a_directory_with_no_books_that_is_not_empty() {
+    let base = std::env::temp_dir().join(format!("abo-reg-serve-full-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::write(base.join("notes.txt"), "x").unwrap();
+    refused(&base, &["serve", "--port", "0"], "holds no books and is not empty");
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
 #[test]
 fn a_bad_line_in_an_address_is_said_under_it_with_the_rest() {
     let base = std::env::temp_dir().join(format!("abo-reg-new-ctrl-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    let s = serve_data(&base);
+    let s = serve(&base);
     let (_, _, page) = http(&s, "POST", "/new", &[("token", "n1"), ("p.n", "0"), ("name", "Acme"), ("address", "x\u{1}y"), ("currency", "xx")]);
     assert!(page.contains("is not a currency code") && page.contains("control character"), "{page}");
     assert!(std::fs::read_dir(&base).unwrap().next().is_none());
@@ -1385,20 +1362,6 @@ fn abo_toml_holds_what_a_command_would_take() {
         refused(&dir, &["config", "set", key, value], says);
     }
     clean(&dir);
-}
-
-#[test]
-fn a_data_directory_serves_and_lists_what_init_makes_alone() {
-    let dir = books("odd-dirs", &[]);
-    let base = dir.parent().unwrap();
-    for odd in ["-lead", "Odd_Name"] {
-        Command::new("cp").args(["-r"]).arg(&dir).arg(base.join(odd)).status().unwrap();
-    }
-    let s = serve_data(base);
-    let (_, _, page) = http(&s, "GET", "/", &[]);
-    assert!(page.contains("/c/test-ltd/") && !page.contains("Odd_Name") && !page.contains("/c/-lead"), "{page}");
-    let (status, _, _) = http(&s, "GET", "/c/-lead/", &[]);
-    assert_eq!(status, 404);
 }
 
 // ---- found moving the commands onto the store ----

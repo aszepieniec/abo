@@ -549,7 +549,9 @@ pub fn lines(root: &Path) -> Vec<serde_json::Value> {
 /// Open new books in `dir`: the configuration, the accounts it names and a
 /// few to start with, its currency of 2 places.
 pub fn init(dir: &Path, config: model::Config, author: Option<(String, String)>, argv: Vec<String>) -> Result<String> {
-    if dir.exists() {
+    // In an empty directory, as the web's opening form opens them; else in a new one.
+    let made = !dir.exists();
+    if !made && std::fs::read_dir(dir)?.next().is_some() {
         bail!("{} already exists; choose another name, or move it out of the way", dir.display());
     }
     let mut b = Books::new(config);
@@ -582,8 +584,16 @@ pub fn init(dir: &Path, config: model::Config, author: Option<(String, String)>,
         log(dir, &stamp, &argv, &what, &commit, None);
         Ok(commit)
     })();
+    // As it was: gone if made here, else empty again.
     if r.is_err() {
-        let _ = std::fs::remove_dir_all(dir);
+        if made {
+            let _ = std::fs::remove_dir_all(dir);
+        } else if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                let _ = if p.is_dir() && !p.is_symlink() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+            }
+        }
     }
     r
 }

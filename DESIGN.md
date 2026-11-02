@@ -13,8 +13,8 @@ adding it is stated.
 
 Status: M0-M4 built — `abo init`, `post`, `file`, `bill`, `invoice`,
 `reconcile`, `clear`, `revert`, `undo`, `company`, `payment-options`, `pl`, `bs`,
-`vat`, `balance`, `register`, `log`, `serve`, `demo`. M5 half built: a data
-directory serves each of its companies under `/c/<dir>/`; users are next.
+`vat`, `balance`, `register`, `log`, `serve`, `demo`. M5: `abo serve` serves
+one company; users come from a gateway, in front of it.
 M6 built: each company installs as an app; not yet tried on a real phone
 (WORKFLOWS.md G1).
 
@@ -674,13 +674,16 @@ Not legal advice, but none of this is controversial.
   as `--json`, and as PDFs through a second typst template. Bank import moved
   to §11 — the point of reconciliation is to notice what is wrong, and typing
   a closing balance is enough to do that.
-- **M5** — companies and users. **← next.** Companies are done: `abo serve`
-  on a data directory hands `/c/<dir>/…` to that company's own router with
-  the prefix taken off, and puts it back on every link, form and redirect in
-  the answer, so no page knows where it is served. Users are not.
+- **M5** — companies and users. `abo serve` serves one company: its books,
+  or an empty directory, where it serves the form that opens them in it
+  and then the company. A server for several companies under `/c/<dir>/`
+  was built and taken out: behind a gateway a project is the unit of sharing,
+  so one company per project makes a role on it a role on one company's
+  books. Users are the gateway's: the author of a change is the person the gateway
+  names (`X-Gateway-User`, `-Name`, `-Email`).
 - **M6** — PWA manifest, or the JSON API if native has been chosen. **Done**
-  as a manifest, one per company: relative URLs, so under `/c/<dir>/` its
-  scope is that company's alone. Chrome finds it installable
+  as a manifest, one per company: relative URLs, so under a prefix
+  (the gateway's `/<owner>/<project>/`) its scope is that company's alone. Chrome finds it installable
   (`tests/installable.mjs`). **Open:** adding it to a real phone's home
   screen, and on an iPhone whether a PDF opened in the app leaves a way back
   (WORKFLOWS.md G1).
