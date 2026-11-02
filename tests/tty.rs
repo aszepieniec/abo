@@ -35,8 +35,10 @@ fn init(test: &str, name: &str, steps: &[(&str, &str)]) -> Run {
     let base = std::env::temp_dir().join(format!("abo-tty-{test}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    let (status, screen, terminal_restored) = abo(&base, &["init", name], steps);
-    Run { status, screen, books: base.join(name.to_lowercase()), terminal_restored }
+    let books = base.join(name.to_lowercase());
+    std::fs::create_dir_all(&books).unwrap();
+    let (status, screen, terminal_restored) = abo(&books, &["init", name], steps);
+    Run { status, screen, books, terminal_restored }
 }
 
 /// `abo <args>` in `cwd`, on a terminal: how it ended, everything it drew,
@@ -143,7 +145,7 @@ fn refused(r: &Run, says: &str) {
     assert!(!r.status.success(), "init went through:\n{}", r.screen);
     assert!(r.screen.contains(says), "no {says:?} on screen:\n{}", r.screen);
     assert!(r.terminal_restored, "terminal left changed:\n{}", r.screen);
-    assert!(!r.books.exists(), "{} was made", r.books.display());
+    assert!(std::fs::read_dir(&r.books).unwrap().next().is_none(), "{} was left with books in it", r.books.display());
     std::fs::remove_dir_all(r.books.parent().unwrap()).unwrap();
 }
 

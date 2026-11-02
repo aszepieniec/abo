@@ -6,6 +6,15 @@ use crate::questions;
 use crate::store::Store;
 use anyhow::{bail, Result};
 use std::io::Write as _;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// `--ni`: nothing is asked. The commands take the way that asks nothing;
+/// a question reached all the same is an error, never a wait on stdin.
+pub(crate) static NI: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn ni() -> bool {
+    NI.load(Ordering::Relaxed)
+}
 
 /// Ctrl-D on a terminal: a blank answer, `None`, which a question that needs
 /// one refuses rather than asks again. Piped input that has run out stops
@@ -24,6 +33,9 @@ pub(crate) fn ran_out(question: &str) -> Result<Option<String>> {
 /// whoever pipes the answers in sees what each was to.
 fn line(prompt: &str, initial: &str) -> rustyline::Result<String> {
     use std::io::IsTerminal as _;
+    if ni() {
+        return Err(rustyline::error::ReadlineError::Io(std::io::Error::other("--ni asks nothing, and this asks")));
+    }
     if std::io::stdin().is_terminal() {
         return rustyline::DefaultEditor::new()?.readline_with_initial(prompt, (initial, ""));
     }
@@ -127,7 +139,7 @@ pub(crate) fn choose(
     #[cfg(unix)]
     {
         use std::io::IsTerminal as _;
-        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        if !ni() && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
             return pick(question, options, default);
         }
     }
@@ -201,7 +213,7 @@ pub(crate) fn pick(question: &str, options: &[&'static str], default: &str) -> R
 /// Asks y/n on stderr, counting down; silence, or no terminal to ask on, is no.
 pub(crate) fn confirm(question: &str, secs: u8) -> Result<bool> {
     use std::io::IsTerminal as _;
-    if !std::io::stdin().is_terminal() {
+    if ni() || !std::io::stdin().is_terminal() {
         return Ok(false);
     }
     // The reader outlives a timeout, blocked on stdin, until the process ends.
@@ -390,7 +402,7 @@ impl questions::Source for Flags {
 /// A payment option's questions, answered by flags: what is not given is
 /// what each offers.
 pub(crate) fn flagged_option(s: &Store, given: questions::Answers, others: Vec<String>) -> Result<(String, model::PayOption)> {
-    let context = questions::Context { root: None, ids: others, declared: Some(s.books.accounts.iter().cloned().collect()), ..Default::default() };
+    let context = questions::Context { ids: others, declared: Some(s.books.accounts.iter().cloned().collect()), ..Default::default() };
     let mut answers = questions::Answers::from([("name".into(), s.books.config.company.name.clone())]);
     let keys: Vec<String> = given.keys().cloned().collect();
     let mut flags = Flags::new(given);
@@ -406,7 +418,7 @@ pub(crate) fn flagged_option(s: &Store, given: questions::Answers, others: Vec<S
 
 /// A payment option's questions, starting from `start`; `None` if skipped.
 pub(crate) fn ask_option(s: &Store, start: questions::Answers, others: Vec<String>) -> Result<Option<(String, model::PayOption)>> {
-    let context = questions::Context { root: None, ids: others, declared: Some(s.books.accounts.iter().cloned().collect()), ..Default::default() };
+    let context = questions::Context { ids: others, declared: Some(s.books.accounts.iter().cloned().collect()), ..Default::default() };
     // The company's name, offered as the account holder.
     let mut answers = questions::Answers::from([("name".into(), s.books.config.company.name.clone())]);
     let mut term = Terminal { given: Default::default(), start };

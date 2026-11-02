@@ -13,7 +13,6 @@ use crate::model::answer;
 use anyhow::{bail, Result};
 use rust_decimal::Decimal;
 use std::collections::BTreeMap;
-use std::path::Path;
 
 pub type Answers = BTreeMap<String, String>;
 
@@ -68,9 +67,7 @@ pub enum Check {
 
 /// What the answers are checked against, besides one another.
 #[derive(Default)]
-pub struct Context<'a> {
-    /// Where the company's directory will be, to refuse a name already there.
-    pub root: Option<&'a Path>,
+pub struct Context {
     /// Payment option ids taken by options not among these answers.
     pub ids: Vec<String>,
     /// The accounts an option's account must be one of, once there are books.
@@ -83,7 +80,7 @@ pub struct Context<'a> {
 pub struct Env<'a> {
     pub answers: &'a Answers,
     pub prefix: &'a str,
-    pub context: &'a Context<'a>,
+    pub context: &'a Context,
 }
 
 impl Env<'_> {
@@ -446,14 +443,10 @@ fn account_check(s: &str, env: &Env) -> Result<String, String> {
     }
 }
 
-fn name(s: &str, env: &Env) -> Result<String, String> {
-    let slug = crate::repo::slug(s);
-    match env.context.root {
-        _ if s.is_empty() => Err("A name is needed.".into()),
-        // The books' directory is named after it when they are opened alone.
-        Some(_) if slug.is_empty() => Err(format!("{} has no letters or digits to name a directory after.", answer::plain(s))),
-        Some(root) if root.join(&slug).exists() => Err(format!("{slug} already exists here; choose another name.")),
-        _ => Ok(s.to_string()),
+fn name(s: &str, _: &Env) -> Result<String, String> {
+    match s.is_empty() {
+        true => Err("A name is needed.".into()),
+        false => Ok(s.to_string()),
     }
 }
 

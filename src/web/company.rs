@@ -173,7 +173,7 @@ pub(super) async fn option_submit(Books(mut s): Books, Form(f): Form<Fields>) ->
             s.books.config.payment.get(w).ok_or_else(|| input::not_found(format!("there is no payment option {w}")))?;
         }
         let ids = s.books.config.payment.keys().filter(|k| Some(*k) != was.as_ref()).cloned().collect();
-        let context = questions::Context { root: None, ids, declared: Some(s.books.accounts.iter().cloned().collect()), ..Default::default() };
+        let context = questions::Context { ids, declared: Some(s.books.accounts.iter().cloned().collect()), ..Default::default() };
         // The company's name, offered as the account holder.
         let mut a = questions::Answers::from([("name".into(), s.books.config.company.name.clone())]);
         let mut posted = Posted { f: &f, problems: Problems::new() };

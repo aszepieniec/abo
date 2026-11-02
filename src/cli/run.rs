@@ -10,6 +10,7 @@ use anyhow::{bail, Context as _, Result};
 use std::path::PathBuf;
 
 pub(crate) async fn run(cli: Cli) -> Result<()> {
+    NI.store(cli.ni, std::sync::atomic::Ordering::Relaxed);
     let missing = preflight()?;
     // The long-running commands report it through the log, beside the line
     // saying where the server is, because that is where someone starting a
@@ -49,24 +50,22 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         Cmd::Init { name, flags } => {
             // `abo init Test LLC` is one name, its words one space apart.
             let name = name.join(" ");
-            // Refusals before the questions, not after them.
-            if cli.dir.is_some() {
-                bail!("abo init makes the company's directory in the working directory; it takes no --dir");
-            }
-            let slug = repo::slug(&name);
-            if slug.is_empty() {
-                bail!("{name:?} has no letters or digits to name a directory after");
+            // Refusals before the questions, not after them. As git init:
+            // the directory is the one there, made first. Empty, as abo
+            // commits all it holds: a stray file would be in the books.
+            if !here.is_dir() {
+                bail!("{} is not a directory: make it first, then open the books in it", here.display());
             }
             if let Some(books) = repo::books_root(&here)? {
-                bail!("{} is inside the books in {}; run abo init from the data directory", here.display(), books.display());
+                bail!("{} is inside the books in {}; open new books outside them", here.display(), books.display());
             }
-            let dir = here.join(&slug);
-            if dir.exists() {
-                bail!("{} already exists; choose another name, or move it out of the way", dir.display());
+            if std::fs::read_dir(&here)?.next().is_some() {
+                bail!("{} is not empty: abo init opens the books in an empty directory", here.display());
             }
-            let context = questions::Context { root: Some(&here), identity: repo::git_identity(), ..Default::default() };
+            let dir = here.clone();
+            let context = questions::Context { identity: repo::git_identity(), ..Default::default() };
             let mut answers = questions::Answers::new();
-            match flags.answers()? {
+            match flags.answers()?.or_else(|| ni().then(Default::default)) {
                 Some(mut given) => {
                     given.insert("name".into(), name);
                     let mut flags = Flags::new(given.clone());
@@ -109,7 +108,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 model::Vat::None => "",
                 _ => "\nThe tax return has no boxes yet: set one for each box of your form with\n  abo config set report.vat.<code> '{ label = \"...\", query = \"...\" }'\n(the query is hledger's, such as acct:^Income; invert = true turns a credit over).",
             };
-            emit(cli.json, &r, || format!("Books opened in {} ({commit}).\nNext: cd {slug}, then `abo account add` and `abo post`.{vat}", dir.display()))
+            emit(cli.json, &r, || format!("Books opened in {} ({commit}).\nNext: `abo account add` and `abo post`.{vat}", dir.display()))
         }
         Cmd::Post { date, description, postings } => {
             let mut s = Store::open(&here)?;
@@ -458,8 +457,8 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 None | Some(PaymentCmd::List) => None,
                 // The flags answer the option's questions, as the terminal
                 // and the form do: what is not given is what they offer.
-                Some(PaymentCmd::Add { id, parts }) if parts.given() => {
-                    let id = id.context("an option added with flags needs an id")?;
+                Some(PaymentCmd::Add { id, parts }) if parts.given() || ni() => {
+                    let id = id.context("an option added with flags, or --ni, needs an id")?;
                     let mut answers = parts.answers();
                     answers.insert("id".into(), id);
                     let (id, option) = flagged_option(&s, answers, others(""))?;
@@ -473,10 +472,12 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                     };
                     Some(Op::OptionAdd { id, option })
                 }
-                Some(PaymentCmd::Edit { id, new_id, parts }) if new_id.is_some() || parts.given() => Some(Op::OptionEdit { id: find(&id)?, new_id, change: parts.change() }),
+                Some(PaymentCmd::Edit { id, new_id, parts }) if new_id.is_some() || parts.given() || ni() => Some(Op::OptionEdit { id: find(&id)?, new_id, change: parts.change() }),
                 Some(PaymentCmd::Edit { id, .. }) => {
                     let id = find(&id)?;
-                    let mut start = questions::option_answers(&id, &options[&id]);
+                    // Refused as the model refuses it, before any question.
+                    let Some(o) = options.get(&id) else { bail!("there is no payment option {id}") };
+                    let mut start = questions::option_answers(&id, o);
                     for k in ["label", "holder", "iban", "bic", "bank", "network", "address", "details"] {
                         start.entry(k.into()).or_default();
                     }

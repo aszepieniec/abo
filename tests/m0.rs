@@ -52,15 +52,17 @@ fn m0() {
 
     // address, country, tax id, no payment option, currency, method, flat rate,
     // vat account, rate charged to customers
-    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nflat\n5.3\nLiabilities:VAT\n0\n\n\n");
+    std::fs::create_dir_all(&dir).unwrap();
+    let o = abo(&dir, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nflat\n5.3\nLiabilities:VAT\n0\n\n\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
     assert_eq!(commits(&dir), 1);
 
-    // A second company of the same name, a --dir, and init from inside a
-    // company's books are each refused before any question is asked.
+    // As git init, in the directory there: one not empty, one not there,
+    // and one inside a company's books are each refused before any question
+    // is asked.
     for (cwd, args, says) in [
-        (&base, &["init", "test  LTD!"][..], "already exists"),
-        (&base, &["init", "Other", "--dir", "x"][..], "takes no --dir"),
+        (&base, &["init", "Other"][..], "is not empty"),
+        (&base, &["init", "Other", "--dir", "x"][..], "is not a directory"),
         (&dir, &["init", "Other"][..], "is inside the books in"),
     ] {
         let o = abo(cwd, args, "");
@@ -146,8 +148,9 @@ fn invoices() {
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
 
+    std::fs::create_dir_all(&dir).unwrap();
     let o = abo(
-        &base,
+        &dir,
         &["init", "Test Ltd"],
         // address and the empty line ending it, country, tax id; a bank
         // option: holder as offered, IBAN, then as offered BIC (none), bank
@@ -295,7 +298,8 @@ fn reconciliation() {
     let dir = base.join("test-ltd");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n\n\n");
+    std::fs::create_dir_all(&dir).unwrap();
+    let o = abo(&dir, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n\n\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
 
     let book = |date: &str, desc: &str, amount: &str| {
@@ -396,7 +400,8 @@ fn statements() {
     std::fs::create_dir_all(&base).unwrap();
     // address, country, tax id, no payment option, currency, method, input,
     // output, rate charged to customers
-    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\neffective\n\n\n10\n\n\n");
+    std::fs::create_dir_all(&dir).unwrap();
+    let o = abo(&dir, &["init", "Test Ltd"], "\n\n\nskip\nEUR\neffective\n\n\n10\n\n\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
 
     let add = |args: &[&str]| {
@@ -456,7 +461,8 @@ fn undo_and_revert() {
     let dir = base.join("test-ltd");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n\n\n");
+    std::fs::create_dir_all(&dir).unwrap();
+    let o = abo(&dir, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n\n\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
     let journal = || std::fs::read_to_string(dir.join("journal/2026.journal")).unwrap_or_default();
 
@@ -513,8 +519,14 @@ fn init_asks_again() {
     // then good;
     // method unknown, then a prefix; flat rate not a number, too big, then
     // good; VAT account; rate charged to customers
+    // Each in a directory of its own, empty, as init takes.
+    let fresh = |name: &str| {
+        let d = base.join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    };
     let o = abo(
-        &base,
+        &fresh("test-ltd"),
         // A name of several words needs no quotes.
         &["init", "Test", "Ltd"],
         "\n\n\nskip\n\ne u r\neur\nx\nfl\nabc\n150\n5.3%\n\n0\n\n\n",
@@ -530,17 +542,17 @@ fn init_asks_again() {
 
     // The input run out in the middle of a bank option: stopped, not asked
     // again for ever.
-    let o = abo(&base, &["init", "Piped"], "\n\n\nbank\n");
+    let o = abo(&fresh("piped"), &["init", "Piped"], "\n\n\nbank\n");
     assert!(!o.status.success() && err(&o).contains("ran out at Account holder") && err(&o).len() < 10_000, "{}", err(&o));
     // A flag no question asks for is refused, not dropped.
-    let o = abo(&base, &["init", "Flagged", "--currency", "EUR", "--vat", "none", "--sales-rate", "5"], "");
+    let o = abo(&fresh("flagged"), &["init", "Flagged", "--currency", "EUR", "--vat", "none", "--sales-rate", "5"], "");
     assert!(!o.status.success() && err(&o).contains("--sales-rate does not apply"), "{}", err(&o));
-    let o = abo(&base, &["init", "Flagged", "--currency", "EUR", "--payment", "{ kind = \"cash\", details = \"Till\", iban = \"x\" }"], "");
+    let o = abo(&fresh("flagged"), &["init", "Flagged", "--currency", "EUR", "--payment", "{ kind = \"cash\", details = \"Till\", iban = \"x\" }"], "");
     assert!(!o.status.success() && err(&o).contains("a cash option has no iban"), "{}", err(&o));
 
-    let o = abo(&base, &["init", "Other"], "\n\n\nskip\n");
+    let o = abo(&fresh("other"), &["init", "Other"], "\n\n\nskip\n");
     assert!(!o.status.success() && err(&o).contains("ran out at Currency code (such as USD, EUR or BTC)"), "{}", err(&o));
-    assert!(!base.join("other").exists());
+    assert!(std::fs::read_dir(base.join("other")).unwrap().next().is_none(), "left behind");
 
     std::fs::remove_dir_all(&base).unwrap();
 }
@@ -554,7 +566,8 @@ fn payment_options() {
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
     // address, country, tax id, no payment option, currency, method
-    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n\n\n");
+    std::fs::create_dir_all(&dir).unwrap();
+    let o = abo(&dir, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n\n\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
     let toml = dir.join("abo.toml");
     let po = |args: &[&str]| abo(&dir, &[&["payment-options"][..], args].concat(), "");
@@ -641,7 +654,8 @@ fn refile_missing_document() {
     let dir = base.join("test-ltd");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    let o = abo(&base, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n\n\n");
+    std::fs::create_dir_all(&dir).unwrap();
+    let o = abo(&dir, &["init", "Test Ltd"], "\n\n\nskip\nEUR\nnone\n\n\n");
     assert!(o.status.success(), "init failed: {}", err(&o));
     let (found, other) = (base.join("found.pdf"), base.join("other.pdf"));
     std::fs::write(&found, b"%PDF-1.4\n% found\n%%EOF\n").unwrap();
@@ -688,7 +702,8 @@ fn company_details() {
     let dir = base.join("test-ltd");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    let o = abo(&base, &["init", "Test Ltd", "--address", "1 Street", "--tax-id", "CHE-1", "--currency", "EUR", "--vat", "none",
+    std::fs::create_dir_all(&dir).unwrap();
+    let o = abo(&dir, &["init", "Test Ltd", "--address", "1 Street", "--tax-id", "CHE-1", "--currency", "EUR", "--vat", "none",
                          "--payment", "{ kind = \"bank\", iban = \"CH9300762011623852957\" }"], "");
     assert!(o.status.success(), "init failed: {}", err(&o));
     let show = || out(&abo(&dir, &["company"], ""));
@@ -722,7 +737,8 @@ fn paying_invoices() {
     let dir = base.join("test-ltd");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    let o = abo(&base, &["init", "Test Ltd", "--currency", "EUR", "--vat", "none"], "");
+    std::fs::create_dir_all(&dir).unwrap();
+    let o = abo(&dir, &["init", "Test Ltd", "--currency", "EUR", "--vat", "none"], "");
     assert!(o.status.success(), "init failed: {}", err(&o));
 
     for date in ["2026-01-10", "2026-01-11", "2026-01-12", "2026-01-13"] {

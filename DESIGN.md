@@ -35,6 +35,8 @@ M6 built: each company installs as an app; not yet tried on a real phone
 | Tax | three scheme *shapes* in code (`none` / `flat` / `effective`); every rate, rule and name in config | The shape changes what a *correct booking* is, so the validator must know it. Rates and local rules differ everywhere and are data. See §6. |
 | Commodities | multi-commodity from the start | hledger already is. Cash, bank and wallet balances are all just asset accounts. |
 | Phone app | PWA over the existing server-rendered pages | See §7. |
+| Questions | every command that asks takes `--ni`, and then asks nothing: each question takes what it offers, as a flag left out does, and a yes or no is no | A script, a model's tool call or the gateway must never wait on stdin. Under `--ni` a question reached all the same is an error, not a wait (`tests/regressions.rs` `ni_asks_nothing`). A new command that asks adds its case there. |
+| `abo init` | opens the books in the directory it is run in, or `--dir`, which is there and empty | As `git init`. The web form does the same on an empty directory, so a gateway project is one company. |
 
 ### Crates
 

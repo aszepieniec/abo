@@ -95,9 +95,10 @@ pub(crate) fn git_env(dir: &Path, args: &[&str], env: &[(&str, String)]) -> Resu
 
 
 
-/// A company's directory name: its name in ASCII, lower case, with every run
-/// of anything but letters and digits made one dash. ASCII so that it can be
-/// typed on any keyboard; letters outside it are spelled in it, not dropped.
+/// A name for a path, a bill document's issuer say: in ASCII, lower case,
+/// with every run of anything but letters and digits made one dash. ASCII so
+/// that it can be typed on any keyboard; letters outside it are spelled in
+/// it, not dropped.
 pub fn slug(name: &str) -> String {
     let mut slug = String::new();
     // Whole words up to 60 characters: a file name stays one a system takes.

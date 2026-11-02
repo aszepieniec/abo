@@ -22,6 +22,11 @@ pub(crate) struct Cli {
     /// Books repository. Defaults to the working directory or a parent of it.
     #[arg(long, global = true)]
     pub(crate) dir: Option<PathBuf>,
+    /// Non-interactive: ask nothing. Each question takes what it offers, as a
+    /// flag left out does, and a yes or no is no. Every command that asks
+    /// takes it.
+    #[arg(long, global = true)]
+    pub(crate) ni: bool,
     #[command(subcommand)]
     pub(crate) cmd: Cmd,
 }
@@ -292,14 +297,12 @@ cleared mark, so --cleared says nothing of reconciling.";
 
 #[derive(Subcommand)]
 pub(crate) enum Cmd {
-    /// Open the books for a new company, in a directory of its own named
-    /// after it, inside the working directory. With no flags it asks its
-    /// questions; with any, it asks nothing, and what is not given is what
-    /// the question offers.
+    /// Open the books for a new company in the working directory, or --dir:
+    /// one that is there and empty, as git init takes the directory it is
+    /// run in. With no flags it asks its questions; with any, or --ni, it
+    /// asks nothing, and what is not given is what the question offers.
     Init {
-        /// The company's name; its words need no quotes. The directory is the
-        /// name spelled in ASCII and in lower case, with anything but letters
-        /// and digits made into single dashes.
+        /// The company's name; its words need no quotes.
         #[arg(required = true)]
         name: Vec<String>,
         #[command(flatten)]

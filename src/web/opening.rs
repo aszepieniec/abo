@@ -68,7 +68,7 @@ pub(super) async fn new_submit(axum::extract::State(root): axum::extract::State<
     let token = f.get("token").cloned().unwrap_or_default();
     // A company not yet there: nothing to hold.
     let opened = once(None, &token, || {
-        let context = questions::Context { root: None, identity: crate::repo::git_identity(), ..Default::default() };
+        let context = questions::Context { identity: crate::repo::git_identity(), ..Default::default() };
         let mut posted = Posted { f: &f, problems: Problems::new() };
         let mut answers = questions::Answers::new();
         questions::walk(questions::INIT, "", &mut answers, &context, &mut posted)?;

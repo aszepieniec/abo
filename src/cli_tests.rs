@@ -102,9 +102,10 @@ pub(crate) fn opened() -> (Dir, PathBuf) {
         "--sales-rate", "8.1", "--git-name", "abo test", "--git-email", "test@example.invalid",
         "--payment", r#"{ kind = "bank", iban = "CH93 0076 2011 6238 5295 7" }"#,
     ]);
-    let o = abo(&parent.0, start(), &init);
-    assert!(o.ok, "init: {}", o.stderr);
     let books = parent.0.join("test-llc");
+    std::fs::create_dir_all(&books).unwrap();
+    let o = abo(&books, start(), &init);
+    assert!(o.ok, "init: {}", o.stderr);
     for a in [
         &["account", "add", "Expenses:Hosting"][..],
         &["account", "add", "Expenses:Other"],
@@ -414,10 +415,10 @@ fn init_opens_valid_books_or_nothing(
     // input that runs out stops it.
     let o = Command::new(exe()).arg("--json").args(&a).current_dir(&parent.0).env("ABO_TODAY", start().to_string()).stdin(std::process::Stdio::null()).output().unwrap();
     prop_assert!(matches!(o.status.code(), Some(0..=2)), "{:?}: {}", a, String::from_utf8_lossy(&o.stderr));
+    // Opened in the directory itself, as git init.
     let made: Vec<_> = std::fs::read_dir(&parent.0).unwrap().flatten().collect();
     if o.status.success() {
-        prop_assert_eq!(made.len(), 1);
-        let s = store::Store::open(&made[0].path()).unwrap();
+        let s = store::Store::open(&parent.0).unwrap();
         prop_assert_eq!(s.problems, Vec::<String>::new());
         prop_assert_eq!(&s.books.config.company.name, name.trim());
         prop_assert!(model::check(&s.books).is_empty());

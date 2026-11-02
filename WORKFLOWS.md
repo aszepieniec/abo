@@ -23,10 +23,11 @@ last such run.
 ## A. Setting up
 
 ### A1. Open the books — Supported (CLI, browser)
-`abo init <name>` (its words need no quotes), run in a data directory, makes the company's directory
-there: the name spelled in ASCII and in lower case, every run of anything but
-letters and digits made one dash (`Smith & Sons, LLC` → `smith-sons-llc`,
-`Łódź Straße` → `lodz-strasse`). It then asks, one per
+`abo init <name>` (its words need no quotes) opens the books in the working
+directory, or `--dir`, as `git init` does: a directory that is there, made
+first, and empty, since abo commits all it holds. One that is not there, not
+empty, or inside a company's books is refused before any question. It then
+asks, one per
 line: the company's address (a line at a time, ended by an empty line),
 country, tax number, where invoices ask to be paid (payment options: a kind
 from a list, or skip, then its questions, as in A4; after each, another only

@@ -332,11 +332,10 @@ fn terminal_and_form_agree() {
     drop(s);
 
     for file in ["abo.toml", "journal/accounts.journal", "journal/main.journal", ".gitignore"] {
-        // init names a directory after the company; the form opens them where it is served.
-        let (t, p) = (std::fs::read_to_string(typed.join("parity-ltd").join(file)).unwrap(), std::fs::read_to_string(posted.join(file)).unwrap());
-        assert_eq!(t, p, "{file} differs");
+        let read = |d: &Path| std::fs::read_to_string(d.join(file)).unwrap();
+        assert_eq!(read(&typed), read(&posted), "{file} differs");
     }
-    let config = std::fs::read_to_string(typed.join("parity-ltd/abo.toml")).unwrap();
+    let config = std::fs::read_to_string(typed.join("abo.toml")).unwrap();
     for has in ["[payment.bank]", "iban = \"CH93 0076 2011 6238 5295 7\"", "[payment.crypto]", "account = \"Assets:Crypto\"", "rate = \"5.3\""] {
         assert!(config.contains(has), "no {has:?} in\n{config}");
     }
@@ -346,9 +345,10 @@ fn terminal_and_form_agree() {
 /// Books of `Test Ltd`, no VAT, by Ann, in `base`; served.
 fn company_books(base: &Path) -> (std::path::PathBuf, Server) {
     let _ = std::fs::remove_dir_all(base);
-    std::fs::create_dir_all(base).unwrap();
+    std::fs::create_dir_all(base.join("test-ltd")).unwrap();
     let o = Command::new(env!("CARGO_BIN_EXE_abo"))
-        .args(["init", "Test Ltd", "--currency", "EUR", "--vat", "none", "--git-name", "Ann", "--git-email", "ann@example.invalid"])
+        .args(["init", "Test Ltd", "--currency", "EUR", "--vat", "none", "--git-name", "Ann", "--git-email", "ann@example.invalid", "--dir"])
+        .arg(base.join("test-ltd"))
         .current_dir(base)
         .env("HOME", base)
         .env("XDG_CONFIG_HOME", base)
@@ -456,8 +456,9 @@ fn bills_page() {
         assert!(o.status.success(), "{args:?}: {}", String::from_utf8_lossy(&o.stderr));
         serde_json::from_slice(&o.stdout).unwrap_or_default()
     };
-    abo(&base, &["init", "Test Ltd", "--currency", "EUR", "--vat", "none", "--git-name", "Ann", "--git-email", "ann@example.invalid"]);
     let books = base.join("test-ltd");
+    std::fs::create_dir_all(&books).unwrap();
+    abo(&books, &["init", "Test Ltd", "--currency", "EUR", "--vat", "none", "--git-name", "Ann", "--git-email", "ann@example.invalid"]);
     let scan = base.join("scan.pdf");
     std::fs::write(&scan, b"%PDF-1.4\n% a bill\n%%EOF\n").unwrap();
     let filed = abo(&books, &["file", "--date", "2026-03-01", "--issuer", "Acme", &scan.to_string_lossy()]);
@@ -863,7 +864,10 @@ fn third_web_run() {
     // opened after issuing or later, and its correction keeps the reason.
     let o = Command::new(env!("CARGO_BIN_EXE_abo"))
         .args(["init", "Vat Co", "--currency", "EUR", "--vat", "effective", "--sales-rate", "21", "--tax-id", "NL123456789B01", "--git-name", "Ann", "--git-email", "ann@example.invalid"])
-        .current_dir(&base)
+        .current_dir({
+            std::fs::create_dir_all(base.join("vat-co")).unwrap();
+            base.join("vat-co")
+        })
         .env("HOME", &base)
         .env("XDG_CONFIG_HOME", &base)
         .output()
@@ -969,7 +973,10 @@ fn fourth_web_run() {
     // A correction filled in as given: blanks blank, and what it replaces.
     let o = Command::new(env!("CARGO_BIN_EXE_abo"))
         .args(["init", "Vat Co", "--currency", "EUR", "--vat", "effective", "--sales-rate", "21", "--tax-id", "NL123456789B01", "--git-name", "Ann", "--git-email", "ann@example.invalid"])
-        .current_dir(&base)
+        .current_dir({
+            std::fs::create_dir_all(base.join("vat-co")).unwrap();
+            base.join("vat-co")
+        })
         .env("HOME", &base)
         .env("XDG_CONFIG_HOME", &base)
         .output()

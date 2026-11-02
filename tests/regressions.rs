@@ -43,9 +43,18 @@ fn books(name: &str, extra: &[&str]) -> PathBuf {
         args.extend(["--vat", "effective", "--sales-rate", "10"]);
     }
     args.extend(extra);
-    let o = abo(&base, &args);
+    let books = base.join("test-ltd");
+    std::fs::create_dir_all(&books).unwrap();
+    let o = abo(&books, &args);
     assert!(o.status.success(), "init failed: {}", err(&o));
-    base.join("test-ltd")
+    books
+}
+
+/// `base/name`, made empty: a directory for init to open books in.
+fn made(base: &Path, name: &str) -> PathBuf {
+    let d = base.join(name);
+    std::fs::create_dir_all(&d).unwrap();
+    d
 }
 
 fn abo(dir: &Path, args: &[&str]) -> Output {
@@ -581,7 +590,7 @@ fn init_stops_when_its_input_runs_out() {
     }
     let o = c.wait_with_output().unwrap();
     assert!(!o.status.success() && err(&o).contains("ran out at Account holder"), "{}", err(&o));
-    assert!(!base.join("piped").exists());
+    assert!(std::fs::read_dir(&base).unwrap().next().is_none(), "left behind");
 }
 
 #[test]
@@ -686,7 +695,7 @@ fn init_without_a_git_identity_leaves_nothing_behind() {
     let o = Command::new(env!("CARGO_BIN_EXE_abo")).args(["init", "Nobody", "--currency", "EUR", "--vat", "none"])
         .current_dir(&base).env("GIT_AUTHOR_NAME", "").stdin(Stdio::null()).output().unwrap();
     assert!(!o.status.success() && err(&o).contains("no name and email"), "{}", err(&o));
-    assert!(!base.join("nobody").exists());
+    assert!(std::fs::read_dir(&base).unwrap().next().is_none(), "left behind");
 }
 
 #[test]
@@ -1172,6 +1181,52 @@ fn an_answer_of_spaces_is_no_answer() {
     refused(&dir, &["payment-options", "add", "t", "--kind", "cash", "--detail", " "], "needs lines saying where and when");
 }
 
+/// `--ni`: every command that asks asks nothing. With stdin a pipe left
+/// open, one that read it would wait for ever; each ends within seconds,
+/// done as the flags left out offer, or refused saying what is missing.
+#[test]
+fn ni_asks_nothing() {
+    let base = std::env::temp_dir().join(format!("abo-reg-ni-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let run = |dir: &Path, args: &[&str]| -> Output {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_abo")).arg("--ni").args(args).current_dir(dir).env("ABO_TODAY", TODAY)
+            .env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@example.invalid").env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let _open = c.stdin.take();
+        let start = std::time::Instant::now();
+        while c.try_wait().unwrap().is_none() {
+            if start.elapsed() > std::time::Duration::from_secs(10) {
+                let _ = c.kill();
+                panic!("{args:?} waited for an answer");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        c.wait_with_output().unwrap()
+    };
+    let books = made(&base, "acme");
+    // init: what has no offer is refused by name; with it, the rest offered.
+    let o = run(&books, &["init", "Acme"]);
+    assert!(!o.status.success() && err(&o).contains("A currency is needed"), "{}", err(&o));
+    let o = run(&books, &["init", "Acme", "--currency", "EUR"]);
+    assert!(o.status.success(), "{}", err(&o));
+    // payment-options: add needs its id; with it, the kind offered; edit changes nothing.
+    let o = run(&books, &["payment-options", "add"]);
+    assert!(!o.status.success() && err(&o).contains("needs an id"), "{}", err(&o));
+    let o = run(&books, &["payment-options", "add", "till", "--kind", "cash", "--detail", "At the till"]);
+    assert!(o.status.success(), "{}", err(&o));
+    let toml = read(&books, "abo.toml");
+    let o = run(&books, &["payment-options", "edit", "till"]);
+    assert!(o.status.success(), "{}", err(&o));
+    assert_eq!(read(&books, "abo.toml"), toml);
+    // Without --ni, an option not there is refused before any question; it panicked.
+    let o = abo(&books, &["payment-options", "edit", "nope"]);
+    assert!(o.status.code() == Some(1) && err(&o).contains("there is no payment option nope"), "{}", err(&o));
+    // serve: a directory not there is not made.
+    let o = run(&base, &["--dir", "missing", "serve", "--port", "0"]);
+    assert!(!o.status.success() && !base.join("missing").exists(), "{}", err(&o));
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
 /// One company, or an empty directory to open it in: a directory holding
 /// anything else, a data directory of several say, is not served.
 #[test]
@@ -1319,7 +1374,7 @@ fn flags_are_trimmed_as_typed_answers_are() {
     let base = std::env::temp_dir().join(format!("abo-reg-trim-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    ok(&base, &["init", "Trim", "--currency", " chf ", "--country", " CH ", "--address", " Line A ", "--address", "", "--vat", "none",
+    ok(&made(&base, "trim"), &["init", "Trim", "--currency", " chf ", "--country", " CH ", "--address", " Line A ", "--address", "", "--vat", "none",
                 "--git-name", "t", "--git-email", "t@example.invalid"]);
     let toml = read(&base.join("trim"), "abo.toml");
     assert!(toml.contains("country = \"CH\"") && toml.contains("currency = \"CHF\"") && toml.contains("address = \"Line A\""), "{toml}");
@@ -1601,7 +1656,7 @@ fn an_invoice_abroad_charges_no_vat_unless_told() {
     let base = std::env::temp_dir().join(format!("abo-reg-vat-abroad-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    ok(&base, &["init", "Abroad", "--currency", "EUR", "--vat", "effective", "--sales-rate", "10", "--tax-id", "DE123456789", "--git-name", "t", "--git-email", "t@t"]);
+    ok(&made(&base, "abroad"), &["init", "Abroad", "--currency", "EUR", "--vat", "effective", "--sales-rate", "10", "--tax-id", "DE123456789", "--git-name", "t", "--git-email", "t@t"]);
     let dir = base.join("abroad");
     ok(&dir, &["commodity", "add", "USD", "2"]);
     ok(&dir, &["price", "add", "2026-03-01", "USD", "0.92", "EUR"]);
@@ -1868,7 +1923,7 @@ fn a_payment_options_lines_are_taken_alike() {
     let base = std::env::temp_dir().join(format!("abo-reg-pay-lines-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    ok(&base, &["init", "Lines", "--currency", "EUR", "--vat", "none", "--git-name", "t", "--git-email", "t@t",
+    ok(&made(&base, "lines"), &["init", "Lines", "--currency", "EUR", "--vat", "none", "--git-name", "t", "--git-email", "t@t",
                 "--payment", "{ kind = \"bank\", iban = \"CH93 0076 2011 6238 5295 7\", bank = [\"PostFinance\", \"Bern\"] }"]);
     let dir = base.join("lines");
     assert!(read(&dir, "abo.toml").contains("PostFinance\nBern"), "{}", read(&dir, "abo.toml"));
@@ -2190,9 +2245,9 @@ fn init_says_the_tax_return_has_no_boxes() {
     let base = std::env::temp_dir().join(format!("abo-reg-init-vat-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    let said = ok(&base, &["init", "Vat Co", "--currency", "EUR", "--vat", "effective", "--sales-rate", "10", "--git-name", "t", "--git-email", "t@t"]);
+    let said = ok(&made(&base, "vat-co"), &["init", "Vat Co", "--currency", "EUR", "--vat", "effective", "--sales-rate", "10", "--git-name", "t", "--git-email", "t@t"]);
     assert!(said.contains("abo config set report.vat.<code>"), "{said}");
-    let said = ok(&base, &["init", "No Vat", "--currency", "EUR", "--vat", "none", "--git-name", "t", "--git-email", "t@t"]);
+    let said = ok(&made(&base, "no-vat"), &["init", "No Vat", "--currency", "EUR", "--vat", "none", "--git-name", "t", "--git-email", "t@t"]);
     assert!(!said.contains("report.vat"), "{said}");
 }
 
@@ -2503,7 +2558,7 @@ fn a_vat_registered_company_says_its_rate() {
     std::fs::create_dir_all(&base).unwrap();
     let o = abo(&base, &["init", "Test Ltd", "--currency", "EUR", "--vat", "effective", "--git-name", "t", "--git-email", "t@example.invalid"]);
     assert!(!o.status.success() && err(&o).contains("A rate is needed"), "{}", err(&o));
-    assert!(!base.join("test-ltd").exists());
+    assert!(std::fs::read_dir(&base).unwrap().next().is_none(), "left behind");
 }
 
 // ---- found by the fifth web run, 2026-10-07 ----
