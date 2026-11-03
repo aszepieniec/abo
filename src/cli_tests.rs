@@ -25,17 +25,38 @@ pub(crate) fn arg_text() -> impl Strategy<Value = String> {
     arb::<String>().prop_map(|s| s.replace('\0', ""))
 }
 
-/// The binary `cargo test` built beside this test, and not an older one:
-/// `cargo test --bin abo` builds the tests alone.
+/// The binary beside this test, built from the source as it is now:
+/// `cargo test --bin abo` builds the tests alone, so a binary older than
+/// `src/` is built again here, once, before any test runs it.
 pub(crate) fn exe() -> PathBuf {
+    static BUILT: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
+    BUILT.get_or_init(build).clone().unwrap_or_else(|e| panic!("{e}"))
+}
+
+fn build() -> Result<PathBuf, String> {
     let me = std::env::current_exe().unwrap();
-    let abo = me.parent().unwrap().parent().unwrap().join("abo");
+    // target/<profile>/deps/<this test>
+    let profile = me.parent().unwrap().parent().unwrap();
+    let abo = profile.join("abo");
     let at = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     // Files compiled into the tests alone do not make the binary stale.
-    let newest = walk(&src).iter().filter(|p| !p.to_string_lossy().ends_with("tests.rs")).filter_map(|p| at(p)).max();
-    assert!(at(&abo) >= newest, "{} is older than src/: run `cargo build` first", abo.display());
-    abo
+    let newest = || walk(&src).iter().filter(|p| !p.to_string_lossy().ends_with("tests.rs")).filter_map(|p| at(p)).max();
+    if at(&abo) >= newest() {
+        return Ok(abo);
+    }
+    // Where and as this test was built, so the binary lands beside it.
+    let mut c = Command::new(env!("CARGO"));
+    c.args(["build", "--quiet", "--bin", "abo", "--manifest-path", concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"), "--target-dir"]);
+    c.arg(profile.parent().unwrap());
+    if profile.file_name().is_some_and(|n| n == "release") {
+        c.arg("--release");
+    }
+    let ok = c.status().map_err(|e| format!("cargo build: {e}"))?.success();
+    if !ok || at(&abo) < newest() {
+        return Err(format!("{} is older than src/, and cargo build did not build it again: run it yourself", abo.display()));
+    }
+    Ok(abo)
 }
 
 fn walk(dir: &Path) -> Vec<PathBuf> {
