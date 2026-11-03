@@ -61,8 +61,10 @@ pub(super) async fn index(Books(s): Books) -> Response {
                 h1 { "Books" }
                 div.actions {
                     a.btn href="/reconcile" { (icon("checks")) " Reconcile" }
-                    a.btn href="/invoice" { (icon("outbox")) " Issue an invoice" }
-                    a.btn.btn-primary href="/bill" { (icon("camera")) " Book a bill" }
+                    @if may_change() {
+                        a.btn href="/invoice" { (icon("outbox")) " Issue an invoice" }
+                        a.btn.btn-primary href="/bill" { (icon("camera")) " Book a bill" }
+                    }
                 }
             }
             @if !tiles.is_empty() {
@@ -149,7 +151,7 @@ pub(super) fn toast(s: &Store, n: usize) -> Option<Markup> {
                 strong { (said) }
                 @if let Some(n) = &number { " · " a href={"/invoice/" (n) ".pdf"} { "the PDF" } }
             }
-            @if undoable(s, n) {
+            @if may_change() && undoable(s, n) {
                 form.undo method="post" action="/undo" {
                     (token())
                     @if let Some(c) = commit { input type="hidden" name="commit" value=(c); }
@@ -296,7 +298,7 @@ pub(super) async fn activity(Books(s): Books, Query(q): Query<Fields>) -> Respon
                                         }
                                     }
                                     td {
-                                        @if undoable(&s, *n) {
+                                        @if may_change() && undoable(&s, *n) {
                                             form method="post" action="/undo" {
                                                 (token())
                                                 @if let Some(h) = commit { input type="hidden" name="commit" value=(h); }

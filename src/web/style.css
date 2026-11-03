@@ -178,6 +178,7 @@ pre .missing, code .missing { font: inherit; color: var(--error); background: no
 label.field, div.field { display: block; margin: 0 0 16px; font-weight: 600; }
 div.field a { font-weight: 400; }
 label.field .hint, div.field .hint { display: block; font-weight: 400; color: var(--muted); font-size: 12px; margin-top: 2px; }
+fieldset.plain { border: 0; margin: 0; min-width: 0; }
 fieldset.field { border: 0; padding: 0; margin: 0 0 16px; min-width: 0; }
 fieldset.field legend { padding: 0; margin-bottom: 4px; font-weight: 600; }
 fieldset.field .hint { display: block; color: var(--muted); font-size: 12px; margin: -2px 0 2px; }

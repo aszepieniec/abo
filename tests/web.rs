@@ -997,3 +997,73 @@ fn fourth_web_run() {
     drop(s);
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+/// the gateway's view role: every page a viewer reaches, by every link from the
+/// first, offers no change: no form that posts, no link to a page that is
+/// only one. Those pages, asked for anyway, say so; and books not yet
+/// opened are not offered to open. The same crawl with the write role
+/// finds both, so it is not passing for finding nothing.
+#[test]
+fn a_viewer_is_offered_no_change() {
+    let base = std::env::temp_dir().join(format!("abo-web-viewer-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let books = base.join("test-ltd");
+    std::fs::create_dir_all(&books).unwrap();
+    let abo = |args: &[&str]| -> serde_json::Value {
+        let o = Command::new(env!("CARGO_BIN_EXE_abo")).arg("--json").args(args).current_dir(&books).env("HOME", &base).env("XDG_CONFIG_HOME", &base).output().unwrap();
+        assert!(o.status.success(), "{args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        serde_json::from_slice(&o.stdout).unwrap_or_default()
+    };
+    let view = "X-Gateway-User: vic\r\nX-Gateway-Role: view\r\n";
+    let s = serve(&books, &base);
+    let (status, _, page) = http_as(&s, view, "GET", "/", &[]);
+    assert!(status == 200 && page.contains("No books yet") && !page.contains("method=\"post\""), "{page}");
+    drop(s);
+
+    // Something of everything that has a button.
+    abo(&["init", "Test Ltd", "--currency", "EUR", "--vat", "effective", "--sales-rate", "8.1", "--git-name", "Ann", "--git-email", "ann@example.invalid", "--payment", "{ kind = \"bank\", iban = \"CH93 0076 2011 6238 5295 7\" }"]);
+    abo(&["config", "set", "report.vat.1", "{ label = \"Turnover\", query = \"acct:^Income\" }"]);
+    abo(&["invoice", "--to", "Nordlicht AG", "--item", "1|100|Advice", "--date", "2026-03-01"]);
+    abo(&["bill", "--date", "2026-03-02", "--desc", "Hosting", "Expenses:General=110.00", "Liabilities:Payable=-110.00"]);
+    let scan = base.join("scan.pdf");
+    std::fs::write(&scan, b"%PDF-1.4\n% a bill\n%%EOF\n").unwrap();
+    abo(&["file", "--date", "2026-03-03", "--issuer", "Acme", &scan.to_string_lossy()]);
+    let s = serve(&books, &base);
+
+    let forms = ["/post", "/invoice", "/pay", "/bill", "/company/payment"];
+    let crawl = |who: &str| -> (usize, usize, usize) {
+        let (mut todo, mut seen) = (vec!["/".to_string()], std::collections::BTreeSet::new());
+        let (mut posts, mut to_forms) = (0, 0);
+        while let Some(path) = todo.pop() {
+            if !seen.insert(path.clone()) || seen.len() > 300 {
+                continue;
+            }
+            let (status, _, page) = http_as(&s, who, "GET", &path, &[]);
+            if !page.contains("<!DOCTYPE") {
+                continue;
+            }
+            assert!(status < 500, "{path}: {status}");
+            posts += page.matches("method=\"post\"").count();
+            for href in page.split("href=\"").skip(1).filter_map(|h| h.split('"').next()) {
+                let href = href.replace("&amp;", "&");
+                let bare = href.split(['?', '#']).next().unwrap_or_default();
+                if forms.contains(&bare) || bare.ends_with("/correct") {
+                    to_forms += 1;
+                } else if href.starts_with('/') && !bare.ends_with(".pdf") && !bare.ends_with(".png") {
+                    todo.push(href.split('#').next().unwrap().to_string());
+                }
+            }
+        }
+        (seen.len(), posts, to_forms)
+    };
+    let (pages, posts, to_forms) = crawl(view);
+    assert!(pages > 15 && posts == 0 && to_forms == 0, "a viewer, on {pages} pages: {posts} forms that post, {to_forms} links to forms");
+    let (_, posts, to_forms) = crawl("X-Gateway-User: ann\r\nX-Gateway-Role: write\r\n");
+    assert!(posts > 10 && to_forms > 5, "a writer: {posts} forms that post, {to_forms} links to forms");
+    for path in forms.iter().copied().chain(["/invoice/1/correct"]) {
+        let (status, _, page) = http_as(&s, view, "GET", path, &[]);
+        assert!(status == 403 && page.contains("View only") && !page.contains("method=\"post\""), "{path}: {status} {page}");
+    }
+    drop(s);
+    let _ = std::fs::remove_dir_all(&base);
+}

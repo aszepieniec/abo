@@ -87,7 +87,7 @@ pub(super) async fn booking(Books(s): Books, Path(id): Path<String>, Query(q): Q
                             }
                         } }
                     }
-                    @if has_open {
+                    @if has_open && may_change() {
                         div.box-body { div.actions {
                             a.btn href={"/pay?debt=" (id)} { (icon("coins")) " Pay" }
                             a.btn href={"/pay?debt=" (id) "#write-off"} { (icon("trash")) " Write off" }
@@ -108,6 +108,7 @@ pub(super) async fn booking(Books(s): Books, Path(id): Path<String>, Query(q): Q
                     "Its document: "
                     @match &document {
                         Some((_, path)) => a href={"/" (path)} { code { (path) } },
+                        None if !may_change() => "none yet",
                         None => button.missing type="button" popovertarget="upload" title="Not in the books: upload it" { "none yet" },
                     }
                 }
@@ -120,7 +121,8 @@ pub(super) async fn booking(Books(s): Books, Path(id): Path<String>, Query(q): Q
                         button type="button" disabled title="The PDF is not in the books" { (icon("doc")) " PDF" }
                     }
                 }
-                @if invoice {
+                @if !may_change() {
+                } @else if invoice {
                     // Asked first: a credit note is not undone.
                     @if reversed.is_none() && paid_by.is_empty() {
                         a.btn.btn-danger href={"/invoice/" (number.clone().unwrap_or_default()) "/correct"} { (icon("undo")) " Correct" }
@@ -157,6 +159,9 @@ pub(super) async fn booking(Books(s): Books, Path(id): Path<String>, Query(q): Q
 /// opened by a button with `popovertarget` set to `id`. Filed, it goes to
 /// `to`, or else to the booking.
 pub(super) fn upload(id: &str, bill: usize, to: &str) -> Markup {
+    if !may_change() {
+        return html! {};
+    }
     html! {
         div.modal popover id=(id) {
             h2 { "The document is missing" }

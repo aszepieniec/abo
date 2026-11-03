@@ -103,7 +103,7 @@ pub(super) async fn bills_list(Books(s): Books, Query(q): Query<Fields>) -> Resp
             @for b in all.iter().filter(|b| b.entry.is_some() && b.document.is_none()) {
                 (upload(&format!("up-{}", b.entry.unwrap_or_default()), b.entry.unwrap_or_default(), "/bills"))
             }
-            div.actions { a.btn.btn-primary href="/bill" { (icon("camera")) " Book a bill" } }
+            @if may_change() { div.actions { a.btn.btn-primary href="/bill" { (icon("camera")) " Book a bill" } } }
         })
     })
 }
@@ -115,10 +115,11 @@ pub(super) fn bill_actions(b: &BillRow) -> Markup {
         div.row-actions {
             @match (&b.document, b.entry) {
                 (Some(path), _) => a.btn.small href={"/" (path)} download { (icon("doc")) " " (path.rsplit('.').next().unwrap_or_default().to_uppercase()) },
+                (None, Some(_)) if !may_change() => {},
                 (None, Some(id)) => button.small type="button" popovertarget={"up-" (id)} title="The books do not have its document" { (icon("upload")) " Upload" },
                 (None, None) => {},
             }
-            @if b.entry.is_none() {
+            @if b.entry.is_none() && may_change() {
                 @if let Some(path) = &b.document {
                     a.btn.small href={"/bill?file=" (enc(path))} { (icon("book")) " Book it" }
                     form method="post" action="/bill/unfile" {
@@ -128,7 +129,7 @@ pub(super) fn bill_actions(b: &BillRow) -> Markup {
                     }
                 }
             }
-            @if let (true, Some(id)) = (b.has_open, b.entry) { a.btn.small href={"/pay?debt=" (id)} { (icon("coins")) " Pay" } }
+            @if let (true, true, Some(id)) = (b.has_open, may_change(), b.entry) { a.btn.small href={"/pay?debt=" (id)} { (icon("coins")) " Pay" } }
         }
     }
 }

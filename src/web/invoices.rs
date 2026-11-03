@@ -329,7 +329,7 @@ pub(super) async fn invoices(Books(s): Books, Query(q): Query<Fields>) -> Respon
                     }
                 }
             }
-            div.actions { a.btn.btn-primary href="/invoice" { (icon("plus")) " Issue an invoice" } }
+            @if may_change() { div.actions { a.btn.btn-primary href="/invoice" { (icon("plus")) " Issue an invoice" } } }
         })
     })
 }
@@ -341,7 +341,7 @@ pub(super) fn row_actions(s: &Store, i: &views::InvoiceRow) -> Markup {
         div.row-actions {
             @if pdf { a.btn.small href={"/invoice/" (i.number) ".pdf"} download { (icon("doc")) " PDF" } }
             @else { button.small type="button" disabled title="The PDF is not in the books" { (icon("doc")) " PDF" } }
-            @if i.has_open { a.btn.small href={"/pay?debt=" (i.entry)} { (icon("coins")) " Pay" } }
+            @if i.has_open && may_change() { a.btn.small href={"/pay?debt=" (i.entry)} { (icon("coins")) " Pay" } }
         }
     }
 }

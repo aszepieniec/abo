@@ -95,7 +95,8 @@ pub(super) fn reconcile_page(s: &Store, f: &Fields, ticked: &[String], notice: O
         h1 { "Reconcile" }
         p.muted { "Check an account against its bank statement, or a cash box against a count: tick what the statement shows, give its closing balance, and record it. What stays unticked waits for the next statement." }
         @if let Some(n) = notice { (n) }
-        form method="post" action="/reconcile" {
+        // For one who may only look, Show alone: a plain GET.
+        form method=(if may_change() { "post" } else { "get" }) action="/reconcile" {
             (token())
             div.box {
                 div.box-header { (icon("checks")) "Against the " (doc) }
@@ -146,9 +147,11 @@ pub(super) fn reconcile_page(s: &Store, f: &Fields, ticked: &[String], notice: O
                 }
             }
             div.actions {
+                @if may_change() {
                 button.btn-primary type="submit" name="action" value="record" { (icon("book")) " Record the " (doc) ", with what is ticked" }
                 @if let Some(d) = latest {
                     button.btn-danger type="submit" name="action" value="unrecord" { (icon("undo")) " Take out the " (doc) " of " (of) " of " (d) }
+                }
                 }
                 span.nav { a.btn href=(back_to("/")) { (icon("left")) " Back" } }
             }

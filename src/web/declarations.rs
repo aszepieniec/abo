@@ -9,22 +9,22 @@ pub(super) async fn declarations(Books(s): Books) -> Response {
 
 pub(super) fn declarations_page(s: &Store, error: Option<&anyhow::Error>) -> Markup {
     let b = &s.books;
-    let remove = |what: &str, value: &str| html! {
+    let remove = |what: &str, value: &str| if !may_change() { html! {} } else { html! {
         form method="post" action="/declarations" {
             (token())
             input type="hidden" name="action" value={ "remove-" (what) };
             input type="hidden" name="value" value=(value);
             button.small.btn-danger type="submit" { (icon("trash")) " Remove" }
         }
-    };
+    } };
     let t = Tree::new(b);
     html! {
         h1 { "Accounts" }
         @if let Some(e) = error { (refused(e)) }
         div.box {
-            div.box-header { (icon("book")) "Accounts" span.spacer.muted.small { "drag " (icon("grip")) " onto another account to move it there" } }
+            div.box-header { (icon("book")) "Accounts" @if may_change() { span.spacer.muted.small { "drag " (icon("grip")) " onto another account to move it there" } } }
             ul.tree { @for c in model::CLASSES { (t.node(c)) } }
-            form #moves method="post" action="/declarations" hidden {
+            @if may_change() { form #moves method="post" action="/declarations" hidden {
                 (token()) input type="hidden" name="action" value="move-accounts";
                 input type="hidden" name="value";
                 div.box-body {
@@ -33,12 +33,12 @@ pub(super) fn declarations_page(s: &Store, error: Option<&anyhow::Error>) -> Mar
                     div.actions { button.btn-primary type="submit" { "Confirm" } a.btn href="/declarations" { "Cancel" } }
                 }
             }
-            script { (PreEscaped(DRAG)) }
+            script { (PreEscaped(DRAG)) } }
         }
         div.box {
             div.box-header { (icon("coins")) "Currencies and Commodities" }
             table.list { tbody { @for (c, p) in &b.commodities { tr { td { code { (c) } } td { (p) " places" } td.amt { (remove("commodity", c)) } } } } }
-            div.box-body { details.add {
+            @if may_change() { div.box-body { details.add {
                 summary.btn.small { (icon("plus")) " New currency or commodity" }
                 form.one-row method="post" action="/declarations" {
                     (token()) input type="hidden" name="action" value="add-commodity";
@@ -46,12 +46,12 @@ pub(super) fn declarations_page(s: &Store, error: Option<&anyhow::Error>) -> Mar
                     label.field { "Places" span.hint { "Digits after the point, 0 to 8." } input type="text" name="places" required value="2"; }
                     button.btn-primary type="submit" { (icon("plus")) " Declare" }
                 }
-            } }
+            } } }
         }
         div.box {
             div.box-header { (icon("chart")) "Prices" span.spacer.muted.small { "what one unit of a currency was worth, for invoices in it" } }
             table.list { tbody { @for ((c, d), p) in &b.prices { tr { td.date { (d) } td { "1 " (c) " = " (p.quantity) " " (p.commodity) } td.amt { (remove("price", &format!("{d} {c}"))) } } } } }
-            div.box-body { details.add {
+            @if may_change() { div.box-body { details.add {
                 summary.btn.small { (icon("plus")) " New price" }
                 form method="post" action="/declarations" {
                     (token()) input type="hidden" name="action" value="add-price";
@@ -70,7 +70,7 @@ pub(super) fn declarations_page(s: &Store, error: Option<&anyhow::Error>) -> Mar
                         button.btn-primary type="submit" { (icon("plus")) " Add" }
                     }
                 }
-            } }
+            } } }
         }
     }
 }
@@ -177,7 +177,7 @@ impl<'a> Tree<'a> {
                         span.chev {}
                         @if gone.is_some() { span.grip-gap {} }
                         @let stuck = self.owed.iter().find(|(a, _)| *a == path || a.starts_with(&under)).map(|(_, why)| why);
-                        @if path != class && gone.is_none() {
+                        @if path != class && gone.is_none() && may_change() {
                             @if let Some(why) = stuck { span.grip.stuck title={ "It cannot be moved: " (why) } { (icon("grip")) } }
                             @else { span.grip draggable="true" title="Drag onto another account to move it there" { (icon("grip")) } }
                         }
@@ -185,7 +185,7 @@ impl<'a> Tree<'a> {
                         span.bal { (self.balance(path)) }
                         @let kept = self.leaves.get(path);
                         // On the wrapper: a disabled button shows no title in every browser.
-                        span.act title=[kept.map(|why| format!("{path} cannot be removed: {why}"))] { @if declared {
+                        span.act title=[kept.map(|why| format!("{path} cannot be removed: {why}"))] { @if declared && may_change() {
                             form method="post" action="/declarations" {
                                 (token())
                                 input type="hidden" name="action" value="remove-account";
@@ -198,7 +198,8 @@ impl<'a> Tree<'a> {
                         @for c in &children { (self.node(c)) }
                         // Any account takes another under it, but what postings go to (I-A2).
                         // Such a one with none under it shows no arrow: its list is empty.
-                        @if let Some(why) = self.leaves.get(path).filter(|_| !children.is_empty()) {
+                        @if !may_change() {
+                        } @else if let Some(why) = self.leaves.get(path).filter(|_| !children.is_empty()) {
                             li.add { span.kept title={ "Nothing can be declared under " (path) ": " (why) ", and postings go to accounts with none under them." } {
                                 button.btn.small type="button" disabled { (icon("plus")) " New account" }
                             } }

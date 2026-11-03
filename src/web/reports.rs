@@ -97,7 +97,7 @@ pub(super) async fn report(Books(s): Books, Path(kind): Path<String>, Query(q): 
                 div.flash.flash-info { (icon("info")) div {
                     strong { "No boxes yet" }
                     "The tax return shows a figure for each box of your form; none is set up yet. "
-                    a href="/company/tax-return" { "Set up its boxes" } "."
+                    @if may_change() { a href="/company/tax-return" { "Set up its boxes" } "." }
                 } }
             } @else if bad_period.is_none() {
             div.box {

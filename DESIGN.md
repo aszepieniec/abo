@@ -630,6 +630,12 @@ What abo takes from a gateway is who is asking: `X-Gateway-User`, `X-Gateway-Nam
 and `X-Gateway-Email`, the author of the commits a request makes. It trusts
 them because only the gateway can send them; the gateway replaces any a browser sends.
 A role abo does not check: the gateway refuses a viewer's POST before abo sees it.
+It only shows it: given `X-Gateway-Role: view` (or any role but write and
+admin), the pages leave out every form that posts and every link to a page
+that is only such a form; those pages, asked for, say "View only", and
+books not yet opened are not offered to open. The company's details show,
+disabled. Test: `tests/web.rs` `a_viewer_is_offered_no_change`, which
+crawls every page as a viewer.
 
 The CSRF check above stays abo's: it guards a person's own browser against
 other pages, with or without a gateway in front.

@@ -116,6 +116,7 @@ fn company_app(root: PathBuf) -> Router {
         .route("/icon-512.png", get(|| async { png(include_bytes!("icon-512.png")) }))
         .route("/apple-touch-icon.png", get(|| async { png(include_bytes!("apple-touch-icon.png")) }))
         .fallback(not_found)
+        .layer(axum::middleware::from_fn_with_state(Arc::new(root.clone()), looks_only))
         .layer(axum::middleware::from_fn_with_state(Arc::new(root.clone()), opening::opening))
         // A scanned bill is much bigger than a form post.
         .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
@@ -419,7 +420,8 @@ fn page_with(s: &Store, title: &str, body: Markup, with_banner: bool) -> Html<St
                     aside.side {
                         a.brand href="/company" title="The company" { span.mark { "abo" } span.name { (s.books.config.company.name) } }
                         nav {
-                            @for (href, ic, label, section) in nav {
+                            // Entry is only a form.
+                            @for (href, ic, label, section) in nav.into_iter().filter(|n| n.0 != "/post" || may_change()) {
                                 a href=(href) class=[current(section).then_some("current")] { (icon(ic)) span { (label) } }
                             }
                         }
@@ -493,6 +495,44 @@ tokio::task_local! {
     /// Whether the request only looks: what it asks for is then not found,
     /// where a change naming it is refused.
     static LOOKS: bool;
+    /// Whether the person asking may only look: the gateway's view role.
+    static VIEW: bool;
+}
+
+/// Whether the person asking may change the books: not when the gateway gives
+/// them its view role (its app contract, item 9). The gateway refuses such a
+/// one's every change itself; what they may not do is left off the pages
+/// so they never fill in a form only to have it refused. Without a gateway, yes.
+fn may_change() -> bool {
+    !VIEW.try_with(|v| *v).unwrap_or(false)
+}
+
+/// Whether `X-Gateway-Role` gives only the view role. write and admin change
+/// the books alike: admin is the gateway's, over who may do what. No header: not
+/// behind a gateway. Any other value counts as view, the least: the gateway
+/// enforces it anyway.
+fn view_only(h: &HeaderMap) -> bool {
+    h.get("x-gateway-role").is_some_and(|r| !matches!(r.as_bytes(), b"write" | b"admin"))
+}
+
+/// The pages that are only a form that changes the books: for one who may
+/// only look, a page saying so in their place.
+async fn looks_only(axum::extract::State(root): axum::extract::State<Arc<PathBuf>>, req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let p = req.uri().path();
+    let form = matches!(p, "/post" | "/invoice" | "/pay" | "/bill" | "/company/payment") || (p.starts_with("/invoice/") && p.ends_with("/correct"));
+    if may_change() || !form || !req.method().is_safe() {
+        return next.run(req).await;
+    }
+    let s = match Store::open(&root) {
+        Ok(s) => s,
+        Err(e) => return unreadable(&e),
+    };
+    let body = html! {
+        h1 { "View only" }
+        p { "You may look at these books, not change them." }
+        div.actions { span.nav { a.btn href=(back_to("/")) { (icon("left")) " Back" } } }
+    };
+    (StatusCode::FORBIDDEN, page(&s, "View only", body)).into_response()
 }
 
 /// The path of a same-site Referer, or None. Anything from another host is
@@ -534,7 +574,8 @@ async fn scope(req: axum::extract::Request, next: axum::middleware::Next) -> Res
     let query = req.uri().query().unwrap_or_default().to_string();
     let looks = req.method() == axum::http::Method::GET;
     let who = author(req.headers());
-    let run = PATH.scope(path, BACK.scope(back, QUERY.scope(query, LOOKS.scope(looks, next.run(req)))));
+    let view = view_only(req.headers());
+    let run = PATH.scope(path, BACK.scope(back, QUERY.scope(query, LOOKS.scope(looks, VIEW.scope(view, next.run(req))))));
     match who {
         Ok(Some(a)) => crate::repo::AUTHOR.scope(a, run).await,
         Ok(None) => run.await,

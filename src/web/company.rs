@@ -50,14 +50,15 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
                 "Some answers need another look; each says why under it."
             } }
         }
-        form.edits method="post" action="/company" {
+        // For one who may only look, the details shown and not to be sent.
+        form.edits method=[may_change().then_some("post")] action="/company" {
             (token())
             div.box {
                 div.box-header { (icon("book")) "Details" }
-                div.box-body {
+                fieldset.plain.box-body disabled[!may_change()] {
                     p.muted.small { "Invoices print these." }
                     (fields)
-                    div.actions { button.btn-primary type="submit" { (icon("check")) " Save" } }
+                    @if may_change() { div.actions { button.btn-primary type="submit" { (icon("check")) " Save" } } }
                 }
             }
         }
@@ -77,12 +78,13 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
                         tr { td { "VAT rate charged" } td { (cfg.invoice.vat_rate.normalize()) "%, unless an invoice says otherwise" } }
                     }
                     tr { td { "Payment terms" } td {
-                        form.inline.edits method="post" action="/company/terms" {
+                        @if !may_change() { (cfg.invoice.terms_days) " days, unless an invoice says otherwise" }
+                        @else { form.inline.edits method="post" action="/company/terms" {
                             (token())
                             label { "Days a customer has to pay " input type="number" name="days" min="0" required value=(cfg.invoice.terms_days) style="width:6em"; " days, unless an invoice says otherwise" }
                             " "
                             button.small type="submit" { (icon("check")) " Save" }
-                        }
+                        } }
                     } }
                 }
             }
@@ -94,7 +96,7 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
                 }
             } }
         }
-        form method="post" action="/company/close" {
+        @if may_change() { form method="post" action="/company/close" {
             (token())
             div.box {
                 div.box-header { (icon("clock")) "Closing a period" }
@@ -111,7 +113,7 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
                     div.actions { button type="submit" { (icon("check")) " Close the books through it" } }
                 }
             }
-        }
+        } }
         div.box {
             div.box-header { (icon("inbox")) "Where invoices ask to be paid" }
             table.list.options {
@@ -125,7 +127,7 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
                                 @for l in &p.lines { div.muted.small { (l) } }
                             }
                             td { "Into " code { (o.account) } }
-                            td {
+                            @if may_change() { td {
                                 div.actions {
                                     a.btn href={ "/company/payment?id=" (enc(id)) } { (icon("pencil")) " Edit" }
                                     form method="post" action="/company/payment/remove" {
@@ -134,14 +136,14 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
                                         button.btn-danger type="submit" { (icon("trash")) " Remove" }
                                     }
                                 }
-                            }
+                            } }
                         }
                     }
                 }
             }
             div.box-body {
                 @if cfg.payment.is_empty() { p.muted { "None yet: invoices say only when to pay." } }
-                div.actions { a.btn href="/company/payment" { (icon("plus")) " Add a payment option" } }
+                @if may_change() { div.actions { a.btn href="/company/payment" { (icon("plus")) " Add a payment option" } } }
             }
         }
     }
@@ -315,7 +317,7 @@ pub(super) fn tax_return_page(s: &Store, f: &Fields, error: Option<&anyhow::Erro
         div.box {
             div.box-header { (icon("doc")) "Its boxes" span.spacer { a.small href="/report/vat" { "The tax return" } } }
             @if boxes.is_empty() {
-                div.box-body { p.muted { "None yet. Add one for each box of your form that abo should fill in." } }
+                div.box-body { p.muted { "None yet." @if may_change() { " Add one for each box of your form that abo should fill in." } } }
             } @else {
                 table.list {
                     thead { tr { th { "Box" } th { "Label" } th { "Figure, from" } th {} } }
@@ -325,7 +327,7 @@ pub(super) fn tax_return_page(s: &Store, f: &Fields, error: Option<&anyhow::Erro
                                 td { code { (code) } }
                                 td { (b.label) }
                                 td { code { (b.query) } @if b.invert { span.muted.small { " turned over" } } }
-                                td { div.row-actions {
+                                td { @if may_change() { div.row-actions {
                                     a.btn.small href={"/company/tax-return?code=" (enc(code))} { (icon("pencil")) " Change" }
                                     form method="post" action="/company/tax-return" {
                                         (token())
@@ -333,14 +335,14 @@ pub(super) fn tax_return_page(s: &Store, f: &Fields, error: Option<&anyhow::Erro
                                         input type="hidden" name="code" value=(code);
                                         button.small.btn-danger type="submit" { (icon("trash")) " Remove" }
                                     }
-                                } }
+                                } } }
                             }
                         }
                     }
                 }
             }
         }
-        form.edits[!was.is_empty()] method="post" action="/company/tax-return" {
+        @if may_change() { form.edits[!was.is_empty()] method="post" action="/company/tax-return" {
             (token())
             input type="hidden" name="was" value=(was);
             div.box {
@@ -358,7 +360,7 @@ pub(super) fn tax_return_page(s: &Store, f: &Fields, error: Option<&anyhow::Erro
                     }
                 }
             }
-        }
+        } }
     }
 }
 

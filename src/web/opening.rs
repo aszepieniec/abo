@@ -16,6 +16,10 @@ pub(super) async fn opening(axum::extract::State(root): axum::extract::State<Arc
         }
         return next.run(req).await;
     }
+    // One who may only look cannot open them.
+    if !super::may_change() {
+        return data_page("No books yet", html! { h1 { "No books yet" } p { "Nothing is booked here yet. Once someone who may change these books opens them, they are here to look at." } }).into_response();
+    }
     let form = Router::new()
         .route("/", get(new_form))
         .route("/new", get(new_form).post(new_submit))
