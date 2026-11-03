@@ -84,6 +84,15 @@ pub(super) async fn new_submit(axum::extract::State(root): axum::extract::State<
     match opened {
         Ok(to) => Redirect::to(&to).into_response(),
         Err(_) if !problems.is_empty() => (StatusCode::UNPROCESSABLE_ENTITY, data_page("A new company", new_page(&f, &problems, None))).into_response(),
+        // Said under the fields that mend it, which open to show it.
+        Err(e) if e.is::<store::NoIdentity>() => {
+            let mut problems = Problems::new();
+            problems.insert(
+                "git_name".into(),
+                "A name and an email are needed, to show who made each change to the books. Give them here, or set them once for this computer with git config --global user.name and user.email.".into(),
+            );
+            (StatusCode::UNPROCESSABLE_ENTITY, data_page("A new company", new_page(&f, &problems, None))).into_response()
+        }
         Err(e) => {
             error!(%e, "opening books failed");
             (StatusCode::UNPROCESSABLE_ENTITY, data_page("A new company", new_page(&f, &problems, Some(&e)))).into_response()

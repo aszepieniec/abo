@@ -119,7 +119,7 @@ pub(super) fn render(qs: &[Q], prefix: &str, f: &Fields, problems: &Problems, om
             // Behind a gateway, the person signed in is who keeps them.
             Q::Group { title: "git", .. } if crate::repo::AUTHOR.try_with(|_| ()).is_ok() => html! {},
             Q::Group { title: "git", qs, .. } => html! {
-                details.box {
+                details.box open[qs.iter().any(|q| matches!(q, Q::Text { key, .. } if problems.contains_key(&format!("{prefix}{key}"))))] {
                     summary.box-header { (icon("pencil")) "Who keeps the books (optional)" }
                     div.box-body {
                         p.muted.small { "Their name and email go with every change made to the books, to show who made it. Blank takes the ones this computer is set up with." }

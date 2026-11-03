@@ -263,7 +263,9 @@ fn a_failed_opening_leaves_the_directory_empty() {
     let s = serve(&data, &home);
     let new = [("token", "t1"), ("name", "Nobody Ltd"), ("address", "1 Street"), ("p0.kind", "skip"), ("p.n", "1"), ("currency", "CHF"), ("method", "none")];
     let (status, _, page) = http(&s, "POST", "/new", &new);
-    assert!(status == 422 && page.contains("has no name and email"), "{page}");
+    // Said under the name, its fold open, in a browser's words, not the terminal's.
+    assert!(status == 422 && page.contains("<details class=\"box\" open>") && page.contains("A name and an email are needed"), "{page}");
+    assert!(!page.contains("--git-name") && !page.contains("Author identity unknown"), "{page}");
     assert!(std::fs::read_dir(&data).unwrap().next().is_none(), "left behind: {:?}", std::fs::read_dir(&data).unwrap().flatten().map(|e| e.file_name()).collect::<Vec<_>>());
     drop(s);
     let _ = std::fs::remove_dir_all(&base);
@@ -942,7 +944,8 @@ fn fourth_web_run() {
     let (status, _, page) = http(&s, "GET", "/report/pl?fy=2026&fq=3&ty=2026&tq=1", &[]);
     assert!(status == 422 && page.contains("The period ends before it begins."), "{page}");
     assert!(http(&s, "GET", "/report/pl?fy=2026&fq=1&ty=2026&tq=1", &[]).2.contains("2026q1 (2026-01-01 to 2026-03-31)"), "one quarter");
-    for path in ["/account?name=Expenses:General"] {
+    {
+        let path = "/account?name=Expenses:General";
         let page = http(&s, "GET", path, &[]).2;
         assert!(page.contains("last quarter") && page.contains("this year"), "{path}: {page}");
     }

@@ -301,7 +301,7 @@ pub(super) async fn declare(Books(mut s): Books, Form(f): Form<Fields>) -> Respo
         if get("action") == "move-accounts" {
             // In their order, each a change of its own, as each a command.
             let names: Vec<&str> = v.lines().collect();
-            if names.is_empty() || names.len() % 2 != 0 {
+            if names.is_empty() || !names.len().is_multiple_of(2) {
                 bail!("nothing to move");
             }
             let date = store::today()?;

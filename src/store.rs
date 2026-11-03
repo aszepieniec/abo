@@ -31,6 +31,20 @@ impl std::fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
+/// New books with no one to name on their commits: no name and email given,
+/// and none git has. Said as a terminal can mend it; the web says it under
+/// its own fields.
+#[derive(Debug)]
+pub struct NoIdentity;
+
+impl std::fmt::Display for NoIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "git has no name and email to put on commits: give --git-name and --git-email, or set them with `git config --global`")
+    }
+}
+
+impl std::error::Error for NoIdentity {}
+
 /// The books, in a state no change is made in: a change someone made to
 /// their files outside abo, problems they hold, files that cannot be read.
 /// Its text is for whoever keeps the files; a page says it otherwise, to
@@ -576,7 +590,7 @@ pub fn init(dir: &Path, config: model::Config, author: Option<(String, String)>,
                 }
             }
         }
-        let stamp = Stamp::now(dir).context("git has no name and email to put on commits: give --git-name and --git-email, or set them with `git config --global`")?;
+        let stamp = Stamp::now(dir).map_err(|_| NoIdentity)?;
         repo::git_in(dir, &["add", "-A"])?;
         let what = format!("Open the books for {}", b.config.company.name);
         repo::git_env(dir, &["commit", "-q", "-m", &what], &stamp.env())?;

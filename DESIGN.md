@@ -31,7 +31,7 @@ M6 built: each company installs as an app; not yet tried on a real phone
 | Invoice PDF | typst template, `typst compile` shelled out | One page, fixed grid. Layout lives in a `.typ` template, not in Rust. Compiler is Apache-2.0, offline, no account. |
 | Git access | shell out to `git` | Smaller than `git2`/libgit2 by a wide margin. |
 | Web UI | axum + maud, server-rendered, one hand-written stylesheet | No SPA, no npm, no build step, no WASM. HTML escaping comes from maud. One hand-written stylesheet, not a framework — see §7. |
-| Deployment | localhost first, reachable later | See §8. Auth goes at a reverse proxy, not in the app — until users exist. |
+| Deployment | localhost; behind a gateway when reachable | abo is not responsible for authentication: no login, no users, no TLS. The gateway, in front, is all three. See §8. |
 | Tax | three scheme *shapes* in code (`none` / `flat` / `effective`); every rate, rule and name in config | The shape changes what a *correct booking* is, so the validator must know it. Rates and local rules differ everywhere and are data. See §6. |
 | Commodities | multi-commodity from the start | hledger already is. Cash, bank and wallet balances are all just asset accounts. |
 | Phone app | PWA over the existing server-rendered pages | See §7. |
@@ -144,8 +144,8 @@ These are free now and expensive to retrofit. Do not violate them.
 
 1. **Every workflow function takes a context first.** `bill::file(&ctx, ...)`,
    never `bill::file(...)` reading a global. Multi-company then means building
-   a different `Ctx`; users mean `Ctx` carries an actor. Authorization has exactly
-   one place to live.
+   a different `Ctx`. Who is acting is the gateway's to say (§8), and is carried per
+   request.
 2. **No rendering below the dispatch layer.** No HTML, no terminal formatting, no
    `println!` inside workflow functions. They return serde structs.
 3. **`--json` on the CLI is the API schema.** The struct a phone client would
@@ -616,17 +616,23 @@ This matters most for the application a model lives in (§5). A supplier's PDF
 can contain text addressed to the model, and what that text can reach is the
 command the model suggests, which `abo` treats as it treats a typed one.
 
-Deferred, with triggers:
+### Authentication is not abo's
 
-- **Auth.** Not needed on localhost. When first exposed: TLS + HTTP basic auth at
-  a reverse proxy, not a login page in the app. That plan expires when users
-  exist — a phone client with basic auth is poor, so users mean session cookies
-  and a login page. Build it then; but keep invariant §3.1 so authorization has a
-  place to go.
-- **Users and companies.** One repo per company still works. What does not fit in
-  a books repository is the user table — credentials do not belong in the books.
-  That is the first non-git store in the system; `users.toml` or a small SQLite
-  outside the book repositories is sufficient for a long time.
+abo has no login, no users and no TLS, and never will: whoever reaches its
+port may do anything to the books it serves. It listens on 127.0.0.1 only.
+Run alone, that is one person on their own computer. Reachable by others,
+it runs behind a gateway, which is the login (accounts, sessions, second
+factors), the roles on a project (view, write, admin), and TLS. The gateway runs
+each project's abo in a sandbox on a network of its own, so the gateway is the
+only one that reaches the port.
+
+What abo takes from a gateway is who is asking: `X-Gateway-User`, `X-Gateway-Name`
+and `X-Gateway-Email`, the author of the commits a request makes. It trusts
+them because only the gateway can send them; the gateway replaces any a browser sends.
+A role abo does not check: the gateway refuses a viewer's POST before abo sees it.
+
+The CSRF check above stays abo's: it guards a person's own browser against
+other pages, with or without a gateway in front.
 
 ---
 
@@ -777,7 +783,7 @@ Each with the trigger for revisiting.
 | Not built | Add when |
 |---|---|
 | Account / commodity editor UI | You are editing `accounts.journal` weekly. It is `$EDITOR` plus `hledger check accounts`. |
-| Database | Never, for the books. Only for users (§8). |
+| Database | Never, for the books. Users are the gateway's (§8). |
 | Client-side JavaScript | A workflow genuinely cannot be a form submission. |
 | Bootstrap, Tailwind, or any CSS framework | The hand-written stylesheet stops fitting on one screen, or a component needs behaviour rather than style. |
 | An icon font or an icon package | You need more than about twenty icons. |
@@ -786,7 +792,7 @@ Each with the trigger for revisiting.
 | Currency conversion | Never at booking time. For reporting, `hledger -X`. |
 | QR or structured payment codes on invoices | A customer asks for one. It is a template change plus a QR crate, not an abo change. |
 | Statutory rates in code | Never. They are `[invoice] vat_rate` and `--vat-rate`. |
-| Auth in the application | Users exist (§8). |
+| Auth in the application | Never: the gateway's (§8). |
 | Templating engine, ORM, workspace split | Not foreseen. |
 | A third typst template before it is needed | `templates/payslip.typ` arrives with payroll in §11, not before. |
 | Committing rendered statements | A filing needs archiving. Today they are handed to you. |
