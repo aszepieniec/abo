@@ -132,20 +132,27 @@ src/invoice.rs    issuing an invoice or credit note, and its PDF's data
 src/pdf.rs        typst: a template and its data made a PDF
 src/report.rs     hledger passthrough (-O json / -O csv)
 src/demo.rs       the demo's toy books
-src/web/          axum + maud: a module per page's area, the forms, the data
-                  directory, and style.css
+src/web/          axum + maud: a module per page's area, the forms, the opening
+                  form, and style.css
 ```
 
 No `lib.rs`/`bin/` split, no workspace, no crate-per-module.
+
+The tests are run with `cargo test --no-fail-fast`. Two in
+`src/model/tests.rs`, `every_rule_is_checked` and `every_guarantee_is_tested`,
+fail until what MODEL.md has and the code has not (partners, agreements) is
+built: they are the list of it. Without the flag cargo stops at them and
+never runs `tests/`.
 
 ### Three invariants that keep future work cheap
 
 These are free now and expensive to retrofit. Do not violate them.
 
-1. **Every workflow function takes a context first.** `bill::file(&ctx, ...)`,
-   never `bill::file(...)` reading a global. Multi-company then means building
-   a different `Ctx`. Who is acting is the gateway's to say (§8), and is carried per
-   request.
+1. **Everything acts on the `Store` it is handed.** A `Store` is one
+   company's books, opened (`Store::open`): their directory and what was read
+   from it. Every change is `store.change(op)`; nothing reads a global
+   company. Who is acting is the gateway's to say (§8), and is carried per request
+   (`repo::AUTHOR`), not by the `Store`.
 2. **No rendering below the dispatch layer.** No HTML, no terminal formatting, no
    `println!` inside workflow functions. They return serde structs.
 3. **`--json` on the CLI is the API schema.** The struct a phone client would
