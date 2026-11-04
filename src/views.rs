@@ -528,7 +528,3 @@ pub fn fields_of(b: &Books, id: usize) -> Option<std::collections::BTreeMap<Stri
     Some(f)
 }
 
-/// The invoice template of agreement `a`'s version in force on `day`.
-pub fn template(b: &Books, a: &str, day: model::Date) -> std::collections::BTreeMap<String, String> {
-    b.agreements.get(a).and_then(|ag| ag.template_on(day)).cloned().unwrap_or_default()
-}

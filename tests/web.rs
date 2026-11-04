@@ -1142,6 +1142,11 @@ fn partners_and_agreements_through_the_pages() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     mpost("/agreement/hosting/amend", &amend);
     again(&["contracts/hosting.toml"]);
+    // The form fills in from the version of the day it is for, or the one chosen.
+    let (_, _, page) = http(&s, "GET", "/invoice?agreement=hosting&partner=acme&period_from=2026-01-01&period_to=2026-01-31", &[]);
+    assert!(page.contains("1|110|Hosting") && page.contains("<option value=\"1\" selected>Version 1 from 2026-01-01") && page.contains("formaction=\"/invoice\""), "{page}");
+    let (_, _, page) = http(&s, "GET", "/invoice?agreement=hosting&partner=acme&period_from=2026-01-01&period_to=2026-01-31&version=2&items=xyzzy", &[]);
+    assert!(page.contains("1|120|Hosting") && !page.contains("xyzzy") && page.contains("value=\"2026-01-31\""), "{page}");
 
     let (_, _, page) = http(&s, "GET", "/agreement/hosting", &[]);
     assert!(page.contains("No signed copy of this version is filed yet"), "{page}");

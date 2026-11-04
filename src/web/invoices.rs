@@ -4,17 +4,27 @@ use super::*;
 
 /// `?from=<number>`: filled in as that invoice was, for its correction;
 /// `?again=<number>`, likewise, for another like it. `?partner=<id>`: to
-/// them. `?agreement=<id>`: under it, from the invoice template of the
-/// version in force today.
+/// them. `?agreement=<id>`: under it, from the invoice template of
+/// `?version=<n>`, or of the version in force on the day it is for: its
+/// `period_from`, else today. The date and period sent are kept: the form
+/// refilled from another version's template.
 pub(super) async fn invoice_form(Books(s): Books, Query(q): Query<Fields>) -> Response {
     or_error(&s, "Issue an invoice", || {
         let mut f = Fields::new();
-        if let Some(p) = q.get("partner") {
-            f.insert("partner".into(), p.clone());
+        for k in ["partner", "date", "period_from", "period_to"] {
+            if let Some(v) = q.get(k).filter(|v| !v.trim().is_empty()) {
+                f.insert(k.into(), v.clone());
+            }
         }
-        if let Some(a) = q.get("agreement") {
-            f.extend(views::template(&s.books, a, store::today()?));
+        if let Some((a, ag)) = q.get("agreement").and_then(|a| Some((a, s.books.agreements.get(a)?))) {
+            let day = match q.get("period_from").map(|d| d.trim()).filter(|d| !d.is_empty()) {
+                Some(d) => input::day(Some(d))?,
+                None => store::today()?,
+            };
+            let n = q.get("version").and_then(|v| v.parse::<usize>().ok()).filter(|n| (1..=ag.versions.len()).contains(n)).or(ag.in_force(day)).unwrap_or(1);
+            f.extend(ag.versions[n - 1].template.clone().unwrap_or_default());
             f.insert("agreement".into(), a.clone());
+            f.insert("version".into(), n.to_string());
         }
         let again = q.get("again");
         if let Some(n) = q.get("from").or(again) {
@@ -310,6 +320,21 @@ pub(super) fn invoice_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>)
                     @if !get("like").is_empty() { span.muted.small { " · like " (get("like")) ", filled in from it" } }
                     @if !agreement.is_empty() { span.spacer.muted.small { "Under " a href={"/agreement/" (enc(&agreement))} { (agreement) } } } }
                 div.box-body {
+                    @if let Some(ag) = s.books.agreements.get(&agreement).filter(|ag| ag.versions.len() > 1) {
+                        // ponytail: refilled by a GET of the form, no script;
+                        // what was typed but the partner, date and period is lost.
+                        label.field { "Terms"
+                            span.hint { "The version of the agreement whose invoice template fills in the form. It starts as the one in force on the day the invoice is for, its period's first; the invoice is filed under that one, whichever fills it in. Choosing another fills the form in again, and what was typed in the lines and below is replaced." }
+                            div.party-row {
+                                select name="version" {
+                                    @for (i, v) in ag.versions.iter().enumerate() {
+                                        option value=(i + 1) selected[get("version") == (i + 1).to_string()] { "Version " (i + 1) " from " (v.from) @if v.template.is_none() { " (no template)" } }
+                                    }
+                                }
+                                button.small type="submit" formmethod="get" formaction="/invoice" formnovalidate { (icon("pencil")) " Fill in from it" }
+                            }
+                        }
+                    }
                     @if !parties.is_empty() {
                         label.field { "Partner" span.hint { @if agreement.is_empty() { "Their name, address and tax number are printed, unless given below." } @else { "One of the agreement's parties. Their name, address and tax number are printed, unless given below." } }
                             select name="partner" {

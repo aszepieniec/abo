@@ -165,7 +165,7 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
         s.change(&Op::AgreementEnd { id: who.into(), status: model::AgreementStatus::Terminated { on: ago(to) } }, &[])?;
     }
     // Nordlicht's retainer: what each month's invoice starts from.
-    let template = [("items", "1|1500.00|Retainer, the month"), ("reference", "Retainer")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let template = [("items", "1|1500.00|Retainer"), ("reference", "Retainer")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let version = model::Version { from: month(2), until: None, template: Some(template) };
     s.change(&Op::AgreementAdd { id: "nordlicht-retainer".into(), parties: vec!["nordlicht".into()], version }, &[])?;
     signed(&mut s, "nordlicht-retainer", "Nordlicht AG", month(2))?;
