@@ -22,9 +22,13 @@ pub(super) async fn invoice_form(Books(s): Books, Query(q): Query<Fields>) -> Re
         if let Some(n) = q.get("from").or(again) {
             let id = input::debt(&s.books, n)?;
             let Some(Kind::Invoice { content: c, .. }) = s.books.entry(id).map(|e| &e.kind) else { bail!("{n} is not an invoice") };
-            f.insert("to".into(), c.customer.clone());
+            // To a partner, their details are theirs as they are now: blank.
+            let partner = s.books.partner_of(id).cloned();
+            if partner.is_none() {
+                f.insert("to".into(), c.customer.clone());
+                f.insert("customer_tax_id".into(), c.customer_tax_id.clone());
+            }
             f.insert("items".into(), c.lines.iter().map(|l| format!("{}|{}|{}", l.quantity, l.unit_price, l.description)).collect::<Vec<_>>().join("\n"));
-            f.insert("customer_tax_id".into(), c.customer_tax_id.clone());
             f.insert("reference".into(), c.reference.clone());
             // Filled in as it was given: what the default gave is left blank,
             // for the default to give again. ponytail: inferred, as the books
@@ -53,8 +57,8 @@ pub(super) async fn invoice_form(Books(s): Books, Query(q): Query<Fields>) -> Re
                 None => String::new(),
             };
             // To the partner it was to; another like it is for its own period.
-            if let Some(model::To::Partner(p)) = &c.to {
-                f.insert("partner".into(), p.clone());
+            if let Some(p) = partner {
+                f.insert("partner".into(), p);
             }
             // Its correction is for what it was for: the credit note leaves
             // an agreement's period to do again.
@@ -367,7 +371,7 @@ pub(super) async fn invoices(Books(s): Books, Query(q): Query<Fields>) -> Respon
         let all: Vec<_> = views::invoices(&s.books, store::today()?).into_iter().filter(|i| !open || i.has_open).rev().collect();
         Ok(html! {
             h1 { "Invoices" }
-            (due_box(&s, true))
+            (due_box(&s, Some(true)))
             nav.tabs {
                 a href="/invoices" class=(if open { "" } else { "current" }) { (icon("outbox")) " All" }
                 a href="/invoices?open=1" class=(if open { "current" } else { "" }) { (icon("clock")) " Open" }

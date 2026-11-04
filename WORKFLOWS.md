@@ -158,7 +158,8 @@ each, and the tax number. A partner's page has their invoices, bills and
 agreements, and their details as a form; a change to them changes no
 invoice issued. One nothing names may be removed. CLI: `abo partner [list]`,
 `abo partner add <id>` (asking the name, address and tax number, or
-`--name --address... --tax-id --employee`), `edit <id>`, `remove <id>`.
+`--name --address... --tax-id --employee [yes|no]`), `edit <id>`, `remove
+<id>`. An agreement ending on a day to come pays its party till then.
 **Done when** `partners.toml` holds them, and an invoice to one prints their
 name, address and tax number as they were when it was issued.
 
@@ -170,8 +171,10 @@ one by an entry, every so many months, each period done from its first day
 (in advance) or from the day after its last (in arrears), from a draft of
 the form. Without one it is a contract on record. **Add an agreement**
 (Partners, or a partner's page) asks its short name, its parties, and its
-first version; its page lists its periods, done or due, its versions, and
-forms to amend it, end it (terminated, or subsumed by another, on a day,
+first version; its page lists its periods, done or due, each with the
+version it is under, and the next one to come; its versions, one not yet in
+force marked; and forms to amend it (filled in from the latest version,
+from the next period's first day), end it (terminated, or subsumed by another, on a day,
 today unless said), file each version's signed document, and remove it
 while nothing names it. A version that would take effect on or before the
 last day of a period done is refused, saying from when one may; so is
@@ -232,7 +235,8 @@ one owes, on the same account, dated within 7 days of it either side,
 document or not and however it is split among expenses, unless it is said
 to be another — `abo bill
 --again`, or the checkbox on the form (N8). Under the same number of the supplier's
-it is that bill whatever is said.
+it is that bill whatever is said; two numbers are the same when their
+letters and digits are, in lower case, so `OW-1042` and `ow 1042` are one.
 
 ### B4. Pay a bill, or receive an invoice's payment — Supported (browser, CLI)
 A payment names the one bill or invoice it pays, by its id; whether that is
@@ -267,11 +271,14 @@ debt shows as written off, not settled.
 
 ### B7. Pay or receive a period of an agreement — Supported (browser, CLI)
 A period due to pay (a salary, a rent) or to receive shows on the home page,
-with **Pay it**: the entry form, filled in from the draft, saying the
+with what is due to invoice, with **Pay it**: the entry form, filled in from the draft, saying the
 period; this month's figures are typed over it. A bill may name the partner
 who sent it (**From**, or `abo bill --partner`): then two of theirs under one
 number are one bill, whatever each owes. CLI: `abo post --agreement <id>
 --period <from>..<to> [--desc ...] [postings]`, the draft's where not given.
+The entry is dated as the bookkeeper says, the day paid by default: a
+period paid in arrears whose cost belongs to it is dated, or accrued, by
+them.
 **Done when** the period no longer shows as due, and the entry is tagged
 `agreement:`, `period:` and `partner:` in the journal.
 
@@ -350,7 +357,7 @@ profit and loss is one amount.
 The invoice form's **Partner** fills in their name, address and tax number
 when the customer is left blank; the invoice keeps them as printed. A
 period, from and to, is printed on it. A period due under an agreement shows
-above **Invoices**, with **Invoice it**: the form, filled in from the draft,
+on the home page and above **Invoices**, with **Invoice it**: the form, filled in from the draft,
 to the party, dated today, saying the period; what is changed this month is
 changed there. Each period is done once: invoicing it again is refused
 until its invoice is cancelled, and correcting that invoice issues the new
@@ -361,9 +368,11 @@ command run again issues the same invoice.
 **Done when** the period no longer shows as due, the invoice's page says the
 period and the agreement, and `hledger reg tag:partner=<id>` lists it.
 
-### C5. Issue again — Supported (browser)
+### C5. Issue again — Supported (browser, CLI)
 On an invoice's page, **Issue again** opens the form filled in as it was —
-lines, terms, reference, partner — for another like it, dated today.
+lines, terms, reference, partner — for another like it, dated today. To a
+partner, it is to them as their details are now; the customer is left
+blank. CLI: `abo invoice --like <number>`, what else is given taken over it.
 **Done when** the new invoice says what the old one did, numbered next.
 
 ---
@@ -554,6 +563,43 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 - **Year-end closing entries** (§12) — until then unclosed profit is a computed equity line.
 
 ---
+
+## Partners and agreements, CLI and web runs of 2026-11-04: found and fixed
+
+One agent on the CLI and one in the browser did section 6 of SCENARIOS.md
+(S27 to S31). Both finished; both copies of the books passed `abo check`.
+Fixed, each with a test:
+
+- An agreement terminated or subsumed as of a day to come read as ended
+  already: its employee was marked as paid by no agreement, and its status
+  said "Terminated on" a day not yet come. It is active until its last day.
+- The same bill went in twice as `OW-1042` and `ow-1042` (N8): supplier
+  numbers now compare by their letters and digits, in lower case.
+- An agreement's periods did not say which version each was under, nor
+  show the next period; now they do. A version not yet in force is marked.
+- The amend form started from the version in force today, from today; it
+  starts from the latest version, from the next period's first day.
+- The draft's hint said "For entrys."
+- Amend, terminate and subsume were confirmed as instructions ("Amend the
+  agreement"); they read "Amended", "Terminated", "Subsumed".
+- **Issue again** copied a partner's address as typed text: it is left
+  blank, so their details as they are now are printed.
+- **Back** after adding a partner or an agreement led to the form just
+  sent; Back never leads to a form.
+- `abo file --help` spoke of bills alone; it names contracts too.
+- `partner add --employee` was a bare flag and `edit --employee` took yes
+  or no: both take either.
+- The CLI had no Issue again: `abo invoice --like <number>`.
+- The home page listed only payments due; it lists invoices due too.
+- `abo bills` has a partner column.
+- Demo: Acme's tax number was the company's own; the retainer's draft
+  reference named a year.
+
+Reported and left as decided:
+- A period paid in arrears is dated the day it is paid unless the
+  bookkeeper dates it otherwise; dating or accruing the cost is theirs.
+- Preview "showed nothing": it opens the PDF in a new tab, which the
+  agent's browser tool closed.
 
 ## Fifth and sixth web runs of 2026-10-07: found and fixed
 

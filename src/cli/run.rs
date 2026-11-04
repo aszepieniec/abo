@@ -163,9 +163,29 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             let op = Op::Bill { date, description, postings, document, again, more };
             changed(&mut s, &op, &[], cli.json)
         }
-        Cmd::Invoice { to, partner, agreement, period, items, date, due_days, vat_rate, currency, reference, pay_to, note, customer_tax_id, income, preview, vat_reason } => {
+        Cmd::Invoice { mut to, mut partner, agreement, period, like, items, date, due_days, vat_rate, currency, reference, pay_to, note, mut customer_tax_id, income, preview, vat_reason } => {
             let mut s = Store::open(&here)?;
             let under = input::made_for(agreement.as_deref(), period.as_deref())?;
+            // Like another: what it says, to whom it was, unless given.
+            let like = match &like {
+                Some(n) => {
+                    let id = input::debt(&s.books, n)?;
+                    let Some(model::Kind::Invoice { content: c, .. }) = s.books.entry(id).map(|e| &e.kind) else { bail!("--like {n}: {n} is not an invoice") };
+                    if to.is_empty() && partner.is_none() {
+                        match s.books.partner_of(id) {
+                            Some(p) => partner = Some(p.clone()),
+                            None => {
+                                to = c.customer.lines().map(String::from).collect();
+                                if customer_tax_id.is_empty() {
+                                    customer_tax_id = c.customer_tax_id.clone();
+                                }
+                            }
+                        }
+                    }
+                    views::fields_of(&s.books, id)
+                }
+                None => None,
+            };
             let period = period.as_deref().map(input::period).transpose()?;
             let target = match (partner, agreement) {
                 (Some(p), _) => Some(model::To::Partner(p)),
@@ -176,7 +196,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 bail!("a customer is needed: --to, a line of theirs each, or --partner or --agreement");
             }
             // For a period of an agreement, what is not given is its draft's.
-            let draft = under.as_ref().map(|f| views::draft(&s.books, &f.agreement, &f.period)).unwrap_or_default();
+            let draft = like.or_else(|| under.as_ref().map(|f| views::draft(&s.books, &f.agreement, &f.period))).unwrap_or_default();
             let from = |given: Option<String>, k: &str| given.or_else(|| draft.get(k).cloned()).unwrap_or_default();
             let (reference, note, vat_reason) = (from(reference, "reference"), from(note, "note"), from(vat_reason, "vat_reason"));
             let currency = currency.or_else(|| draft.get("currency").cloned());
@@ -282,7 +302,8 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                             // it is what a supplier's reminder is matched against.
                             let number = b.number.clone().unwrap_or_default();
                             let due = b.due.as_ref().map_or(String::new(), |d| format!("due {d}"));
-                            format!("{:>5}  {}  {:<12}  {:<36}  {:>16}  {:<14}  {:<11}  {}", b.entry, b.date, number, cut(&b.description), b.owed.text(" "), due, doc, said)
+                            let partner = b.partner.clone().unwrap_or_default();
+                            format!("{:>5}  {}  {:<14}  {:<12}  {:<36}  {:>16}  {:<14}  {:<11}  {}", b.entry, b.date, partner, number, cut(&b.description), b.owed.text(" "), due, doc, said)
                         })
                         .collect();
                     lines.join("\n")

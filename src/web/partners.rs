@@ -7,7 +7,7 @@ use super::*;
 /// apart, each one no active agreement pays marked.
 pub(super) async fn partners_list(Books(s): Books) -> Response {
     or_error(&s, "Partners", || {
-        let all = views::partners(&s.books);
+        let all = views::partners(&s.books, store::today()?);
         let (employees, others): (Vec<_>, Vec<_>) = all.iter().partition(|p| p.employee);
         let agreements = views::agreements(&s.books, store::today()?);
         Ok(html! {
@@ -67,13 +67,14 @@ fn partner_table(title: &str, rows: &[&views::PartnerRow]) -> Markup {
 }
 
 fn status_said(a: &views::AgreementView) -> String {
-    match (a.status, &a.ended_on, &a.subsumed_by) {
-        ("subsumed", Some(on), Some(by)) => format!("Subsumed by {by} on {on}"),
-        ("terminated", Some(on), _) => format!("Terminated on {on}"),
-        _ => match &a.last_day {
-            Some(l) => format!("Active, until {l}"),
-            None => "Active".into(),
-        },
+    match (a.ended, &a.ended_on, &a.subsumed_by, &a.last_day) {
+        (true, Some(on), Some(by), _) => format!("Subsumed by {by}, its last day {on}"),
+        (true, Some(on), None, _) => format!("Terminated, its last day {on}"),
+        (false, Some(on), Some(by), _) => format!("Active until {on}, then subsumed by {by}"),
+        (false, Some(on), None, _) => format!("Active until {on}, terminated"),
+        (true, None, _, Some(l)) => format!("Ended, its last day {l}"),
+        (false, None, _, Some(l)) => format!("Active, until {l}"),
+        _ => "Active".into(),
     }
 }
 
@@ -86,7 +87,7 @@ pub(super) async fn partner_new(Books(s): Books) -> Response {
 
 pub(super) async fn partner_view(Books(s): Books, Path(id): Path<String>) -> Response {
     or_error(&s, "Partner", || {
-        let p = views::partners(&s.books).into_iter().find(|p| p.id == id).ok_or_else(|| input::not_found(format!("there is no partner {id}")))?;
+        let p = views::partners(&s.books, store::today()?).into_iter().find(|p| p.id == id).ok_or_else(|| input::not_found(format!("there is no partner {id}")))?;
         Ok(partner_page(&s, &p, &partner_fields(&s.books, &id), None))
     })
 }
@@ -213,7 +214,7 @@ fn partner_changed(mut s: Store, id: Option<String>, f: Fields) -> Response {
     });
     match r {
         Ok(to) => Redirect::to(&to).into_response(),
-        Err(e) => again(&s, "Partner", || match views::partners(&s.books).into_iter().find(|p| p.id == id) {
+        Err(e) => again(&s, "Partner", || match views::partners(&s.books, store::today()?).into_iter().find(|p| p.id == id) {
             Some(p) => Ok(partner_page(&s, &p, &f, Some(&e))),
             None => Ok(partner_form(&s, None, &f, Some(&e))),
         }),
@@ -251,13 +252,14 @@ pub(super) async fn agreement_view(Books(s): Books, Path(id): Path<String>) -> R
     })
 }
 
-/// The amend form, filled in from the version in force today, from today.
+/// The amend form, filled in from the latest version, from the next
+/// period's first day; from today, with no period next.
 fn amend_fields(b: &Model, id: &str) -> Result<Fields> {
     let mut f = Fields::new();
-    let Some(a) = b.agreements.get(id) else { return Ok(f) };
+    let Some(v) = b.agreements.get(id).and_then(|a| a.versions.last()) else { return Ok(f) };
     let today = store::today()?;
-    let v = &a.versions[a.in_force(today).unwrap_or(a.versions.len()) - 1];
-    f.insert("from".into(), today.to_string());
+    let from = views::agreement(b, id, today).and_then(|a| a.next).map_or(today.to_string(), |p| p.from);
+    f.insert("from".into(), from);
     f.insert("until".into(), v.until.map(|d| d.to_string()).unwrap_or_default());
     if let Some(s) = &v.schedule {
         f.insert("does".into(), views::does_word(s.does).into());
@@ -312,7 +314,7 @@ fn version_fields(b: &Model, f: &Fields) -> Markup {
             span.hint { "What each period's invoice or entry starts from: those for invoices with a schedule of invoices, those for entries with one that pays or receives. Left blank, the form starts blank." }
             @for (k, form, said) in WEB_DRAFT {
                 @let name = format!("draft-{k}");
-                label.field { (said) span.hint { "For " (form) "s." }
+                label.field { (said) span.hint { @if form == "invoice" { "For invoices." } @else { "For entries." } }
                     @if matches!(k, "items" | "postings") { textarea name=(name) rows="3" { (get(&name)) } }
                     @else { input type="text" name=(name) value=(get(&name)); }
                 }
@@ -406,15 +408,16 @@ fn agreement_page(s: &Store, a: &views::AgreementView, f: &Fields, error: Option
         }
         div.box {
             div.box-header { (icon("clock")) "Periods" }
-            @if a.periods.is_empty() {
+            @if a.periods.is_empty() && a.next.is_none() {
                 div.box-body { p.muted { "None through today." } }
             } @else {
                 table.list {
-                    thead { tr { th { "Period" } th { "What" } th {} } }
-                    tbody { @for p in a.periods.iter().rev() {
+                    thead { tr { th { "Period" } th { "What" } th { "Under" } th {} } }
+                    tbody { @for p in a.next.iter().chain(a.periods.iter().rev()) {
                         tr {
                             td.date { (p.from) " – " (p.to) }
                             td { (p.does) " " (p.party) }
+                            td { "version " (p.version) }
                             td { @match (&p.done_by, p.entry) {
                                 (Some(by), Some(e)) => a href={"/entry/" (e)} { (by) },
                                 _ if p.due && may_change() => (do_period(p)),
@@ -428,7 +431,7 @@ fn agreement_page(s: &Store, a: &views::AgreementView, f: &Fields, error: Option
         }
         @for v in a.versions.iter().rev() {
             div.box {
-                div.box-header { (icon("doc")) "Version " (v.n) " from " (v.from) @if let Some(u) = &v.until { " until " (u) } @if a.in_force == Some(v.n) { " " span.pill.pill-info { "in force" } } }
+                div.box-header { (icon("doc")) "Version " (v.n) " from " (v.from) @if let Some(u) = &v.until { " until " (u) } @if a.in_force == Some(v.n) { " " span.pill.pill-info { "in force" } } @else if v.from > today { " " span.pill { "not yet in force" } } }
                 div.box-body {
                     @match (v.does, &v.party, v.every, v.billed) {
                         (Some(d), Some(p), Some(e), Some(b)) => p { (d) " " (p) ", every " (e) " month" @if e != 1 { "s" } ", " (b.replace('-', " ")) },
@@ -498,16 +501,17 @@ fn do_period(p: &views::PeriodView) -> Markup {
     html! { a.btn.small.btn-primary href=(href) { (icon(if p.does == "invoice" { "outbox" } else { "coins" })) " " (said) } }
 }
 
-/// What is due, as a box above a list: to invoice, or to pay or receive.
-pub(super) fn due_box(s: &Store, invoices: bool) -> Markup {
+/// What is due, as a box above a list: to invoice, with `Some(true)`; to
+/// pay or receive, with `Some(false)`; all of it, with `None`.
+pub(super) fn due_box(s: &Store, invoices: Option<bool>) -> Markup {
     let Ok(today) = store::today() else { return html! {} };
-    let due: Vec<views::PeriodView> = views::due(&s.books, today).into_iter().filter(|p| (p.does == "invoice") == invoices).collect();
+    let due: Vec<views::PeriodView> = views::due(&s.books, today).into_iter().filter(|p| invoices.is_none_or(|i| (p.does == "invoice") == i)).collect();
     if due.is_empty() {
         return html! {};
     }
     html! {
         div.box {
-            div.box-header { (icon("clock")) @if invoices { "Due to invoice" } @else { "Due to pay or receive" } }
+            div.box-header { (icon("clock")) @match invoices { Some(true) => "Due to invoice", Some(false) => "Due to pay or receive", None => "Due under agreements" } }
             table.list {
                 tbody { @for p in &due {
                     tr {

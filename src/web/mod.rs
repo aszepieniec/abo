@@ -534,8 +534,7 @@ fn view_only(h: &HeaderMap) -> bool {
 /// only look, a page saying so in their place.
 async fn looks_only(axum::extract::State(root): axum::extract::State<Arc<PathBuf>>, req: axum::extract::Request, next: axum::middleware::Next) -> Response {
     let p = req.uri().path();
-    let form = matches!(p, "/post" | "/invoice" | "/pay" | "/bill" | "/company/payment" | "/partners/new" | "/agreements/new") || (p.starts_with("/invoice/") && p.ends_with("/correct"));
-    if may_change() || !form || !req.method().is_safe() {
+    if may_change() || !is_form(p) || !req.method().is_safe() {
         return next.run(req).await;
     }
     let s = match Store::open(&root) {
@@ -570,9 +569,16 @@ fn back_to(fallback: &str) -> String {
     back_from(BACK.try_with(Clone::clone).ok().flatten(), &here, fallback)
 }
 
+/// A page that is a form to change the books by.
+fn is_form(p: &str) -> bool {
+    matches!(p, "/post" | "/invoice" | "/pay" | "/bill" | "/company/payment" | "/partners/new" | "/agreements/new") || (p.starts_with("/invoice/") && p.ends_with("/correct"))
+}
+
+/// Not to this page itself, nor to a form: what it came from may be the
+/// form just sent.
 fn back_from(referer: Option<String>, here: &str, fallback: &str) -> String {
     referer
-        .filter(|b| b.split('?').next() != Some(here))
+        .filter(|b| b.split('?').next().is_some_and(|p| p != here && !is_form(p)))
         .map(|b| {
             let (path, query) = b.split_once('?').unwrap_or((&b, ""));
             let q: Vec<&str> = query.split('&').filter(|kv| !kv.is_empty() && !kv.starts_with("done=")).collect();
@@ -836,6 +842,8 @@ mod tests {
         // none, or this page itself shown again after a refusal
         assert_eq!(b(None), "/invoices");
         assert_eq!(b(Some("/invoices/pay?n=2026-0003")), "/invoices");
+        // nor the form just sent
+        assert_eq!(b(Some("/partners/new")), "/invoices");
     }
 
     use super::{back_from, same_origin};

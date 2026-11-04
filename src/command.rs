@@ -292,9 +292,9 @@ pub fn subject(op: &Op, m: &Books, n: &Books) -> String {
         Op::PartnerRemove { id } => format!("Remove the partner {id}"),
         Op::AgreementAdd { id, .. } => format!("Add the agreement {id}"),
         Op::Amend { id, .. } => format!("Amend the agreement {id}: version {}", n.agreements.get(id).map_or(0, |a| a.versions.len())),
-        Op::AgreementEnd { id, status: model::AgreementStatus::Subsumed { by, on } } => format!("The agreement {id} is subsumed by {by} on {on}"),
+        Op::AgreementEnd { id, status: model::AgreementStatus::Subsumed { by, on } } => format!("Subsume the agreement {id} by {by}, its last day {on}"),
         Op::AgreementEnd { id, status } => format!("Terminate the agreement {id}{}", match status {
-            model::AgreementStatus::Terminated { on } => format!(" on {on}"),
+            model::AgreementStatus::Terminated { on } => format!(", its last day {on}"),
             _ => String::new(),
         }),
         Op::AgreementRemove { id } => format!("Remove the agreement {id}"),
@@ -424,10 +424,11 @@ fn a_command_is_shown_as_a_shell_takes_it() {
 /// verb in the past, and what it was done to. `Book Rent, October` is
 /// (`Booked`, `Rent, October`).
 pub fn done(what: &str) -> (String, String) {
-    const VERBS: [(&str, &str); 16] = [
+    const VERBS: [(&str, &str); 19] = [
         ("Declare ", "Declared"), ("Take out ", "Took out"), ("Record ", "Recorded"), ("Change ", "Changed"), ("Set ", "Set"),
         ("Unset ", "Unset"), ("File ", "Filed"), ("Book the bill ", "Booked the bill"), ("Book ", "Booked"), ("Pay ", "Paid"), ("Write off ", "Wrote off"),
         ("Revert ", "Reverted"), ("Add ", "Added"), ("Remove ", "Removed"), ("Undo ", "Undid"), ("Close ", "Closed"),
+        ("Amend ", "Amended"), ("Terminate ", "Terminated"), ("Subsume ", "Subsumed"),
     ];
     VERBS
         .iter()

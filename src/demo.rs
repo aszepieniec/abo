@@ -128,7 +128,7 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
     // Partners: two customers, a customer under a retainer, the hosting
     // supplier, and an employee.
     let partner = |s: &mut Store, id: &str, lines: &str, tax_id: &str, employee: bool| s.change(&Op::PartnerAdd { id: id.into(), partner: model::Partner { lines: lines.into(), tax_id: tax_id.into(), employee } }, &[]);
-    partner(&mut s, "acme", "Acme Hosting AG\nServer Street 1\n8000 Zurich", "CHE-123.456.789", false)?;
+    partner(&mut s, "acme", "Acme Hosting AG\nServer Street 1\n8000 Zurich", "CHE-111.222.333", false)?;
     partner(&mut s, "customer-one", "Customer One\n1 Customer Lane\n10000 Example City", "", false)?;
     partner(&mut s, "customer-three", "Customer Three\n3 Example Road\n10000 Example City", "", false)?;
     partner(&mut s, "nordlicht", "Nordlicht AG\nSeestrasse 12\n8002 Zurich", "CHE-987.654.321", false)?;
@@ -149,7 +149,7 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
     let version = model::Version { from: month(5), until: None, schedule: schedule("sam", model::Does::Pay, model::Billed::InArrears, &draft) };
     s.change(&Op::AgreementAdd { id: "sam".into(), parties: vec!["sam".into()], version }, &[])?;
     // Nordlicht's retainer: invoiced each month, at its start.
-    let draft = [("items", "1|1500.00|Retainer, the month"), ("reference", "Retainer 2026")];
+    let draft = [("items", "1|1500.00|Retainer, the month"), ("reference", "Retainer")];
     let version = model::Version { from: month(2), until: None, schedule: schedule("nordlicht", model::Does::Invoice, model::Billed::InAdvance, &draft) };
     s.change(&Op::AgreementAdd { id: "nordlicht-retainer".into(), parties: vec!["nordlicht".into()], version }, &[])?;
 

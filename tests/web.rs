@@ -1148,7 +1148,7 @@ fn partners_and_agreements_through_the_pages() {
     post("/agreement/hosting/end", &[("token", "a8"), ("on", "2026-06-30"), ("by", "")]);
     again(&["contracts/hosting.toml"]);
     let (_, _, page) = http(&s, "GET", "/agreement/hosting", &[]);
-    assert!(page.contains("Terminated on 2026-06-30") && !page.contains("/agreement/hosting/amend"), "{page}");
+    assert!(page.contains("Terminated, its last day 2026-06-30") && !page.contains("/agreement/hosting/amend"), "{page}");
 
     // Named by an invoice and an agreement, acme is not removed.
     let (status, _, page) = http(&s, "POST", "/partner/acme/remove", &[("token", "a9")]);

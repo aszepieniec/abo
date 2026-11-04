@@ -44,9 +44,9 @@ pub(crate) enum PartnerCmd {
         id: String,
         #[command(flatten)]
         details: PartnerFlags,
-        /// One the company employs.
-        #[arg(long)]
-        employee: bool,
+        /// One the company employs: yes or no; alone, yes.
+        #[arg(long, num_args = 0..=1, default_missing_value = "yes", value_name = "yes|no")]
+        employee: Option<String>,
     },
     /// Change a partner's details. Without flags it asks again, each answer
     /// on the line as it stands. No invoice changes: each keeps what it
@@ -55,8 +55,8 @@ pub(crate) enum PartnerCmd {
         id: String,
         #[command(flatten)]
         details: PartnerFlags,
-        /// yes or no.
-        #[arg(long)]
+        /// One the company employs: yes or no; alone, yes.
+        #[arg(long, num_args = 0..=1, default_missing_value = "yes", value_name = "yes|no")]
         employee: Option<String>,
     },
     /// Remove a partner nothing names: one added by mistake.
@@ -81,8 +81,9 @@ pub(crate) enum AgreementCmd {
     /// Every agreement, with what is due under it today. The same as no
     /// subcommand.
     List,
-    /// An agreement: its parties, status, versions and documents, and its
-    /// periods through today, each done or due.
+    /// An agreement: its parties, status, versions and documents, its
+    /// periods through today, each done or due, and the next. `abo file
+    /// --for AGREEMENT/N` files a version's document.
     Show { id: String },
     /// Add an agreement with the partners party to it, and its first
     /// version.
@@ -472,11 +473,12 @@ pub(crate) enum Cmd {
         /// `'Expenses:General=12.50 USD'`.
         postings: Vec<String>,
     },
-    /// Put a bill's document in the books, at
-    /// bills/<year>/<date>-<issuer>-<hash>.<ext>. `abo bill --document` then
-    /// books it.
+    /// Put a document in the books: a bill's, at
+    /// bills/<year>/<date>-<issuer>-<hash>.<ext>, which `abo bill --document`
+    /// then books; or, with --for AGREEMENT/N, a contract or an amendment as
+    /// signed, at contracts/<agreement>/<date>-<issuer>-<hash>.<ext>.
     File {
-        /// The date on the bill.
+        /// The date on it.
         #[arg(long)]
         date: String,
         /// Who issued it.
@@ -553,6 +555,12 @@ pub(crate) enum Cmd {
         /// period of the agreement, or of any supply.
         #[arg(long)]
         period: Option<String>,
+        /// Another like invoice NUMBER, as Issue again on the web: its
+        /// lines, reference, note, currency, VAT, terms and income account,
+        /// to its partner, or to its customer as printed. What is given here
+        /// is taken over them; the period is not kept.
+        #[arg(long, value_name = "NUMBER", conflicts_with = "agreement")]
+        like: Option<String>,
         /// `quantity|unit price|description`, repeatable; a negative quantity,
         /// such as a discount's, as it is: `--item -1|20|Discount`.
         #[arg(long = "item", allow_hyphen_values = true)]

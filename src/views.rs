@@ -182,6 +182,8 @@ pub struct BillRow {
     pub document: Option<String>,
     /// The supplier's number for it, if the bill gave one.
     pub number: Option<String>,
+    /// The partner it is from, by id, if it names one.
+    pub partner: Option<String>,
     /// When it is due, if the bill said.
     pub due: Option<String>,
     /// Something open past its due date.
@@ -207,6 +209,7 @@ pub fn bills(b: &Books, today: model::Date) -> Vec<BillRow> {
                 status: b.status(id, &standing).map_or("", model::Status::word),
                 document: b.document_of(id).map(|(h, doc)| doc.path(h)),
                 number: (!more.number.is_empty()).then(|| more.number.clone()),
+                partner: more.partner.clone(),
                 due: more.due.map(|x| x.to_string()),
                 overdue: !open.is_zero() && more.due.is_some_and(|x| x < today),
             })
@@ -327,15 +330,16 @@ pub struct PartnerEntry {
     pub description: String,
 }
 
-/// Every partner, in the order of their ids; employees too, marked.
-pub fn partners(b: &Books) -> Vec<PartnerRow> {
+/// Every partner, in the order of their ids; employees too, marked: an
+/// agreement pays them on `today` that has not ended before it.
+pub fn partners(b: &Books, today: model::Date) -> Vec<PartnerRow> {
     b.partners
         .iter()
         .map(|(id, p)| {
             let (to, by) = b.owed(id);
             let amounts = |m: std::collections::BTreeMap<String, Decimal>| m.into_iter().map(|(c, q)| Amount::new(b, q, &c)).collect();
             let agreements: Vec<String> = b.agreements_of(id).into_iter().cloned().collect();
-            let pays = |a: &model::Agreement| a.status == model::AgreementStatus::Active && a.versions.iter().any(|v| v.schedule.as_ref().is_some_and(|s| s.party == *id && s.does == model::Does::Pay));
+            let pays = |a: &model::Agreement| a.last_day().is_none_or(|l| l >= today) && a.versions.iter().any(|v| v.schedule.as_ref().is_some_and(|s| s.party == *id && s.does == model::Does::Pay));
             let unpaid = p.employee && !b.agreements.values().any(pays);
             let entries = (1..=b.entries.len())
                 .rev()
@@ -364,8 +368,10 @@ pub struct AgreementView {
     pub parties: Vec<String>,
     /// active, terminated or subsumed.
     pub status: &'static str,
-    /// The day it was terminated or subsumed on.
+    /// The last day its termination or subsumption leaves it.
     pub ended_on: Option<String>,
+    /// Its last day is before today.
+    pub ended: bool,
     /// The agreement it is subsumed by.
     pub subsumed_by: Option<String>,
     /// The earlier of its terms' end and its status's.
@@ -375,6 +381,8 @@ pub struct AgreementView {
     pub versions: Vec<VersionView>,
     /// Through today: each done or not, and whether it is due.
     pub periods: Vec<PeriodView>,
+    /// The first period that begins after today.
+    pub next: Option<PeriodView>,
 }
 
 #[derive(serde::Serialize)]
@@ -462,18 +470,36 @@ pub fn agreement(b: &Books, id: &str, today: model::Date) -> Option<AgreementVie
         ended_on: a.ended_on().map(|d| d.to_string()),
         subsumed_by,
         last_day: a.last_day().map(|d| d.to_string()),
+        ended: a.last_day().is_some_and(|l| l < today),
         in_force: a.in_force(today),
         versions,
         periods: periods(b, id, today),
+        next: next(b, id, today),
     })
 }
 
 /// Agreement `id`'s periods that begin on or before `today`.
 fn periods(b: &Books, id: &str, today: model::Date) -> Vec<PeriodView> {
     let Some(a) = b.agreements.get(id) else { return vec![] };
+    viewed(b, id, a.periods(today), today)
+}
+
+/// Agreement `id`'s first period that begins after `today`: one period
+/// of the longest schedule's months on, or on the last version's first day.
+fn next(b: &Books, id: &str, today: model::Date) -> Option<PeriodView> {
+    let a = b.agreements.get(id)?;
+    let months = a.versions.iter().filter_map(|v| v.schedule.as_ref()).map(|s| s.every).max()?;
+    let on = today.checked_add(jiff::Span::new().months(i64::from(months) + 1)).unwrap_or(today);
+    let through = a.versions.iter().map(|v| v.from).max().map_or(on, |f| f.max(on));
+    let after: Vec<_> = a.periods(through).into_iter().filter(|(_, p)| p.from > today).take(1).collect();
+    viewed(b, id, after, today).pop()
+}
+
+fn viewed(b: &Books, id: &str, periods: Vec<(usize, model::Period)>, today: model::Date) -> Vec<PeriodView> {
+    let Some(a) = b.agreements.get(id) else { return vec![] };
     let done = b.done(&b.standing());
     let due = b.due(id, today);
-    a.periods(today)
+    periods
         .into_iter()
         .filter_map(|(n, p)| {
             let s = a.schedule(n)?;

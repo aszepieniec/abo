@@ -1012,7 +1012,10 @@ neither for an entry made long ago.
   added that owes what a standing bill owes under the same number of the
   supplier's, whatever the dates of the two, and whether or not the
   operation says it is another: a supplier numbers each bill once, so it is
-  that bill. Where both bills name the same partner, the number alone says
+  that bill. Two numbers are the same when their letters and digits are,
+  in lower case: `OW-1042`, `ow 1042` and `OW1042` are one number, as a
+  supplier's number is copied by hand and its marks with it; one with
+  neither letters nor digits is the same as none. Where both bills name the same partner, the number alone says
   so, whatever either owes; where they name two, their numbers say nothing
   of each other.
 - **N10** No version is added to an agreement that takes effect on or before
@@ -1226,8 +1229,8 @@ browser's **File and book it** is the one such pair: a `file` and the
 Partners and agreements are kept by commands, as declarations are:
 
 ```
-abo partner   [list]   add <id> [--name --address... --tax-id --employee]
-              edit <id> [--name --address... --tax-id --employee=yes|no]
+abo partner   [list]   add <id> [--name --address... --tax-id --employee[=yes|no]]
+              edit <id> [--name --address... --tax-id --employee[=yes|no]]
               remove <id>
 abo agreement [list]   show <id>   remove <id>
 abo agreement add <id> --partner=<id>... --from=<date> [--until=<date>]
@@ -1239,6 +1242,7 @@ abo agreement terminate <id> [--on=<date>]  subsume <id> --by=<id> [--on=<date>]
 abo file    --for=<id>/<n> ... <file>
 abo bill    --partner=<id> ...
 abo invoice --partner=<id> ...
+abo invoice --like=<number> ...
 abo invoice --agreement=<id> --period=<from>..<to> ...
 abo post    --agreement=<id> --period=<from>..<to> ...
 ```
@@ -1253,7 +1257,10 @@ with; `--every` is 1 unless given. `--draft=<field>=<value>` sets a field
 of the draft, and again for the same field adds a line to it; `<field>=`
 alone clears it. `--draft-from` fills the draft from an issued invoice's
 content, as **Issue again** fills the form, or from an entry's, as the
-entry form is filled from one. `terminate` and `subsume` end it on the day
+entry form is filled from one. `invoice --like` fills the invoice as
+**Issue again** fills the form: to its partner as their details are now,
+or to its customer as printed; what else is given is taken over it.
+`terminate` and `subsume` end it on the day
 they are run, unless `--on` says another. `abo file --for` names a bill by
 its id, or an agreement's version as `<id>/<n>`. An invoice or an entry
 for a period of an agreement takes what it is not given from the draft of

@@ -2313,11 +2313,13 @@ fn bills_alike_are_refused_unless_another(#[strategy(plan())] plan: Vec<Step>, b
     prop_assert!(!n8(&apply(&m, &twice(true), today)));
     // Under the bill's own number of the supplier's, the same whatever its date.
     if let Kind::Bill(_, more) = &e.kind {
-        if !more.number.is_empty() {
+        if !super::bill_number_key(&more.number).is_empty() {
             let numbered = Op::Bill { date, description: "Again".into(), postings: postings.clone(), document: None, again: false, more: BillMore { number: more.number.clone(), due: None, partner: None } };
             prop_assert!(n8(&apply(&m, &numbered, today)), "the same number {:?} and debt were not refused", more.number);
-            // Said to be another, all the same: a supplier numbers each bill once.
-            let another = Op::Bill { date, description: "Again".into(), postings: postings.clone(), document: None, again: true, more: BillMore { number: more.number.clone(), due: None, partner: None } };
+            // Said to be another, all the same: a supplier numbers each bill
+            // once; copied otherwise in case and marks, it is the same number.
+            let copied: String = more.number.chars().filter(|c| *c != '-').flat_map(char::to_uppercase).collect();
+            let another = Op::Bill { date, description: "Again".into(), postings: postings.clone(), document: None, again: true, more: BillMore { number: copied, due: None, partner: None } };
             prop_assert!(n8(&apply(&m, &another, today)), "the same number {:?}, said to be another, was taken", more.number);
         }
     }

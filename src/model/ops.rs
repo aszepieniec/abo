@@ -622,6 +622,12 @@ fn config_edited(c: &Config, key: &str, value: Option<&str>) -> Result<Config, S
     root.try_into().map_err(|_: toml::de::Error| format!("{shown_key}: abo.toml would not be read with it"))
 }
 
+/// A supplier's number as N8 compares it: its letters and digits, in
+/// lower case. `OW-1042`, `ow 1042` and `OW1042` are one number.
+pub fn bill_number_key(n: &str) -> String {
+    n.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
 /// How many days apart two bills owing the same are taken for one (N8).
 pub const BILL_WEEK: i32 = 7;
 
@@ -744,7 +750,8 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
             _ => ("", None),
         };
         // Bills of two partners: their numbers say nothing of each other.
-        let same_number = |k: &Kind| matches!(k, Kind::Bill(_, more) if !number.is_empty() && more.number == number && !matches!((partner, &more.partner), (Some(a), Some(b)) if a != b));
+        let number_key = bill_number_key(number);
+        let same_number = |k: &Kind| matches!(k, Kind::Bill(_, more) if !number_key.is_empty() && bill_number_key(&more.number) == number_key && !matches!((partner, &more.partner), (Some(a), Some(b)) if a != b));
         let owes_same = |id: EntryId| standing[id] && matches!(m.entries[id - 1].kind, Kind::Bill(..)) && m.debt(id).as_ref() == Some(&new);
         // Of one partner, under one number of theirs, whatever either owes.
         let same_partner = |id: EntryId| partner.is_some() && standing[id] && matches!(&m.entries[id - 1].kind, Kind::Bill(_, more) if more.partner.as_ref() == partner);
@@ -771,7 +778,7 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
     if let Op::Amend { id, version } = op {
         if let Some(a) = m.agreements.get(id) {
             if a.status != AgreementStatus::Active {
-                no!("N11", "agreement {id} has ended, on {}; an agreement ended takes no new version", a.ended_on().unwrap());
+                no!("N11", "agreement {id} is ended, its last day {}; an agreement ended takes no new version", a.ended_on().unwrap());
             }
             let standing = m.standing();
             if let Some(((_, p), _)) = m.done(&standing).into_iter().filter(|((x, _), _)| *x == id).max_by_key(|((_, p), _)| p.to).filter(|((_, p), _)| version.from <= p.to) {
@@ -781,7 +788,7 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
     }
     if let Op::AgreementEnd { id, .. } = op {
         if let Some(a) = m.agreements.get(id).filter(|a| a.status != AgreementStatus::Active) {
-            no!("N11", "agreement {id} has ended already, on {}; what became of it does not change but by undo", a.ended_on().unwrap());
+            no!("N11", "agreement {id} is ended already, its last day {}; what became of it does not change but by undo", a.ended_on().unwrap());
         }
     }
     v

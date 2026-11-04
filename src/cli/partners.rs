@@ -17,6 +17,7 @@ pub(crate) fn partner(here: &Path, json: bool, change: Option<PartnerCmd>) -> Re
         // ponytail: three questions, asked here; the web's form has the same
         // three fields. Into questions.rs should a third place ask them.
         Some(PartnerCmd::Add { id, details, employee }) => {
+            let employee = yes_no(employee)?.unwrap_or(false);
             let (name, address, tax_id) = if details.given() || ni() {
                 (details.name.clone().context("a partner's name is needed: --name")?, details.address.join("\n"), details.tax_id.clone().unwrap_or_default())
             } else {
@@ -31,12 +32,7 @@ pub(crate) fn partner(here: &Path, json: bool, change: Option<PartnerCmd>) -> Re
             let p = s.books.partners.get(&id);
             let lines = p.map_or("", |p| p.lines.as_str());
             let (name, address) = lines.split_once('\n').unwrap_or((lines, ""));
-            let employee = employee.map(|e| match e.as_str() {
-                "yes" => Ok(true),
-                "no" => Ok(false),
-                _ => bail!("--employee takes yes or no, not {e}"),
-            });
-            let employee = employee.transpose()?;
+            let employee = yes_no(employee)?;
             if details.given() || employee.is_some() || ni() {
                 let lines = (details.name.is_some() || !details.address.is_empty()).then(|| {
                     let address = if details.address.is_empty() { address.to_string() } else { details.address.join("\n") };
@@ -57,6 +53,15 @@ pub(crate) fn partner(here: &Path, json: bool, change: Option<PartnerCmd>) -> Re
     changed(&mut s, &op, &[], json)
 }
 
+fn yes_no(e: Option<String>) -> Result<Option<bool>> {
+    e.map(|e| match e.as_str() {
+        "yes" => Ok(true),
+        "no" => Ok(false),
+        _ => bail!("--employee takes yes or no, not {e}"),
+    })
+    .transpose()
+}
+
 /// A name, then an address's lines.
 fn joined(name: &str, address: &str) -> String {
     [name, address].iter().filter(|l| !l.trim().is_empty()).copied().collect::<Vec<_>>().join("\n")
@@ -74,7 +79,7 @@ fn amounts(v: &[views::Amount]) -> String {
 
 fn list(s: &Store, json: bool) -> Result<()> {
     still(s);
-    let all = views::partners(&s.books);
+    let all = views::partners(&s.books, store::today()?);
     emit(json, &all, || {
         if all.is_empty() {
             return "No partners yet; abo partner add adds one.".into();
@@ -152,10 +157,13 @@ pub(crate) fn agreement(here: &Path, json: bool, change: Option<AgreementCmd>) -
 }
 
 fn status(a: &views::AgreementView) -> String {
-    match (a.status, &a.ended_on, &a.subsumed_by) {
-        ("subsumed", Some(on), Some(by)) => format!("subsumed by {by} on {on}"),
-        (s, Some(on), _) => format!("{s} on {on}"),
-        (s, ..) => s.to_string(),
+    match (a.ended, &a.ended_on, &a.subsumed_by) {
+        (true, Some(on), Some(by)) => format!("subsumed by {by}, its last day {on}"),
+        (true, Some(on), None) => format!("terminated, its last day {on}"),
+        (false, Some(on), Some(by)) => format!("active until {on}, then subsumed by {by}"),
+        (false, Some(on), None) => format!("active until {on}, terminated"),
+        (true, None, _) => "ended".into(),
+        (false, None, _) => "active".into(),
     }
 }
 
@@ -178,15 +186,15 @@ fn show(a: &views::AgreementView) -> String {
             out += &format!("\n    document: {d}");
         }
     }
-    if !a.periods.is_empty() {
+    if !a.periods.is_empty() || a.next.is_some() {
         out += "\nPeriods:";
-        for p in &a.periods {
+        for p in a.periods.iter().chain(&a.next) {
             let state = match (&p.done_by, p.due) {
                 (Some(by), _) => format!("done by {by}"),
                 (None, true) => "due".into(),
                 (None, false) => "not yet".into(),
             };
-            out += &format!("\n  {}..{}  {} {}  {state}", p.from, p.to, p.does, p.party);
+            out += &format!("\n  {}..{}  {} {}  version {}  {state}", p.from, p.to, p.does, p.party, p.version);
         }
     }
     out

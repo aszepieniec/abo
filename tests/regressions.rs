@@ -1833,7 +1833,7 @@ fn bills_lists_every_bill_and_what_waits_to_be_booked() {
     std::fs::write(dir.join("scan.pdf"), b"%PDF-1.4 waiting\n%%EOF\n").unwrap();
     ok(&dir, &["file", "--date", "2026-03-05", "--issuer", "Telecom", "scan.pdf"]);
     let said = ok(&dir, &["bills"]);
-    assert!(said.contains(&format!("{id:>5}  2026-03-03                Chairs")) && said.contains("no document") && said.contains("part paid, 300.00 EUR open") && said.contains("bills/2026/2026-03-05-telecom-"), "{said}");
+    assert!(said.contains(&format!("{id:>5}  2026-03-03  {:14}  {:12}  Chairs", "", "")) && said.contains("no document") && said.contains("part paid, 300.00 EUR open") && said.contains("bills/2026/2026-03-05-telecom-"), "{said}");
     let v = json(&dir, &["bills", "--open"]);
     assert_eq!(v["bills"][0]["open"]["quantity"], "300.00", "{v}");
 }
@@ -2617,4 +2617,30 @@ fn a_recorded_balance_is_not_carried_over() {
     let s = serve(&dir);
     let (_, _, page) = http(&s, "GET", "/reconcile?account=Assets:Bank&commodity=EUR&date=2026-03-31&balance=-5.00", &[]);
     assert!(page.contains(r#"name="balance" value="""#) && page.contains("-5.00 EUR"), "{page}");
+}
+
+/// The fresh-agent run of section 6: an agreement terminated as of a day to
+/// come read as ended already, and its employee as paid by none; a period
+/// did not say which version it was under, nor was the next one shown; and
+/// the CLI had no Issue again.
+#[test]
+fn an_agreement_ending_later_is_active_till_then() {
+    let dir = books("ending-later", &[]);
+    ok(&dir, &["partner", "add", "sam", "--name", "Sam", "--employee"]);
+    ok(&dir, &["agreement", "add", "sam", "--partner", "sam", "--from", "2027-01-01", "--pay", "sam", "--in-arrears"]);
+    let said = ok(&dir, &["agreement", "terminate", "sam", "--on", "2027-12-31"]);
+    assert!(said.starts_with("Terminated the agreement sam"), "{said}");
+    let said = ok(&dir, &["partner"]);
+    assert!(!said.contains("no active agreement"), "{said}");
+    let said = ok(&dir, &["agreement", "show", "sam"]);
+    assert!(said.contains("active until 2027-12-31, terminated") && said.contains("version 1  not yet"), "{said}");
+
+    ok(&dir, &["partner", "add", "acme", "--name", "Acme GmbH", "--address", "1 Road"]);
+    let v = json(&dir, &["invoice", "--partner", "acme", "--item", "2|50|Support", "--reference", "PO 7"]);
+    let n = v["number"].as_str().unwrap_or_else(|| panic!("{v}")).to_string();
+    ok(&dir, &["partner", "edit", "acme", "--address", "2 Road"]);
+    let v = json(&dir, &["invoice", "--like", &n]);
+    let again = v["number"].as_str().unwrap_or_else(|| panic!("{v}"));
+    let t = read(&dir, &format!("invoices/2027/{again}.json"));
+    assert!(t.contains("2 Road") && t.contains("PO 7") && t.contains("Support"), "{t}");
 }
