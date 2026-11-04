@@ -1149,7 +1149,7 @@ fn partners_and_agreements_through_the_pages() {
     let (_, _, page) = http(&s, "GET", "/agreement/hosting", &[]);
     assert!(page.contains(&format!("href=\"/{}\" download=", index.split(' ').nth(1).unwrap())), "{page}");
 
-    // A former employee: folded away under the current ones, marked.
+    // A former employee: folded into the employees' table, under a heading.
     post("/partners/new", &[("token", "a20"), ("id", "kim"), ("name", "Kim Then"), ("employee", "on")]);
     again(&["partners.toml"]);
     post("/agreements/new", &[("token", "a21"), ("id", "kim"), ("party0", "kim"), ("from", "2026-01-01")]);
@@ -1157,8 +1157,14 @@ fn partners_and_agreements_through_the_pages() {
     post("/agreement/kim/end", &[("token", "a22"), ("on", "2026-02-28"), ("by", "")]);
     again(&["contracts/kim.toml"]);
     let (_, _, page) = http(&s, "GET", "/partners", &[]);
-    let (_, former) = page.split_once("<details class=\"former\"").unwrap_or_else(|| panic!("{page}"));
-    assert!(former.contains("Show former employees (1)") && former.contains("Kim Then"), "{page}");
+    let (_, employees) = page.split_once("</svg>Employees").unwrap_or_else(|| panic!("{page}"));
+    let (employees, _) = employees.split_once("</table>").unwrap();
+    let (now, former) = employees.split_once("<tbody class=\"folded\">").unwrap_or_else(|| panic!("{page}"));
+    assert!(now.contains("Show former employees (1)") && !now.contains("Kim Then") && former.contains("Former employees") && former.contains("Kim Then"), "{page}");
+    // An agreement ended: folded likewise.
+    let (_, agreements) = page.split_once("</svg>Agreements").unwrap_or_else(|| panic!("{page}"));
+    let (active, ended) = agreements.split_once("<tbody class=\"folded\">").unwrap_or_else(|| panic!("{page}"));
+    assert!(active.contains("Show ended agreements (1)") && active.contains("/agreement/hosting") && !active.contains("/agreement/kim") && ended.contains("/agreement/kim"), "{page}");
     let (_, _, page) = http(&s, "GET", "/partner/kim", &[]);
     assert!(page.contains("Former employee"), "{page}");
 
@@ -1167,7 +1173,7 @@ fn partners_and_agreements_through_the_pages() {
     again(&["partners.toml"]);
     let (_, _, page) = http(&s, "GET", "/partners", &[]);
     let (_, shareholders) = page.split_once("Shareholders</div>").unwrap_or_else(|| panic!("{page}"));
-    let (_, employees) = page.split_once("Employees</div>").unwrap_or_else(|| panic!("{page}"));
+    let (_, employees) = page.split_once("</svg>Employees").unwrap_or_else(|| panic!("{page}"));
     assert!(shareholders.contains("Ann Both") && employees.contains("Ann Both") && !shareholders.contains("Acme GmbH"), "{page}");
     let (_, _, page) = http(&s, "GET", "/partner/ann", &[]);
     assert!(page.contains(">Shareholder<") && page.contains(">Employee<"), "{page}");

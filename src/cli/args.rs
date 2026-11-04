@@ -91,7 +91,13 @@ pub(crate) struct PartnerFlags {
 #[derive(Subcommand)]
 pub(crate) enum AgreementCmd {
     /// Every agreement: its status and parties. The same as no subcommand.
-    List,
+    /// Ended ones, terminated, subsumed or past their last day, are
+    /// counted, not listed.
+    List {
+        /// List ended agreements too, under a heading of their own.
+        #[arg(long)]
+        ended: bool,
+    },
     /// An agreement: its parties, status, versions with their invoice
     /// templates and documents, and the invoices issued under it. `abo file
     /// --for AGREEMENT/N` files a version's document.

@@ -153,7 +153,8 @@ by: their name, then their address and tax number, either of which may be
 blank, whether the company employs them, and whether they hold shares in
 it. **Partners** lists them with what each owes and is owed, and their
 agreements; the employees apart, former employees — every agreement with
-them ended — folded away behind **Show former employees**; and the
+them ended — folded into the same table under their own heading, shown by
+**Show former employees** in its header; and the
 shareholders apart, one who is also an employee in both tables. A partner's
 page marks them Employee, Former employee or Shareholder. **Add a partner** asks a short name
 (`acme`: a-z, 0-9 and `-`, not changed after), the name, the address a line
@@ -184,7 +185,9 @@ from the latest version, from today), end it (terminated, or subsumed by
 another, on a day, today unless said), and remove it while nothing names
 it. A version that would take effect on or before the date of an invoice
 issued under it is refused, saying from when one may; so is ending it
-before such an invoice. CLI: `abo agreement [list]`, `show <id>`, `add <id>
+before such an invoice. Ended agreements are folded into the Partners page's
+agreements table, shown by **Show ended agreements**. CLI: `abo agreement
+[list [--ended]]` (ended ones counted, listed with `--ended`), `show <id>`, `add <id>
 --partner ... --from ... [--template field=value ...]`, `amend <id> --from
 ...` (what it is not given kept from the version in force; `--no-template`
 for none), `terminate <id> [--on]`, `subsume <id> --by <other> [--on]`,

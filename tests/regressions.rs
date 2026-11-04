@@ -2664,6 +2664,11 @@ fn former_employees_are_listed_apart() {
     assert!(now.contains("Sam Now") && !now.contains("Alex Then") && then.contains("Alex Then"), "{said}");
     let said = ok(&dir, &["agreement", "show", "alex"]);
     assert!(said.contains("no signed copy filed: abo file --for alex/1"), "{said}");
+    // An ended agreement likewise: counted, and listed with --ended.
+    let said = ok(&dir, &["agreement"]);
+    assert!(!said.contains("alex  ") && said.contains("1 ended agreement; abo agreement list --ended"), "{said}");
+    let said = ok(&dir, &["agreement", "list", "--ended"]);
+    assert!(said.split_once("Ended").is_some_and(|(_, e)| e.contains("alex  ")), "{said}");
 }
 
 /// Shareholders are partners marked so, as employees are: listed under a

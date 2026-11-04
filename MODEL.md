@@ -559,7 +559,10 @@ so it is held once.
 
 An employee is **former** once they have agreements and every one has
 ended before today: their contract terminated. It is derived, not held, and
-the Partners page folds former employees away under the current ones.
+the Partners page folds former employees into the employees' table, under
+a heading of their own, shown by the table's toggle. An agreement is
+**ended** once its last day is before today; ended agreements are folded
+into the agreements' table likewise, and `abo agreement` counts them.
 
 An `Id` is a-z, 0-9 and `-`, as a document's name: it is written in the
 journal as a tag's value, which hledger ends at a comma, and typed on the
@@ -1188,7 +1191,7 @@ abo partner   [list [--former]]
               add <id> [--name --address... --tax-id --employee[=yes|no] --shareholder[=yes|no]]
               edit <id> [--name --address... --tax-id --employee[=yes|no] --shareholder[=yes|no]]
               remove <id>
-abo agreement [list]   show <id>   remove <id>
+abo agreement [list [--ended]]   show <id>   remove <id>
 abo agreement add <id> --partner=<id>... --from=<date> [--until=<date>]
                        [--template=<field>=<value>... | --template-from=<invoice>]
 abo agreement amend <id> --from=<date> ...  [--no-template]
@@ -1222,7 +1225,7 @@ issues the same invoice (G-O8).
 
 In the browser, **Partners** lists each partner with what they owe and are
 owed, their invoices, bills and agreements, the employees apart, former
-employees folded away, and the shareholders apart, one who is also an
+employees folded into their table, ended agreements likewise, and the shareholders apart, one who is also an
 employee in both tables; an agreement's page, its parties, status, the
 invoices issued under it, its versions with their templates and signed
 copies (each to download, or to upload where none is filed), and its forms:

@@ -135,20 +135,32 @@ pub(crate) fn agreement(here: &Path, json: bool, change: Option<AgreementCmd>) -
     let mut s = Store::open(here)?;
     let today = store::today()?;
     let op = match change {
-        None | Some(AgreementCmd::List) => {
+        None | Some(AgreementCmd::List { .. }) => {
             still(&s);
+            let with_ended = matches!(change, Some(AgreementCmd::List { ended: true }));
             let all = views::agreements(&s.books, today);
-            return emit(json, &all, || {
+            let shown: Vec<&views::AgreementView> = all.iter().filter(|a| with_ended || !a.ended).collect();
+            return emit(json, &shown, || {
                 if all.is_empty() {
                     return "No agreements yet; abo agreement add adds one.".into();
                 }
-                all.iter()
-                    .map(|a| {
-                        let unsigned = if a.versions.iter().any(|v| v.documents.is_empty()) { ", no signed copy" } else { "" };
-                        format!("{}  {}  {}{unsigned}", a.id, status(a), a.parties.join(", "))
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                let line = |a: &&views::AgreementView| {
+                    let unsigned = if a.versions.iter().any(|v| v.documents.is_empty()) { ", no signed copy" } else { "" };
+                    format!("{}  {}  {}{unsigned}", a.id, status(a), a.parties.join(", "))
+                };
+                let (ended, active): (Vec<_>, Vec<_>) = shown.iter().partition(|a| a.ended);
+                let mut out: Vec<String> = active.iter().map(line).collect();
+                let n = all.iter().filter(|a| a.ended).count();
+                match (n, with_ended) {
+                    (0, _) => {}
+                    (_, true) => {
+                        out.push("Ended (terminated, subsumed, or past their last day):".into());
+                        out.extend(ended.iter().map(line));
+                    }
+                    (1, false) => out.push("1 ended agreement; abo agreement list --ended lists it.".into()),
+                    (n, false) => out.push(format!("{n} ended agreements; abo agreement list --ended lists them.")),
+                }
+                out.join("\n")
             });
         }
         Some(AgreementCmd::Show { id }) => {

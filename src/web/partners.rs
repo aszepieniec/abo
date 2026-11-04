@@ -4,7 +4,8 @@
 use super::*;
 
 /// Every partner, what they owe and are owed, their agreements; employees
-/// apart, former ones folded away under the current ones.
+/// apart, former ones folded into the same table; ended agreements folded
+/// likewise.
 pub(super) async fn partners_list(Books(s): Books) -> Response {
     or_error(&s, "Partners", || {
         let all = views::partners(&s.books, store::today()?);
@@ -22,29 +23,33 @@ pub(super) async fn partners_list(Books(s): Books) -> Response {
                     a.btn href="/agreements/new" { (icon("plus")) " Add an agreement" }
                 } }
             }
-            (partner_table("Customers and suppliers", &others))
-            @if !employees.is_empty() || !former.is_empty() { (partner_table("Employees", &employees)) }
-            @if !former.is_empty() {
-                details.former {
-                    summary.btn { (icon("people")) span.closed { " Show former employees (" (former.len()) ")" } span.opened { " Hide former employees" } }
-                    (partner_table("Former employees: every agreement with them has ended", &former))
-                }
+            (partner_table("Customers and suppliers", &others, None))
+            @if !employees.is_empty() || !former.is_empty() {
+                (partner_table("Employees", &employees, Some(("former employees", "Former employees: every agreement with them has ended", &former))))
             }
-            @if !shareholders.is_empty() { (partner_table("Shareholders", &shareholders)) }
+            @if !shareholders.is_empty() { (partner_table("Shareholders", &shareholders, None)) }
+            @let (ended, active): (Vec<_>, Vec<_>) = agreements.iter().partition(|a| a.ended);
+            @let row = |a: &views::AgreementView| html! {
+                tr.row-link {
+                    td { a.stretch href={"/agreement/" (enc(&a.id))} { code { (a.id) } } }
+                    td { (a.parties.join(", ")) }
+                    td { (status_said(a)) @if a.versions.iter().any(|v| v.documents.is_empty()) { " " span.pill.pill-warn { "no signed copy" } } }
+                }
+            };
             div.box {
-                div.box-header { (icon("book")) "Agreements" }
+                div.box-header { (icon("book")) "Agreements" (fold_toggle("ended agreements", ended.len())) }
                 @if agreements.is_empty() {
                     div.box-body { p.muted { "No agreements yet." } }
                 } @else {
                     table.list {
                         thead { tr { th { "Agreement" } th { "Parties" } th { "Status" } } }
-                        tbody { @for a in &agreements {
-                            tr.row-link {
-                                td { a.stretch href={"/agreement/" (enc(&a.id))} { code { (a.id) } } }
-                                td { (a.parties.join(", ")) }
-                                td { (status_said(a)) @if a.versions.iter().any(|v| v.documents.is_empty()) { " " span.pill.pill-warn { "no signed copy" } } }
+                        tbody { @for a in &active { (row(a)) } }
+                        @if !ended.is_empty() {
+                            tbody.folded {
+                                tr.fold-head { td colspan="3" { "Ended: terminated, subsumed, or past their last day" } }
+                                @for a in &ended { (row(a)) }
                             }
-                        } }
+                        }
                     }
                 }
             }
@@ -52,26 +57,46 @@ pub(super) async fn partners_list(Books(s): Books) -> Response {
     })
 }
 
-fn partner_table(title: &str, rows: &[&views::PartnerRow]) -> Markup {
+/// A table of partners; `folded`, rows under it hidden until its
+/// header's toggle shows them: (what they are, their heading, the rows).
+fn partner_table(title: &str, rows: &[&views::PartnerRow], folded: Option<(&str, &str, &[&views::PartnerRow])>) -> Markup {
+    let (what, head, more) = folded.unwrap_or(("", "", &[]));
+    let row = |p: &views::PartnerRow| html! {
+        tr.row-link {
+            td { a.stretch href={"/partner/" (enc(&p.id))} { (p.name) } " " span.muted.small { (p.id) } }
+            td.amt { (money(&p.owed_by)) }
+            td.amt { (money(&p.owed_to)) }
+            td { (p.agreements.join(", ")) }
+        }
+    };
     html! {
         div.box {
-            div.box-header { (icon("people")) (title) }
-            @if rows.is_empty() {
+            div.box-header { (icon("people")) (title) (fold_toggle(what, more.len())) }
+            @if rows.is_empty() && more.is_empty() {
                 div.box-body { p.muted { "None yet." } }
             } @else {
                 table.list {
                     thead { tr { th { "Partner" } th.amt { "Owes" } th.amt { "Is owed" } th { "Agreements" } } }
-                    tbody { @for p in rows {
-                        tr.row-link {
-                            td { a.stretch href={"/partner/" (enc(&p.id))} { (p.name) } " " span.muted.small { (p.id) }
-}
-                            td.amt { (money(&p.owed_by)) }
-                            td.amt { (money(&p.owed_to)) }
-                            td { (p.agreements.join(", ")) }
+                    tbody { @for p in rows { (row(p)) } }
+                    @if !more.is_empty() {
+                        tbody.folded {
+                            tr.fold-head { td colspan="4" { (head) } }
+                            @for p in more { (row(p)) }
                         }
-                    } }
+                    }
                 }
             }
+        }
+    }
+}
+
+/// The header's toggle that shows a table's folded rows: `n` of `what`.
+/// ponytail: a checkbox and `:has`, no script; where `:has` is not
+/// supported the rows show, the toggle doing nothing.
+fn fold_toggle(what: &str, n: usize) -> Markup {
+    html! {
+        @if n > 0 {
+            span.spacer { label.fold.small { input type="checkbox" class="fold"; " Show " (what) " (" (n) ")" } }
         }
     }
 }
