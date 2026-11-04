@@ -54,7 +54,7 @@ pub(super) async fn booking(Books(s): Books, Path(id): Path<String>, Query(q): Q
                 (e.date) " · " @if is_bill { "bill " } @else { "entry " } (id)
                 @if let Some(n) = &number { " · " @if credit_note { "credit note " } @else { "invoice " } (n) }
                 @if let Some(p) = b.partner_of(id) { " · " a href={"/partner/" (enc(p))} { (p) } }
-                @if let Some((a, p)) = b.made_for(id) { " · for " (p.from) " – " (p.to) " of " a href={"/agreement/" (enc(a))} { (a) } }
+                @if let Some(a) = b.under(id) { " · under " a href={"/agreement/" (enc(a))} { (a) } }
             }
             @if let Kind::Invoice { content, .. } = &e.kind {
                 // Said alike whenever the page is opened: the rate and why, and
@@ -369,19 +369,8 @@ pub(super) async fn revert(Books(mut s): Books, Path(id): Path<String>, Form(f):
     }
 }
 
-/// `?agreement=<id>&period=<from>..<to>`: for that period, filled in from
-/// the draft of the version in force then.
-pub(super) async fn post_form(Books(s): Books, Query(q): Query<Fields>) -> Response {
-    or_error(&s, "Book an entry", || {
-        let mut f = Fields::new();
-        if let (Some(a), Some(p)) = (q.get("agreement"), q.get("period")) {
-            let period = input::period(p)?;
-            f.extend(views::draft(&s.books, a, &period));
-            f.insert("agreement".into(), a.clone());
-            f.insert("period".into(), format!("{}..{}", period.from, period.to));
-        }
-        Ok(form(&s, &f, None))
-    })
+pub(super) async fn post_form(Books(s): Books) -> Response {
+    or_error(&s, "Book an entry", || Ok(form(&s, &Fields::new(), None)))
 }
 
 /// A form's postings, one per line.
@@ -405,8 +394,7 @@ pub(super) async fn post_submit(Books(mut s): Books, Form(f): Form<Fields>) -> R
     let r = once(Some(&root), &get("token"), || {
         let date = input::day(Some(&get("date")))?;
         let lines = postings(&s.books, &get("postings"))?;
-        let under = input::made_for(Some(get("agreement")).filter(|a| !a.is_empty()).as_deref(), Some(get("period")).filter(|p| !p.is_empty()).as_deref())?;
-        change(&mut s, &Op::Post { date, description: get("description"), postings: lines, under }, &[], "/")
+        change(&mut s, &Op::Post { date, description: get("description"), postings: lines }, &[], "/")
     });
     match r {
         Ok(to) => Redirect::to(&to).into_response(),
@@ -452,11 +440,7 @@ pub(super) fn form(s: &Store, f: &Fields, error: Option<&anyhow::Error>) -> Mark
         @if let Some(e) = error { (refused(e)) }
         form method="post" action="/post" {
             (token())
-            @for k in ["agreement", "period"] { @if !get(k).is_empty() { input type="hidden" name=(k) value=(get(k)); } }
             div.box {
-                @if !get("agreement").is_empty() {
-                    div.box-header { (icon("clock")) "For " (get("period").replace("..", " – ")) " of " a href={"/agreement/" (enc(&get("agreement")))} { (get("agreement")) } }
-                }
                 div.box-body {
                     label.field { "Date" input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="date" required value=(if get("date").is_empty() { today } else { get("date") }); }
                     label.field { "Description" input type="text" name="description" required value=(get("description")); }

@@ -132,7 +132,7 @@ fn numbers(m: &Books) -> Vec<Decimal> {
     let mut v = vec![];
     for e in &m.entries {
         match &e.kind {
-            Kind::Plain(ps, _) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. } => {
+            Kind::Plain(ps) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. } => {
                 for p in ps {
                     v.push(p.amount.quantity);
                     v.extend(p.cost.as_ref().map(|c| c.quantity));
@@ -167,14 +167,10 @@ fn dates(m: &Books) -> Vec<Date> {
         _ => None,
     }));
     for e in &m.entries {
-        match &e.kind {
-            Kind::Invoice { content, .. } => {
-                v.push(content.due);
-                v.extend(content.home.as_ref().map(|h| h.date));
-                v.extend(content.period.iter().flat_map(|p| [p.from, p.to]));
-            }
-            Kind::Plain(_, Some(f)) => v.extend([f.period.from, f.period.to]),
-            _ => {}
+        if let Kind::Invoice { content, .. } = &e.kind {
+            v.push(content.due);
+            v.extend(content.home.as_ref().map(|h| h.date));
+            v.extend(content.period.iter().flat_map(|p| [p.from, p.to]));
         }
     }
     for a in m.agreements.values() {
@@ -646,12 +642,11 @@ pub(crate) fn partners_and_agreements(m: &Books, standing: &[bool], who: &dyn Fn
         let Some(e) = m.entry(id) else { continue };
         let named: Option<(&str, &str)> = match &e.kind {
             Kind::Bill(_, BillMore { partner: Some(p), .. }) => (!partner(p)).then_some(("partner", p.as_str())),
-            Kind::Invoice { content, .. } => match &content.to {
-                Some(To::Partner(p)) if !partner(p) => Some(("partner", p.as_str())),
-                Some(To::Agreement(a)) if !agreement(a) => Some(("agreement", a.as_str())),
+            Kind::Invoice { content, .. } => match (&content.to, &content.agreement) {
+                (Some(p), _) if !partner(p) => Some(("partner", p.as_str())),
+                (_, Some(a)) if !agreement(a) => Some(("agreement", a.as_str())),
                 _ => None,
             },
-            Kind::Plain(_, Some(f)) => (!agreement(&f.agreement)).then_some(("agreement", f.agreement.as_str())),
             _ => None,
         };
         if let Some((what, x)) = named {
@@ -661,12 +656,6 @@ pub(crate) fn partners_and_agreements(m: &Books, standing: &[bool], who: &dyn Fn
     for (id, a) in &m.agreements {
         for p in a.parties.iter().filter(|p| !partner(p)) {
             no!("I-T2", "agreement {id} has party {}, and there is no such partner", super::explain::shown(p));
-        }
-        for (n, s) in a.versions.iter().enumerate().filter_map(|(n, x)| Some((n + 1, x.schedule.as_ref()?))) {
-            // A party missing is said of the agreement's parties, above.
-            if !partner(&s.party) && !a.parties.contains(&s.party) {
-                no!("I-T2", "version {n} of agreement {id} is with {}, and there is no such partner", super::explain::shown(&s.party));
-            }
         }
         if let AgreementStatus::Subsumed { by, .. } = &a.status {
             if !agreement(by) {
@@ -701,18 +690,11 @@ pub(crate) fn partners_and_agreements(m: &Books, standing: &[bool], who: &dyn Fn
             if x.until.is_some_and(|u| u < x.from) {
                 no!("I-T3", "version {n} of agreement {id} ends before it takes effect");
             }
-            if let Some(s) = &x.schedule {
-                if !parties.contains(&s.party) {
-                    no!("I-T3", "version {n} of agreement {id} is with {}, who is not a party to it", super::explain::shown(&s.party));
-                }
-                if s.every == 0 {
-                    no!("I-T3", "version {n} of agreement {id} has periods of no months; a period is a month or more");
-                }
-                if s.draft.iter().any(|(k, val)| !text_ok(k) || !lines_ok(val)) {
-                    no!("I-T3", "the draft of version {n} of agreement {id} holds a hidden character");
-                } else if let Some(k) = s.draft.keys().find(|k| !s.does.fields().contains(&k.as_str())) {
-                    let form = if s.does == Does::Invoice { "an invoice's" } else { "an entry's" };
-                    no!("I-T3", "the draft of version {n} of agreement {id} has {}, which is not a field of {form} form: {}", super::explain::shown(k), s.does.fields().join(", "));
+            if let Some(t) = &x.template {
+                if t.iter().any(|(k, val)| !text_ok(k) || !lines_ok(val)) {
+                    no!("I-T3", "the invoice template of version {n} of agreement {id} holds a hidden character");
+                } else if let Some(k) = t.keys().find(|k| !INVOICE_FIELDS.contains(&k.as_str())) {
+                    no!("I-T3", "the invoice template of version {n} of agreement {id} has {}, which is not a field of the invoice form: {}", super::explain::shown(k), INVOICE_FIELDS.join(", "));
                 }
             }
         }
@@ -722,36 +704,25 @@ pub(crate) fn partners_and_agreements(m: &Books, standing: &[bool], who: &dyn Fn
             }
         }
     }
-    // I-T4.
-    let mut made: BTreeMap<(&Id, Period), EntryId> = BTreeMap::new();
-    for id in 1..=m.entries.len() {
-        let Some(e) = m.entry(id) else { continue };
-        let for_invoice = matches!(e.kind, Kind::Invoice { .. });
-        if let Kind::Invoice { content, .. } = &e.kind {
-            if matches!(content.to, Some(To::Agreement(_))) && content.period.is_none() {
-                no!(@of Subject::Entry(id), "I-T4", "{} is issued under an agreement, and says no period", who(id));
-            }
-        }
-        let Some((a, p)) = m.made_for(id) else { continue };
+    // I-T4: an invoice under an agreement is to one of its parties; a
+    // standing one is dated on a day it is in force.
+    for (id, &stands) in standing.iter().enumerate().skip(1) {
+        let Some(Kind::Invoice { content, .. }) = m.entry(id).map(|e| &e.kind) else { continue };
+        let Some(a) = &content.agreement else { continue };
         let Some(ag) = m.agreements.get(a) else { continue };
-        let of_version = ag.periods(p.from).into_iter().find(|(_, q)| *q == p).map(|(n, _)| n);
-        let does = of_version.and_then(|n| ag.schedule(n)).map(|s| s.does);
-        let fits = match does {
-            Some(Does::Invoice) => for_invoice,
-            Some(Does::Pay | Does::Receive) => !for_invoice,
-            None => false,
-        };
-        let range = format!("{}..{}", p.from, p.to);
-        if does.is_none() {
-            no!(@of Subject::Entry(id), "I-T4", "{} is for {range}, which is not a period of agreement {a}", who(id));
-        } else if !fits {
-            let what = if for_invoice { "an invoice; its schedule then books entries" } else { "an entry; its schedule then issues invoices" };
-            no!(@of Subject::Entry(id), "I-T4", "{} is for {range} of agreement {a}, which is not done by {what}", who(id));
+        match &content.to {
+            None => no!(@of Subject::Entry(id), "I-T4", "{} is issued under agreement {a}, and to no partner; it is to one of its parties", who(id)),
+            Some(p) if !ag.parties.contains(p) => no!(@of Subject::Entry(id), "I-T4", "{} is issued under agreement {a}, to {p}, who is not a party to it: {}", who(id), ag.parties.join(", ")),
+            _ => {}
         }
-        if standing[id] {
-            if let Some(other) = made.insert((a, p), id) {
-                no!(@of Subject::Entry(id), "I-T4", "{} and {} are both for {range} of agreement {a}; a period is done once", who(other), who(id));
-            }
+        let date = m.entries[id - 1].date;
+        if stands && !ag.in_force_on(date) {
+            let span = match (ag.versions.first(), ag.last_day()) {
+                (Some(f), Some(l)) => format!("from {} through {l}", f.from),
+                (Some(f), None) => format!("from {}", f.from),
+                _ => "on no day".into(),
+            };
+            no!(@of Subject::Entry(id), "I-T4", "{} is issued under agreement {a} on {date}, and the agreement is in force {span}", who(id));
         }
     }
     // I-T5: no agreement is subsumed, through others, by itself.

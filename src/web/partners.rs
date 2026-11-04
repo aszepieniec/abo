@@ -4,8 +4,7 @@
 use super::*;
 
 /// Every partner, what they owe and are owed, their agreements; employees
-/// apart, each one no active agreement pays marked; former employees
-/// folded away under the current ones.
+/// apart, former ones folded away under the current ones.
 pub(super) async fn partners_list(Books(s): Books) -> Response {
     or_error(&s, "Partners", || {
         let all = views::partners(&s.books, store::today()?);
@@ -61,7 +60,7 @@ fn partner_table(title: &str, rows: &[&views::PartnerRow]) -> Markup {
                     tbody { @for p in rows {
                         tr.row-link {
                             td { a.stretch href={"/partner/" (enc(&p.id))} { (p.name) } " " span.muted.small { (p.id) }
-                                @if p.unpaid { div { span.pill.pill-warn { "No active agreement pays them" } } } }
+}
                             td.amt { (money(&p.owed_by)) }
                             td.amt { (money(&p.owed_to)) }
                             td { (p.agreements.join(", ")) }
@@ -125,7 +124,6 @@ fn partner_page(s: &Store, p: &views::PartnerRow, f: &Fields, error: Option<&any
             div.tile { span.muted.small { "Owes" } span.figure { @if p.owed_by.is_empty() { "nothing" } @else { (money(&p.owed_by)) } } }
             div.tile { span.muted.small { "Is owed" } span.figure { @if p.owed_to.is_empty() { "nothing" } @else { (money(&p.owed_to)) } } }
         }
-        @if p.unpaid { div.flash.flash-warn { (icon("alert")) div { strong { "Employed, and no active agreement pays them" } p { "Add their contract as an agreement that pays them, or say they are not employed." } } } }
         div.box {
             div.box-header { (icon("book")) "Agreements"
                 @if may_change() { span.spacer { a.small href={"/agreements/new?partner=" (enc(&p.id))} { "Add one" } } } }
@@ -236,21 +234,20 @@ pub(super) async fn partner_remove(Books(mut s): Books, Path(id): Path<String>, 
     }
 }
 
-/// An agreement: its parties, status, versions and their documents, and its
-/// periods through today, each done or due; for one who may change the
-/// books, its forms.
-/// `?partner=<id>`: with them, as its party.
+/// The form to add an agreement. `?partner=<id>`: with them, as its party.
 pub(super) async fn agreement_new_form(Books(s): Books, Query(q): Query<Fields>) -> Response {
     or_error(&s, "Add an agreement", || {
         let mut f = Fields::new();
         if let Some(p) = q.get("partner") {
             f.insert("party0".into(), p.clone());
-            f.insert("party".into(), p.clone());
         }
         Ok(agreement_new(&s, &f, None))
     })
 }
 
+/// An agreement: its parties, status, invoices issued under it, versions
+/// with their templates and documents; for one who may change the books,
+/// its forms.
 pub(super) async fn agreement_view(Books(s): Books, Path(id): Path<String>) -> Response {
     or_error(&s, "Agreement", || {
         let a = views::agreement(&s.books, &id, store::today()?).ok_or_else(|| input::not_found(format!("there is no agreement {id}")))?;
@@ -258,70 +255,44 @@ pub(super) async fn agreement_view(Books(s): Books, Path(id): Path<String>) -> R
     })
 }
 
-/// The amend form, filled in from the latest version, from the next
-/// period's first day; from today, with no period next.
+/// The amend form, filled in from the latest version, from today.
 fn amend_fields(b: &Model, id: &str) -> Result<Fields> {
     let mut f = Fields::new();
     let Some(v) = b.agreements.get(id).and_then(|a| a.versions.last()) else { return Ok(f) };
-    let today = store::today()?;
-    let from = views::agreement(b, id, today).and_then(|a| a.next).map_or(today.to_string(), |p| p.from);
-    f.insert("from".into(), from);
+    f.insert("from".into(), store::today()?.to_string());
     f.insert("until".into(), v.until.map(|d| d.to_string()).unwrap_or_default());
-    if let Some(s) = &v.schedule {
-        f.insert("does".into(), views::does_word(s.does).into());
-        f.insert("party".into(), s.party.clone());
-        f.insert("every".into(), s.every.to_string());
-        f.insert("billed".into(), views::billed_word(s.billed).into());
-        for (k, x) in &s.draft {
-            f.insert(format!("draft-{k}"), x.clone());
-        }
+    for (k, x) in v.template.iter().flatten() {
+        f.insert(format!("tpl-{k}"), x.clone());
     }
     Ok(f)
 }
 
-/// The fields of the web's draft, of each form: the rest are the command
-/// line's to set.
-const WEB_DRAFT: [(&str, &str, &str); 5] = [
-    ("items", "invoice", "Lines, one per line: quantity|unit price|description"),
-    ("reference", "invoice", "Their reference"),
-    ("note", "invoice", "Note"),
-    ("description", "entry", "Description"),
-    ("postings", "entry", "Postings, one per line: account=amount"),
+/// The invoice template's fields, as the form asks them: the invoice
+/// form's, by its names (`model::INVOICE_FIELDS`).
+const TEMPLATE: [(&str, &str); 8] = [
+    ("items", "Lines, one per line: quantity|unit price|description"),
+    ("reference", "Their reference"),
+    ("note", "Note"),
+    ("currency", "Currency"),
+    ("vat_rate", "VAT rate, percent"),
+    ("vat_reason", "Why no VAT"),
+    ("income", "Income account"),
+    ("due_days", "Payment terms, in days"),
 ];
 
 /// A version's fields, as the add and amend forms ask them.
-fn version_fields(b: &Model, f: &Fields) -> Markup {
+fn version_fields(f: &Fields) -> Markup {
     let get = |k: &str| f.get(k).cloned().unwrap_or_default();
-    let does = get("does");
     html! {
         label.field { "From" span.hint { "The day it takes effect." } input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="from" required value=(get("from")); }
         label.field { "Until" span.hint { "Its last day, if its terms say it ends; blank if not." } input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="until" value=(get("until")); }
         fieldset.field {
-            legend { "Schedule" }
-            span.hint { "What the company does each period under it. None: a contract on record, invoiced or paid by hand." }
-            @for (v, said) in [("", "None"), ("invoice", "Invoice the party"), ("pay", "Pay the party, by an entry: a salary, a rent"), ("receive", "Receive from the party, by an entry, without an invoice")] {
-                label.choice { input type="radio" name="does" value=(v) checked[does == v]; " " (said) }
-            }
-        }
-        label.field { "With" span.hint { "One of its parties." }
-            select name="party" {
-                option value="" { "—" }
-                @for id in b.partners.keys() { option value=(id) selected[get("party") == *id] { (id) } }
-            }
-        }
-        label.field { "Months to each period" input type="number" name="every" min="1" value=(if get("every").is_empty() { "1".to_string() } else { get("every") }); }
-        fieldset.field {
-            legend { "Each period is done" }
-            label.choice { input type="radio" name="billed" value="in-advance" checked[get("billed") != "in-arrears"]; " From its first day, in advance" }
-            label.choice { input type="radio" name="billed" value="in-arrears" checked[get("billed") == "in-arrears"]; " From the day after its last, in arrears" }
-        }
-        fieldset.field {
-            legend { "Draft" }
-            span.hint { "What each period's invoice or entry starts from: those for invoices with a schedule of invoices, those for entries with one that pays or receives. Left blank, the form starts blank." }
-            @for (k, form, said) in WEB_DRAFT {
-                @let name = format!("draft-{k}");
-                label.field { (said) span.hint { @if form == "invoice" { "For invoices." } @else { "For entries." } }
-                    @if matches!(k, "items" | "postings") { textarea name=(name) rows="3" { (get(&name)) } }
+            legend { "Invoice template" }
+            span.hint { "What an invoice issued under it starts from; each may be left blank. All blank: no template." }
+            @for (k, said) in TEMPLATE {
+                @let name = format!("tpl-{k}");
+                label.field { (said)
+                    @if k == "items" { textarea name=(name) rows="3" { (get(&name)) } }
                     @else { input type="text" name=(name) value=(get(&name)); }
                 }
             }
@@ -334,25 +305,8 @@ fn version_of(f: &Fields) -> Result<model::Version> {
     let get = |k: &str| f.get(k).map_or("", |v| v.trim()).replace("\r\n", "\n");
     let from = input::day(Some(&get("from")))?;
     let until = (!get("until").is_empty()).then(|| input::day(Some(&get("until")))).transpose()?;
-    let does = match get("does").as_str() {
-        "" => None,
-        "invoice" => Some(model::Does::Invoice),
-        "pay" => Some(model::Does::Pay),
-        "receive" => Some(model::Does::Receive),
-        d => bail!("{d} is not invoice, pay or receive"),
-    };
-    let schedule = match does {
-        None => None,
-        Some(does) => {
-            let every = get("every");
-            let every = if every.is_empty() { 1 } else { every.parse().with_context(|| format!("{every} months is not a whole number of them"))? };
-            let billed = if get("billed") == "in-arrears" { model::Billed::InArrears } else { model::Billed::InAdvance };
-            let form = if does == model::Does::Invoice { "invoice" } else { "entry" };
-            let draft = WEB_DRAFT.iter().filter(|(_, fm, _)| *fm == form).map(|(k, ..)| (k.to_string(), get(&format!("draft-{k}")))).filter(|(_, v)| !v.is_empty()).collect();
-            Some(model::Schedule { party: get("party"), does, every, billed, draft })
-        }
-    };
-    Ok(model::Version { from, until, schedule })
+    let template: std::collections::BTreeMap<String, String> = TEMPLATE.iter().map(|(k, _)| (k.to_string(), get(&format!("tpl-{k}")))).filter(|(_, v)| !v.is_empty()).collect();
+    Ok(model::Version { from, until, template: (!template.is_empty()).then_some(template) })
 }
 
 fn agreement_new(s: &Store, f: &Fields, error: Option<&anyhow::Error>) -> Markup {
@@ -383,7 +337,7 @@ fn agreement_new(s: &Store, f: &Fields, error: Option<&anyhow::Error>) -> Markup
                         }
                         div.actions { button.small type="submit" name="more" value="party" formnovalidate { (icon("plus")) " Add a party" } }
                     }
-                    (version_fields(&s.books, f))
+                    (version_fields(f))
                     div.actions { button.btn-primary type="submit" { (icon("check")) " Add it" } }
                 }
             }
@@ -402,7 +356,7 @@ pub(super) async fn agreement_add(Books(mut s): Books, Form(mut f): Form<Fields>
     // A party more, or one fewer: the form again, nothing changed.
     if f.contains_key("more") || f.contains_key("drop") {
         let mut parties = parties_sent(&f);
-        f.retain(|k, _| !k.starts_with("party") || k == "party");
+        f.retain(|k, _| !k.starts_with("party"));
         match f.remove("drop").and_then(|i| i.parse::<usize>().ok()) {
             Some(i) if i < parties.len() && parties.len() > 1 => drop(parties.remove(i)),
             _ => parties.push(String::new()),
@@ -440,23 +394,19 @@ fn agreement_page(s: &Store, a: &views::AgreementView, f: &Fields, error: Option
             }
         }
         div.box {
-            div.box-header { (icon("clock")) "Periods" }
-            @if a.periods.is_empty() && a.next.is_none() {
-                div.box-body { p.muted { "None through today." } }
+            div.box-header { (icon("outbox")) "Invoices under it"
+                @if may_change() && !a.ended { span.spacer { @for p in &a.parties { a.small href={"/invoice?agreement=" (id) "&partner=" (enc(p))} { "Invoice " (p) } " " } } } }
+            @if a.invoices.is_empty() {
+                div.box-body { p.muted { "None yet." } }
             } @else {
                 table.list {
-                    thead { tr { th { "Period" } th { "What" } th { "Under" } th {} } }
-                    tbody { @for p in a.next.iter().chain(a.periods.iter().rev()) {
-                        tr {
-                            td.date { (p.from) " – " (p.to) }
-                            td { (p.does) " " (p.party) }
-                            td { "version " (p.version) }
-                            td { @match (&p.done_by, p.entry) {
-                                (Some(by), Some(e)) => a href={"/entry/" (e)} { (by) },
-                                _ if p.due && may_change() => (do_period(p)),
-                                _ if p.due => span.pill.pill-warn { "due" },
-                                _ => span.muted.small { "not yet" },
-                            } }
+                    thead { tr { th { "Date" } th { "Invoice" } th { "To" } th { "Under" } } }
+                    tbody { @for i in &a.invoices {
+                        tr.row-link {
+                            td.date { (i.date) }
+                            td { a.stretch href={"/entry/" (i.entry)} { (i.what) } }
+                            td { (i.partner) }
+                            td { "version " (i.version) }
                         }
                     } }
                 }
@@ -466,11 +416,8 @@ fn agreement_page(s: &Store, a: &views::AgreementView, f: &Fields, error: Option
             div.box {
                 div.box-header { (icon("doc")) "Version " (v.n) " from " (v.from) @if let Some(u) = &v.until { " until " (u) } @if a.in_force == Some(v.n) { " " span.pill.pill-info { "in force" } } @else if v.from > today { " " span.pill { "not yet in force" } } }
                 div.box-body {
-                    @match (v.does, &v.party, v.every, v.billed) {
-                        (Some(d), Some(p), Some(e), Some(b)) => p { (d) " " (p) ", every " (e) " month" @if e != 1 { "s" } ", " (b.replace('-', " ")) },
-                        _ => p.muted { "A contract on record: nothing is scheduled under it." },
-                    }
-                    @for (k, x) in &v.draft { div.small { span.muted { (k) ": " } (x.replace('\n', "; ")) } }
+                    @if v.template.is_empty() { p.muted { "No invoice template." } }
+                    @else { p { "Invoice template:" } @for (k, x) in &v.template { div.small { span.muted { (TEMPLATE.iter().find(|(n, _)| n == k).map_or(k.as_str(), |(_, said)| *said)) ": " } (x.replace('\n', "; ")) } } }
                     @if v.documents.is_empty() {
                         div.flash.flash-warn { (icon("alert")) div { "No signed copy of this version is filed yet." @if may_change() { " Upload the scan, a PDF or a JPEG, below." } } }
                     }
@@ -501,8 +448,8 @@ fn agreement_page(s: &Store, a: &views::AgreementView, f: &Fields, error: Option
                 div.box {
                     div.box-header { (icon("pencil")) "Amend: new terms, from a day" }
                     div.box-body {
-                        p.muted.small { "A new version; those before stay as they were. It takes effect after every period done." }
-                        (version_fields(&s.books, f))
+                        p.muted.small { "A new version; those before stay as they were. It takes effect after every invoice issued under the agreement." }
+                        (version_fields(f))
                         div.actions { button.btn-primary type="submit" { (icon("check")) " Add the version" } }
                     }
                 }
@@ -525,45 +472,13 @@ fn agreement_page(s: &Store, a: &views::AgreementView, f: &Fields, error: Option
                 }
             }
         }
-        @if may_change() && a.periods.iter().all(|p| p.done_by.is_none()) && a.versions.iter().all(|v| v.documents.is_empty()) {
+        @if may_change() && a.invoices.is_empty() && a.versions.iter().all(|v| v.documents.is_empty()) {
             form method="post" action={"/agreement/" (id) "/remove"} {
                 (token())
                 div.actions { button.btn-danger type="submit" { (icon("trash")) " Remove it" } span.muted.small { " Added by mistake, while nothing names it." } }
             }
         }
         p { a.btn href=(back_to("/partners")) { (icon("left")) " Back" } }
-    }
-}
-
-/// Where a period due is done: its form, filled in from the draft and the
-/// period, dated today.
-fn do_period(p: &views::PeriodView) -> Markup {
-    let q = format!("agreement={}&period={}..{}", enc(&p.agreement), p.from, p.to);
-    let (href, said) = if p.does == "invoice" { (format!("/invoice?{q}"), "Invoice it") } else { (format!("/post?{q}"), if p.does == "pay" { "Pay it" } else { "Book what came in" }) };
-    html! { a.btn.small.btn-primary href=(href) { (icon(if p.does == "invoice" { "outbox" } else { "coins" })) " " (said) } }
-}
-
-/// What is due, as a box above a list: to invoice, with `Some(true)`; to
-/// pay or receive, with `Some(false)`; all of it, with `None`.
-pub(super) fn due_box(s: &Store, invoices: Option<bool>) -> Markup {
-    let Ok(today) = store::today() else { return html! {} };
-    let due: Vec<views::PeriodView> = views::due(&s.books, today).into_iter().filter(|p| invoices.is_none_or(|i| (p.does == "invoice") == i)).collect();
-    if due.is_empty() {
-        return html! {};
-    }
-    html! {
-        div.box {
-            div.box-header { (icon("clock")) @match invoices { Some(true) => "Due to invoice", Some(false) => "Due to pay or receive", None => "Due under agreements" } }
-            table.list {
-                tbody { @for p in &due {
-                    tr {
-                        td.date { (p.from) " – " (p.to) }
-                        td { a href={"/agreement/" (enc(&p.agreement))} { code { (p.agreement) } } " " span.muted.small { (s.books.partners.get(&p.party).and_then(|x| x.lines.lines().next()).unwrap_or(&p.party)) } }
-                        td { @if may_change() { (do_period(p)) } @else { span.pill.pill-warn { "due" } } }
-                    }
-                } }
-            }
-        }
     }
 }
 

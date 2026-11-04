@@ -9,8 +9,7 @@ use super::*;
 
 #[derive(Clone, Debug)]
 pub enum Op {
-    /// `under`: the agreement and period it is made for, if any.
-    Post { date: Date, description: String, postings: Vec<Posting>, under: Option<For> },
+    Post { date: Date, description: String, postings: Vec<Posting> },
     /// `of`: the bill, or an agreement's version, it is the document of.
     File { sha256: Hash, date: Date, name: String, ext: String, of: Option<Of> },
     Unfile { sha256: Hash },
@@ -73,10 +72,12 @@ pub struct InvoiceMore {
     pub income: Option<Account>,
     pub due_days: Option<i64>,
     pub pay_to: Vec<String>,
-    /// The partner, or the agreement, it is issued under: the customer and
-    /// their tax number, when not given, are the partner's.
-    pub to: Option<To>,
-    /// What it is for, when for a period.
+    /// The partner it is to: the customer and their tax number, when not
+    /// given, are theirs.
+    pub to: Option<Id>,
+    /// The agreement it is issued under; `to` is one of its parties.
+    pub agreement: Option<Id>,
+    /// What it is for, when for a period: printed.
     pub period: Option<Period>,
 }
 
@@ -100,7 +101,7 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
     let about = |id: EntryId| m.entry(id).map(|e| e.description.clone()).ok_or(format!("no entry has the id {id}"));
     let entry = |date: Date, description: String, kind| Entry { date, description, kind };
     match op.clone() {
-        Op::Post { date, description, postings, under } => n.entries.push(entry(date, description, Kind::Plain(postings, under))),
+        Op::Post { date, description, postings } => n.entries.push(entry(date, description, Kind::Plain(postings))),
         Op::File { sha256, date, name, ext, of } => {
             if let Some(d) = m.documents.get(&sha256) {
                 let booked = match &d.of {
@@ -135,13 +136,7 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
         }
         Op::Invoice { date, mut customer, commodity, lines, rate, reason, reference, note, pdf, mut more } => {
             let c = &m.config;
-            // Whom it is to: the partner named, or the agreement's party.
-            let party = match (&more.to, more.period) {
-                (Some(To::Partner(p)), _) => Some(p.clone()),
-                (Some(To::Agreement(a)), Some(period)) => m.party_on(a, period.from).cloned(),
-                _ => None,
-            };
-            if let Some(p) = party.and_then(|p| m.partners.get(&p)).filter(|_| customer.trim().is_empty()) {
+            if let Some(p) = more.to.as_ref().and_then(|p| m.partners.get(p)).filter(|_| customer.trim().is_empty()) {
                 customer = p.lines.clone();
                 if more.customer_tax_id.trim().is_empty() {
                     more.customer_tax_id = p.tax_id.clone();
@@ -178,7 +173,7 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
             let pay_to = ids.into_iter().map(|id| c.payment[id].printed()).collect();
             let accounts = InvoiceAccounts { receivable: c.invoice.receivable.clone(), income: more.income.clone().unwrap_or_else(|| c.invoice.income.clone()), output };
             let first = customer.lines().next().unwrap_or("").trim().to_string();
-            let content = Content { to: more.to, period: more.period, customer, customer_tax_id: more.customer_tax_id, commodity, home, lines, vat, due, pay_to, reference, note, accounts };
+            let content = Content { to: more.to, agreement: more.agreement, period: more.period, customer, customer_tax_id: more.customer_tax_id, commodity, home, lines, vat, due, pay_to, reference, note, accounts };
             n.entries.push(entry(date, String::new(), Kind::Invoice { content: Box::new(content), pdf }));
             // The number first: a name may begin with what the date line
             // reads as a status or a code, `*` or `(`; and `;` would begin a
@@ -303,7 +298,7 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
                 .flat_map(|((a, c), q)| [Posting::new(&new(&a), q, &c), Posting::new(&a, -q, &c)])
                 .collect();
             if !postings.is_empty() {
-                n.entries.push(entry(date, format!("Move {from} to {to}"), Kind::Plain(postings, None)));
+                n.entries.push(entry(date, format!("Move {from} to {to}"), Kind::Plain(postings)));
             }
             let c = &mut n.config;
             let mut named: Vec<&mut Account> = vec![&mut c.invoice.receivable, &mut c.invoice.income];
@@ -381,11 +376,14 @@ fn lines(s: &str) -> String {
     s.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n")
 }
 
-/// A version as kept: its draft without the fields left blank.
+/// A version as kept: its template without the fields left blank, and none
+/// if none is left.
 fn drafted(mut v: Version) -> Version {
-    if let Some(s) = &mut v.schedule {
-        s.draft.retain(|_, x| !x.trim().is_empty());
+    if let Some(t) = &mut v.template {
+        t.retain(|_, x| !x.trim().is_empty());
     }
+    // A template of nothing is none.
+    v.template = v.template.filter(|t| !t.is_empty());
     v
 }
 
@@ -650,7 +648,7 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
         }
         Op::File { date, of, .. } => {
             dated.push(*date);
-            // An agreement's document changes no figure of a period.
+            // An agreement's document changes no figure.
             if !matches!(of, Some(Of::Version(..))) {
                 touched.push(*date);
             }
@@ -773,16 +771,18 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
             no!("N8", "{}, dated {} owes the same, {q} {}, on {}; to book another like it, say it is another", name(m, id), m.entries[id - 1].date, new.owed.commodity, new.account);
         }
     }
-    // What was done stays done: no version takes effect on or before the
-    // last day of a period done, which was made under the one then in force.
+    // What was issued keeps its version: no version takes effect on or
+    // before the date of a standing invoice under the agreement, which was
+    // issued under the one in force then.
     if let Op::Amend { id, version } = op {
         if let Some(a) = m.agreements.get(id) {
             if a.status != AgreementStatus::Active {
                 no!("N11", "agreement {id} is ended, its last day {}; an agreement ended takes no new version", a.ended_on().unwrap());
             }
             let standing = m.standing();
-            if let Some(((_, p), _)) = m.done(&standing).into_iter().filter(|((x, _), _)| *x == id).max_by_key(|((_, p), _)| p.to).filter(|((_, p), _)| version.from <= p.to) {
-                no!("N10", "the period {}..{} of agreement {id} is done, under the version in force then; a new version takes effect after {}", p.from, p.to, p.to);
+            if let Some(last) = m.invoices_under(id, &standing).into_iter().max_by_key(|&e| m.entries[e - 1].date).filter(|&e| version.from <= m.entries[e - 1].date) {
+                let date = m.entries[last - 1].date;
+                no!("N10", "{} is issued under agreement {id} on {date}, under the version in force then; a new version takes effect after {date}", name(m, last));
             }
         }
     }

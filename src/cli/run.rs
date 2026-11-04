@@ -111,16 +111,11 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             };
             emit(cli.json, &r, || format!("Books opened in {} ({commit}).\nNext: `abo account add` and `abo post`.{vat}", dir.display()))
         }
-        Cmd::Post { date, description, agreement, period, postings } => {
+        Cmd::Post { date, description, postings } => {
             let mut s = Store::open(&here)?;
-            let under = input::made_for(agreement.as_deref(), period.as_deref())?;
-            // For a period of an agreement, what is not given is its draft's.
-            let draft = under.as_ref().map(|f| views::draft(&s.books, &f.agreement, &f.period)).unwrap_or_default();
-            let description = description.or_else(|| draft.get("description").cloned()).context("--desc is needed: what the entry is")?;
-            let postings = if postings.is_empty() { draft.get("postings").map(|p| p.lines().map(String::from).collect()).unwrap_or_default() } else { postings };
             let postings = postings.iter().map(|p| input::posting(&s.books, p)).collect::<Result<_>>()?;
             let date = input::day(date.as_deref())?;
-            let op = Op::Post { date, description, postings, under };
+            let op = Op::Post { date, description, postings };
             changed(&mut s, &op, &[], cli.json)
         }
         Cmd::File { date, issuer, bill, src } => {
@@ -163,14 +158,17 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             let op = Op::Bill { date, description, postings, document, again, more };
             changed(&mut s, &op, &[], cli.json)
         }
-        Cmd::Invoice { mut to, mut partner, agreement, period, like, items, date, due_days, vat_rate, currency, reference, pay_to, note, mut customer_tax_id, income, preview, vat_reason } => {
+        Cmd::Invoice { mut to, mut partner, mut agreement, period, like, items, date, due_days, vat_rate, currency, reference, pay_to, note, mut customer_tax_id, income, preview, vat_reason } => {
             let mut s = Store::open(&here)?;
-            let under = input::made_for(agreement.as_deref(), period.as_deref())?;
+            let date = input::day(date.as_deref())?;
             // Like another: what it says, to whom it was, unless given.
             let like = match &like {
                 Some(n) => {
                     let id = input::debt(&s.books, n)?;
                     let Some(model::Kind::Invoice { content: c, .. }) = s.books.entry(id).map(|e| &e.kind) else { bail!("--like {n}: {n} is not an invoice") };
+                    if agreement.is_none() {
+                        agreement = c.agreement.clone();
+                    }
                     if to.is_empty() && partner.is_none() {
                         match s.books.partner_of(id) {
                             Some(p) => partner = Some(p.clone()),
@@ -187,21 +185,18 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 None => None,
             };
             let period = period.as_deref().map(input::period).transpose()?;
-            let target = match (partner, agreement) {
-                (Some(p), _) => Some(model::To::Partner(p)),
-                (None, Some(a)) => Some(model::To::Agreement(a)),
-                (None, None) => None,
-            };
-            if to.is_empty() && target.is_none() {
-                bail!("a customer is needed: --to, a line of theirs each, or --partner or --agreement");
+            if to.is_empty() && partner.is_none() {
+                bail!("a customer is needed: --to, a line of theirs each, or --partner");
             }
-            // For a period of an agreement, what is not given is its draft's.
-            let draft = like.or_else(|| under.as_ref().map(|f| views::draft(&s.books, &f.agreement, &f.period))).unwrap_or_default();
+            // Under an agreement, what is not given is its invoice template's,
+            // of the version in force on the invoice's date.
+            let template = agreement.as_ref().and_then(|a| s.books.agreements.get(a)).and_then(|a| a.template_on(date)).cloned();
+            let draft = like.or(template).unwrap_or_default();
             let from = |given: Option<String>, k: &str| given.or_else(|| draft.get(k).cloned()).unwrap_or_default();
             let (reference, note, vat_reason) = (from(reference, "reference"), from(note, "note"), from(vat_reason, "vat_reason"));
             let currency = currency.or_else(|| draft.get("currency").cloned());
             let income = income.or_else(|| draft.get("income").cloned());
-            let number = |k: &str| draft.get(k).map(|v| v.parse().with_context(|| format!("the agreement's draft: {k} {v} is not a number"))).transpose();
+            let number = |k: &str| draft.get(k).map(|v| v.parse().with_context(|| format!("the invoice template: {k} {v} is not a number"))).transpose();
             let vat_rate = match vat_rate {
                 Some(r) => Some(r),
                 None => number("vat_rate")?,
@@ -221,8 +216,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                     _ => id,
                 })
                 .collect();
-            let more = model::InvoiceMore { customer_tax_id, income, due_days, pay_to, to: target, period };
-            let date = input::day(date.as_deref())?;
+            let more = model::InvoiceMore { customer_tax_id, income, due_days, pay_to, to: partner, agreement, period };
             // A line each; `\n` within one, as logs written before take it.
             let customer = to.iter().map(|l| l.replace("\\n", "\n")).collect::<Vec<_>>().join("\n");
             let op = |pdf: String| Op::Invoice {

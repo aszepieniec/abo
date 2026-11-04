@@ -95,19 +95,16 @@ An entry carries its id and its kind as tags:
   invoice's negated.
 - `pays:` on a payment names the one debt it pays, by id. Whether a debt is
   settled is what the amounts say, never a tag.
-- `partner:` names who a bill, an invoice or an entry is with. An invoice or
-  an entry made for a period of an agreement — a month's hosting, a month's
-  salary — also carries `agreement:` and `period:`, so that a period is done
-  once (MODEL.md §2.9).
+- `partner:` names who a bill or an invoice is with. An invoice issued under
+  an agreement also carries `agreement:` (MODEL.md §2.9).
 
-Partners and agreements are specified, not built yet. A partner is a name,
-with an address and a tax number where something prints them; an employee is
-a partner. An agreement is a contract with one or more partners, held as
-versions only added, and active until terminated or subsumed by another on a
-day. A version may carry a schedule: every so many months, in advance or in
-arrears, invoice, pay or receive, from a draft that fills the form. Periods
-are whole months but for the first and last, which are cut to the days the
-contract runs. abo lists what is due and makes nothing of its own accord.
+A partner is a name, with an address and a tax number where something
+prints them; an employee is a partner. An agreement is a contract with one
+or more partners, held as versions only added, each with its signed copy,
+and active until terminated or subsumed by another on a day. A version may
+carry an invoice template: the invoice form's fields an invoice issued
+under it starts from. An agreement holds no schedule: nothing falls due
+under it, and abo makes nothing of its own accord.
 
 Account naming: CamelCase segments, acronyms in capitals: `Assets:Bank`,
 `Expenses:Telecom`, `Liabilities:VAT:Output`. If your accountant wants a
@@ -807,10 +804,9 @@ Three things to get right, because they are where payroll goes wrong:
   `max(invoice:)` instead of keeping a counter. No payroll state file.
 
 Until then, payroll is booked, not computed (MODEL.md §10): an employee is a
-partner, their contract an agreement under `contracts/` whose schedule pays
-them monthly, and its draft holds the salary entry's postings — gross,
-withholding, net — which whoever runs payroll corrects each month from the
-payslip.
+partner, their contract an agreement under `contracts/` with its signed
+copy, and each month's salary an entry booked by hand from the payslip —
+gross, withholding, net.
 
 Open questions, to settle before this becomes a milestone:
 

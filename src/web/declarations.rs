@@ -128,7 +128,7 @@ impl<'a> Tree<'a> {
         let under = |a: &str, b: &str| a == b || a.strip_prefix(b).is_some_and(|r| r.starts_with(':'));
         let mut moved = std::collections::BTreeMap::new();
         for e in &b.entries {
-            let (model::Kind::Plain(ps, _), Some(rest)) = (&e.kind, e.description.strip_prefix("Move ")) else { continue };
+            let (model::Kind::Plain(ps), Some(rest)) = (&e.kind, e.description.strip_prefix("Move ")) else { continue };
             // A name may hold " to ": the split whose first part the postings are under.
             let Some((from, to)) = rest.match_indices(" to ").map(|(i, _)| (&rest[..i], &rest[i + 4..])).find(|(f, _)| ps.iter().any(|p| under(&p.account, f))) else { continue };
             for p in ps.iter().filter(|p| under(&p.account, from)) {

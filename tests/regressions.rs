@@ -2620,29 +2620,32 @@ fn a_recorded_balance_is_not_carried_over() {
 }
 
 /// The fresh-agent run of section 6: an agreement terminated as of a day to
-/// come read as ended already, and its employee as paid by none; a period
-/// did not say which version it was under, nor was the next one shown; and
-/// the CLI had no Issue again.
+/// come read as ended already, and its employee as former; and the CLI had
+/// no Issue again. An invoice under an agreement starts from its template,
+/// and one like it stays under it.
 #[test]
 fn an_agreement_ending_later_is_active_till_then() {
     let dir = books("ending-later", &[]);
     ok(&dir, &["partner", "add", "sam", "--name", "Sam", "--employee"]);
-    ok(&dir, &["agreement", "add", "sam", "--partner", "sam", "--from", "2027-01-01", "--pay", "sam", "--in-arrears"]);
+    ok(&dir, &["agreement", "add", "sam", "--partner", "sam", "--from", "2027-01-01"]);
     let said = ok(&dir, &["agreement", "terminate", "sam", "--on", "2027-12-31"]);
     assert!(said.starts_with("Terminated the agreement sam"), "{said}");
     let said = ok(&dir, &["partner"]);
-    assert!(!said.contains("no active agreement"), "{said}");
+    assert!(said.contains("Employees:\nsam  Sam") && !said.contains("former"), "{said}");
     let said = ok(&dir, &["agreement", "show", "sam"]);
-    assert!(said.contains("active until 2027-12-31, terminated") && said.contains("version 1  not yet"), "{said}");
+    assert!(said.contains("active until 2027-12-31, terminated"), "{said}");
 
     ok(&dir, &["partner", "add", "acme", "--name", "Acme GmbH", "--address", "1 Road"]);
-    let v = json(&dir, &["invoice", "--partner", "acme", "--item", "2|50|Support", "--reference", "PO 7"]);
+    ok(&dir, &["agreement", "add", "support", "--partner", "acme", "--from", "2027-01-01", "--template", "items=2|50|Support", "--template", "reference=PO 7"]);
+    let v = json(&dir, &["invoice", "--partner", "acme", "--agreement", "support"]);
     let n = v["number"].as_str().unwrap_or_else(|| panic!("{v}")).to_string();
     ok(&dir, &["partner", "edit", "acme", "--address", "2 Road"]);
     let v = json(&dir, &["invoice", "--like", &n]);
     let again = v["number"].as_str().unwrap_or_else(|| panic!("{v}"));
     let t = read(&dir, &format!("invoices/2027/{again}.json"));
-    assert!(t.contains("2 Road") && t.contains("PO 7") && t.contains("Support"), "{t}");
+    assert!(t.contains("2 Road") && t.contains("PO 7") && t.contains("Support") && t.contains("\"agreement\": \"support\""), "{t}");
+    let said = ok(&dir, &["agreement", "show", "support"]);
+    assert!(said.contains(&format!("invoice {n}  to acme  version 1")) && said.contains(&format!("invoice {again}  to acme")), "{said}");
 }
 
 /// Former employees, those whose agreements have all ended, were listed

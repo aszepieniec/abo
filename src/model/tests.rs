@@ -284,14 +284,14 @@ pub(crate) enum Draw {
     Amend { which: Index, version: VersionDraw },
     AgreementEnd { which: Index, by: Option<Index>, on: When },
     AgreementRemove(Index),
-    /// A period of an agreement done: invoiced, or paid or received by an
-    /// entry, as its schedule says, or now and then the other way.
+    /// An invoice under an agreement: to one of its parties, or now and
+    /// then to a partner who is not.
     #[weight(6)]
-    Done {
+    Under {
         which: Index,
-        period: Index,
+        party: Index,
         #[strategy(proptest::bool::weighted(0.1))]
-        other_way: bool,
+        stranger: bool,
         #[strategy(hash())]
         pdf: String,
         when: When,
@@ -308,42 +308,26 @@ pub(crate) struct VersionDraw {
     /// Days from that it ends, now and then before it.
     #[strategy(proptest::option::weighted(0.2, -5i64..400))]
     until: Option<i64>,
-    #[strategy(proptest::option::weighted(0.8, any::<ScheduleDraw>()))]
-    schedule: Option<ScheduleDraw>,
+    #[strategy(proptest::option::weighted(0.5, any::<TemplateDraw>()))]
+    template: Option<TemplateDraw>,
 }
 
 #[derive(Arbitrary, Debug, Clone)]
-pub(crate) struct ScheduleDraw {
-    party: Index,
-    #[strategy(0u8..3)]
-    does: u8,
-    #[strategy(prop_oneof![9 => 1u32..4, 1 => Just(0u32)])]
-    every: u32,
-    arrears: bool,
-    #[strategy(proptest::option::weighted(0.5, prop_oneof![4 => Just("1|110|Hosting".to_string()), 1 => arb::<String>()]))]
-    draft: Option<String>,
+pub(crate) struct TemplateDraw {
+    #[strategy(prop_oneof![4 => Just("1|110|Hosting".to_string()), 1 => arb::<String>()])]
+    items: String,
+    /// Now and then a field the invoice form has not.
     #[strategy(proptest::bool::weighted(0.1))]
     wrong_field: bool,
 }
 
 impl VersionDraw {
-    /// The version in books `m` on `today`, its party one of `parties`.
-    fn version(&self, today: Date, parties: &[Id]) -> Version {
+    /// The version on `today`.
+    fn version(&self, today: Date) -> Version {
         let days = |d: Date, n: i64| jiff::Span::new().try_days(n).ok().and_then(|s| d.checked_add(s).ok()).unwrap_or(d);
         let from = days(today, self.from);
-        let schedule = self.schedule.as_ref().map(|s| Schedule {
-            party: pick(&s.party, parties).unwrap_or_else(|| "acme".into()),
-            does: [Does::Invoice, Does::Pay, Does::Receive][s.does as usize % 3],
-            every: s.every,
-            billed: if s.arrears { Billed::InArrears } else { Billed::InAdvance },
-            // The form's first field, or now and then the other form's.
-            draft: s.draft.iter().map(|d| {
-                let does = [Does::Invoice, Does::Pay, Does::Receive][s.does as usize % 3];
-                let other = if does == Does::Invoice { Does::Pay } else { Does::Invoice };
-                ((if s.wrong_field { other } else { does }).fields()[0].to_string(), d.clone())
-            }).collect(),
-        });
-        Version { from, until: self.until.map(|u| days(from, u)), schedule }
+        let template = self.template.as_ref().map(|t| BTreeMap::from([((if t.wrong_field { "postings" } else { "items" }).to_string(), t.items.clone())]));
+        Version { from, until: self.until.map(|u| days(from, u)), template }
     }
 }
 
@@ -377,7 +361,7 @@ pub(crate) fn op(d: &Draw, m: &Books, today: Date) -> Option<Op> {
     Some(match d.clone() {
         Draw::Post { from, to, q, description, when } => {
             let (a, b) = (pick(&from, &PLAIN).unwrap(), pick(&to, &[&PLAIN[..], &[RECEIVABLE]].concat()).unwrap());
-            Op::Post { date: when.at(today), description, postings: vec![Posting::new(a, q, "EUR"), Posting::new(b, -q, "EUR")], under: None }
+            Op::Post { date: when.at(today), description, postings: vec![Posting::new(a, q, "EUR"), Posting::new(b, -q, "EUR")] }
         }
         Draw::File { sha256, name, bill, version, when } => {
             let versions: Vec<Of> = m.agreements.iter().flat_map(|(id, a)| (1..=a.versions.len() + 1).map(|n| Of::Version(id.clone(), n))).collect();
@@ -413,7 +397,7 @@ pub(crate) fn op(d: &Draw, m: &Books, today: Date) -> Option<Op> {
                 Rate::Any(r) => (Some(r), String::new()),
             };
             let lines = lines.into_iter().map(|l| Line { description: l.description, quantity: l.quantity, unit_price: l.unit_price }).collect();
-            let to = to.map(|i| To::Partner(pick(&i, &partners).unwrap_or_else(|| "zz-none".into())));
+            let to = to.map(|i| pick(&i, &partners).unwrap_or_else(|| "zz-none".into()));
             let customer = if to.is_some() { String::new() } else { customer };
             Op::Invoice { date: when.at(today), customer, commodity: usd(u).into(), lines, rate, reason, reference: String::new(), note: String::new(), pdf, more: InvoiceMore { to, ..Default::default() } }
         }
@@ -507,13 +491,11 @@ pub(crate) fn op(d: &Draw, m: &Books, today: Date) -> Option<Op> {
         Draw::PartnerRemove(i) => Op::PartnerRemove { id: pick(&i, &partners).unwrap_or_else(|| "zz-none".into()) },
         Draw::AgreementAdd { id, parties, version } => {
             let parties: Vec<Id> = parties.iter().map(|i| pick(i, &partners).unwrap_or_else(|| "acme".into())).collect();
-            let version = version.version(today, &parties);
-            Op::AgreementAdd { id, parties, version }
+            Op::AgreementAdd { id, parties, version: version.version(today) }
         }
         Draw::Amend { which, version } => {
             let id = pick(&which, &agreements).unwrap_or_else(|| "zz-none".into());
-            let parties = m.agreements.get(&id).map(|a| a.parties.clone()).unwrap_or_default();
-            Op::Amend { id, version: version.version(today, &parties) }
+            Op::Amend { id, version: version.version(today) }
         }
         Draw::AgreementEnd { which, by, on } => {
             let id = pick(&which, &agreements).unwrap_or_else(|| "zz-none".into());
@@ -525,27 +507,13 @@ pub(crate) fn op(d: &Draw, m: &Books, today: Date) -> Option<Op> {
             Op::AgreementEnd { id, status }
         }
         Draw::AgreementRemove(i) => Op::AgreementRemove { id: pick(&i, &agreements).unwrap_or_else(|| "zz-none".into()) },
-        Draw::Done { which, period, other_way, pdf, when } => {
-            // Of an agreement with periods, if one has: any through today,
-            // done already or not; else a day, which is no period.
-            let with: Vec<Id> = m.agreements.iter().filter(|(_, a)| !a.periods(today).is_empty()).map(|(id, _)| id.clone()).collect();
-            let (id, n, p) = match pick(&which, &with) {
-                Some(id) => {
-                    let (n, p) = pick(&period, &m.agreements[&id].periods(today)).unwrap();
-                    (id, n, p)
-                }
-                None => (pick(&which, &agreements)?, 1, Period { from: today, to: today }),
-            };
-            let invoices = m.agreements[&id].schedule(n).is_some_and(|s| s.does == Does::Invoice) != other_way;
-            let date = when.at(today);
-            if invoices {
-                let lines = vec![Line { description: "Hosting".into(), quantity: Decimal::ONE, unit_price: Decimal::new(110, 0) }];
-                let more = InvoiceMore { to: Some(To::Agreement(id)), period: Some(p), ..Default::default() };
-                Op::Invoice { date, customer: String::new(), commodity: "EUR".into(), lines, rate: None, reason: String::new(), reference: String::new(), note: String::new(), pdf, more }
-            } else {
-                let q = Decimal::new(3000, 0);
-                Op::Post { date, description: "Salary".into(), postings: vec![Posting::new("Expenses:Other", q, "EUR"), Posting::new(BANK, -q, "EUR")], under: Some(For { agreement: id, period: p }) }
-            }
+        Draw::Under { which, party, stranger, pdf, when } => {
+            let id = pick(&which, &agreements)?;
+            let parties = &m.agreements[&id].parties;
+            let to = if stranger { pick(&party, &partners).unwrap_or_else(|| "zz-none".into()) } else { pick(&party, parties).unwrap_or_else(|| "zz-none".into()) };
+            let lines = vec![Line { description: "Hosting".into(), quantity: Decimal::ONE, unit_price: Decimal::new(110, 0) }];
+            let more = InvoiceMore { to: Some(to), agreement: Some(id), ..Default::default() };
+            Op::Invoice { date: when.at(today), customer: String::new(), commodity: "EUR".into(), lines, rate: None, reason: String::new(), reference: String::new(), note: String::new(), pdf, more }
         }
         Draw::Undo => return None,
     })
@@ -924,7 +892,7 @@ fn given_texts(m: &Books, op: &Op) -> Vec<String> {
     v.extend(m.config.payment.iter().flat_map(|(id, o)| [id.clone(), o.iban.clone(), o.bic.clone(), o.account.clone()]));
     v.extend([m.config.company.name.clone(), m.config.invoice.receivable.clone(), m.config.invoice.income.clone()]);
     v.extend(m.partners.keys().cloned().chain(m.agreements.keys().cloned()));
-    v.extend(m.agreements.values().flat_map(|a| a.parties.iter().cloned().chain(a.versions.iter().filter_map(|x| x.schedule.as_ref().map(|s| s.party.clone())))));
+    v.extend(m.agreements.values().flat_map(|a| a.parties.iter().cloned()));
     let postings = |ps: &[Posting]| ps.iter().flat_map(|p| [p.account.clone(), p.amount.commodity.clone()]).collect::<Vec<_>>();
     match op {
         Op::Post { description, postings: ps, .. } => v.extend([vec![description.clone()], postings(ps)].concat()),
@@ -1359,11 +1327,7 @@ fn tags(m: &Books, id: EntryId) -> BTreeSet<(String, String)> {
     let mut t = vec![("id", id.to_string())];
     let partner = m.partner_of(id).cloned();
     match &m.entries[id - 1].kind {
-        Kind::Plain(_, None) => {}
-        Kind::Plain(_, Some(f)) => {
-            t.extend([("agreement", f.agreement.clone()), ("period", format!("{}..{}", f.period.from, f.period.to))]);
-            t.extend(partner.map(|p| ("partner", p)));
-        }
+        Kind::Plain(_) => {}
         Kind::Bill(_, more) => {
             t.push(("bill", String::new()));
             if !more.number.is_empty() {
@@ -1374,8 +1338,9 @@ fn tags(m: &Books, id: EntryId) -> BTreeSet<(String, String)> {
             }
             t.extend(more.partner.clone().map(|p| ("partner", p)));
         }
-        Kind::Invoice { .. } => {
+        Kind::Invoice { content, .. } => {
             t.push(("invoice", number));
+            t.extend(content.agreement.clone().map(|a| ("agreement", a)));
             t.extend(partner.map(|p| ("partner", p)));
         }
         Kind::CreditNote { of, .. } => t.extend([("invoice", number), ("credits", of.to_string())]),
@@ -1504,14 +1469,14 @@ fn hledger_catches_what_check_catches(#[strategy(plan())] plan: Vec<Step>, tampe
         }
         Tamper::Unbalance(i) => {
             let own: Vec<EntryId> = (1..=m.entries.len())
-                .filter(|&id| matches!(&m.entries[id - 1].kind, Kind::Plain(ps, _) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. } if ps[0].cost.is_none()))
+                .filter(|&id| matches!(&m.entries[id - 1].kind, Kind::Plain(ps) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. } if ps[0].cost.is_none()))
                 .collect();
             let Some(id) = pick(&i, &own) else { return Ok(()) };
             let u = {
-                let (Kind::Plain(ps, _) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. }) = &m.entries[id - 1].kind else { unreachable!() };
+                let (Kind::Plain(ps) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. }) = &m.entries[id - 1].kind else { unreachable!() };
                 unit(&m, &ps[0].amount.commodity)
             };
-            let (Kind::Plain(ps, _) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. }) = &mut m.entries[id - 1].kind else { unreachable!() };
+            let (Kind::Plain(ps) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. }) = &mut m.entries[id - 1].kind else { unreachable!() };
             ps[0].amount.quantity += u;
         }
         Tamper::Undeclare(i) => {
@@ -1586,7 +1551,7 @@ fn closed_dates_are_refused(#[strategy(plan())] plan: Vec<Step>, #[strategy(1i64
     let Ok(m) = apply(&m, &Op::ConfigSet { key: "company.closed_through".into(), value: at.to_string() }, today) else { return Ok(()) };
     let c = m.config.company.closed_through.unwrap();
     let names = |r: &Outcome, code: &str| r.as_ref().is_err_and(|v| v.iter().any(|v| v.code == code));
-    let post = Op::Post { date: c, description: "Late".into(), postings: vec![Posting::new(BANK, Decimal::ONE, "EUR"), Posting::new("Equity:Opening", -Decimal::ONE, "EUR")], under: None };
+    let post = Op::Post { date: c, description: "Late".into(), postings: vec![Posting::new(BANK, Decimal::ONE, "EUR"), Posting::new("Equity:Opening", -Decimal::ONE, "EUR")] };
     prop_assert!(names(&apply(&m, &post, today), "N2"));
     let record = Op::Record { account: "Expenses:Other".into(), commodity: "EUR".into(), date: c, balance: Decimal::ZERO, clears: BTreeSet::new() };
     prop_assert!(names(&apply(&m, &record, today), "N2"));
@@ -1843,7 +1808,7 @@ fn rename(m: &Books, f: &dyn Fn(&str) -> String) -> Books {
     n.accounts = m.accounts.iter().map(|a| f(a)).collect();
     for e in &mut n.entries {
         match &mut e.kind {
-            Kind::Plain(ps, _) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. } => ps.iter_mut().for_each(|p| p.account = f(&p.account)),
+            Kind::Plain(ps) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. } => ps.iter_mut().for_each(|p| p.account = f(&p.account)),
             Kind::Invoice { content, .. } => {
                 let a = &mut content.accounts;
                 a.receivable = f(&a.receivable);
@@ -1872,7 +1837,7 @@ fn rename(m: &Books, f: &dyn Fn(&str) -> String) -> Books {
 fn rename_op(op: &Op, f: &dyn Fn(&str) -> String) -> Op {
     let ps = |ps: &[Posting]| ps.iter().map(|p| Posting { account: f(&p.account), ..p.clone() }).collect();
     match op.clone() {
-        Op::Post { date, description, postings, under } => Op::Post { date, description, postings: ps(&postings), under },
+        Op::Post { date, description, postings } => Op::Post { date, description, postings: ps(&postings) },
         Op::Bill { date, description, postings, document, again, more } => Op::Bill { date, description, postings: ps(&postings), document, again, more },
         Op::Pay { debt, date, amount, from, cost } => Op::Pay { debt, date, amount, from: f(&from), cost },
         Op::WriteOff { debt, date, to } => Op::WriteOff { debt, date, to: f(&to) },
@@ -2052,14 +2017,14 @@ fn extremes_survive_hledger(#[strategy(0u32..9)] places: u32, negative: bool, #[
     let top = Decimal::from(BOUND) - unit;
     for q in [top, unit, Decimal::new(small, places)] {
         let q = if negative { -q } else { q };
-        let post = Op::Post { date: today, description: "Edge".into(), postings: vec![Posting::new("Equity:Opening", q, "ZZZ"), Posting::new("Assets:Bank", -q, "ZZZ")], under: None };
+        let post = Op::Post { date: today, description: "Edge".into(), postings: vec![Posting::new("Equity:Opening", q, "ZZZ"), Posting::new("Assets:Bank", -q, "ZZZ")] };
         m = apply(&m, &post, today).map_err(|v| TestCaseError::fail(format!("{q}: {v:?}")))?;
     }
     let mut exchange = Posting::new("Equity:Opening", top, "ZZZ");
     exchange.cost = Some(eur(Decimal::from(BOUND) - Decimal::new(1, 2)));
     let back = Posting { account: "Assets:Bank".into(), amount: eur(-(Decimal::from(BOUND) - Decimal::new(1, 2))), cost: None };
-    m = apply(&m, &Op::Post { date: today, description: "Exchange".into(), postings: vec![exchange, back], under: None }, today).map_err(|v| TestCaseError::fail(format!("{v:?}")))?;
-    let over = Op::Post { date: today, description: "Over".into(), postings: vec![Posting::new("Equity:Opening", top + unit, "ZZZ"), Posting::new("Assets:Bank", -(top + unit), "ZZZ")], under: None };
+    m = apply(&m, &Op::Post { date: today, description: "Exchange".into(), postings: vec![exchange, back] }, today).map_err(|v| TestCaseError::fail(format!("{v:?}")))?;
+    let over = Op::Post { date: today, description: "Over".into(), postings: vec![Posting::new("Equity:Opening", top + unit, "ZZZ"), Posting::new("Assets:Bank", -(top + unit), "ZZZ")] };
     prop_assert!(apply(&m, &over, today).is_err_and(|v| v.iter().any(|v| v.code == "I-K3")));
     prop_assert_eq!(parse(&render(&m)), Ok(m.clone()));
     hledger(&m, None).map_err(TestCaseError::fail)?;
@@ -2089,7 +2054,7 @@ fn any_text_the_rules_allow_survives(
     let today = day("2026-06-30");
     let account = format!("Expenses:{segment}");
     let m = apply(&fresh(), &Op::AccountAdd(account.clone()), today).map_err(|v| TestCaseError::fail(format!("{v:?}")))?;
-    let post = Op::Post { date: today, description: description.clone(), postings: vec![Posting::new(&account, Decimal::ONE, "EUR"), Posting::new("Assets:Bank", -Decimal::ONE, "EUR")], under: None };
+    let post = Op::Post { date: today, description: description.clone(), postings: vec![Posting::new(&account, Decimal::ONE, "EUR"), Posting::new("Assets:Bank", -Decimal::ONE, "EUR")] };
     let mut m = apply(&m, &post, today).map_err(|v| TestCaseError::fail(format!("{v:?}")))?;
     if check::lines_ok(&lines) {
         m = apply(&m, &Op::ConfigSet { key: "company.address".into(), value: lines.clone() }, today).map_err(|v| TestCaseError::fail(format!("{v:?}")))?;
@@ -2378,20 +2343,20 @@ pub(crate) fn has_unwritable_date(text: &str) -> bool {
 }
 
 /// What names partner `p`: a bill, an invoice issued to them, an agreement
-/// they are a party to or whose schedule is with them.
+/// they are a party to.
 fn names_partner(m: &Books, p: &str) -> bool {
     let entry = |id| match m.entry(id).map(|e| &e.kind) {
         Some(Kind::Bill(_, more)) => more.partner.as_deref() == Some(p),
-        Some(Kind::Invoice { content, .. }) => content.to == Some(To::Partner(p.into())),
+        Some(Kind::Invoice { content, .. }) => content.to.as_deref() == Some(p),
         _ => false,
     };
-    (1..=m.entries.len()).any(entry) || m.agreements.values().any(|a| a.parties.iter().any(|x| x == p) || a.versions.iter().any(|v| v.schedule.as_ref().is_some_and(|s| s.party == p)))
+    (1..=m.entries.len()).any(entry) || m.agreements.values().any(|a| a.parties.iter().any(|x| x == p))
 }
 
-/// What names agreement `a`: an invoice or entry made under it, a document
-/// of one of its versions, an agreement it subsumes.
+/// What names agreement `a`: an invoice issued under it, a document of one
+/// of its versions, an agreement it subsumes.
 fn names_agreement(m: &Books, a: &str) -> bool {
-    let entry = |id| matches!(m.entry(id).map(|e| &e.kind), Some(Kind::Plain(_, Some(f))) if f.agreement == a) || matches!(m.entry(id).map(|e| &e.kind), Some(Kind::Invoice { content, .. }) if content.to == Some(To::Agreement(a.into())));
+    let entry = |id| matches!(m.entry(id).map(|e| &e.kind), Some(Kind::Invoice { content, .. }) if content.agreement.as_deref() == Some(a));
     (1..=m.entries.len()).any(entry)
         || m.documents.values().any(|d| d.version().is_some_and(|(x, _)| x == a))
         || m.agreements.values().any(|x| matches!(&x.status, AgreementStatus::Subsumed { by, .. } if by == a))
@@ -2442,8 +2407,7 @@ fn versions_are_kept(#[strategy(plan())] plan: Vec<Step>) {
 }
 
 /// G-T2: an agreement terminated or subsumed stays so and takes no new
-/// version; none has a period past its last day; none is subsumed, through
-/// others, by itself.
+/// version; none is subsumed, through others, by itself.
 #[proptest]
 fn ended_agreements_stay_ended(#[strategy(plan())] plan: Vec<Step>) {
     walk(&plan, |m, op, n| {
@@ -2454,10 +2418,7 @@ fn ended_agreements_stay_ended(#[strategy(plan())] plan: Vec<Step>) {
                 }
             }
         }
-        for (id, a) in &n.agreements {
-            if let Some(last) = a.last_day() {
-                prop_assert!(a.periods(last).iter().all(|(_, p)| p.to <= last), "agreement {} has a period past {}", id, last);
-            }
+        for id in n.agreements.keys() {
             let mut at = id;
             for _ in 0..=n.agreements.len() {
                 match n.agreements.get(at).map(|x| &x.status) {
@@ -2483,46 +2444,64 @@ fn ended_agreements_stay_ended(#[strategy(plan())] plan: Vec<Step>) {
     }
 }
 
-/// G-T3: what is made for a period of an agreement is for one of its
-/// periods, of a schedule that does what it does, and each period is done
-/// once while its invoice or entry stands.
+/// G-T3: an invoice under an agreement is to one of its parties, and one
+/// standing is dated on a day the agreement is in force: from its first
+/// version's first day through its last day.
 #[proptest]
-fn periods_are_done_once(#[strategy(plan())] plan: Vec<Step>) {
+fn invoices_under_an_agreement_are_to_its_parties_while_in_force(#[strategy(plan())] plan: Vec<Step>, which: Index, stranger: Index) {
     walk(&plan, |_, _, n| {
         let standing = n.standing();
-        for ((a, p), by) in n.done(&standing) {
-            prop_assert_eq!(by.len(), 1, "{} done {:?} times for {:?}", a, by, p);
-            let ag = &n.agreements[a];
-            let (v, _) = ag.periods(p.from).into_iter().find(|(_, q)| *q == p).ok_or_else(|| TestCaseError::fail(format!("{p:?} is not a period of {a}")))?;
-            let invoice = matches!(n.entries[by[0] - 1].kind, Kind::Invoice { .. });
-            prop_assert_eq!(ag.schedule(v).map(|s| s.does == Does::Invoice), Some(invoice));
-        }
-        Ok(())
-    })?;
-}
-
-/// G-T3: the version in force on a period done stays the one it was done
-/// under, while what did it stands.
-#[proptest]
-fn what_is_done_keeps_its_version(#[strategy(plan())] plan: Vec<Step>) {
-    walk(&plan, |m, op, n| {
-        let (ms, ns) = (m.standing(), n.standing());
-        let after = n.done(&ns);
-        for ((a, p), by) in m.done(&ms) {
-            if after.get(&(a, p)) == Some(&by) {
-                prop_assert_eq!(n.agreements[a].in_force(p.from), m.agreements[a].in_force(p.from), "{:?} moved the version of {:?} of {}", op, p, a);
+        for (id, a) in &n.agreements {
+            for e in n.invoices_under(id, &standing) {
+                prop_assert!(n.partner_of(e).is_some_and(|p| a.parties.contains(p)), "{} under {} is to no party of it", e, id);
+                prop_assert!(a.in_force_on(n.entries[e - 1].date), "{} under {} is dated when it is not in force", e, id);
             }
         }
         Ok(())
     })?;
-    // The one way past I-T4: a version on the same terms, taking effect on
-    // a period's first day, makes that period again, under itself.
+    // To one not a party, or dated before it begins: refused, by I-T4.
     let (m, today) = end(&plan);
-    for ((a, p), _) in m.done(&m.standing()) {
-        let ag = &m.agreements[a];
-        let same = Version { from: p.from, ..ag.versions[ag.in_force(p.from).unwrap() - 1].clone() };
+    let Some(id) = pick(&which, &m.agreements.keys().cloned().collect::<Vec<_>>()) else { return Ok(()) };
+    let a = &m.agreements[&id];
+    let lines = vec![Line { description: "Hosting".into(), quantity: Decimal::ONE, unit_price: Decimal::new(110, 0) }];
+    let invoice = |to: &str, date: Date| Op::Invoice { date, customer: String::new(), commodity: "EUR".into(), lines: lines.clone(), rate: None, reason: String::new(), reference: String::new(), note: String::new(), pdf: "0".repeat(64), more: InvoiceMore { to: Some(to.into()), agreement: Some(id.clone()), ..Default::default() } };
+    let i_t4 = |r: &Outcome| r.as_ref().is_err_and(|v| v.iter().any(|x| x.code == "I-T4"));
+    let others: Vec<Id> = m.partners.keys().filter(|p| !a.parties.contains(p)).cloned().collect();
+    if let Some(p) = pick(&stranger, &others) {
+        prop_assert!(i_t4(&apply(&m, &invoice(&p, today), today)), "an invoice under {} to {}, no party of it, was issued", id, p);
+    }
+    let first = a.versions[0].from;
+    if let (Ok(before), Some(p)) = (first.yesterday(), a.parties.iter().find(|p| m.partners.contains_key(*p))) {
+        if before <= today {
+            prop_assert!(i_t4(&apply(&m, &invoice(p, before), today)), "an invoice under {} dated {}, before it began, was issued", id, before);
+        }
+    }
+}
+
+/// G-T3: the version in force on the date of an invoice issued under an
+/// agreement stays the one it was issued under, while the invoice stands.
+#[proptest]
+fn what_is_issued_keeps_its_version(#[strategy(plan())] plan: Vec<Step>) {
+    walk(&plan, |m, op, n| {
+        let ns = n.standing();
+        for (a, ag) in &m.agreements {
+            for e in m.invoices_under(a, &m.standing()).into_iter().filter(|&e| ns.get(e).copied().unwrap_or(false)) {
+                let date = m.entries[e - 1].date;
+                if let Some(x) = n.agreements.get(a) {
+                    prop_assert_eq!(x.in_force(date), ag.in_force(date), "{:?} moved the version of {} under {}", op, e, a);
+                }
+            }
+        }
+        Ok(())
+    })?;
+    // A version on the same terms, from the last invoice's date: refused.
+    let (m, today) = end(&plan);
+    for (a, ag) in &m.agreements {
+        let Some(&last) = m.invoices_under(a, &m.standing()).iter().max_by_key(|&&e| m.entries[e - 1].date) else { continue };
+        let date = m.entries[last - 1].date;
+        let same = Version { from: date, ..ag.versions.last().unwrap().clone() };
         let r = apply(&m, &Op::Amend { id: a.clone(), version: same }, today);
-        prop_assert!(r.as_ref().is_err_and(|v| v.iter().any(|x| x.code == "N10" || x.code == "N11")), "a version from {} was added to {}, done: {:?}", p.from, a, r.map(|_| ()));
+        prop_assert!(r.as_ref().is_err_and(|v| v.iter().any(|x| x.code == "N10" || x.code == "N11")), "a version from {} was added to {}, invoiced then: {:?}", date, a, r.map(|_| ()));
     }
 }
 

@@ -100,9 +100,6 @@ fn list(s: &Store, json: bool, with_former: bool) -> Result<()> {
             if !p.agreements.is_empty() {
                 out += &format!("\n    agreements: {}", p.agreements.join(", "));
             }
-            if p.unpaid {
-                out += "\n    employed, and no active agreement pays them";
-            }
             out
         };
         let (employees, others): (Vec<_>, Vec<_>) = all.iter().partition(|p| p.employee);
@@ -154,11 +151,11 @@ pub(crate) fn agreement(here: &Path, json: bool, change: Option<AgreementCmd>) -
             let v = version.version(&s.books, None, false)?;
             Op::AgreementAdd { id, parties, version: v }
         }
-        Some(AgreementCmd::Amend { id, version, no_schedule }) => {
+        Some(AgreementCmd::Amend { id, version, no_template }) => {
             // What is not given is the version's in force from then.
             let from = version.from.as_deref().map(|d| input::day(Some(d))).transpose()?.context("--from is needed: the day the new terms begin")?;
             let base = s.books.agreements.get(&id).and_then(|a| a.versions.get(a.in_force(from).unwrap_or(a.versions.len()).checked_sub(1)?)).cloned();
-            Op::Amend { version: version.version(&s.books, base.as_ref(), no_schedule)?, id }
+            Op::Amend { version: version.version(&s.books, base.as_ref(), no_template)?, id }
         }
         Some(AgreementCmd::Terminate { id, on }) => Op::AgreementEnd { id, status: model::AgreementStatus::Terminated { on: input::day(on.as_deref())? } },
         Some(AgreementCmd::Subsume { id, by, on }) => Op::AgreementEnd { id, status: model::AgreementStatus::Subsumed { by, on: input::day(on.as_deref())? } },
@@ -186,12 +183,11 @@ fn show(a: &views::AgreementView) -> String {
     for v in &a.versions {
         let force = if a.in_force == Some(v.n) { ", in force" } else { "" };
         out += &format!("\nVersion {} from {}{}{force}", v.n, v.from, v.until.as_ref().map(|u| format!(" until {u}")).unwrap_or_default());
-        match (v.does, &v.party, v.every, v.billed) {
-            (Some(d), Some(p), Some(e), Some(b)) => out += &format!(": {d} {p} every {e} month{} {}", if e == 1 { "" } else { "s" }, b.replace('-', " ")),
-            _ => out += ": a contract on record",
+        if !v.template.is_empty() {
+            out += "\n    invoice template:";
         }
-        for (k, x) in &v.draft {
-            out += &format!("\n    {k}: {}", x.replace('\n', "; "));
+        for (k, x) in &v.template {
+            out += &format!("\n      {k}: {}", x.replace('\n', "; "));
         }
         for d in &v.documents {
             out += &format!("\n    document: {d}");
@@ -200,15 +196,10 @@ fn show(a: &views::AgreementView) -> String {
             out += &format!("\n    no signed copy filed: abo file --for {}/{} --date ... --issuer ... <scan>", a.id, v.n);
         }
     }
-    if !a.periods.is_empty() || a.next.is_some() {
-        out += "\nPeriods:";
-        for p in a.periods.iter().chain(&a.next) {
-            let state = match (&p.done_by, p.due) {
-                (Some(by), _) => format!("done by {by}"),
-                (None, true) => "due".into(),
-                (None, false) => "not yet".into(),
-            };
-            out += &format!("\n  {}..{}  {} {}  version {}  {state}", p.from, p.to, p.does, p.party, p.version);
+    if !a.invoices.is_empty() {
+        out += "\nInvoices under it:";
+        for i in &a.invoices {
+            out += &format!("\n  {}  {}  to {}  version {}", i.date, i.what, i.partner, i.version);
         }
     }
     out
@@ -217,60 +208,42 @@ fn show(a: &views::AgreementView) -> String {
 impl VersionFlags {
     /// The version these flags say, over `base`, the one in force, for an
     /// amendment: what they do not give is its.
-    fn version(&self, b: &model::Books, base: Option<&model::Version>, no_schedule: bool) -> Result<model::Version> {
-        let from = match (&self.from, base) {
-            (Some(d), _) => input::day(Some(d))?,
-            (None, _) => bail!("--from is needed: the day it takes effect"),
+    fn version(&self, b: &model::Books, base: Option<&model::Version>, no_template: bool) -> Result<model::Version> {
+        let from = match &self.from {
+            Some(d) => input::day(Some(d))?,
+            None => bail!("--from is needed: the day it takes effect"),
         };
         let until = match self.until.as_deref() {
             Some("") => None,
             Some(d) => Some(input::day(Some(d))?),
             None => base.and_then(|v| v.until),
         };
-        let does = [(model::Does::Invoice, &self.invoice), (model::Does::Pay, &self.pay), (model::Does::Receive, &self.receive)].into_iter().find_map(|(d, p)| Some((d, p.clone()?)));
-        let billed = match (self.in_advance, self.in_arrears) {
-            (true, _) => Some(model::Billed::InAdvance),
-            (_, true) => Some(model::Billed::InArrears),
-            _ => None,
-        };
-        let changes = does.is_some() || self.every.is_some() || billed.is_some() || !self.draft.is_empty() || self.draft_from.is_some();
-        if no_schedule {
-            if changes {
-                bail!("--no-schedule says the new version has none; it takes no schedule's flags");
+        if no_template {
+            if !self.template.is_empty() || self.template_from.is_some() {
+                bail!("--no-template says the new version has none; it takes no --template or --template-from");
             }
-            return Ok(model::Version { from, until, schedule: None });
+            return Ok(model::Version { from, until, template: None });
         }
-        let start = base.and_then(|v| v.schedule.clone());
-        let schedule = match (start, does) {
-            (None, None) if changes => bail!("a schedule is with a party: --invoice, --pay or --receive names them"),
-            (None, None) => None,
-            (start, does) => {
-                let (does, party) = match (does, &start) {
-                    (Some(d), _) => d,
-                    (None, Some(s)) => (s.does, s.party.clone()),
-                    (None, None) => unreachable!(),
-                };
-                let billed = billed.or(start.as_ref().map(|s| s.billed)).context("a schedule says when each period is done: --in-advance, from its first day, or --in-arrears, from the day after its last")?;
-                let mut draft = match &self.draft_from {
-                    Some(e) => {
-                        let id = input::debt(b, e)?;
-                        views::fields_of(b, id).with_context(|| format!("--draft-from {e}: an invoice or an entry booked by hand fills a draft"))?
-                    }
-                    None => start.as_ref().map(|s| s.draft.clone()).unwrap_or_default(),
-                };
-                // The first of a name replaces it; each after, a line more.
-                let mut given: Vec<&str> = vec![];
-                for f in &self.draft {
-                    let (k, x) = f.split_once('=').with_context(|| format!("--draft {f}: write it name=value"))?;
-                    match given.contains(&k) {
-                        true => draft.entry(k.to_string()).or_default().push_str(&format!("\n{x}")),
-                        false => drop(draft.insert(k.to_string(), x.to_string())),
-                    }
-                    given.push(k);
+        let mut template = match &self.template_from {
+            Some(e) => {
+                let id = input::debt(b, e)?;
+                if !matches!(b.entry(id).map(|x| &x.kind), Some(model::Kind::Invoice { .. })) {
+                    bail!("--template-from {e}: an invoice fills a template");
                 }
-                model::Schedule { party, does, every: self.every.or(start.as_ref().map(|s| s.every)).unwrap_or(1), billed, draft }.into()
+                views::fields_of(b, id).unwrap_or_default()
             }
+            None => base.and_then(|v| v.template.clone()).unwrap_or_default(),
         };
-        Ok(model::Version { from, until, schedule })
+        // The first of a name replaces it; each after, a line more.
+        let mut given: Vec<&str> = vec![];
+        for f in &self.template {
+            let (k, x) = f.split_once('=').with_context(|| format!("--template {f}: write it name=value"))?;
+            match given.contains(&k) {
+                true => template.entry(k.to_string()).or_default().push_str(&format!("\n{x}")),
+                false => drop(template.insert(k.to_string(), x.to_string())),
+            }
+            given.push(k);
+        }
+        Ok(model::Version { from, until, template: Some(template) })
     }
 }

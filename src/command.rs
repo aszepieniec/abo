@@ -13,11 +13,8 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
     let flag = |k: &str, v: &dyn std::fmt::Display| format!("--{k}={v}");
     let mut a: Vec<String>;
     match op {
-        Op::Post { date, description, postings, under } => {
+        Op::Post { date, description, postings } => {
             a = vec![s("post"), flag("date", date), flag("desc", description)];
-            if let Some(f) = under {
-                a.extend([flag("agreement", &f.agreement), flag("period", &period(&f.period))]);
-            }
             a.push(s("--"));
             a.extend(postings.iter().map(posting));
         }
@@ -56,21 +53,18 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
             // A line of the customer each. ponytail: a `\n` typed within a
             // line is read back as a break, as logs written before have it.
             a = vec![s("invoice"), flag("date", date)];
-            match &more.to {
-                Some(model::To::Partner(p)) => a.push(flag("partner", p)),
-                Some(model::To::Agreement(x)) => a.push(flag("agreement", x)),
-                None => {}
+            if let Some(p) = &more.to {
+                a.push(flag("partner", p));
+            }
+            if let Some(x) = &more.agreement {
+                a.push(flag("agreement", x));
             }
             if let Some(p) = &more.period {
                 a.push(flag("period", &period(p)));
             }
             // What it copied from the partner, written out: run again after
             // their address changed, it issues the same invoice (G-O8).
-            let party = match (&more.to, more.period) {
-                (Some(model::To::Partner(p)), _) => m.partners.get(p),
-                (Some(model::To::Agreement(x)), Some(p)) => m.party_on(x, p.from).and_then(|p| m.partners.get(p)),
-                _ => None,
-            };
+            let party = more.to.as_ref().and_then(|p| m.partners.get(p));
             let copied = party.filter(|_| customer.trim().is_empty());
             let customer = copied.map_or(customer.as_str(), |p| p.lines.as_str());
             let tax_id = match copied {
@@ -90,8 +84,8 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
             // invoice.income is set by then.
             a.push(flag("income", more.income.as_ref().unwrap_or(&m.config.invoice.income)));
             // Under an agreement, what is left blank is said so: else its
-            // draft's would be taken, run again.
-            let drafted = matches!(more.to, Some(model::To::Agreement(_)));
+            // template's would be taken, run again.
+            let drafted = more.agreement.is_some();
             if drafted && more.due_days.is_none() {
                 a.push(flag("due-days", &m.config.invoice.terms_days));
             }
@@ -194,9 +188,9 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
             if version.until.is_none() && base.is_some_and(|b| b.until.is_some()) {
                 a.push(s("--until="));
             }
-            match (&version.schedule, base.and_then(|b| b.schedule.as_ref())) {
-                (None, _) => a.push(s("--no-schedule")),
-                (Some(new), Some(old)) => a.extend(old.draft.keys().filter(|k| !new.draft.contains_key(*k)).map(|k| format!("--draft={k}="))),
+            match (&version.template, base.and_then(|b| b.template.as_ref())) {
+                (None, _) => a.push(s("--no-template")),
+                (Some(new), Some(old)) => a.extend(old.keys().filter(|k| !new.contains_key(*k)).map(|k| format!("--template={k}="))),
                 (Some(_), None) => {}
             }
             a.extend([s("--"), id.clone()]);
@@ -233,25 +227,12 @@ fn lines_flags(lines: &str) -> Vec<String> {
     v
 }
 
-/// A version as flags: when, and its schedule, its draft a field each.
+/// A version as flags: when, and its invoice template, a field each.
 fn version_flags(v: &model::Version) -> Vec<String> {
     let mut a = vec![format!("--from={}", v.from)];
     a.extend(v.until.map(|u| format!("--until={u}")));
-    if let Some(s) = &v.schedule {
-        let does = match s.does {
-            model::Does::Invoice => "invoice",
-            model::Does::Pay => "pay",
-            model::Does::Receive => "receive",
-        };
-        a.push(format!("--{does}={}", s.party));
-        a.push(format!("--every={}", s.every));
-        a.push(match s.billed {
-            model::Billed::InAdvance => "--in-advance".into(),
-            model::Billed::InArrears => "--in-arrears".into(),
-        });
-        // A line each: the first sets the field, each after adds a line.
-        a.extend(s.draft.iter().flat_map(|(k, x)| x.split('\n').map(move |l| format!("--draft={k}={l}"))));
-    }
+    // A line each: the first sets the field, each after adds a line.
+    a.extend(v.template.iter().flatten().flat_map(|(k, x)| x.split('\n').map(move |l| format!("--template={k}={l}"))));
     a
 }
 

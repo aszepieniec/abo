@@ -317,9 +317,6 @@ pub struct PartnerRow {
     pub owed_by: Vec<Amount>,
     /// The agreements they are a party to, by id.
     pub agreements: Vec<String>,
-    /// An employee no active agreement pays (MODEL.md §2.9): shown, as it
-    /// is no rule.
-    pub unpaid: bool,
     /// Their invoices and bills, by entry, newest first.
     pub entries: Vec<PartnerEntry>,
 }
@@ -333,8 +330,8 @@ pub struct PartnerEntry {
     pub description: String,
 }
 
-/// Every partner, in the order of their ids; employees too, marked: an
-/// agreement pays them on `today` that has not ended before it.
+/// Every partner, in the order of their ids; employees too, marked, and
+/// former ones: those whose agreements all ended before `today`.
 pub fn partners(b: &Books, today: model::Date) -> Vec<PartnerRow> {
     b.partners
         .iter()
@@ -342,10 +339,8 @@ pub fn partners(b: &Books, today: model::Date) -> Vec<PartnerRow> {
             let (to, by) = b.owed(id);
             let amounts = |m: std::collections::BTreeMap<String, Decimal>| m.into_iter().map(|(c, q)| Amount::new(b, q, &c)).collect();
             let agreements: Vec<String> = b.agreements_of(id).into_iter().cloned().collect();
-            let pays = |a: &model::Agreement| a.last_day().is_none_or(|l| l >= today) && a.versions.iter().any(|v| v.schedule.as_ref().is_some_and(|s| s.party == *id && s.does == model::Does::Pay));
             let of: Vec<&model::Agreement> = agreements.iter().filter_map(|a| b.agreements.get(a)).collect();
             let former = p.employee && !of.is_empty() && of.iter().all(|a| a.last_day().is_some_and(|l| l < today));
-            let unpaid = p.employee && !former && !b.agreements.values().any(pays);
             let entries = (1..=b.entries.len())
                 .rev()
                 .filter(|&e| matches!(b.entries[e - 1].kind, model::Kind::Bill(..) | model::Kind::Invoice { .. }) && b.partner_of(e) == Some(id))
@@ -361,7 +356,6 @@ pub fn partners(b: &Books, today: model::Date) -> Vec<PartnerRow> {
                 owed_to: amounts(to),
                 owed_by: amounts(by),
                 agreements,
-                unpaid,
                 entries,
             }
         })
@@ -385,10 +379,8 @@ pub struct AgreementView {
     /// The version in force today.
     pub in_force: Option<usize>,
     pub versions: Vec<VersionView>,
-    /// Through today: each done or not, and whether it is due.
-    pub periods: Vec<PeriodView>,
-    /// The first period that begins after today.
-    pub next: Option<PeriodView>,
+    /// The standing invoices issued under it, newest first.
+    pub invoices: Vec<InvoiceUnder>,
 }
 
 #[derive(serde::Serialize)]
@@ -397,51 +389,24 @@ pub struct VersionView {
     pub n: usize,
     pub from: String,
     pub until: Option<String>,
-    /// invoice, pay or receive; none for a contract on record.
-    pub does: Option<&'static str>,
-    pub party: Option<String>,
-    pub every: Option<u32>,
-    /// in-advance or in-arrears.
-    pub billed: Option<&'static str>,
-    pub draft: std::collections::BTreeMap<String, String>,
+    /// Its invoice template, by the invoice form's names; empty for none.
+    pub template: std::collections::BTreeMap<String, String>,
     /// Its documents' paths.
     pub documents: Vec<String>,
 }
 
-#[derive(serde::Serialize, Clone)]
-pub struct PeriodView {
-    pub agreement: String,
-    /// The version it is of.
+#[derive(serde::Serialize)]
+pub struct InvoiceUnder {
+    pub entry: usize,
+    pub date: String,
+    /// `invoice 2026-0003`.
+    pub what: String,
+    pub partner: String,
+    /// The version in force on its date.
     pub version: usize,
-    pub from: String,
-    pub to: String,
-    /// invoice, pay or receive.
-    pub does: &'static str,
-    pub party: String,
-    /// What did it: `invoice 2026-0003`, `entry 41`.
-    pub done_by: Option<String>,
-    /// The entry that did it.
-    pub entry: Option<usize>,
-    /// Can be done by today, and is not.
-    pub due: bool,
 }
 
-pub fn does_word(d: model::Does) -> &'static str {
-    match d {
-        model::Does::Invoice => "invoice",
-        model::Does::Pay => "pay",
-        model::Does::Receive => "receive",
-    }
-}
-
-pub fn billed_word(b: model::Billed) -> &'static str {
-    match b {
-        model::Billed::InAdvance => "in-advance",
-        model::Billed::InArrears => "in-arrears",
-    }
-}
-
-/// Agreement `id`, its periods through `today`.
+/// Agreement `id`, as of `today`.
 pub fn agreement(b: &Books, id: &str, today: model::Date) -> Option<AgreementView> {
     let a = b.agreements.get(id)?;
     let (status, subsumed_by) = match &a.status {
@@ -453,20 +418,21 @@ pub fn agreement(b: &Books, id: &str, today: model::Date) -> Option<AgreementVie
         .versions
         .iter()
         .enumerate()
-        .map(|(i, v)| {
-            let s = v.schedule.as_ref();
-            let documents = b.documents.iter().filter(|(_, d)| d.version() == Some((id, i + 1))).map(|(h, d)| d.path(h)).collect();
-            VersionView {
-                n: i + 1,
-                from: v.from.to_string(),
-                until: v.until.map(|d| d.to_string()),
-                does: s.map(|s| does_word(s.does)),
-                party: s.map(|s| s.party.clone()),
-                every: s.map(|s| s.every),
-                billed: s.map(|s| billed_word(s.billed)),
-                draft: s.map(|s| s.draft.clone()).unwrap_or_default(),
-                documents,
-            }
+        .map(|(i, v)| VersionView {
+            n: i + 1,
+            from: v.from.to_string(),
+            until: v.until.map(|d| d.to_string()),
+            template: v.template.clone().unwrap_or_default(),
+            documents: b.documents.iter().filter(|(_, d)| d.version() == Some((id, i + 1))).map(|(h, d)| d.path(h)).collect(),
+        })
+        .collect();
+    let invoices = b
+        .invoices_under(id, &b.standing())
+        .into_iter()
+        .rev()
+        .map(|e| {
+            let date = b.entries[e - 1].date;
+            InvoiceUnder { entry: e, date: date.to_string(), what: model::name(b, e), partner: b.partner_of(e).cloned().unwrap_or_default(), version: a.in_force(date).unwrap_or(0) }
         })
         .collect();
     Some(AgreementView {
@@ -474,55 +440,13 @@ pub fn agreement(b: &Books, id: &str, today: model::Date) -> Option<AgreementVie
         parties: a.parties.clone(),
         status,
         ended_on: a.ended_on().map(|d| d.to_string()),
+        ended: a.last_day().is_some_and(|l| l < today),
         subsumed_by,
         last_day: a.last_day().map(|d| d.to_string()),
-        ended: a.last_day().is_some_and(|l| l < today),
         in_force: a.in_force(today),
         versions,
-        periods: periods(b, id, today),
-        next: next(b, id, today),
+        invoices,
     })
-}
-
-/// Agreement `id`'s periods that begin on or before `today`.
-fn periods(b: &Books, id: &str, today: model::Date) -> Vec<PeriodView> {
-    let Some(a) = b.agreements.get(id) else { return vec![] };
-    viewed(b, id, a.periods(today), today)
-}
-
-/// Agreement `id`'s first period that begins after `today`: one period
-/// of the longest schedule's months on, or on the last version's first day.
-fn next(b: &Books, id: &str, today: model::Date) -> Option<PeriodView> {
-    let a = b.agreements.get(id)?;
-    let months = a.versions.iter().filter_map(|v| v.schedule.as_ref()).map(|s| s.every).max()?;
-    let on = today.checked_add(jiff::Span::new().months(i64::from(months) + 1)).unwrap_or(today);
-    let through = a.versions.iter().map(|v| v.from).max().map_or(on, |f| f.max(on));
-    let after: Vec<_> = a.periods(through).into_iter().filter(|(_, p)| p.from > today).take(1).collect();
-    viewed(b, id, after, today).pop()
-}
-
-fn viewed(b: &Books, id: &str, periods: Vec<(usize, model::Period)>, today: model::Date) -> Vec<PeriodView> {
-    let Some(a) = b.agreements.get(id) else { return vec![] };
-    let done = b.done(&b.standing());
-    let due = b.due(id, today);
-    periods
-        .into_iter()
-        .filter_map(|(n, p)| {
-            let s = a.schedule(n)?;
-            let by = done.iter().find(|((x, q), _)| x.as_str() == id && *q == p).map(|(_, e)| e[0]);
-            Some(PeriodView {
-                agreement: id.into(),
-                version: n,
-                from: p.from.to_string(),
-                to: p.to.to_string(),
-                does: does_word(s.does),
-                party: s.party.clone(),
-                done_by: by.map(|e| model::name(b, e)),
-                entry: by,
-                due: due.iter().any(|(_, q)| *q == p),
-            })
-        })
-        .collect()
 }
 
 /// Every agreement, in the order of their ids.
@@ -530,17 +454,9 @@ pub fn agreements(b: &Books, today: model::Date) -> Vec<AgreementView> {
     b.agreements.keys().filter_map(|id| agreement(b, id, today)).collect()
 }
 
-/// What is due on `today`, of every agreement: to invoice, to pay or to
-/// receive, oldest first.
-pub fn due(b: &Books, today: model::Date) -> Vec<PeriodView> {
-    let mut v: Vec<PeriodView> = b.agreements.keys().flat_map(|id| periods(b, id, today)).filter(|p| p.due).collect();
-    v.sort_by(|x, y| (&x.from, &x.agreement).cmp(&(&y.from, &y.agreement)));
-    v
-}
-
 /// An invoice's or a plain entry's form, filled from it: what it says, by
 /// the form's names, those it leaves as the form would left out. Issue
-/// again, and a draft taken from one, start from it.
+/// again, and a template taken from an invoice, start from it.
 pub fn fields_of(b: &Books, id: usize) -> Option<std::collections::BTreeMap<String, String>> {
     use model::{InvoiceVat, Kind};
     let e = b.entry(id)?;
@@ -574,7 +490,7 @@ pub fn fields_of(b: &Books, id: usize) -> Option<std::collections::BTreeMap<Stri
                 put("due_days", days.to_string());
             }
         }
-        Kind::Plain(ps, _) => {
+        Kind::Plain(ps) => {
             put("description", e.description.clone());
             let posting = |p: &model::Posting| {
                 let mut s = format!("{}={} {}", p.account, Amount::new(b, p.amount.quantity, &p.amount.commodity).quantity, p.amount.commodity);
@@ -590,8 +506,7 @@ pub fn fields_of(b: &Books, id: usize) -> Option<std::collections::BTreeMap<Stri
     Some(f)
 }
 
-/// The draft agreement `a`'s schedule in force on `period`'s first day
-/// starts what is made for the period from.
-pub fn draft(b: &Books, a: &str, period: &model::Period) -> std::collections::BTreeMap<String, String> {
-    b.agreements.get(a).and_then(|ag| ag.schedule(ag.in_force(period.from)?)).map(|s| s.draft.clone()).unwrap_or_default()
+/// The invoice template of agreement `a`'s version in force on `day`.
+pub fn template(b: &Books, a: &str, day: model::Date) -> std::collections::BTreeMap<String, String> {
+    b.agreements.get(a).and_then(|ag| ag.template_on(day)).cloned().unwrap_or_default()
 }

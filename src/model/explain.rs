@@ -200,7 +200,7 @@ pub fn explain(m: &Books, op: &Op, n: &Books, v: Vec<Violation>) -> Vec<Violatio
             "I-E0" | "I-E1" => matches!(op, Op::Invoice { .. }) && has("I-I1"),
             // An invoice in a commodity not declared has no price to be booked at.
             "I-E4" => matches!(op, Op::Invoice { .. }) && has("I-A1"),
-            // A version over what is done cuts its period: N10 says why.
+            // A version over what is issued: N10 says why.
             "I-T4" => matches!(op, Op::Amend { .. }) && has("N10"),
             _ => false,
         }
@@ -752,17 +752,18 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
             let them = if what == "partner" { "them" } else { "it" };
             vec![format!("{} names {what} {id}; a {what} is removed only while nothing names {them}", and(&by))]
         }
-        // Ended before what is done under it: its periods would be cut.
+        // Ended before an invoice issued under it.
         "I-T4" if matches!(op, Op::AgreementEnd { .. }) => {
             let Op::AgreementEnd { id, status } = op else { unreachable!() };
             let on = match status {
                 AgreementStatus::Terminated { on } | AgreementStatus::Subsumed { on, .. } => *on,
                 AgreementStatus::Active => return vec![],
             };
-            let done = m.done(&m_standing);
-            let mut cut: Vec<(Period, EntryId)> = done.into_iter().filter(|((a, p), _)| a.as_str() == id && p.to > on).map(|((_, p), by)| (p, by[0])).collect();
-            cut.sort();
-            cut.iter().map(|(p, by)| format!("{} is for {}..{} of agreement {id}; ended on {on}, the agreement would cut that period short: end it on {} or after", name(m, *by), p.from, p.to, p.to)).collect()
+            let late: Vec<EntryId> = m.invoices_under(id, &m_standing).into_iter().filter(|&e| m.entries[e - 1].date > on).collect();
+            let Some(&last) = late.iter().max_by_key(|&&e| m.entries[e - 1].date) else { return vec![] };
+            let date = m.entries[last - 1].date;
+            let them: Vec<String> = late.iter().map(|&e| name(m, e)).collect();
+            vec![format!("{} {} issued under agreement {id} after {on}; ended on {on}, it would not be in force then: end it on {date} or after", and(&them), if them.len() == 1 { "is" } else { "are" })]
         }
         "I-T1" | "I-T2" | "I-T3" | "I-T4" | "I-T5" => {
             // As `check` says them, the entry being added called by its kind.
@@ -785,19 +786,19 @@ fn naming_partner(m: &Books, p: &str) -> Vec<String> {
     let mut v: Vec<String> = (1..=m.entries.len())
         .filter(|&id| match m.entry(id).map(|e| &e.kind) {
             Some(Kind::Bill(_, more)) => more.partner.as_deref() == Some(p),
-            Some(Kind::Invoice { content, .. }) => content.to == Some(To::Partner(p.into())),
+            Some(Kind::Invoice { content, .. }) => content.to.as_deref() == Some(p),
             _ => false,
         })
         .map(|id| name(m, id))
         .collect();
-    v.extend(m.agreements.iter().filter(|(_, a)| a.parties.iter().any(|x| x == p) || a.versions.iter().any(|x| x.schedule.as_ref().is_some_and(|s| s.party == p))).map(|(id, _)| format!("agreement {id}")));
+    v.extend(m.agreements.iter().filter(|(_, a)| a.parties.iter().any(|x| x == p)).map(|(id, _)| format!("agreement {id}")));
     v
 }
 
-/// What names agreement `a`: entries made for it, its documents, and the
+/// What names agreement `a`: invoices issued under it, its documents, and the
 /// agreements it subsumes.
 fn naming_agreement(m: &Books, a: &str) -> Vec<String> {
-    let mut v: Vec<String> = (1..=m.entries.len()).filter(|&id| m.made_for(id).is_some_and(|(x, _)| x == a) || matches!(m.entry(id).map(|e| &e.kind), Some(Kind::Invoice { content, .. }) if content.to == Some(To::Agreement(a.into())))).map(|id| name(m, id)).collect();
+    let mut v: Vec<String> = (1..=m.entries.len()).filter(|&id| m.under(id).is_some_and(|x| x == a)).map(|id| name(m, id)).collect();
     v.extend(m.documents.iter().filter(|(_, d)| d.version().is_some_and(|(x, _)| x == a)).map(|(h, d)| d.path(h)));
     v.extend(m.agreements.iter().filter(|(_, x)| matches!(&x.status, AgreementStatus::Subsumed { by, .. } if by == a)).map(|(id, _)| format!("agreement {id}")));
     v

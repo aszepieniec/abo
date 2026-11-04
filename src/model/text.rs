@@ -64,18 +64,9 @@ struct VersionFile {
     from: toml::value::Datetime,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     until: Option<toml::value::Datetime>,
+    /// The invoice template, by the invoice form's names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    invoice: Option<Id>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pay: Option<Id>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    receive: Option<Id>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    every: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    billed: Option<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    draft: BTreeMap<String, String>,
+    template: Option<BTreeMap<String, String>>,
 }
 
 fn tdate(d: Date) -> toml::value::Datetime {
@@ -100,23 +91,7 @@ fn contract_file(a: &Agreement) -> ContractFile {
     let versions = a
         .versions
         .iter()
-        .map(|v| {
-            let s = v.schedule.as_ref();
-            let with = |d: Does| s.filter(|s| s.does == d).map(|s| s.party.clone());
-            VersionFile {
-                from: tdate(v.from),
-                until: v.until.map(tdate),
-                invoice: with(Does::Invoice),
-                pay: with(Does::Pay),
-                receive: with(Does::Receive),
-                every: s.map(|s| s.every),
-                billed: s.map(|s| match s.billed {
-                    Billed::InAdvance => "in-advance".into(),
-                    Billed::InArrears => "in-arrears".into(),
-                }),
-                draft: s.map(|s| s.draft.clone()).unwrap_or_default(),
-            }
-        })
+        .map(|v| VersionFile { from: tdate(v.from), until: v.until.map(tdate), template: v.template.clone() })
         .collect();
     ContractFile { parties: a.parties.clone(), status, versions }
 }
@@ -130,23 +105,7 @@ fn agreement_of(f: ContractFile) -> Result<Agreement, String> {
     };
     let mut versions = vec![];
     for v in f.versions {
-        let with: Vec<(Does, Id)> = [(Does::Invoice, v.invoice), (Does::Pay, v.pay), (Does::Receive, v.receive)].into_iter().filter_map(|(d, p)| Some((d, p?))).collect();
-        let schedule = match (&with[..], v.every, v.billed.as_deref()) {
-            ([], None, None) if v.draft.is_empty() => None,
-            ([(does, party)], Some(every), Some(b)) => Some(Schedule {
-                party: party.clone(),
-                does: *does,
-                every,
-                billed: match b {
-                    "in-advance" => Billed::InAdvance,
-                    "in-arrears" => Billed::InArrears,
-                    _ => return Err(format!("billed {} is not in-advance or in-arrears", super::explain::shown(b))),
-                },
-                draft: v.draft,
-            }),
-            _ => return Err("a version's schedule is one of invoice, pay or receive, with every and billed".into()),
-        };
-        versions.push(Version { from: from_tdate(&v.from)?, until: v.until.as_ref().map(from_tdate).transpose()?, schedule });
+        versions.push(Version { from: from_tdate(&v.from)?, until: v.until.as_ref().map(from_tdate).transpose()?, template: v.template });
     }
     Ok(Agreement { parties: f.parties, status, versions })
 }
@@ -242,12 +201,7 @@ fn entry(m: &Books, id: EntryId, e: &Entry, f: &mut Files) -> String {
     // Derived, for hledger and a person reading: `tag:partner=acme`.
     let partner = m.partner_of(id).cloned();
     match &e.kind {
-        Kind::Plain(_, None) => {}
-        Kind::Plain(_, Some(f)) => {
-            tags.push(("agreement", f.agreement.clone()));
-            tags.push(("period", format!("{}..{}", f.period.from, f.period.to)));
-            tags.extend(partner.map(|p| ("partner", p)));
-        }
+        Kind::Plain(_) => {}
         Kind::Bill(_, more) => {
             tags.push(("bill", String::new()));
             if !more.number.is_empty() {
@@ -260,6 +214,7 @@ fn entry(m: &Books, id: EntryId, e: &Entry, f: &mut Files) -> String {
         }
         Kind::Invoice { content, pdf } => {
             tags.push(("invoice", number.clone()));
+            tags.extend(content.agreement.clone().map(|a| ("agreement", a)));
             tags.extend(partner.map(|p| ("partner", p)));
             let mut content = (**content).clone();
             for l in &mut content.lines {
@@ -500,24 +455,20 @@ fn parse_block(
     };
     let names: Vec<&str> = tags.iter().map(|(k, _)| *k).collect();
     // The kind's own tags, then those it may have, in their order: the
-    // partner of an invoice or a plain entry is derived, and read past.
+    // agreement and partner of an invoice are derived, and read past.
     let may = |own: &[&str], then: &[&str]| names.len() >= own.len() && names[..own.len()] == *own && {
         let mut rest = then.iter();
         names[own.len()..].iter().all(|n| rest.any(|t| t == n))
     };
     let kind = match names[..] {
-        ["id"] => Kind::Plain(postings, None),
-        _ if may(&["id", "agreement", "period"], &["partner"]) => {
-            let (from, to) = tag("period").unwrap().split_once("..").ok_or("a period is <from>..<to>")?;
-            Kind::Plain(postings, Some(For { agreement: tag("agreement").unwrap().into(), period: Period { from: date(from)?, to: date(to)? } }))
-        }
+        ["id"] => Kind::Plain(postings),
         _ if may(&["id", "bill"], &["number", "due", "partner"]) => {
             let due = tag("due").map(date).transpose()?;
             Kind::Bill(postings, BillMore { number: tag("number").unwrap_or_default().to_string(), due, partner: tag("partner").map(String::from) })
         }
         ["id", "pays"] => Kind::Payment { of: id(tag("pays").unwrap())?, postings },
         ["id", "reverses"] => Kind::Reversal { of: id(tag("reverses").unwrap())? },
-        _ if may(&["id", "invoice"], &["partner"]) => {
+        _ if may(&["id", "invoice"], &["agreement", "partner"]) => {
             let file: InvoiceFile = serde_json::from_str(read_json(tag("invoice").unwrap())?).map_err(|e| e.to_string())?;
             Kind::Invoice { content: Box::new(file.content), pdf: file.pdf }
         }

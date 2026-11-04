@@ -140,12 +140,3 @@ pub fn period(s: &str) -> Result<model::Period> {
     Ok(model::Period { from, to })
 }
 
-/// The agreement and period an invoice or entry is made for, from
-/// `--agreement` and `--period`: both, or neither.
-pub fn made_for(agreement: Option<&str>, period: Option<&str>) -> Result<Option<model::For>> {
-    match (agreement, period) {
-        (Some(a), Some(p)) => Ok(Some(model::For { agreement: a.to_string(), period: self::period(p)? })),
-        (Some(a), None) => Err(unreadable(format!("a period of agreement {a} is named by --period, such as 2026-01-01..2026-01-31"))),
-        (None, _) => Ok(None),
-    }
-}

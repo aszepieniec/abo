@@ -33,9 +33,11 @@ made: an opening balance about nine months ago, bills from Acme Hosting AG,
 Lex & Partners (part paid) and Devtools Inc (in USD, unpaid), two invoices
 (one settled, one part paid), a bill document from Telecom GmbH filed and not
 booked, and a bank statement recorded a week ago. Acme Hosting AG, the two
-customers, Nordlicht AG and an employee, Sam Example, are partners; Nordlicht
-AG has a monthly retainer invoiced at the start of each month, this month's
-not yet, and Sam a salary paid after each month, last month's not yet.
+customers, Nordlicht AG, an employee, Sam Example, and two former employees
+are partners. Each has an agreement on record with its signed copy filed:
+Nordlicht AG's retainer has an invoice template, and the two months before
+this one are invoiced under it; Sam's salary is booked by hand at the start
+of each month.
 
 A run counts as clean when no person got stuck, misread what abo said, met a
 refusal they could not act on, or saw a character outside printable ASCII on
@@ -178,26 +180,27 @@ put it right? None of these is needed to pass; each is recorded.
 
 ## 6. Partners and agreements
 
-**S27. A new supplier** (A5, B7). Officeworld GmbH, Industriestrasse 3, 80331
+**S27. A new supplier** (A5, B3). Officeworld GmbH, Industriestrasse 3, 80331
 München, Germany, VAT number DE811234567, now supplies the office. Keep them
 as a partner, and book their bill no. OW-1042 of the 3rd of this month: paper,
 80.00 EUR plus 8.00 EUR VAT, as theirs. Then try to book the same bill no.
 OW-1042 again, for 88.00 EUR in all: it must not get in.
 
-**S28. Cleaning** (A6, B7). From the 1st of last month, Clean & Co (Gasse 7,
+**S28. Cleaning** (A6, B1). From the 1st of last month, Clean & Co (Gasse 7,
 8001 Zürich) clean the office for 250.00 EUR a month, paid from the bank
-after each month, without a bill. Keep the contract, and pay last month's
-cleaning. Pay what Sam Example is owed for last month too: their salary is
-as before.
+after each month, without a bill. Keep the contract, with `contract.pdf`
+from your home directory as its signed copy, and pay last month's cleaning
+today.
 
-**S29. The retainer** (C4). Invoice Nordlicht AG this month's retainer.
-Nordlicht's retainer goes up: from the 1st of next month, 1,800.00 EUR a
-month. Afterwards, the retainer must show what was invoiced under which
-terms, and what next month's invoice will say.
+**S29. The retainer** (A6, C4). Invoice Nordlicht AG this month's retainer,
+under their agreement, saying the month it is for. Nordlicht's retainer
+goes up: from the 1st of next month, 1,800.00 EUR a month. Afterwards, the
+retainer must show what was invoiced under which terms, and what the next
+invoice under it will start from.
 
-**S30. Signed, and ended** (A6). File `contract.pdf` from your home
-directory as Nordlicht's retainer contract, as signed. Sam Example leaves:
-their last day is the last day of this month.
+**S30. Signed, and ended** (A5, A6). Download the signed copy of Sam
+Example's contract, to check it is there. Sam leaves: their last day is the
+last day of this month. Until then they are an employee as before.
 
 **S31. The same again** (C5). Customer One wants the consulting of their
 invoice again, at the same price, invoiced today.
