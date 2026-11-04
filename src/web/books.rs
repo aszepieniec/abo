@@ -254,8 +254,8 @@ pub(super) async fn activity(Books(s): Books, Query(q): Query<Fields>) -> Respon
         Ok(html! {
             h1 { "Log" }
             form.one-row.range method="get" action="/log" {
-                label.field { "From" input type="date" name="since" value=[from.as_ref()] max=[today.as_ref()]; }
-                label.field { "To" input type="date" name="until" value=[to.as_ref()] max=[today.as_ref()]; }
+                label.field { "From" input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="since" value=[from.as_ref()]; }
+                label.field { "To" input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="until" value=[to.as_ref()]; }
                 button type="submit" { (icon("chart")) " Show" }
             }
             @if lines.is_empty() && ranged {

@@ -66,7 +66,7 @@ pub(super) fn declarations_page(s: &Store, error: Option<&anyhow::Error>) -> Mar
                         } }
                     }
                     div.one-row {
-                        label.field { "On" input type="date" name="date" required value=[store::today().ok()] max=[store::today().ok()]; }
+                        label.field { "On" input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="date" required value=[store::today().ok()]; }
                         button.btn-primary type="submit" { (icon("plus")) " Add" }
                     }
                 }

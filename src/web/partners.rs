@@ -286,8 +286,8 @@ fn version_fields(b: &Model, f: &Fields) -> Markup {
     let get = |k: &str| f.get(k).cloned().unwrap_or_default();
     let does = get("does");
     html! {
-        label.field { "From" span.hint { "The day it takes effect." } input type="date" name="from" required value=(get("from")); }
-        label.field { "Until" span.hint { "Its last day, if its terms say it ends; blank if not." } input type="date" name="until" value=(get("until")); }
+        label.field { "From" span.hint { "The day it takes effect." } input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="from" required value=(get("from")); }
+        label.field { "Until" span.hint { "Its last day, if its terms say it ends; blank if not." } input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="until" value=(get("until")); }
         fieldset.field {
             legend { "Schedule" }
             span.hint { "What the company does each period under it. None: a contract on record, invoiced or paid by hand." }
@@ -470,7 +470,7 @@ fn agreement_page(s: &Store, a: &views::AgreementView, f: &Fields, error: Option
                             input type="hidden" name="version" value=(v.n);
                             input type="hidden" name="issuer" value=(a.parties.first().cloned().unwrap_or_default());
                             label { "Its document, as signed " input type="file" name="document" accept="application/pdf,image/*" required; }
-                            label { " dated " input type="date" name="date" required value=(v.from); }
+                            label { " dated " input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="date" required value=(v.from); }
                             " "
                             button.small type="submit" { (icon("upload")) " File it" }
                         }
@@ -496,7 +496,7 @@ fn agreement_page(s: &Store, a: &views::AgreementView, f: &Fields, error: Option
                     div.box-header { (icon("alert")) "End it otherwise than its terms say" }
                     div.box-body {
                         p.muted.small { "To end it as its terms say, amend it with its last day. Ended, it is kept as a record." }
-                        label.field { "Its last day" input type="date" name="on" required value=(today); }
+                        label.field { "Its last day" input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="on" required value=(today); }
                         label.field { "Subsumed by" span.hint { "Another agreement that holds what it agreed from the day after; blank if it is terminated." }
                             select name="by" {
                                 option value="" { "— terminated —" }

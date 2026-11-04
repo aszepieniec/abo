@@ -108,7 +108,7 @@ pub(super) fn reconcile_page(s: &Store, f: &Fields, ticked: &[String], notice: O
                     label.field { "Currency"
                         select name="commodity" { @for c in s.books.commodities.keys() { option value=(c) selected[c == &commodity] { (c) } } }
                     }
-                    label.field { (dated) input type="date" name="date" value=(date); }
+                    label.field { (dated) input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="date" value=(date); }
                     label.field { (closing) input type="text" name="balance" value=(if recorded { "" } else { raw }); }
                     // A plain GET: it only looks. First in the form, so Enter
                     // in a field does this rather than record anything.

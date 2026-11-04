@@ -49,7 +49,7 @@ pub(super) fn pay_page(s: &Store, id: usize, f: &Fields, error: Option<&anyhow::
             (token())
             input type="hidden" name="debt" value=(id);
             div.box { div.box-body {
-                label.field { "Date" input type="date" name="date" required value=(f.get("date").cloned().unwrap_or(today.clone())); }
+                label.field { "Date" input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="date" required value=(f.get("date").cloned().unwrap_or(today.clone())); }
                 label.field { "Amount" span.hint { "In " (debt.owed.commodity) ", taken off " code { (debt.account) } ". Less than what is open pays a part." }
                     input type="text" name="amount" required value=(get("amount")); }
                 label.field { @if invoice { "Received into" } @else { "Paid from" }
@@ -70,7 +70,7 @@ pub(super) fn pay_page(s: &Store, id: usize, f: &Fields, error: Option<&anyhow::
                 div.box-header { (icon("trash")) "Write off what is open" }
                 div.box-body {
                     p.muted.small { "What " @if invoice { "the customer will never pay" } @else { "the supplier forgave" } ", moved to an account for it." }
-                    label.field { "Date" input type="date" name="date" required value=(today); }
+                    label.field { "Date" input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="date" required value=(today); }
                     // What a customer never pays is an expense; what a supplier forgives, income.
                     @let classes = b.written_off_to(id).unwrap_or_default();
                     // What a supplier forgives is not sales: the accounts sales

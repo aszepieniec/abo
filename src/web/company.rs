@@ -109,7 +109,7 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
                         " A closing date only moves forward; while it is the last change, Undo takes it back."
                     }
                     label.field { "Closed through" span.hint { "The last day of the period filed, such as the end of a quarter." }
-                        input type="date" name="through" required value=(cfg.company.closed_through.map(|c| c.to_string()).unwrap_or_default()); }
+                        input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="through" required value=(cfg.company.closed_through.map(|c| c.to_string()).unwrap_or_default()); }
                     div.actions { button type="submit" { (icon("check")) " Close the books through it" } }
                 }
             }

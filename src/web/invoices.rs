@@ -285,7 +285,7 @@ fn lacking(b: &Model, f: &Fields, e: Option<&anyhow::Error>) -> Markup {
                 ("I-E4", model::Subject::Commodity(c)) => {
                     div.box-body {
                         label.field { "What one " (c) " was worth" span.hint { "In " (b.config.company.currency) ", such as " code { "0.92 " (b.config.company.currency) } "." } input type="text" name="price_worth"; }
-                        label.field { "On" input type="date" name="price_date" value=(date); }
+                        label.field { "On" input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="price_date" value=(date); }
                         button type="submit" name="add_price" value=(c) formnovalidate { (icon("plus")) " Add the price of " (c) " and come back to this" }
                     }
                 }
@@ -326,7 +326,7 @@ pub(super) fn invoice_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>)
                         span.hint { "One per line: " code { "quantity|unit price|description" } }
                         textarea name="items" rows="4" required placeholder="10|150.00|Consulting, September" { (get("items")) }
                     }
-                    label.field { "Date" span.hint { "Blank for today." } input type="date" name="date" value=(get("date")); }
+                    label.field { "Date" span.hint { "Blank for today." } input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="date" value=(get("date")); }
                     label.field { "VAT rate" span.hint { "Percent. Blank for the default: no VAT when both the customer's tax number and the company's name a country, and the countries differ, as with EU VAT numbers; the configured rate otherwise, whatever the currency. 0 for an export or an exempt supply, with why below. The invoice's page says which rate it took, and why." } input type="text" name="vat_rate" value=(get("vat_rate")); }
                     label.field { "Currency" span.hint { "Blank for " (s.books.config.company.currency) "." } input type="text" name="currency" value=(get("currency")); }
                     label.field { "Their tax number" span.hint { "Printed under their address; cross-border invoices to businesses usually need it." } input type="text" name="customer_tax_id" value=(get("customer_tax_id")); }
@@ -346,8 +346,8 @@ pub(super) fn invoice_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>)
                         fieldset.field {
                             legend { "Period" }
                             span.hint { "When the supply was made, printed on it; blank if it is for no period." }
-                            label { "From " input type="date" name="period_from" value=(get("period_from")); }
-                            label { " to " input type="date" name="period_to" value=(get("period_to")); }
+                            label { "From " input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="period_from" value=(get("period_from")); }
+                            label { " to " input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="period_to" value=(get("period_to")); }
                         }
                     }
                     label.field { "Their reference" input type="text" name="reference" value=(get("reference")); }

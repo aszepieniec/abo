@@ -187,7 +187,7 @@ pub(super) fn bill_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>) ->
                             // the camera, and a PDF could not be chosen.
                             input type="file" name="document" accept="image/*,application/pdf";
                         }
-                        label.field { "Date on the bill" input type="date" name="date" required value=(get("date")); }
+                        label.field { "Date on the bill" input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="date" required value=(get("date")); }
                         label.field { "Issuer" span.hint { "Who sent it. The document is filed under this name and the date; without a document, not needed." } input type="text" name="issuer" value=(get("issuer")); }
                     }
                     label.field { "Description" span.hint { "Needed to book it; not to file the document alone, to book later." } input type="text" name="description" value=(get("description")); }
@@ -200,7 +200,7 @@ pub(super) fn bill_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>) ->
                         }
                     }
                     label.field { "The supplier's number for it" span.hint { "As the bill prints it, if it has one." } input type="text" name="number" value=(get("number")); }
-                    label.field { "Due" span.hint { "If the bill says when." } input type="date" name="due" value=(get("due")); }
+                    label.field { "Due" span.hint { "If the bill says when." } input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="due" value=(get("due")); }
                     label.field { "Postings"
                         span.hint { "One per line, " code { "account=amount" } ", every amount written; one credits what is owed." }
                         textarea name="postings" rows="5" required placeholder="Expenses:Hosting=100.00\nLiabilities:Payable=-100.00" { (get("postings")) }

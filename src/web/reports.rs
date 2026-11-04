@@ -72,7 +72,7 @@ pub(super) async fn report(Books(s): Books, Path(kind): Path<String>, Query(q): 
                 div.box {
                     div.box-body {
                         @if kind == "bs" {
-                            label.field { "As at" input type="date" name="date" value=(date); }
+                            label.field { "As at" input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="date" value=(date); }
                         } @else {
                             div.one-row.period data-first=(format!("{}-{}", first.year(), quarter(first).1)) data-now=(format!("{}-{}", now.0, now.1)) {
                                 @for (name, (y, qq)) in [("f", from), ("t", to)] {

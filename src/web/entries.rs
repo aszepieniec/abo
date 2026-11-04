@@ -143,7 +143,7 @@ pub(super) async fn booking(Books(s): Books, Path(id): Path<String>, Query(q): Q
                     @if reversed.is_none() {
                         form.inline method="post" action={"/entry/" (id) "/revert"} {
                             (token())
-                            label.field.inline { "Dated" input type="date" name="date" value=(store::today().map(|d| d.to_string()).unwrap_or_default()); }
+                            label.field.inline { "Dated" input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="date" value=(store::today().map(|d| d.to_string()).unwrap_or_default()); }
                             button.btn-danger type="submit" disabled[!paid_by.is_empty()] { (icon("undo")) " Revert" }
                         }
                     }
@@ -458,7 +458,7 @@ pub(super) fn form(s: &Store, f: &Fields, error: Option<&anyhow::Error>) -> Mark
                     div.box-header { (icon("clock")) "For " (get("period").replace("..", " – ")) " of " a href={"/agreement/" (enc(&get("agreement")))} { (get("agreement")) } }
                 }
                 div.box-body {
-                    label.field { "Date" input type="date" name="date" required value=(if get("date").is_empty() { today } else { get("date") }); }
+                    label.field { "Date" input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="date" required value=(if get("date").is_empty() { today } else { get("date") }); }
                     label.field { "Description" input type="text" name="description" required value=(get("description")); }
                     label.field { "Postings"
                         span.hint { "One per line, " code { "account=amount" } ", every amount written; " code { "account=250.00 USD @@ 230.00 EUR" } " for one exchanged." }
