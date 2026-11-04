@@ -154,8 +154,9 @@ pub struct Posting {
 /// them; the others' postings follow from what they hold (`Books::postings`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
-    /// Booked by hand: anything that balances.
-    Plain(Vec<Posting>),
+    /// Booked by hand: anything that balances. Whom and what it is about,
+    /// if said.
+    Plain(Vec<Posting>, Link),
     /// A supplier's bill. A debt. What the supplier says of it besides.
     Bill(Vec<Posting>, BillMore),
     /// An invoice abo issued, and its PDF's hash (a check). A debt.
@@ -169,6 +170,14 @@ pub enum Kind {
     /// An id given and taken back by undo: no entry, and no other entry
     /// ever has it (MODEL.md §2.3).
     Gone,
+}
+
+/// What an entry booked by hand may say it is about: a partner, and an
+/// agreement, each if given; with both, the partner is a party to it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Link {
+    pub partner: Option<Id>,
+    pub agreement: Option<Id>,
 }
 
 /// What a bill may say besides its postings, each as the supplier gives it,
@@ -751,6 +760,15 @@ impl Books {
         }
     }
 
+    /// The agreement entry `id` names: an invoice's, issued under it, or
+    /// one booked by hand about it.
+    pub fn agreement_of(&self, id: EntryId) -> Option<&Id> {
+        match &self.entry(id)?.kind {
+            Kind::Plain(_, link) => link.agreement.as_ref(),
+            _ => self.under(id),
+        }
+    }
+
     /// The standing invoices issued under agreement `a`, in the order issued.
     pub fn invoices_under(&self, a: &str, standing: &[bool]) -> Vec<EntryId> {
         (1..=self.entries.len()).filter(|&id| standing[id] && self.under(id).is_some_and(|x| x == a)).collect()
@@ -763,6 +781,7 @@ impl Books {
         match &self.entry(id)?.kind {
             Kind::Bill(_, more) => more.partner.as_ref(),
             Kind::Invoice { content, .. } => content.to.as_ref(),
+            Kind::Plain(_, link) => link.partner.as_ref(),
             k => self.partner_of(k.names().filter(|of| *of < id)?),
         }
     }
@@ -802,7 +821,7 @@ impl Books {
     pub fn postings(&self, id: EntryId) -> Vec<Posting> {
         let Some(e) = self.entry(id) else { return vec![] };
         match &e.kind {
-            Kind::Plain(p) | Kind::Bill(p, _) | Kind::Payment { postings: p, .. } => p.clone(),
+            Kind::Plain(p, _) | Kind::Bill(p, _) | Kind::Payment { postings: p, .. } => p.clone(),
             Kind::Invoice { content, .. } => self.invoice_postings(content),
             Kind::CreditNote { of, .. } | Kind::Reversal { of } if *of < id => {
                 self.postings(*of).iter().map(Posting::negated).collect()

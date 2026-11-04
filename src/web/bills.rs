@@ -188,21 +188,22 @@ pub(super) fn bill_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>) ->
                             input type="file" name="document" accept="image/*,application/pdf";
                         }
                         label.field { "Date on the bill" input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="date" required value=(get("date")); }
-                        label.field { "Issuer" span.hint { "Who sent it. The document is filed under this name and the date; without a document, not needed." } input type="text" name="issuer" value=(get("issuer")); }
+                        label.field { "Issuer" span.hint { "The name the document is filed under, with its date: blank for the partner it is from, below. Without a document, not needed." } input type="text" name="issuer" value=(get("issuer")); }
                     }
                     label.field { "Description" span.hint { "Needed to book it; not to file the document alone, to book later." } input type="text" name="description" value=(get("description")); }
                     @if !s.books.partners.is_empty() {
                         label.field { "From" span.hint { "The partner who sent it, if they are one. Then two of theirs under one number are one bill." }
                             select name="partner" {
                                 option value="" { "— not a partner —" }
-                                @for (id, p) in &s.books.partners { option value=(id) selected[get("partner") == *id] { (p.lines.lines().next().unwrap_or(id)) " (" (id) ")" } }
+                                // Employees send no bills: left off, unless chosen.
+                                @for (id, p) in s.books.partners.iter().filter(|(id, p)| !p.employee || get("partner") == **id) { option value=(id) selected[get("partner") == *id] { (p.lines.lines().next().unwrap_or(id)) " (" (id) ")" } }
                             }
                         }
                     }
                     label.field { "The supplier's number for it" span.hint { "As the bill prints it, if it has one." } input type="text" name="number" value=(get("number")); }
                     label.field { "Due" span.hint { "If the bill says when." } input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="due" value=(get("due")); }
                     label.field { "Postings"
-                        span.hint { "One per line, " code { "account=amount" } ", every amount written; one credits what is owed." }
+                        span.hint { "One per line, " code { "account=amount" } ", every amount written: the line crediting what is owed too, as " code { "Liabilities:Payable=-110.00" } "." }
                         textarea name="postings" rows="5" required placeholder="Expenses:Hosting=100.00\nLiabilities:Payable=-100.00" { (get("postings")) }
                     }
                     label.choice { input type="checkbox" name="again" checked[get("again") == "on"]; " Another just like one booked already: owing the same, within a week of it" }
@@ -303,6 +304,12 @@ pub(super) async fn bill_submit(Books(mut s): Books, mp: Multipart) -> Response 
             Ok(notice) => or_error(&s, "Book a bill", || Ok(html! { (notice) (bill_page(&s, &f, None)) })),
             Err(e) => again(&s, "Book a bill", || Ok(bill_page(&s, &f, Some(&e)))),
         };
+    }
+    // Filed under the partner's id, when no other name is given.
+    if f.get("issuer").is_none_or(|v| v.trim().is_empty()) {
+        if let Some(p) = f.get("partner").filter(|p| !p.is_empty()).cloned() {
+            f.insert("issuer".into(), p);
+        }
     }
     // A document kept from a form refused before, sent again with it.
     let kept = f.get("kept").and_then(|id| kept_path(&root, id));

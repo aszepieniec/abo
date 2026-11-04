@@ -364,7 +364,7 @@ pub(crate) fn op(d: &Draw, m: &Books, today: Date) -> Option<Op> {
     Some(match d.clone() {
         Draw::Post { from, to, q, description, when } => {
             let (a, b) = (pick(&from, &PLAIN).unwrap(), pick(&to, &[&PLAIN[..], &[RECEIVABLE]].concat()).unwrap());
-            Op::Post { date: when.at(today), description, postings: vec![Posting::new(a, q, "EUR"), Posting::new(b, -q, "EUR")] }
+            Op::Post { date: when.at(today), description, postings: vec![Posting::new(a, q, "EUR"), Posting::new(b, -q, "EUR")], link: Default::default() }
         }
         Draw::File { sha256, name, bill, version, when } => {
             let versions: Vec<Of> = m.agreements.iter().flat_map(|(id, a)| (1..=a.versions.len() + 1).map(|n| Of::Version(id.clone(), n))).collect();
@@ -1330,7 +1330,7 @@ fn tags(m: &Books, id: EntryId) -> BTreeSet<(String, String)> {
     let mut t = vec![("id", id.to_string())];
     let partner = m.partner_of(id).cloned();
     match &m.entries[id - 1].kind {
-        Kind::Plain(_) => {}
+        Kind::Plain(_, link) => { t.extend(link.agreement.clone().map(|a| ("agreement", a))); t.extend(link.partner.clone().map(|p| ("partner", p))); }
         Kind::Bill(_, more) => {
             t.push(("bill", String::new()));
             if !more.number.is_empty() {
@@ -1472,14 +1472,14 @@ fn hledger_catches_what_check_catches(#[strategy(plan())] plan: Vec<Step>, tampe
         }
         Tamper::Unbalance(i) => {
             let own: Vec<EntryId> = (1..=m.entries.len())
-                .filter(|&id| matches!(&m.entries[id - 1].kind, Kind::Plain(ps) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. } if ps[0].cost.is_none()))
+                .filter(|&id| matches!(&m.entries[id - 1].kind, Kind::Plain(ps, _) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. } if ps[0].cost.is_none()))
                 .collect();
             let Some(id) = pick(&i, &own) else { return Ok(()) };
             let u = {
-                let (Kind::Plain(ps) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. }) = &m.entries[id - 1].kind else { unreachable!() };
+                let (Kind::Plain(ps, _) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. }) = &m.entries[id - 1].kind else { unreachable!() };
                 unit(&m, &ps[0].amount.commodity)
             };
-            let (Kind::Plain(ps) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. }) = &mut m.entries[id - 1].kind else { unreachable!() };
+            let (Kind::Plain(ps, _) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. }) = &mut m.entries[id - 1].kind else { unreachable!() };
             ps[0].amount.quantity += u;
         }
         Tamper::Undeclare(i) => {
@@ -1554,7 +1554,7 @@ fn closed_dates_are_refused(#[strategy(plan())] plan: Vec<Step>, #[strategy(1i64
     let Ok(m) = apply(&m, &Op::ConfigSet { key: "company.closed_through".into(), value: at.to_string() }, today) else { return Ok(()) };
     let c = m.config.company.closed_through.unwrap();
     let names = |r: &Outcome, code: &str| r.as_ref().is_err_and(|v| v.iter().any(|v| v.code == code));
-    let post = Op::Post { date: c, description: "Late".into(), postings: vec![Posting::new(BANK, Decimal::ONE, "EUR"), Posting::new("Equity:Opening", -Decimal::ONE, "EUR")] };
+    let post = Op::Post { date: c, description: "Late".into(), postings: vec![Posting::new(BANK, Decimal::ONE, "EUR"), Posting::new("Equity:Opening", -Decimal::ONE, "EUR")], link: Default::default() };
     prop_assert!(names(&apply(&m, &post, today), "N2"));
     let record = Op::Record { account: "Expenses:Other".into(), commodity: "EUR".into(), date: c, balance: Decimal::ZERO, clears: BTreeSet::new() };
     prop_assert!(names(&apply(&m, &record, today), "N2"));
@@ -1811,7 +1811,7 @@ fn rename(m: &Books, f: &dyn Fn(&str) -> String) -> Books {
     n.accounts = m.accounts.iter().map(|a| f(a)).collect();
     for e in &mut n.entries {
         match &mut e.kind {
-            Kind::Plain(ps) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. } => ps.iter_mut().for_each(|p| p.account = f(&p.account)),
+            Kind::Plain(ps, _) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. } => ps.iter_mut().for_each(|p| p.account = f(&p.account)),
             Kind::Invoice { content, .. } => {
                 let a = &mut content.accounts;
                 a.receivable = f(&a.receivable);
@@ -1840,7 +1840,7 @@ fn rename(m: &Books, f: &dyn Fn(&str) -> String) -> Books {
 fn rename_op(op: &Op, f: &dyn Fn(&str) -> String) -> Op {
     let ps = |ps: &[Posting]| ps.iter().map(|p| Posting { account: f(&p.account), ..p.clone() }).collect();
     match op.clone() {
-        Op::Post { date, description, postings } => Op::Post { date, description, postings: ps(&postings) },
+        Op::Post { date, description, postings, link } => Op::Post { date, description, postings: ps(&postings), link },
         Op::Bill { date, description, postings, document, again, more } => Op::Bill { date, description, postings: ps(&postings), document, again, more },
         Op::Pay { debt, date, amount, from, cost } => Op::Pay { debt, date, amount, from: f(&from), cost },
         Op::WriteOff { debt, date, to } => Op::WriteOff { debt, date, to: f(&to) },
@@ -2020,14 +2020,14 @@ fn extremes_survive_hledger(#[strategy(0u32..9)] places: u32, negative: bool, #[
     let top = Decimal::from(BOUND) - unit;
     for q in [top, unit, Decimal::new(small, places)] {
         let q = if negative { -q } else { q };
-        let post = Op::Post { date: today, description: "Edge".into(), postings: vec![Posting::new("Equity:Opening", q, "ZZZ"), Posting::new("Assets:Bank", -q, "ZZZ")] };
+        let post = Op::Post { date: today, description: "Edge".into(), postings: vec![Posting::new("Equity:Opening", q, "ZZZ"), Posting::new("Assets:Bank", -q, "ZZZ")], link: Default::default() };
         m = apply(&m, &post, today).map_err(|v| TestCaseError::fail(format!("{q}: {v:?}")))?;
     }
     let mut exchange = Posting::new("Equity:Opening", top, "ZZZ");
     exchange.cost = Some(eur(Decimal::from(BOUND) - Decimal::new(1, 2)));
     let back = Posting { account: "Assets:Bank".into(), amount: eur(-(Decimal::from(BOUND) - Decimal::new(1, 2))), cost: None };
-    m = apply(&m, &Op::Post { date: today, description: "Exchange".into(), postings: vec![exchange, back] }, today).map_err(|v| TestCaseError::fail(format!("{v:?}")))?;
-    let over = Op::Post { date: today, description: "Over".into(), postings: vec![Posting::new("Equity:Opening", top + unit, "ZZZ"), Posting::new("Assets:Bank", -(top + unit), "ZZZ")] };
+    m = apply(&m, &Op::Post { date: today, description: "Exchange".into(), postings: vec![exchange, back], link: Default::default() }, today).map_err(|v| TestCaseError::fail(format!("{v:?}")))?;
+    let over = Op::Post { date: today, description: "Over".into(), postings: vec![Posting::new("Equity:Opening", top + unit, "ZZZ"), Posting::new("Assets:Bank", -(top + unit), "ZZZ")], link: Default::default() };
     prop_assert!(apply(&m, &over, today).is_err_and(|v| v.iter().any(|v| v.code == "I-K3")));
     prop_assert_eq!(parse(&render(&m)), Ok(m.clone()));
     hledger(&m, None).map_err(TestCaseError::fail)?;
@@ -2057,7 +2057,7 @@ fn any_text_the_rules_allow_survives(
     let today = day("2026-06-30");
     let account = format!("Expenses:{segment}");
     let m = apply(&fresh(), &Op::AccountAdd(account.clone()), today).map_err(|v| TestCaseError::fail(format!("{v:?}")))?;
-    let post = Op::Post { date: today, description: description.clone(), postings: vec![Posting::new(&account, Decimal::ONE, "EUR"), Posting::new("Assets:Bank", -Decimal::ONE, "EUR")] };
+    let post = Op::Post { date: today, description: description.clone(), postings: vec![Posting::new(&account, Decimal::ONE, "EUR"), Posting::new("Assets:Bank", -Decimal::ONE, "EUR")], link: Default::default() };
     let mut m = apply(&m, &post, today).map_err(|v| TestCaseError::fail(format!("{v:?}")))?;
     if check::lines_ok(&lines) {
         m = apply(&m, &Op::ConfigSet { key: "company.address".into(), value: lines.clone() }, today).map_err(|v| TestCaseError::fail(format!("{v:?}")))?;

@@ -1164,6 +1164,15 @@ fn partners_and_agreements_through_the_pages() {
     mpost("/agreements/new", &[("token", "a21"), ("id", "kim"), ("party0", "kim"), ("from", "2026-01-01"), ("tpl-items", "1|1|Not meant")]);
     again(&["contracts/kim.toml"]);
     assert!(!read(&books, "contracts/kim.toml").contains("Not meant"), "{}", read(&books, "contracts/kim.toml"));
+    // Not invoiced: no invoice links. A salary booked about it, from its page.
+    let (_, _, page) = http(&s, "GET", "/agreement/kim", &[]);
+    assert!(!page.contains("Invoices under it") && !page.contains("/invoice?agreement=kim") && page.contains("/post?agreement=kim&amp;partner=kim"), "{page}");
+    let (_, _, page) = http(&s, "GET", "/post?agreement=kim&partner=kim", &[]);
+    assert!(page.contains("<option value=\"kim\" selected>Kim Then (kim)") && page.contains("<option value=\"kim\" selected>kim (kim)"), "{page}");
+    post("/post", &[("token", "a24"), ("date", "2026-02-01"), ("description", "Salary, Kim"), ("agreement", "kim"), ("postings", "Expenses:General=10.00\nAssets:Bank=-10.00")]);
+    again(&["journal/2026.journal"]);
+    let (_, _, page) = http(&s, "GET", "/partner/kim", &[]);
+    assert!(page.contains("entry ") && page.contains("Salary, Kim") && !page.contains("Invoice them"), "{page}");
     post("/agreement/kim/end", &[("token", "a22"), ("on", "2026-02-28"), ("by", "")]);
     again(&["contracts/kim.toml"]);
     let (_, _, page) = http(&s, "GET", "/partners", &[]);

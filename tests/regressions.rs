@@ -2709,3 +2709,29 @@ fn an_agreement_comes_with_its_scan_and_replaces_another() {
     let said = ok(&dir, &["agreement", "list", "--ended"]);
     assert!(!said.contains("new  ") && said.contains("old  active"), "{said}");
 }
+
+/// An entry booked by hand names whom and what it is about: listed on the
+/// partner's page and the agreement's, tagged in the journal, and holding
+/// both against removal. An employee whose agreements end is one until then.
+#[test]
+fn an_entry_names_its_partner_and_agreement() {
+    let dir = books("linked", &[]);
+    ok(&dir, &["partner", "add", "clean-co", "--name", "Clean & Co"]);
+    ok(&dir, &["partner", "add", "sam", "--name", "Sam Example", "--employee"]);
+    ok(&dir, &["agreement", "add", "cleaning", "--partner", "clean-co", "--from", "2027-01-01"]);
+    ok(&dir, &["agreement", "add", "sam", "--partner", "sam", "--from", "2027-01-01"]);
+    // The agreement's one party, when no partner is said.
+    ok(&dir, &["post", "--date", "2027-02-01", "--agreement", "cleaning", "--desc", "Cleaning, January", "Expenses:General=250.00", "Assets:Bank=-250.00"]);
+    let journal = read(&dir, "journal/2027.journal");
+    assert!(journal.contains("Cleaning, January\n    ; id: 1\n    ; agreement: cleaning\n    ; partner: clean-co\n"), "{journal}");
+    let said = ok(&dir, &["agreement", "show", "cleaning"]);
+    assert!(said.contains("Entries about it:\n  2027-02-01  entry 1  Cleaning, January") && !said.contains("invoice template"), "{said}");
+    assert!(ok(&dir, &["partner", "list", "--json"]).contains("\"what\": \"entry 1\""));
+    refused(&dir, &["post", "--date", "2027-02-01", "--partner", "sam", "--agreement", "cleaning", "--desc", "Wrong", "Expenses:General=1.00", "Assets:Bank=-1.00"], "not a party to it");
+    refused(&dir, &["partner", "remove", "clean-co"], "entry 1");
+    refused(&dir, &["agreement", "remove", "cleaning"], "entry 1");
+    // The journal reads back as written.
+    ok(&dir, &["check"]);
+    ok(&dir, &["agreement", "terminate", "sam", "--until", "2027-07-31"]);
+    assert!(ok(&dir, &["partner"]).contains("sam  Sam Example  employee until 2027-07-31"));
+}

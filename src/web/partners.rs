@@ -33,7 +33,7 @@ pub(super) async fn partners_list(Books(s): Books) -> Response {
                 tr.row-link {
                     td { a.stretch href={"/agreement/" (enc(&a.id))} { code { (a.id) } } }
                     td { (a.parties.join(", ")) }
-                    td { (status_said(a)) @if a.versions.iter().any(|v| v.documents.is_empty()) { " " span.pill.pill-warn { "no signed copy" } } }
+                    td { (status_said(a)) (unsigned(a)) }
                 }
             };
             div.box {
@@ -63,7 +63,7 @@ fn partner_table(title: &str, rows: &[&views::PartnerRow], folded: Option<(&str,
     let (what, head, more) = folded.unwrap_or(("", "", &[]));
     let row = |p: &views::PartnerRow| html! {
         tr.row-link {
-            td { a.stretch href={"/partner/" (enc(&p.id))} { (p.name) } " " span.muted.small { (p.id) } }
+            td { a.stretch href={"/partner/" (enc(&p.id))} { (p.name) } " " span.muted.small { (p.id) } @if let Some(u) = &p.until { " " span.pill { "until " (u) } } }
             td.amt { (money(&p.owed_by)) }
             td.amt { (money(&p.owed_to)) }
             td { (p.agreements.join(", ")) }
@@ -99,6 +99,12 @@ fn fold_toggle(what: &str, n: usize) -> Markup {
             span.spacer { label.fold.small { input type="checkbox" class="fold"; " Show " (what) " (" (n) ")" } }
         }
     }
+}
+
+/// Which of its versions have no signed copy filed, if any.
+fn unsigned(a: &views::AgreementView) -> Markup {
+    let v: Vec<String> = a.versions.iter().filter(|v| v.documents.is_empty()).map(|v| v.n.to_string()).collect();
+    html! { @if !v.is_empty() { " " span.pill.pill-warn { @if v.len() == 1 { "version " } @else { "versions " } (v.join(", ")) ": no signed copy" } } }
 }
 
 fn status_said(a: &views::AgreementView) -> String {
@@ -148,11 +154,18 @@ fn partner_page(s: &Store, p: &views::PartnerRow, f: &Fields, error: Option<&any
     html! {
         div.head {
             h1 { (p.name) " " span.muted.small { (p.id) }
-                @if p.former { " " span.pill { "Former employee" } } @else if p.employee { " " span.pill.pill-info { "Employee" } }
+                @if p.former { " " span.pill { "Former employee" } } @else if let Some(u) = &p.until { " " span.pill.pill-info { "Employee until " (u) } } @else if p.employee { " " span.pill.pill-info { "Employee" } }
                 @if p.shareholder { " " span.pill.pill-info { "Shareholder" } } }
-            @if may_change() { div.actions { a.btn href={"/invoice?partner=" (enc(&p.id))} { (icon("outbox")) " Invoice them" } } }
+            @if may_change() { div.actions {
+                @if !p.employee {
+                    a.btn href={"/invoice?partner=" (enc(&p.id))} { (icon("outbox")) " Invoice them" }
+                    a.btn href={"/bill?partner=" (enc(&p.id))} { (icon("inbox")) " Book a bill" }
+                }
+                a.btn href={"/post?partner=" (enc(&p.id))} { (icon("plus")) " Book an entry" }
+            } }
         }
         @if let Some(e) = error { (refused(e)) }
+        @if let Some(u) = &p.until { p.muted.small { "Their last agreement ends on " (u) "; from the day after, they are listed as a former employee." } }
         div.tiles {
             div.tile { span.muted.small { "Owes" } span.figure { @if p.owed_by.is_empty() { "nothing" } @else { (money(&p.owed_by)) } } }
             div.tile { span.muted.small { "Is owed" } span.figure { @if p.owed_to.is_empty() { "nothing" } @else { (money(&p.owed_to)) } } }
@@ -166,7 +179,7 @@ fn partner_page(s: &Store, p: &views::PartnerRow, f: &Fields, error: Option<&any
             }
         }
         div.box.scroll {
-            div.box-header { (icon("outbox")) "Invoices and bills" }
+            div.box-header { (icon("outbox")) "Invoices, bills and entries" }
             @if p.entries.is_empty() {
                 div.box-body { p.muted { "None yet." } }
             } @else {
@@ -212,7 +225,7 @@ fn partner_form(s: &Store, id: Option<&str>, f: &Fields, error: Option<&anyhow::
                     }
                     label.field { "Name" input type="text" name="name" required value=(get("name")); }
                     label.field { "Address" span.hint { "A line each; may be left blank." } textarea name="address" rows="3" { (get("address")) } }
-                    label.field { "Tax number" span.hint { "May be left blank." } input type="text" name="tax_id" value=(get("tax_id")); }
+                    label.field { "Their tax number" span.hint { "Their VAT number, if they have one; may be left blank." } input type="text" name="tax_id" value=(get("tax_id")); }
                     label.choice { input type="checkbox" name="employee" checked[f.contains_key("employee")]; " The company employs them" }
                     label.choice { input type="checkbox" name="shareholder" checked[f.contains_key("shareholder")]; " A shareholder of the company" }
                     @if may_change() { div.actions { button.btn-primary type="submit" { (icon("check")) @if id.is_some() { " Save" } @else { " Add" } } } }
@@ -495,7 +508,7 @@ fn agreement_page(s: &Store, a: &views::AgreementView, f: &Fields, error: Option
                 p { "Parties: " @for (i, p) in a.parties.iter().enumerate() { @if i > 0 { ", " } a href={"/partner/" (enc(p))} { (p) } } }
             }
         }
-        div.box {
+        @if a.invoiced { div.box {
             div.box-header { (icon("outbox")) "Invoices under it"
                 @if may_change() && !a.ended { span.spacer { @for p in &a.parties { a.small href={"/invoice?agreement=" (id) "&partner=" (enc(p))} { "Invoice " (p) } " " } } } }
             @if a.invoices.is_empty() {
@@ -510,6 +523,20 @@ fn agreement_page(s: &Store, a: &views::AgreementView, f: &Fields, error: Option
                             td { (i.partner) }
                             td { "version " (i.version) }
                         }
+                    } }
+                }
+            }
+        } }
+        div.box {
+            div.box-header { (icon("book")) "Entries about it"
+                @if may_change() { span.spacer { a.small href={"/post?agreement=" (id) @if let [p] = &a.parties[..] { "&partner=" (enc(p)) }} { "Book one" } } } }
+            @if a.entries.is_empty() {
+                div.box-body { p.muted { "None yet: a payment made for it without a bill, such as a salary or a rent, is booked as an entry about it." } }
+            } @else {
+                table.list {
+                    thead { tr { th { "Date" } th { "Entry" } th { "Description" } } }
+                    tbody { @for e in &a.entries {
+                        tr.row-link { td.date { (e.date) } td { a.stretch href={"/entry/" (e.entry)} { (e.what) } } td { (e.description) } }
                     } }
                 }
             }
@@ -560,14 +587,17 @@ fn agreement_page(s: &Store, a: &views::AgreementView, f: &Fields, error: Option
             form method="post" action={"/agreement/" (id) "/end"} {
                 (token())
                 div.box {
-                    div.box-header { (icon("alert")) "End it otherwise than its terms say" }
+                    div.box-header { (icon("alert")) "Terminate it, or replace it by another" }
                     div.box-body {
-                        p.muted.small { "To end it as its terms say, amend it with its last day. Ended, it is kept as a record." }
+                        p.muted.small { "For an agreement ended early, by notice or a resignation, or replaced by another. One whose own terms set its last day is not ended here: amend it, with that day as Until. Either way it stays active till its last day, and is kept as a record after." }
                         label.field { "Its last day" input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="on" required value=(today); }
-                        label.field { "Subsumed by" span.hint { "Another agreement that holds what it agreed from the day after; blank if it is terminated." }
-                            select name="by" {
-                                option value="" { "— terminated —" }
-                                @for other in s.books.agreements.keys().filter(|x| **x != a.id) { option value=(other) { (other) } }
+                        @let others: Vec<&String> = s.books.agreements.iter().filter(|(x, o)| **x != a.id && o.status == model::AgreementStatus::Active && o.parties.iter().any(|p| a.parties.contains(p))).map(|(x, _)| x).collect();
+                        @if !others.is_empty() {
+                            label.field { "Replaced by" span.hint { "An active agreement with the same party that holds what it agreed from the day after; blank if it is terminated." }
+                                select name="by" {
+                                    option value="" { "— terminated —" }
+                                    @for other in others { option value=(other) { (other) } }
+                                }
                             }
                         }
                         div.actions { button.btn-danger type="submit" { (icon("check")) " End it" } }

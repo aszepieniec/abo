@@ -116,8 +116,8 @@ pub(crate) enum AgreementCmd {
         /// contracts/. Without one, `abo file --for ID/N` files it later.
         #[arg(long, value_name = "FILE")]
         scan: Option<PathBuf>,
-        /// The day it was signed, as its document is dated. Defaults to
-        /// --from.
+        /// The day it was signed, as its document is dated. Without it,
+        /// the copy is dated --from, and abo says so.
         #[arg(long, requires = "scan")]
         signed: Option<String>,
         /// An agreement this one takes the place of: it ends, subsumed by
@@ -139,19 +139,19 @@ pub(crate) enum AgreementCmd {
         /// contracts/. Without one, `abo file --for ID/N` files it later.
         #[arg(long, value_name = "FILE")]
         scan: Option<PathBuf>,
-        /// The day it was signed, as its document is dated. Defaults to
-        /// --from.
+        /// The day it was signed, as its document is dated. Without it,
+        /// the copy is dated --from, and abo says so.
         #[arg(long, requires = "scan")]
         signed: Option<String>,
     },
-    /// End an agreement otherwise than its terms say, on a day, its last.
-    /// To end it as its terms say, amend it with --until. It is kept, as a
-    /// record.
+    /// End an agreement early, by notice or a resignation: it stays
+    /// active through its last day, and is kept as a record after. One
+    /// whose own terms set its last day is amended instead, with --until.
     Terminate {
         id: String,
         /// Its last day. Defaults to today.
-        #[arg(long)]
-        on: Option<String>,
+        #[arg(long, alias = "on")]
+        until: Option<String>,
     },
     /// End an agreement because another holds what it agreed from the day
     /// after: a framework contract, a renegotiation.
@@ -161,8 +161,8 @@ pub(crate) enum AgreementCmd {
         #[arg(long)]
         by: String,
         /// Its last day. Defaults to today.
-        #[arg(long)]
-        on: Option<String>,
+        #[arg(long, alias = "on")]
+        until: Option<String>,
     },
     /// Remove an agreement nothing names: one added by mistake.
     Remove { id: String },
@@ -186,7 +186,7 @@ pub(crate) struct VersionFlags {
     #[arg(long = "template", value_name = "NAME=VALUE")]
     pub(crate) template: Vec<String>,
     /// The invoice template, from an issued invoice, by its number: what it
-    /// says, as Issue again fills the form from it.
+    /// says, as `abo invoice --like` takes it.
     #[arg(long, value_name = "INVOICE")]
     pub(crate) template_from: Option<String>,
 }
@@ -477,6 +477,15 @@ pub(crate) enum Cmd {
         date: Option<String>,
         #[arg(long = "desc")]
         description: String,
+        /// The partner it is about, by their id, as a salary paid to an
+        /// employee: it is then listed on their page.
+        #[arg(long)]
+        partner: Option<String>,
+        /// The agreement it is about, as a payment for a contract's
+        /// services without a bill; --partner defaults to its party, if it
+        /// has one.
+        #[arg(long)]
+        agreement: Option<String>,
         /// Each `account=amount`, the amount with its commodity unless it is
         /// the company's, in one word: `Expenses:General=12.50` or
         /// `'Expenses:General=12.50 USD'`.
@@ -563,7 +572,7 @@ pub(crate) enum Cmd {
         /// What it is for, as `2026-01-01..2026-01-31`, printed on it.
         #[arg(long)]
         period: Option<String>,
-        /// Another like invoice NUMBER, as Issue again on the web: its
+        /// Another like invoice NUMBER: its
         /// lines, reference, note, currency, VAT, terms and income account,
         /// to its partner, or to its customer as printed, under its
         /// agreement. What is given here is taken over them; the period is

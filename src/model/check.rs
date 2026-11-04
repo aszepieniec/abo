@@ -132,7 +132,7 @@ fn numbers(m: &Books) -> Vec<Decimal> {
     let mut v = vec![];
     for e in &m.entries {
         match &e.kind {
-            Kind::Plain(ps) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. } => {
+            Kind::Plain(ps, _) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. } => {
                 for p in ps {
                     v.push(p.amount.quantity);
                     v.extend(p.cost.as_ref().map(|c| c.quantity));
@@ -647,6 +647,11 @@ pub(crate) fn partners_and_agreements(m: &Books, standing: &[bool], who: &dyn Fn
                 (_, Some(a)) if !agreement(a) => Some(("agreement", a.as_str())),
                 _ => None,
             },
+            Kind::Plain(_, Link { partner: p, agreement: a }) => match (p, a) {
+                (Some(p), _) if !partner(p) => Some(("partner", p.as_str())),
+                (_, Some(a)) if !agreement(a) => Some(("agreement", a.as_str())),
+                _ => None,
+            },
             _ => None,
         };
         if let Some((what, x)) = named {
@@ -723,6 +728,14 @@ pub(crate) fn partners_and_agreements(m: &Books, standing: &[bool], who: &dyn Fn
                 _ => "on no day".into(),
             };
             no!(@of Subject::Entry(id), "I-T4", "{} is issued under agreement {a} on {date}, and the agreement is in force {span}", who(id));
+        }
+    }
+    // I-T4, of an entry booked by hand: about an agreement, and a partner
+    // of it, if one.
+    for id in 1..=m.entries.len() {
+        let Some(Kind::Plain(_, Link { partner: Some(p), agreement: Some(a) })) = m.entry(id).map(|e| &e.kind) else { continue };
+        if let Some(ag) = m.agreements.get(a).filter(|ag| !ag.parties.contains(p)) {
+            no!(@of Subject::Entry(id), "I-T4", "{} is about agreement {a} and partner {p}, who is not a party to it: {}", who(id), ag.parties.join(", "));
         }
     }
     // I-T5: no agreement is subsumed, through others, by itself.

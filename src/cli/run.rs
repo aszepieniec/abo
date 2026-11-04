@@ -111,11 +111,11 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             };
             emit(cli.json, &r, || format!("Books opened in {} ({commit}).\nNext: `abo account add` and `abo post`.{vat}", dir.display()))
         }
-        Cmd::Post { date, description, postings } => {
+        Cmd::Post { date, description, partner, agreement, postings } => {
             let mut s = Store::open(&here)?;
             let postings = postings.iter().map(|p| input::posting(&s.books, p)).collect::<Result<_>>()?;
             let date = input::day(date.as_deref())?;
-            let op = Op::Post { date, description, postings };
+            let op = Op::Post { date, description, postings, link: model::Link { partner, agreement } };
             changed(&mut s, &op, &[], cli.json)
         }
         Cmd::File { date, issuer, bill, src } => {

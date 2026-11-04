@@ -787,6 +787,7 @@ fn naming_partner(m: &Books, p: &str) -> Vec<String> {
         .filter(|&id| match m.entry(id).map(|e| &e.kind) {
             Some(Kind::Bill(_, more)) => more.partner.as_deref() == Some(p),
             Some(Kind::Invoice { content, .. }) => content.to.as_deref() == Some(p),
+            Some(Kind::Plain(_, link)) => link.partner.as_deref() == Some(p),
             _ => false,
         })
         .map(|id| name(m, id))
@@ -795,10 +796,10 @@ fn naming_partner(m: &Books, p: &str) -> Vec<String> {
     v
 }
 
-/// What names agreement `a`: invoices issued under it, its documents, and the
+/// What names agreement `a`: invoices issued under it and entries about it, its documents, and the
 /// agreements it subsumes.
 fn naming_agreement(m: &Books, a: &str) -> Vec<String> {
-    let mut v: Vec<String> = (1..=m.entries.len()).filter(|&id| m.under(id).is_some_and(|x| x == a)).map(|id| name(m, id)).collect();
+    let mut v: Vec<String> = (1..=m.entries.len()).filter(|&id| m.agreement_of(id).is_some_and(|x| x == a)).map(|id| name(m, id)).collect();
     v.extend(m.documents.iter().filter(|(_, d)| d.version().is_some_and(|(x, _)| x == a)).map(|(h, d)| d.path(h)));
     v.extend(m.agreements.iter().filter(|(_, x)| matches!(&x.status, AgreementStatus::Subsumed { by, .. } if by == a)).map(|(id, _)| format!("agreement {id}")));
     v

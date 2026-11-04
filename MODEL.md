@@ -240,8 +240,9 @@ hold them; the others hold what their postings follow from.
 
 ```rust
 enum Kind {
-    /// Booked by hand: anything that balances.
-    Plain(Vec<Posting>),
+    /// Booked by hand: anything that balances. Whom and what it is
+    /// about, if said: a salary, a rent, a payment without a bill.
+    Plain(Vec<Posting>, Link),
     /// A supplier's bill. A debt. What the supplier says of it besides.
     Bill(Vec<Posting>, BillMore),
     /// An invoice abo issued: what it says, and its PDF's hash (a check).
@@ -256,6 +257,11 @@ enum Kind {
     Reversal { of: EntryId },
 }
 ```
+
+A `Link` is a partner and an agreement, each optional: `Link { partner:
+Option<Id>, agreement: Option<Id> }`. It says only whom the entry is about;
+no schedule follows from it, and nothing is due by it. With both, the
+partner is a party to the agreement (I-T4).
 
 A bill may say, besides its postings, what the supplier's own number for it
 is and when it is due; either, both or neither, as the bill gives them:
@@ -498,7 +504,7 @@ what September's statement clears (I-S3).
 | `settled(d)` | `d` stands, and `open(d)` is nought |
 | `cleared(p)` | some statement clears posting `p` |
 | `whole(s)` | every posting to the statement's account, in its commodity, dated on or before it, is cleared by it or an earlier statement: its balance is then the account's, and hledger checks it too (§7.3) |
-| `partner(e)` | of a bill, its `partner`; of an invoice, its `to`; of a credit note, a payment or a reversal, that of the entry it names; else none |
+| `partner(e)` | of a bill, its `partner`; of an invoice, its `to`; of a plain entry, its link's partner; of a credit note, a payment or a reversal, that of the entry it names; else none |
 | `customer(p)`, `supplier(p)` | an invoice, a bill, has `partner` p |
 | `agreements(p)` | the agreements `p` is a party to |
 | `active(a)` | `a`'s status is `Active` |
@@ -997,7 +1003,8 @@ undo, while nothing has happened since.
   and `-`. A partner is named on their first line, and their tax number, if
   any, is one line.
 - **I-T2** What names a partner or an agreement names one there is: a bill's
-  partner, an invoice's `to` and `agreement`, an agreement's parties, the
+  partner, an invoice's `to` and `agreement`, a plain entry's link's partner
+  and agreement, an agreement's parties, the
   agreement one is subsumed by, a document's version.
 - **I-T3** An agreement has a party or more, none twice, and a version or
   more. A version's `from` is on or after the `from` of the version added
@@ -1008,7 +1015,9 @@ undo, while nothing has happened since.
 - **I-T4** An invoice under an agreement is to one of its parties, and one
   standing is dated on a day the agreement is in force: on or after its
   first version's `from`, and on or before its last day. So an agreement
-  is not ended before an invoice issued under it.
+  is not ended before an invoice issued under it. A plain entry linked to
+  an agreement and a partner names one of its parties; on any day, as a
+  salary is paid after the contract ends.
 - **I-T5** An agreement is not subsumed by itself, nor by one subsumed,
   through others, by it.
 
@@ -1037,7 +1046,7 @@ Violations the books held before the operation are kept as `check` says them.
 
 | Operation | Adds or changes |
 |---|---|
-| `post(date, description, postings)` | a `Plain` entry |
+| `post(date, description, postings, link)` | a `Plain` entry; with an agreement and no partner, the partner is its party, if it has one alone |
 | `file(bytes, date, issuer, for)` | a `Document`, by the bytes' hash; `for`, when given, a `Bill` entry or an agreement's version it is the document of |
 | `unfile(document)` | removes a `Document` that names no standing bill and no version: one filed by mistake, or a reverted bill's |
 | `bill(document, description, postings)` | a `Bill` entry, its partner, when given, among what it says besides; `document`, when given — filed already, naming no bill or a reversed one — now names it |
@@ -1196,7 +1205,7 @@ abo agreement add <id> --partner=<id>... --from=<date> [--until=<date>]
                        [--template=<field>=<value>... | --template-from=<invoice>]
                        [--scan=<file> [--signed=<date>]] [--replaces=<id>]
 abo agreement amend <id> --from=<date> ...  [--no-template] [--scan=<file> [--signed=<date>]]
-abo agreement terminate <id> [--on=<date>]  subsume <id> --by=<id> [--on=<date>]
+abo agreement terminate <id> [--until=<date>]  subsume <id> --by=<id> [--until=<date>]
 abo file    --for=<id>/<n> ... <file>
 abo bill    --partner=<id> ...
 abo invoice --partner=<id> [--agreement=<id>] [--period=<from>..<to>] ...
@@ -1335,7 +1344,7 @@ The kind is written as tags, and read back from them:
 
 | Kind | Tags |
 |---|---|
-| `Plain` | none |
+| `Plain` | `agreement: <id>` and `partner: <id>`, where its link has them |
 | `Bill` | `bill:`, then `number: <text>`, `due: <date>` and `partner: <id>` where given |
 | `Invoice` | `invoice: <number>`, then `agreement: <id>` and `partner: <id>` where it has them; its content in its `.json` |
 | `CreditNote` | `invoice: <number>`, `credits: <id>` |
@@ -1471,7 +1480,7 @@ A subsumed agreement's status is `[status]` with `subsumed = "<id>"` and
 are derived, written for hledger and a person reading the journal, so that
 `hledger reg tag:partner=acme` lists a partner's bills and invoices, and
 `tag:agreement=acme-hosting` an agreement's invoices; a bill's is what the
-bill says (§2.4).
+bill says, and a plain entry's what its link says (§2.4).
 
 ---
 

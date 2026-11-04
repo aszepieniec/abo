@@ -158,13 +158,15 @@ fn request(op: &Op, m: &Books, today: Date) -> Option<(Post, Op)> {
     let t = |s: &str| s.trim().to_string();
     let one_line = |s: &str| !s.contains(['\n', '\r', '\0']);
     Some(match op.clone() {
-        Op::Post { date, description, postings } => {
+        Op::Post { date, description, postings, link } => {
             if !one_line(&description) || postings.iter().any(|p| !one_line(&posting(p))) {
                 return None;
             }
             let lines = postings.iter().map(posting).collect::<Vec<_>>().join("\n");
-            let fields = vec![("date", date.to_string()), ("description", description.clone()), ("postings", lines)];
-            (urlencoded("/post", fields), Op::Post { date, description: t(&description), postings })
+            let mut fields = vec![("date", date.to_string()), ("description", description.clone()), ("postings", lines)];
+            fields.extend(link.partner.clone().map(|p| ("partner", p)));
+            fields.extend(link.agreement.clone().map(|a| ("agreement", a)));
+            (urlencoded("/post", fields), Op::Post { date, description: t(&description), postings, link })
         }
         Op::Bill { date, description, postings, document, again, more } => {
             if !one_line(&description) || postings.iter().any(|p| !one_line(&posting(p))) || !one_line(&more.number) {

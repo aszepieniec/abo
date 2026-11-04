@@ -70,7 +70,7 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
     s.change(&Op::CommodityAdd("USD".into(), 2), &[])?;
     s.change(&Op::PriceAdd { of: "BTC".into(), date: ago(150), price: model::Amount { quantity: d("60000.00"), commodity: "EUR".into() } }, &[])?;
     let post = |s: &mut Store, days: i64, description: &str, postings: Vec<model::Posting>| -> Result<usize> {
-        s.change(&Op::Post { date: ago(days), description: description.into(), postings }, &[])?;
+        s.change(&Op::Post { date: ago(days), description: description.into(), postings, link: Default::default() }, &[])?;
         Ok(s.books.entries.len())
     };
     // A bill and its document: a small PDF made with typst, or without typst,
@@ -190,7 +190,7 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
     for (k, back) in [2, 1].into_iter().enumerate() {
         let period = model::Period { from: month(back), to: month(back - 1).yesterday().unwrap_or(now) };
         let days = (now - period.from.max(ago(49 - k as i64))).get_days() as i64;
-        if let Some(id) = invoice(&mut s, days, "nordlicht", Some("nordlicht-retainer"), Some(period), "Retainer", &[("1", "1500.00", "Retainer, the month")])? {
+        if let Some(id) = invoice(&mut s, days, "nordlicht", Some("nordlicht-retainer"), Some(period), "Retainer", &[("1", "1500.00", "Retainer")])? {
             if k == 0 {
                 pay(&mut s, 10, id, "1500.00")?;
             }
@@ -199,7 +199,7 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
     // Sam's salary, booked by hand at the start of each month after it.
     for back in (1..=4).rev() {
         let postings = vec![p("Expenses:Salary", "6000.00", "EUR"), p("Assets:Bank", "-6000.00", "EUR")];
-        s.change(&Op::Post { date: month(back), description: "Salary, Sam Example".into(), postings }, &[])?;
+        s.change(&Op::Post { date: month(back), description: "Salary, Sam Example".into(), postings, link: model::Link { partner: Some("sam".into()), agreement: Some("sam".into()) } }, &[])?;
     }
     // Owed in another currency: the open total has a line of its own for it.
     let mut owed = p("Liabilities:Payable", "-250.00", "USD");

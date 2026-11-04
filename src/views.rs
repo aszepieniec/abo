@@ -312,13 +312,16 @@ pub struct PartnerRow {
     /// An employee no longer: they have agreements, and every one has
     /// ended before today.
     pub former: bool,
+    /// An employee till then: their agreements each end, the last of
+    /// them on this day, today or after.
+    pub until: Option<String>,
     /// What the company owes them, on their bills, by commodity.
     pub owed_to: Vec<Amount>,
     /// What they owe the company, on their invoices.
     pub owed_by: Vec<Amount>,
     /// The agreements they are a party to, by id.
     pub agreements: Vec<String>,
-    /// Their invoices and bills, by entry, newest first.
+    /// Their invoices, bills and the entries booked about them, newest first.
     pub entries: Vec<PartnerEntry>,
 }
 
@@ -326,7 +329,7 @@ pub struct PartnerRow {
 pub struct PartnerEntry {
     pub entry: usize,
     pub date: String,
-    /// `invoice 2026-0003`, `bill 12`.
+    /// `invoice 2026-0003`, `bill 12`, `entry 23`.
     pub what: String,
     pub description: String,
 }
@@ -341,12 +344,10 @@ pub fn partners(b: &Books, today: model::Date) -> Vec<PartnerRow> {
             let amounts = |m: std::collections::BTreeMap<String, Decimal>| m.into_iter().map(|(c, q)| Amount::new(b, q, &c)).collect();
             let agreements: Vec<String> = b.agreements_of(id).into_iter().cloned().collect();
             let of: Vec<&model::Agreement> = agreements.iter().filter_map(|a| b.agreements.get(a)).collect();
-            let former = p.employee && !of.is_empty() && of.iter().all(|a| a.last_day().is_some_and(|l| l < today));
-            let entries = (1..=b.entries.len())
-                .rev()
-                .filter(|&e| matches!(b.entries[e - 1].kind, model::Kind::Bill(..) | model::Kind::Invoice { .. }) && b.partner_of(e) == Some(id))
-                .map(|e| PartnerEntry { entry: e, date: b.entries[e - 1].date.to_string(), what: b.number_text(e).map_or(format!("bill {e}"), |n| format!("invoice {n}")), description: b.entries[e - 1].description.clone() })
-                .collect();
+            let last = of.iter().map(|a| a.last_day()).collect::<Option<Vec<_>>>().and_then(|v| v.into_iter().max());
+            let former = p.employee && !of.is_empty() && last.is_some_and(|l| l < today);
+            let until = last.filter(|&l| p.employee && l >= today).map(|l| l.to_string());
+            let entries = (1..=b.entries.len()).rev().filter(|&e| matches!(b.entries[e - 1].kind, model::Kind::Bill(..) | model::Kind::Invoice { .. } | model::Kind::Plain(..)) && b.partner_of(e) == Some(id)).map(|e| entry_row(b, e)).collect();
             PartnerRow {
                 id: id.clone(),
                 name: p.lines.lines().next().unwrap_or_default().to_string(),
@@ -355,6 +356,7 @@ pub fn partners(b: &Books, today: model::Date) -> Vec<PartnerRow> {
                 employee: p.employee,
                 shareholder: p.shareholder,
                 former,
+                until,
                 owed_to: amounts(to),
                 owed_by: amounts(by),
                 agreements,
@@ -362,6 +364,15 @@ pub fn partners(b: &Books, today: model::Date) -> Vec<PartnerRow> {
             }
         })
         .collect()
+}
+
+fn entry_row(b: &Books, e: usize) -> PartnerEntry {
+    let what = match &b.entries[e - 1].kind {
+        model::Kind::Bill(..) => format!("bill {e}"),
+        model::Kind::Plain(..) => format!("entry {e}"),
+        _ => format!("invoice {}", b.number_text(e).unwrap_or_default()),
+    };
+    PartnerEntry { entry: e, date: b.entries[e - 1].date.to_string(), what, description: b.entries[e - 1].description.clone() }
 }
 
 #[derive(serde::Serialize)]
@@ -383,6 +394,11 @@ pub struct AgreementView {
     pub versions: Vec<VersionView>,
     /// The standing invoices issued under it, newest first.
     pub invoices: Vec<InvoiceUnder>,
+    /// It is invoiced: a version has an invoice template, or an invoice
+    /// was issued under it.
+    pub invoiced: bool,
+    /// The entries booked about it, newest first.
+    pub entries: Vec<PartnerEntry>,
 }
 
 #[derive(serde::Serialize)]
@@ -428,7 +444,7 @@ pub fn agreement(b: &Books, id: &str, today: model::Date) -> Option<AgreementVie
             documents: b.documents.iter().filter(|(_, d)| d.version() == Some((id, i + 1))).map(|(h, d)| d.path(h)).collect(),
         })
         .collect();
-    let invoices = b
+    let invoices: Vec<InvoiceUnder> = b
         .invoices_under(id, &b.standing())
         .into_iter()
         .rev()
@@ -446,6 +462,8 @@ pub fn agreement(b: &Books, id: &str, today: model::Date) -> Option<AgreementVie
         subsumed_by,
         last_day: a.last_day().map(|d| d.to_string()),
         in_force: a.in_force(today),
+        invoiced: a.versions.iter().any(|v| v.template.is_some()) || !invoices.is_empty(),
+        entries: (1..=b.entries.len()).rev().filter(|&e| matches!(b.entries[e - 1].kind, model::Kind::Plain(..)) && b.agreement_of(e).is_some_and(|x| x == id)).map(|e| entry_row(b, e)).collect(),
         versions,
         invoices,
     })
@@ -492,8 +510,10 @@ pub fn fields_of(b: &Books, id: usize) -> Option<std::collections::BTreeMap<Stri
                 put("due_days", days.to_string());
             }
         }
-        Kind::Plain(ps) => {
+        Kind::Plain(ps, link) => {
             put("description", e.description.clone());
+            link.partner.iter().for_each(|p| put("partner", p.clone()));
+            link.agreement.iter().for_each(|a| put("agreement", a.clone()));
             let posting = |p: &model::Posting| {
                 let mut s = format!("{}={} {}", p.account, Amount::new(b, p.amount.quantity, &p.amount.commodity).quantity, p.amount.commodity);
                 if let Some(c) = &p.cost {

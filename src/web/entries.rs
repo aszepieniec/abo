@@ -54,7 +54,7 @@ pub(super) async fn booking(Books(s): Books, Path(id): Path<String>, Query(q): Q
                 (e.date) " · " @if is_bill { "bill " } @else { "entry " } (id)
                 @if let Some(n) = &number { " · " @if credit_note { "credit note " } @else { "invoice " } (n) }
                 @if let Some(p) = b.partner_of(id) { " · " a href={"/partner/" (enc(p))} { (p) } }
-                @if let Some(a) = b.under(id) { " · under " a href={"/agreement/" (enc(a))} { (a) } }
+                @if let Some(a) = b.agreement_of(id) { @if invoice { " · under " } @else { " · about " } a href={"/agreement/" (enc(a))} { (a) } }
             }
             @if let Kind::Invoice { content, .. } = &e.kind {
                 // Said alike whenever the page is opened: the rate and why, and
@@ -369,8 +369,11 @@ pub(super) async fn revert(Books(mut s): Books, Path(id): Path<String>, Form(f):
     }
 }
 
-pub(super) async fn post_form(Books(s): Books) -> Response {
-    or_error(&s, "Book an entry", || Ok(form(&s, &Fields::new(), None)))
+/// `?partner=` and `?agreement=` fill those in, as the partner's and the
+/// agreement's pages link here.
+pub(super) async fn post_form(Books(s): Books, Query(q): Query<Fields>) -> Response {
+    let f: Fields = q.into_iter().filter(|(k, _)| k == "partner" || k == "agreement").collect();
+    or_error(&s, "Book an entry", || Ok(form(&s, &f, None)))
 }
 
 /// A form's postings, one per line.
@@ -394,7 +397,9 @@ pub(super) async fn post_submit(Books(mut s): Books, Form(f): Form<Fields>) -> R
     let r = once(Some(&root), &get("token"), || {
         let date = input::day(Some(&get("date")))?;
         let lines = postings(&s.books, &get("postings"))?;
-        change(&mut s, &Op::Post { date, description: get("description"), postings: lines }, &[], "/")
+        let id = |k: &str| Some(get(k)).filter(|v| !v.is_empty());
+        let link = model::Link { partner: id("partner"), agreement: id("agreement") };
+        change(&mut s, &Op::Post { date, description: get("description"), postings: lines, link }, &[], "/")
     });
     match r {
         Ok(to) => Redirect::to(&to).into_response(),
@@ -444,6 +449,22 @@ pub(super) fn form(s: &Store, f: &Fields, error: Option<&anyhow::Error>) -> Mark
                 div.box-body {
                     label.field { "Date" input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="date" required value=(if get("date").is_empty() { today } else { get("date") }); }
                     label.field { "Description" input type="text" name="description" required value=(get("description")); }
+                    @if !s.books.partners.is_empty() {
+                        label.field { "Partner" span.hint { "Whom it is about, if anyone: it is then listed on their page." }
+                            select name="partner" {
+                                option value="" { "— none —" }
+                                @for (id, p) in &s.books.partners { option value=(id) selected[get("partner") == *id] { (p.lines.lines().next().unwrap_or(id)) " (" (id) ")" } }
+                            }
+                        }
+                        @if !s.books.agreements.is_empty() {
+                            label.field { "Agreement" span.hint { "The agreement it is about, if one: the partner is then its party." }
+                                select name="agreement" {
+                                    option value="" { "— none —" }
+                                    @for (id, a) in &s.books.agreements { option value=(id) selected[get("agreement") == *id] { (id) " (" (a.parties.join(", ")) ")" } }
+                                }
+                            }
+                        }
+                    }
                     label.field { "Postings"
                         span.hint { "One per line, " code { "account=amount" } ", every amount written; " code { "account=250.00 USD @@ 230.00 EUR" } " for one exchanged." }
                         textarea name="postings" rows="5" required placeholder="Expenses:Hosting=100.00\nAssets:Bank=-100.00" { (get("postings")) }

@@ -93,6 +93,9 @@ fn list(s: &Store, json: bool, with_former: bool) -> Result<()> {
             if !p.tax_id.is_empty() {
                 out += &format!("  ({})", p.tax_id);
             }
+            if let Some(u) = &p.until {
+                out += &format!("  employee until {u}");
+            }
             if !p.owed_by.is_empty() {
                 out += &format!("\n    owes {}", amounts(&p.owed_by));
             }
@@ -145,7 +148,12 @@ pub(crate) fn agreement(here: &Path, json: bool, change: Option<AgreementCmd>) -
                     return "No agreements yet; abo agreement add adds one.".into();
                 }
                 let line = |a: &&views::AgreementView| {
-                    let unsigned = if a.versions.iter().any(|v| v.documents.is_empty()) { ", no signed copy" } else { "" };
+                    let v: Vec<String> = a.versions.iter().filter(|v| v.documents.is_empty()).map(|v| v.n.to_string()).collect();
+                    let unsigned = match v.len() {
+                        0 => String::new(),
+                        1 => format!(", version {}: no signed copy", v[0]),
+                        _ => format!(", versions {}: no signed copy", v.join(", ")),
+                    };
                     format!("{}  {}  {}{unsigned}", a.id, status(a), a.parties.join(", "))
                 };
                 let (ended, active): (Vec<_>, Vec<_>) = shown.iter().partition(|a| a.ended);
@@ -195,8 +203,8 @@ pub(crate) fn agreement(here: &Path, json: bool, change: Option<AgreementCmd>) -
             let also: Vec<_> = filed.iter().map(|(_, f)| f.clone()).collect();
             return changed_all(&mut s, &ops, &also, json);
         }
-        Some(AgreementCmd::Terminate { id, on }) => Op::AgreementEnd { id, status: model::AgreementStatus::Terminated { on: input::day(on.as_deref())? } },
-        Some(AgreementCmd::Subsume { id, by, on }) => Op::AgreementEnd { id, status: model::AgreementStatus::Subsumed { by, on: input::day(on.as_deref())? } },
+        Some(AgreementCmd::Terminate { id, until }) => Op::AgreementEnd { id, status: model::AgreementStatus::Terminated { on: input::day(until.as_deref())? } },
+        Some(AgreementCmd::Subsume { id, by, until }) => Op::AgreementEnd { id, status: model::AgreementStatus::Subsumed { by, on: input::day(until.as_deref())? } },
         Some(AgreementCmd::Remove { id }) => Op::AgreementRemove { id },
     };
     changed(&mut s, &op, &[], json)
@@ -214,7 +222,10 @@ fn scanned(path: &std::path::Path, signed: Option<&str>, from: model::Date, id: 
     }
     let date = match signed {
         Some(d) => input::day(Some(d))?,
-        None => from,
+        None => {
+            eprintln!("The signed copy is dated {from}, the day it takes effect; --signed gives the day it was signed.");
+            from
+        }
     };
     let sha256 = store::sha256(&bytes);
     let of = Some(model::Of::Version(id.into(), n));
@@ -235,14 +246,24 @@ fn status(a: &views::AgreementView) -> String {
 
 fn show(a: &views::AgreementView) -> String {
     let mut out = format!("{}: {}; parties {}", a.id, status(a), a.parties.join(", "));
-    if let Some(l) = &a.last_day {
+    // Said once: the status says the day its ending set.
+    if let Some(l) = a.last_day.as_ref().filter(|_| a.ended_on.is_none()) {
         out += &format!("; last day {l}");
     }
     for v in &a.versions {
-        let force = if a.in_force == Some(v.n) { ", in force" } else { "" };
+        let today = store::today().map(|d| d.to_string()).unwrap_or_default();
+        let force = match (a.in_force == Some(v.n), v.from > today, a.invoiced) {
+            (true, _, true) => ", in force: an invoice dated today starts from it",
+            (true, _, false) => ", in force",
+            (_, true, true) => ", not yet in force: an invoice dated from its first day starts from it",
+            (_, true, false) => ", not yet in force",
+            _ => "",
+        };
         out += &format!("\nVersion {} from {}{}{force}", v.n, v.from, v.until.as_ref().map(|u| format!(" until {u}")).unwrap_or_default());
         if !v.template.is_empty() {
             out += "\n    invoice template:";
+        } else if a.invoiced {
+            out += "\n    no invoice template";
         }
         for (k, x) in &v.template {
             out += &format!("\n      {k}: {}", x.replace('\n', "; "));
@@ -258,6 +279,12 @@ fn show(a: &views::AgreementView) -> String {
         out += "\nInvoices under it:";
         for i in &a.invoices {
             out += &format!("\n  {}  {}  to {}  version {}", i.date, i.what, i.partner, i.version);
+        }
+    }
+    if !a.entries.is_empty() {
+        out += "\nEntries about it:";
+        for e in &a.entries {
+            out += &format!("\n  {}  {}  {}", e.date, e.what, e.description);
         }
     }
     out

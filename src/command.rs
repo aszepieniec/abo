@@ -13,8 +13,10 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
     let flag = |k: &str, v: &dyn std::fmt::Display| format!("--{k}={v}");
     let mut a: Vec<String>;
     match op {
-        Op::Post { date, description, postings } => {
+        Op::Post { date, description, postings, link } => {
             a = vec![s("post"), flag("date", date), flag("desc", description)];
+            a.extend(link.partner.iter().map(|p| flag("partner", p)));
+            a.extend(link.agreement.iter().map(|x| flag("agreement", x)));
             a.push(s("--"));
             a.extend(postings.iter().map(posting));
         }
@@ -201,8 +203,8 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
         }
         Op::AgreementEnd { id, status } => {
             a = match status {
-                model::AgreementStatus::Subsumed { by, on } => vec![s("agreement"), s("subsume"), flag("by", by), flag("on", on)],
-                model::AgreementStatus::Terminated { on } => vec![s("agreement"), s("terminate"), flag("on", on)],
+                model::AgreementStatus::Subsumed { by, on } => vec![s("agreement"), s("subsume"), flag("by", by), flag("until", on)],
+                model::AgreementStatus::Terminated { on } => vec![s("agreement"), s("terminate"), flag("until", on)],
                 // Refused by the model; said as the command that asks it.
                 model::AgreementStatus::Active => vec![s("agreement"), s("terminate")],
             };

@@ -9,7 +9,8 @@ use super::*;
 
 #[derive(Clone, Debug)]
 pub enum Op {
-    Post { date: Date, description: String, postings: Vec<Posting> },
+    /// `link`: with an agreement and no partner, its party, if it has one.
+    Post { date: Date, description: String, postings: Vec<Posting>, link: Link },
     /// `of`: the bill, or an agreement's version, it is the document of.
     File { sha256: Hash, date: Date, name: String, ext: String, of: Option<Of> },
     Unfile { sha256: Hash },
@@ -101,7 +102,12 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
     let about = |id: EntryId| m.entry(id).map(|e| e.description.clone()).ok_or(format!("no entry has the id {id}"));
     let entry = |date: Date, description: String, kind| Entry { date, description, kind };
     match op.clone() {
-        Op::Post { date, description, postings } => n.entries.push(entry(date, description, Kind::Plain(postings))),
+        Op::Post { date, description, postings, mut link } => {
+            if let (None, Some([p])) = (&link.partner, link.agreement.as_ref().and_then(|a| m.agreements.get(a)).map(|a| &a.parties[..])) {
+                link.partner = Some(p.clone());
+            }
+            n.entries.push(entry(date, description, Kind::Plain(postings, link)))
+        }
         Op::File { sha256, date, name, ext, of } => {
             if let Some(d) = m.documents.get(&sha256) {
                 let booked = match &d.of {
@@ -298,7 +304,7 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
                 .flat_map(|((a, c), q)| [Posting::new(&new(&a), q, &c), Posting::new(&a, -q, &c)])
                 .collect();
             if !postings.is_empty() {
-                n.entries.push(entry(date, format!("Move {from} to {to}"), Kind::Plain(postings)));
+                n.entries.push(entry(date, format!("Move {from} to {to}"), Kind::Plain(postings, Link::default())));
             }
             let c = &mut n.config;
             let mut named: Vec<&mut Account> = vec![&mut c.invoice.receivable, &mut c.invoice.income];
@@ -771,7 +777,7 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
                 of: Subject::Field("number"),
             });
         } else if let Some(id) = (1..=m.entries.len()).find(|&id| !again && owes_same(id) && near(m.entries[id - 1].date)) {
-            no!("N8", "{}, dated {} owes the same, {q} {}, on {}; to book another like it, say it is another", name(m, id), m.entries[id - 1].date, new.owed.commodity, new.account);
+            no!("N8", "{}, dated {}, owes the same, {q} {}, on {}; to book another like it, say it is another", name(m, id), m.entries[id - 1].date, new.owed.commodity, new.account);
         }
     }
     // What was issued keeps its version: no version takes effect on or

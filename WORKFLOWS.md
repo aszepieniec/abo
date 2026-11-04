@@ -569,6 +569,50 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 ---
 
+## Partners and agreements, second CLI and web runs of 2026-11-04: found and fixed
+
+Section 6 again (S27 to S31), after schedules were taken out, the signed
+copy was put first on the forms and the invoice template made optional.
+Both agents finished; both copies of the books passed `abo check`, with no
+file edited by hand. Fixed, each with a test:
+
+- A payment without a bill named no one: cleaning paid from the bank left
+  Clean & Co's page empty. An entry takes a partner and an agreement
+  (**Book an entry**, `abo post --partner --agreement`), tagged as bills
+  and invoices are, and listed on the partner's page and under **Entries
+  about it** on the agreement's. With an agreement alone, its party is the
+  partner. It is a link only: nothing falls due by it.
+- A supplier's or an employee's agreement offered **Invoice ...** and
+  **Invoices under it**: shown only for an agreement with an invoice
+  template, or invoices under it. Employees are not offered **Invoice
+  them**, nor listed under a bill's **From** or an invoice's **Partner**.
+- An employee whose agreements all end reads **Employee until <day>**,
+  saying they are listed as former from the day after.
+- "End it otherwise than its terms say" reads **Terminate it, or replace it
+  by another**, saying when to amend instead; **Replaced by** offers only
+  active agreements with a shared party. `terminate` and `subsume` take
+  `--until`, as `add` and `amend` do (`--on` still works).
+- "no signed copy" names the version that lacks one.
+- `abo agreement show` says its last day once and which version an invoice
+  dated today starts from; CLI help no longer names the web's Issue again.
+- `--signed` left out says the copy is dated `--from`.
+- The partner page has **Book a bill** and **Book an entry**; a bill's
+  issuer defaults to its partner; **Issue again** says which invoice it
+  was filled in from; the duplicate-bill refusal links to the bill; the
+  bill form's postings hint says to write the line crediting what is owed.
+- N8's third message lacked a comma; the partner form says "Their tax
+  number", as the invoice form does.
+- Demo: the retainer's template line reads "Retainer"; Sam's salaries are
+  entries about their agreement.
+
+Reported and left as decided:
+- A contract's terms (250 EUR a month) have no field: the signed copy holds
+  them, and the model holds no schedule.
+- October's cleaning booked in November: dating or accruing it is the
+  bookkeeper's.
+- Preview and Download "did nothing": a new tab and a download, which the
+  agent's browser tool does not show.
+
 ## Partners and agreements, CLI and web runs of 2026-11-04: found and fixed
 
 One agent on the CLI and one in the browser did section 6 of SCENARIOS.md

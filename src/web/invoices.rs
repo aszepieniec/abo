@@ -68,6 +68,10 @@ pub(super) async fn invoice_form(Books(s): Books, Query(q): Query<Fields>) -> Re
                 f.insert("period_to".into(), p.to.to_string());
             }
             f.insert("note".into(), [replaces, c.note.clone()].into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" "));
+            // Said on the form, not sent with it.
+            if again.is_some() {
+                f.insert("like".into(), n.clone());
+            }
             if c.commodity != s.books.config.company.currency {
                 f.insert("currency".into(), c.commodity.clone());
             }
@@ -291,7 +295,8 @@ pub(super) fn invoice_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>)
     // Under an agreement, to one of its parties.
     let parties: Vec<&String> = match s.books.agreements.get(&agreement) {
         Some(a) => s.books.partners.keys().filter(|p| a.parties.contains(p)).collect(),
-        None => s.books.partners.keys().collect(),
+        // Employees are not invoiced: left off, unless chosen.
+        None => s.books.partners.iter().filter(|(id, p)| !p.employee || get("partner") == **id).map(|(id, _)| id).collect(),
     };
     html! {
         h1 { "Issue an invoice" }
@@ -302,6 +307,7 @@ pub(super) fn invoice_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>)
             @for k in ["agreement", "due_days"] { @if !get(k).is_empty() { input type="hidden" name=(k) value=(get(k)); } }
             div.box {
                 div.box-header { (icon("outbox")) "Invoice " (next)
+                    @if !get("like").is_empty() { span.muted.small { " · like " (get("like")) ", filled in from it" } }
                     @if !agreement.is_empty() { span.spacer.muted.small { "Under " a href={"/agreement/" (enc(&agreement))} { (agreement) } } } }
                 div.box-body {
                     @if !parties.is_empty() {

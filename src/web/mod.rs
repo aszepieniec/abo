@@ -279,7 +279,11 @@ fn hint(v: &model::Violation) -> Option<Markup> {
         ("I-B2", _) => html! { "Add a line crediting what is owed, such as " code { "Liabilities:Payable=-440.00" } "." },
         ("I-S3", _) => html! { "Tick each movement it shows: a statement, those it lists; a count, every one up to its day. What it shows and the books lack, book first under " a href="/post" { "Entry" } ": a fee, say, or for a count the difference, as cash over or short." },
         ("N7", Subject::Account(_)) => html! { "Date it after the statement, or take the statement out on " a href="/reconcile" { "Reconcile" } " first." },
-        ("N8", Subject::Field("number")) => return None,
+        // ponytail: the bill read back from the message, which names it first.
+        ("N8", Subject::Field("number")) => {
+            let id = v.what.strip_prefix("bill ").and_then(|r| r.split(' ').next()?.parse::<usize>().ok());
+            html! { @if let Some(id) = id { "It is booked already: " a href={"/entry/" (id)} { "bill " (id) } ". " } "If this is a different bill and the number was mistyped, correct the number." }
+        }
         ("N8", _) => html! { "If it is another bill just like it, tick " em { "Another just like one booked already" } "." },
         ("N9", _) => html! { "To move it to the period it belongs to, book two entries under " a href="/post" { "Entry" } ", through an account between, such as " code { "Liabilities:Accrued" } " (declared first): one on the day it belongs to, one on the day it was booked, each the other's opposite. If the statement was wrong, take it out on " a href="/reconcile" { "Reconcile" } " first." },
         _ => return None,

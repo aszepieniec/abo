@@ -203,7 +203,10 @@ fn entry(m: &Books, id: EntryId, e: &Entry, f: &mut Files) -> String {
     // Derived, for hledger and a person reading: `tag:partner=acme`.
     let partner = m.partner_of(id).cloned();
     match &e.kind {
-        Kind::Plain(_) => {}
+        Kind::Plain(_, link) => {
+            tags.extend(link.agreement.clone().map(|a| ("agreement", a)));
+            tags.extend(link.partner.clone().map(|p| ("partner", p)));
+        }
         Kind::Bill(_, more) => {
             tags.push(("bill", String::new()));
             if !more.number.is_empty() {
@@ -463,7 +466,6 @@ fn parse_block(
         names[own.len()..].iter().all(|n| rest.any(|t| t == n))
     };
     let kind = match names[..] {
-        ["id"] => Kind::Plain(postings),
         _ if may(&["id", "bill"], &["number", "due", "partner"]) => {
             let due = tag("due").map(date).transpose()?;
             Kind::Bill(postings, BillMore { number: tag("number").unwrap_or_default().to_string(), due, partner: tag("partner").map(String::from) })
@@ -478,6 +480,7 @@ fn parse_block(
             let file: CreditFile = serde_json::from_str(read_json(tag("invoice").unwrap())?).map_err(|e| e.to_string())?;
             Kind::CreditNote { of: id(tag("credits").unwrap())?, note: file.note, pdf: file.pdf }
         }
+        _ if may(&["id"], &["agreement", "partner"]) => Kind::Plain(postings, Link { partner: tag("partner").map(String::from), agreement: tag("agreement").map(String::from) }),
         [] => return Err("an entry without an `; id:` line: abo writes an id, and what kind of entry it is, under every entry's date line".into()),
         _ => return Err(format!("the tags {:?} say no kind of entry", tags.iter().map(|(k, _)| *k).collect::<Vec<_>>())),
     };
