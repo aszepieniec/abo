@@ -108,7 +108,10 @@ fn partner_fields(b: &Model, id: &str) -> Fields {
 
 fn partner_page(s: &Store, p: &views::PartnerRow, f: &Fields, error: Option<&anyhow::Error>) -> Markup {
     html! {
-        h1 { (p.name) " " span.muted.small { (p.id) } }
+        div.head {
+            h1 { (p.name) " " span.muted.small { (p.id) } }
+            @if may_change() { div.actions { a.btn href={"/invoice?partner=" (enc(&p.id))} { (icon("outbox")) " Invoice them" } } }
+        }
         @if let Some(e) = error { (refused(e)) }
         div.tiles {
             div.tile { span.muted.small { "Owes" } span.figure { @if p.owed_by.is_empty() { "nothing" } @else { (money(&p.owed_by)) } } }
@@ -134,11 +137,6 @@ fn partner_page(s: &Store, p: &views::PartnerRow, f: &Fields, error: Option<&any
                         tr.row-link { td.date { (e.date) } td { a.stretch href={"/entry/" (e.entry)} { (e.what) } } td { (e.description) } }
                     } }
                 }
-            }
-        }
-        @if may_change() {
-            div.actions {
-                a.btn href={"/invoice?partner=" (enc(&p.id))} { (icon("outbox")) " Invoice them" }
             }
         }
         (partner_form(s, Some(&p.id), f, None))

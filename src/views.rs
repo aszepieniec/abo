@@ -344,7 +344,7 @@ pub fn partners(b: &Books, today: model::Date) -> Vec<PartnerRow> {
             let entries = (1..=b.entries.len())
                 .rev()
                 .filter(|&e| matches!(b.entries[e - 1].kind, model::Kind::Bill(..) | model::Kind::Invoice { .. }) && b.partner_of(e) == Some(id))
-                .map(|e| PartnerEntry { entry: e, date: b.entries[e - 1].date.to_string(), what: model::name(b, e), description: b.entries[e - 1].description.clone() })
+                .map(|e| PartnerEntry { entry: e, date: b.entries[e - 1].date.to_string(), what: b.number_text(e).map_or(format!("bill {e}"), |n| format!("invoice {n}")), description: b.entries[e - 1].description.clone() })
                 .collect();
             PartnerRow {
                 id: id.clone(),
