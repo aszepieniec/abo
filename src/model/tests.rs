@@ -2550,17 +2550,3 @@ fn partners_owe_what_their_debts_have_open(#[strategy(plan())] plan: Vec<Step>) 
         prop_assert_eq!(m.owed(p), (to, by), "partner {}", p);
     }
 }
-
-/// An operation the forms do not make yet: of partners and agreements,
-/// which they are being taught. ponytail: the web's properties pass these
-/// over until then.
-pub(crate) fn not_in_the_forms_yet(op: &Op) -> bool {
-    match op {
-        Op::PartnerAdd { .. } | Op::PartnerEdit { .. } | Op::PartnerRemove { .. } | Op::AgreementAdd { .. } | Op::Amend { .. } | Op::AgreementEnd { .. } | Op::AgreementRemove { .. } => true,
-        Op::File { of, .. } => matches!(of, Some(Of::Version(..))),
-        Op::Post { under, .. } => under.is_some(),
-        Op::Bill { more, .. } => more.partner.is_some(),
-        Op::Invoice { more, .. } => more.to.is_some() || more.period.is_some(),
-        _ => false,
-    }
-}

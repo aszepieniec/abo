@@ -16,8 +16,8 @@ Status: M0-M4 built — `abo init`, `post`, `file`, `bill`, `invoice`,
 `vat`, `balance`, `register`, `log`, `serve`, `demo`. M5: `abo serve` serves
 one company; users come from a gateway, in front of it.
 M6 built: each company installs as an app; not yet tried on a real phone
-(WORKFLOWS.md G1). Partners and agreements (MODEL.md §2.9): in the model
-and on the command line, `partner` and `agreement`; the pages to come.
+(WORKFLOWS.md G1). Partners and agreements (MODEL.md §2.9): `partner`,
+`agreement`, and their pages under Partners.
 
 ---
 
@@ -143,9 +143,7 @@ The tests are run with `cargo test --no-fail-fast`: without the flag cargo
 stops at the first test binary that fails and never runs `tests/`. Two in
 `src/model/tests.rs`, `every_rule_is_checked` and `every_guarantee_is_tested`,
 hold MODEL.md and the code to each other: a rule or a guarantee written
-ahead of the code fails them until it is built. The web's properties pass
-over the operations the forms do not make yet, as `not_in_the_forms_yet`
-lists them: partners and agreements, until the pages are built.
+ahead of the code fails them until it is built.
 
 ### Three invariants that keep future work cheap
 

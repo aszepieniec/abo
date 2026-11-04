@@ -1028,9 +1028,14 @@ fn a_viewer_is_offered_no_change() {
     let scan = base.join("scan.pdf");
     std::fs::write(&scan, b"%PDF-1.4\n% a bill\n%%EOF\n").unwrap();
     abo(&["file", "--date", "2026-03-03", "--issuer", "Acme", &scan.to_string_lossy()]);
+    abo(&["partner", "add", "acme", "--name", "Acme GmbH"]);
+    abo(&["agreement", "add", "hosting", "--partner", "acme", "--from", "2026-01-01", "--invoice", "acme", "--in-advance", "--draft", "items=1|110|Hosting"]);
+    let contract = base.join("contract.pdf");
+    std::fs::write(&contract, b"%PDF-1.4\n% a contract\n%%EOF\n").unwrap();
+    abo(&["file", "--date", "2026-01-01", "--issuer", "Acme", "--for", "hosting/1", &contract.to_string_lossy()]);
     let s = serve(&books, &base);
 
-    let forms = ["/post", "/invoice", "/pay", "/bill", "/company/payment"];
+    let forms = ["/post", "/invoice", "/pay", "/bill", "/company/payment", "/partners/new", "/agreements/new"];
     let crawl = |who: &str| -> (usize, usize, usize) {
         let (mut todo, mut seen) = (vec!["/".to_string()], std::collections::BTreeSet::new());
         let (mut posts, mut to_forms) = (0, 0);
@@ -1066,4 +1071,89 @@ fn a_viewer_is_offered_no_change() {
     }
     drop(s);
     let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Partners and agreements through their pages: added, a period due shown
+/// and done from its draft, amended, ended, a contract filed. Each change
+/// logged as the command that, run in a terminal on the books as they were,
+/// makes the same files.
+#[test]
+fn partners_and_agreements_through_the_pages() {
+    let base = std::env::temp_dir().join(format!("abo-web-partners-{}", std::process::id()));
+    let (books, s) = company_books(&base);
+    let replay = base.join("replay");
+    assert!(Command::new("cp").arg("-r").arg(&books).arg(&replay).status().unwrap().success());
+    let read = |d: &Path, f: &str| std::fs::read_to_string(d.join(f)).unwrap_or_default();
+    // What the form did, done again in a terminal from its log line.
+    let again = |files: &[&str]| {
+        let argv = last_argv(&books);
+        let o = Command::new(env!("CARGO_BIN_EXE_abo")).args(&argv).current_dir(&replay).env("HOME", &base).env("XDG_CONFIG_HOME", &base).stdin(Stdio::null()).output().unwrap();
+        assert!(o.status.success(), "{argv:?}: {}", String::from_utf8_lossy(&o.stderr));
+        for f in files {
+            assert_eq!(read(&replay, f), read(&books, f), "{argv:?} does not make the change the form made to {f}");
+        }
+    };
+    let post = |path: &str, form: &[(&str, &str)]| {
+        let (status, _, page) = http(&s, "POST", path, form);
+        assert_eq!(status, 303, "{path}: {page}");
+    };
+
+    post("/partners/new", &[("token", "a1"), ("id", "acme"), ("name", "Acme GmbH"), ("address", "Hauptstrasse 1\r\n10115 Berlin"), ("tax_id", "DE123456789")]);
+    again(&["partners.toml"]);
+    post("/partner/acme", &[("token", "a2"), ("name", "Acme GmbH"), ("address", "Neue Strasse 9\r\n10117 Berlin"), ("tax_id", "DE123456789")]);
+    again(&["partners.toml"]);
+    let (_, _, page) = http(&s, "GET", "/partners", &[]);
+    assert!(page.contains("Acme GmbH") && page.contains("href=\"/partner/acme\""), "{page}");
+
+    let version = [("from", "2026-01-01"), ("until", ""), ("does", "invoice"), ("party", "acme"), ("every", "1"), ("billed", "in-advance"), ("draft-items", "1|110|Hosting"), ("draft-reference", "PO 4471")];
+    let add: Vec<(&str, &str)> = [("token", "a3"), ("id", "hosting"), ("party-acme", "on")].into_iter().chain(version).collect();
+    post("/agreements/new", &add);
+    again(&["contracts/hosting.toml"]);
+
+    // Due on the invoices page; its form filled from the draft.
+    let (_, _, page) = http(&s, "GET", "/invoices", &[]);
+    assert!(page.contains("Due to invoice") && page.contains("/invoice?agreement=hosting&amp;period=2026-01-01..2026-01-31"), "{page}");
+    let (_, _, page) = http(&s, "GET", "/invoice?agreement=hosting&period=2026-01-01..2026-01-31", &[]);
+    assert!(page.contains("1|110|Hosting") && page.contains("PO 4471") && page.contains("name=\"agreement\" value=\"hosting\""), "{page}");
+    post("/invoice", &[("token", "a4"), ("agreement", "hosting"), ("period", "2026-01-01..2026-01-31"), ("to", ""), ("items", "1|110|Hosting"), ("reference", "PO 4471"), ("date", "2026-01-05")]);
+    let journal = read(&books, "journal/2026.journal");
+    assert!(journal.contains("; partner: acme"), "{journal}");
+    let (_, _, page) = http(&s, "GET", "/agreement/hosting", &[]);
+    assert!(page.contains("invoice 2026-0001"), "{page}");
+    // Issued as the terminal would issue it: the customer copied, and kept.
+    let argv = last_argv(&books);
+    assert!(argv.contains(&"--agreement=hosting".to_string()) && argv.contains(&"--to=Neue Strasse 9".to_string()) && argv.contains(&"--reference=PO 4471".to_string()), "{argv:?}");
+
+    // Amended after what is done; before it, refused, saying why.
+    let mut amend: Vec<(&str, &str)> = version.into_iter().map(|(k, v)| if k == "from" { (k, "2026-01-15") } else { (k, v) }).collect();
+    amend.push(("token", "a5"));
+    let (status, _, page) = http(&s, "POST", "/agreement/hosting/amend", &amend);
+    assert!(status == 422 && page.contains("a new version takes effect after 2026-01-31"), "{status} {page}");
+    let amend: Vec<(&str, &str)> = version.into_iter().map(|(k, v)| match k { "from" => (k, "2026-02-01"), "draft-items" => (k, "1|120|Hosting"), _ => (k, v) }).chain([("token", "a6")]).collect();
+    // The terminal's books lack the invoice the page issued; issue it there too.
+    let o = Command::new(env!("CARGO_BIN_EXE_abo")).args(&argv).current_dir(&replay).env("HOME", &base).env("XDG_CONFIG_HOME", &base).stdin(Stdio::null()).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    post("/agreement/hosting/amend", &amend);
+    again(&["contracts/hosting.toml"]);
+
+    let pdf = b"%PDF-1.4\n% the contract\n%%EOF\n";
+    let body = multipart(&[("token", "a7"), ("version", "1"), ("issuer", "acme"), ("date", "2025-12-20")], Some(pdf));
+    let (status, _, page) = send(&s, "POST", "/agreement/hosting/file", "multipart/form-data; boundary=b0undary", &body);
+    assert_eq!(status, 303, "{page}");
+    let index = read(&books, "contracts/index");
+    assert!(index.contains(" hosting/1\n"), "{index}");
+    let (status, _, _) = http(&s, "GET", &format!("/{}", index.split(' ').nth(1).unwrap()), &[]);
+    assert_eq!(status, 200);
+
+    post("/agreement/hosting/end", &[("token", "a8"), ("on", "2026-06-30"), ("by", "")]);
+    again(&["contracts/hosting.toml"]);
+    let (_, _, page) = http(&s, "GET", "/agreement/hosting", &[]);
+    assert!(page.contains("Terminated on 2026-06-30") && !page.contains("/agreement/hosting/amend"), "{page}");
+
+    // Named by an invoice and an agreement, acme is not removed.
+    let (status, _, page) = http(&s, "POST", "/partner/acme/remove", &[("token", "a9")]);
+    assert!(status == 422 && page.contains("a partner is removed only while nothing names them"), "{status} {page}");
+
+    drop(s);
+    std::fs::remove_dir_all(&base).unwrap();
 }

@@ -53,6 +53,8 @@ pub(super) async fn booking(Books(s): Books, Path(id): Path<String>, Query(q): Q
             p.muted.small {
                 (e.date) " · " @if is_bill { "bill " } @else { "entry " } (id)
                 @if let Some(n) = &number { " · " @if credit_note { "credit note " } @else { "invoice " } (n) }
+                @if let Some(p) = b.partner_of(id) { " · " a href={"/partner/" (enc(p))} { (p) } }
+                @if let Some((a, p)) = b.made_for(id) { " · for " (p.from) " – " (p.to) " of " a href={"/agreement/" (enc(a))} { (a) } }
             }
             @if let Kind::Invoice { content, .. } = &e.kind {
                 // Said alike whenever the page is opened: the rate and why, and
@@ -120,6 +122,9 @@ pub(super) async fn booking(Books(s): Books, Path(id): Path<String>, Query(q): Q
                     } @else {
                         button type="button" disabled title="The PDF is not in the books" { (icon("doc")) " PDF" }
                     }
+                }
+                @if invoice && may_change() {
+                    a.btn href={"/invoice?again=" (number.clone().unwrap_or_default())} { (icon("plus")) " Issue again" }
                 }
                 @if !may_change() {
                 } @else if invoice {
@@ -203,16 +208,15 @@ pub(super) async fn fields(mut mp: Multipart) -> (Fields, Option<Vec<u8>>) {
     (f, doc)
 }
 
-/// File `bytes` as the document of `issuer` dated `date`, for `bill` when it
-/// is booked already: the operation and the file.
-pub(super) fn filing(bytes: Vec<u8>, date: model::Date, issuer: &str, bill: Option<usize>) -> Result<(Op, String, (String, Vec<u8>))> {
+/// File `bytes` as the document of `issuer` dated `date`, of `of`: a bill
+/// booked already, or an agreement's version. The operation and the file.
+pub(super) fn filing(bytes: Vec<u8>, date: model::Date, issuer: &str, of: Option<model::Of>) -> Result<(Op, String, (String, Vec<u8>))> {
     let (ext, _) = store::sniff(&bytes)?;
     let name = crate::repo::slug(issuer);
     if name.is_empty() {
         bail!("an issuer is needed, with letters or digits to name the file after");
     }
     let sha256 = store::sha256(&bytes);
-    let of = bill.map(model::Of::Bill);
     let path = model::Document { date, name: name.clone(), ext: ext.into(), of: of.clone() }.path(&sha256);
     Ok((Op::File { sha256, date, name, ext: ext.into(), of }, path.clone(), (path, bytes)))
 }
@@ -228,7 +232,7 @@ pub(super) async fn entry_file(Books(mut s): Books, Path(id): Path<String>, mp: 
         let e = s.books.entry(id).ok_or_else(|| input::not_found(format!("there is no entry {id}")))?;
         // Named for its issuer; not given, as the description begins.
         let issuer = f.get("issuer").map(|i| i.trim()).filter(|i| !i.is_empty()).map(String::from).unwrap_or_else(|| e.description.split(',').next().unwrap_or_default().to_string());
-        let (op, _, file) = filing(bytes, e.date, &issuer, Some(id))?;
+        let (op, _, file) = filing(bytes, e.date, &issuer, Some(model::Of::Bill(id)))?;
         change(&mut s, &op, &[file], &to)
     });
     match r {
@@ -365,8 +369,19 @@ pub(super) async fn revert(Books(mut s): Books, Path(id): Path<String>, Form(f):
     }
 }
 
-pub(super) async fn post_form(Books(s): Books) -> Response {
-    or_error(&s, "Book an entry", || Ok(form(&s, &Fields::new(), None)))
+/// `?agreement=<id>&period=<from>..<to>`: for that period, filled in from
+/// the draft of the version in force then.
+pub(super) async fn post_form(Books(s): Books, Query(q): Query<Fields>) -> Response {
+    or_error(&s, "Book an entry", || {
+        let mut f = Fields::new();
+        if let (Some(a), Some(p)) = (q.get("agreement"), q.get("period")) {
+            let period = input::period(p)?;
+            f.extend(views::draft(&s.books, a, &period));
+            f.insert("agreement".into(), a.clone());
+            f.insert("period".into(), format!("{}..{}", period.from, period.to));
+        }
+        Ok(form(&s, &f, None))
+    })
 }
 
 /// A form's postings, one per line.
@@ -390,7 +405,8 @@ pub(super) async fn post_submit(Books(mut s): Books, Form(f): Form<Fields>) -> R
     let r = once(Some(&root), &get("token"), || {
         let date = input::day(Some(&get("date")))?;
         let lines = postings(&s.books, &get("postings"))?;
-        change(&mut s, &Op::Post { date, description: get("description"), postings: lines, under: None }, &[], "/")
+        let under = input::made_for(Some(get("agreement")).filter(|a| !a.is_empty()).as_deref(), Some(get("period")).filter(|p| !p.is_empty()).as_deref())?;
+        change(&mut s, &Op::Post { date, description: get("description"), postings: lines, under }, &[], "/")
     });
     match r {
         Ok(to) => Redirect::to(&to).into_response(),
@@ -436,7 +452,11 @@ pub(super) fn form(s: &Store, f: &Fields, error: Option<&anyhow::Error>) -> Mark
         @if let Some(e) = error { (refused(e)) }
         form method="post" action="/post" {
             (token())
+            @for k in ["agreement", "period"] { @if !get(k).is_empty() { input type="hidden" name=(k) value=(get(k)); } }
             div.box {
+                @if !get("agreement").is_empty() {
+                    div.box-header { (icon("clock")) "For " (get("period").replace("..", " – ")) " of " a href={"/agreement/" (enc(&get("agreement")))} { (get("agreement")) } }
+                }
                 div.box-body {
                     label.field { "Date" input type="date" name="date" required value=(if get("date").is_empty() { today } else { get("date") }); }
                     label.field { "Description" input type="text" name="description" required value=(get("description")); }

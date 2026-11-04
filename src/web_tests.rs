@@ -151,13 +151,17 @@ fn request(op: &Op, m: &Books, today: Date) -> Option<(Post, Op)> {
     let t = |s: &str| s.trim().to_string();
     let one_line = |s: &str| !s.contains(['\n', '\r', '\0']);
     Some(match op.clone() {
-        Op::Post { date, description, postings, .. } => {
-            if !one_line(&description) || postings.iter().any(|p| !one_line(&posting(p))) {
+        Op::Post { date, description, postings, under } => {
+            if !one_line(&description) || postings.iter().any(|p| !one_line(&posting(p))) || under.as_ref().is_some_and(|f| !one_line(&f.agreement) || f.agreement.trim().is_empty()) {
                 return None;
             }
             let lines = postings.iter().map(posting).collect::<Vec<_>>().join("\n");
-            let p = urlencoded("/post", vec![("date", date.to_string()), ("description", description.clone()), ("postings", lines)]);
-            (p, Op::Post { date, description: t(&description), postings, under: None })
+            let mut fields = vec![("date", date.to_string()), ("description", description.clone()), ("postings", lines)];
+            if let Some(f) = &under {
+                fields.extend([("agreement", f.agreement.clone()), ("period", format!("{}..{}", f.period.from, f.period.to))]);
+            }
+            let under = under.map(|f| model::For { agreement: t(&f.agreement), ..f });
+            (urlencoded("/post", fields), Op::Post { date, description: t(&description), postings, under })
         }
         Op::Bill { date, description, postings, document, again, more } => {
             if !one_line(&description) || postings.iter().any(|p| !one_line(&posting(p))) || !one_line(&more.number) {
@@ -169,6 +173,12 @@ fn request(op: &Op, m: &Books, today: Date) -> Option<(Post, Op)> {
             }
             fields.push(("number", more.number.clone()));
             fields.push(("due", more.due.map(|d| d.to_string()).unwrap_or_default()));
+            if let Some(p) = &more.partner {
+                if !one_line(p) || p.trim().is_empty() {
+                    return None;
+                }
+                fields.push(("partner", p.clone()));
+            }
             let date = match &document {
                 // The form books a filed document dated as it is.
                 Some(h) => {
@@ -179,7 +189,7 @@ fn request(op: &Op, m: &Books, today: Date) -> Option<(Post, Op)> {
                 None => date,
             };
             let (ctype, body) = multipart(&fields, None);
-            (Post { path: "/bill".into(), ctype, body }, Op::Bill { date, description: t(&description), postings, document, again, more: model::BillMore { number: t(&more.number), due: more.due, partner: None } })
+            (Post { path: "/bill".into(), ctype, body }, Op::Bill { date, description: t(&description), postings, document, again, more: model::BillMore { number: t(&more.number), due: more.due, partner: more.partner.as_deref().map(t) } })
         }
         Op::Unfile { sha256 } => {
             let file = m.documents.get(&sha256).map_or(sha256.clone(), |d| d.path(&sha256));
@@ -189,6 +199,22 @@ fn request(op: &Op, m: &Books, today: Date) -> Option<(Post, Op)> {
             let texts = [&reason, &reference, &note, &commodity];
             if texts.iter().any(|x| !one_line(x)) || lines.iter().any(|l| !one_line(&l.description)) || customer.contains(['\r', '\0']) {
                 return None;
+            }
+            // To a partner, or under an agreement for a period, as the form
+            // sends them; a period alone, as two days.
+            let mut whom: Vec<(&str, String)> = match &more.to {
+                Some(model::To::Partner(p)) => vec![("partner", p.clone())],
+                Some(model::To::Agreement(a)) => vec![("agreement", a.clone())],
+                None => vec![],
+            };
+            if whom.iter().any(|(_, v)| !one_line(v) || v.trim().is_empty()) {
+                return None;
+            }
+            match (&more.to, more.period) {
+                (Some(model::To::Agreement(_)), Some(p)) => whom.push(("period", format!("{}..{}", p.from, p.to))),
+                (Some(model::To::Agreement(_)), None) => return None,
+                (_, Some(p)) => whom.extend([("period_from", p.from.to_string()), ("period_to", p.to.to_string())]),
+                _ => {}
             }
             let items = lines.iter().map(|l| format!("{}|{}|{}", l.quantity, l.unit_price, l.description)).collect::<Vec<_>>().join("\n");
             let fields = vec![
@@ -201,6 +227,11 @@ fn request(op: &Op, m: &Books, today: Date) -> Option<(Post, Op)> {
                 ("note", note.clone()),
                 ("vat_reason", reason.clone()),
             ];
+            let fields = [fields, whom].concat();
+            let more = model::InvoiceMore { to: more.to.map(|x| match x {
+                model::To::Partner(p) => model::To::Partner(t(&p)),
+                model::To::Agreement(a) => model::To::Agreement(t(&a)),
+            }), ..more };
             // As the form reads its lines: each trimmed, a blank one none.
             let lines = lines.into_iter().filter(|l| !format!("{}|{}|{}", l.quantity, l.unit_price, l.description).trim().is_empty()).map(|l| model::Line { description: l.description.trim_end().to_string(), ..l }).collect();
             (urlencoded("/invoice", fields), Op::Invoice { date, customer, commodity: t(&commodity), lines, rate, reason: t(&reason), reference: t(&reference), note: t(&note), pdf, more })
@@ -250,8 +281,111 @@ fn request(op: &Op, m: &Books, today: Date) -> Option<(Post, Op)> {
         }
         Op::OptionRemove { id } => (urlencoded("/company/payment/remove", vec![("id", id.clone())]), Op::OptionRemove { id }),
         Op::PriceRemove { of, date } if !of.contains(' ') && one_line(&of) => (urlencoded("/declarations", vec![("action", "remove-price".into()), ("value", format!("{date} {of}"))]), Op::PriceRemove { of, date }),
+        // The partner form: the name, then the address; every field sent.
+        Op::PartnerAdd { id, partner } => {
+            let (name, address) = partner.lines.split_once('\n').unwrap_or((&partner.lines, ""));
+            if !one_line(&id) || !one_line(name) || address.contains(['\r', '\0']) || !one_line(&partner.tax_id) {
+                return None;
+            }
+            let mut fields = vec![("id", id.clone()), ("name", name.to_string()), ("address", address.to_string()), ("tax_id", partner.tax_id.clone())];
+            if partner.employee {
+                fields.push(("employee", "on".into()));
+            }
+            (urlencoded("/partners/new", fields), Op::PartnerAdd { id: t(&id), partner: model::Partner { lines: lines_sent(name, address), ..partner } })
+        }
+        Op::PartnerEdit { id, lines, tax_id, employee } => {
+            let now = m.partners.get(&id)?;
+            let lines = lines.unwrap_or(now.lines.clone());
+            let (tax_id, employee) = (tax_id.unwrap_or(now.tax_id.clone()), employee.unwrap_or(now.employee));
+            let (name, address) = lines.split_once('\n').unwrap_or((&lines, ""));
+            if !one_line(name) || address.contains(['\r', '\0']) || !one_line(&tax_id) {
+                return None;
+            }
+            let mut fields = vec![("name", name.to_string()), ("address", address.to_string()), ("tax_id", tax_id.clone())];
+            if employee {
+                fields.push(("employee", "on".into()));
+            }
+            let lines = lines_sent(name, address);
+            (urlencoded(&format!("/partner/{}", enc(&id)), fields), Op::PartnerEdit { id, lines: Some(lines), tax_id: Some(t(&tax_id)), employee: Some(employee) })
+        }
+        Op::PartnerRemove { id } => (urlencoded(&format!("/partner/{}/remove", enc(&id)), vec![]), Op::PartnerRemove { id }),
+        // Parties are ticked, so the form sends each once, in the order of their ids.
+        Op::AgreementAdd { id, parties, version } => {
+            let mut sorted = parties.clone();
+            sorted.sort();
+            sorted.dedup();
+            if sorted != parties || !one_line(&id) || parties.iter().any(|p| !one_line(p)) {
+                return None;
+            }
+            let ticks: Vec<(String, String)> = parties.iter().map(|p| (format!("party-{p}"), "on".into())).collect();
+            let (mut fields, version) = version_sent(&version)?;
+            fields.push(("id", id.clone()));
+            fields.extend(ticks.iter().map(|(k, v)| (k.as_str(), v.clone())));
+            (urlencoded("/agreements/new", fields), Op::AgreementAdd { id: t(&id), parties, version })
+        }
+        Op::Amend { id, version } => {
+            let (fields, version) = version_sent(&version)?;
+            (urlencoded(&format!("/agreement/{}/amend", enc(&id)), fields), Op::Amend { id, version })
+        }
+        Op::AgreementEnd { id, status } => {
+            let (on, by) = match &status {
+                model::AgreementStatus::Terminated { on } => (*on, String::new()),
+                model::AgreementStatus::Subsumed { by, on } if one_line(by) && !by.trim().is_empty() => (*on, by.clone()),
+                _ => return None,
+            };
+            let status = match status {
+                model::AgreementStatus::Subsumed { by, on } => model::AgreementStatus::Subsumed { by: t(&by), on },
+                s => s,
+            };
+            (urlencoded(&format!("/agreement/{}/end", enc(&id)), vec![("on", on.to_string()), ("by", by)]), Op::AgreementEnd { id, status })
+        }
+        Op::AgreementRemove { id } => (urlencoded(&format!("/agreement/{}/remove", enc(&id)), vec![]), Op::AgreementRemove { id }),
         _ => return None,
     })
+}
+
+/// A partner's lines as the form reads its name and address: each trimmed.
+fn lines_sent(name: &str, address: &str) -> String {
+    [name.trim(), address.trim()].into_iter().filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n")
+}
+
+/// A version as the add and amend forms send it, and the version they
+/// make of it: the web's draft holds its form's fields of the five it asks.
+fn version_sent(v: &model::Version) -> Option<(Vec<(&'static str, String)>, model::Version)> {
+    let mut fields = vec![("from", v.from.to_string()), ("until", v.until.map(|d| d.to_string()).unwrap_or_default())];
+    let Some(s) = &v.schedule else {
+        fields.push(("does", String::new()));
+        return Some((fields, v.clone()));
+    };
+    let web: &[&str] = if s.does == model::Does::Invoice { &["items", "reference", "note"] } else { &["description", "postings"] };
+    if s.draft.keys().any(|k| !web.contains(&k.as_str())) || s.draft.values().any(|x| x.contains(['\r', '\0'])) || !one_line_text(&s.party) || s.party.trim().is_empty() {
+        return None;
+    }
+    let does = match s.does {
+        model::Does::Invoice => "invoice",
+        model::Does::Pay => "pay",
+        model::Does::Receive => "receive",
+    };
+    fields.extend([("does", does.to_string()), ("party", s.party.clone()), ("every", s.every.to_string()), ("billed", if s.billed == model::Billed::InArrears { "in-arrears" } else { "in-advance" }.to_string())]);
+    for k in ["items", "reference", "note", "description", "postings"] {
+        fields.push((k_draft(k), s.draft.get(k).cloned().unwrap_or_default()));
+    }
+    let draft = s.draft.iter().map(|(k, x)| (k.clone(), x.trim().to_string())).filter(|(_, x)| !x.is_empty()).collect();
+    Some((fields, model::Version { schedule: Some(model::Schedule { party: s.party.trim().to_string(), draft, ..s.clone() }), ..v.clone() }))
+}
+
+fn k_draft(k: &str) -> &'static str {
+    match k {
+        "items" => "draft-items",
+        "reference" => "draft-reference",
+        "note" => "draft-note",
+        "description" => "draft-description",
+        _ => "draft-postings",
+    }
+}
+
+fn one_line_text(s: &str) -> bool {
+    !s.contains(['\n', '\r', '\0'])
 }
 
 /// MODEL.md §5 through the forms: a plan posted as the pages post it does
@@ -286,9 +420,6 @@ fn the_web_is_the_model(#[strategy(vec(any::<Step>(), 1..25))] plan: Vec<Step>) 
             prop_assert_eq!(store::text_files(&books).unwrap(), model::render(&now), "after undo");
             continue;
         };
-        if mt::not_in_the_forms_yet(&op) {
-            continue;
-        }
         let Some((post, model_op)) = request(&op, &m, today) else { continue };
         let a = send(server.port, "POST", &post.path, &post.ctype, &post.body, None);
         prop_assert!(matches!(a.status, 200 | 303 | 422), "{} answered {}: {}", post.path, a.status, a.body);

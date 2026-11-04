@@ -11,6 +11,7 @@ mod entries;
 mod forms;
 mod invoices;
 mod opening;
+mod partners;
 mod pay;
 mod reconcile;
 mod reports;
@@ -22,6 +23,7 @@ use declarations::*;
 use entries::*;
 use forms::*;
 use invoices::*;
+use partners::*;
 use pay::*;
 use reconcile::*;
 use reports::*;
@@ -111,6 +113,17 @@ fn company_app(root: PathBuf) -> Router {
         .route("/company/terms", post(terms))
         .route("/company/tax-return", get(tax_return).post(tax_return_submit))
         .route("/bills/{*rest}", get(bill_doc))
+        .route("/partners", get(partners_list))
+        .route("/partners/new", get(partner_new).post(partner_add))
+        .route("/partner/{id}", get(partner_view).post(partner_submit))
+        .route("/partner/{id}/remove", post(partner_remove))
+        .route("/agreements/new", get(agreement_new_form).post(agreement_add))
+        .route("/agreement/{id}", get(agreement_view))
+        .route("/agreement/{id}/amend", post(agreement_amend))
+        .route("/agreement/{id}/end", post(agreement_end))
+        .route("/agreement/{id}/remove", post(agreement_remove))
+        .route("/agreement/{id}/file", post(agreement_file))
+        .route("/contracts/{*rest}", get(contract_doc))
         .route("/manifest.webmanifest", get(manifest))
         .route("/icon-192.png", get(|| async { png(include_bytes!("icon-192.png")) }))
         .route("/icon-512.png", get(|| async { png(include_bytes!("icon-512.png")) }))
@@ -394,6 +407,7 @@ fn page_with(s: &Store, title: &str, body: Markup, with_banner: bool) -> Html<St
         ("/", "book", "Books", "/"),
         ("/bills", "inbox", "Bills", "/bill"),
         ("/invoices", "outbox", "Invoices", "/invoice"),
+        ("/partners", "people", "Partners", "/partner"),
         ("/reconcile", "checks", "Reconcile", "/reconcile"),
         ("/report/pl", "chart", "Reports", "/report"),
         ("/post", "plus", "Entry", "/post"),
@@ -402,7 +416,8 @@ fn page_with(s: &Store, title: &str, body: Markup, with_banner: bool) -> Html<St
         ("/log", "clock", "Log", "/log"),
     ];
     let here = PATH.try_with(String::clone).unwrap_or_default();
-    let current = |section: &str| if section == "/" { here == "/" } else { here.starts_with(section) };
+    // An agreement's pages are under Partners, as DESIGN §7 has it.
+    let current = |section: &str| if section == "/" { here == "/" } else { here.starts_with(section) || (section == "/partner" && here.starts_with("/agreement")) };
     Html(
         html! {
             (DOCTYPE)
@@ -519,7 +534,7 @@ fn view_only(h: &HeaderMap) -> bool {
 /// only look, a page saying so in their place.
 async fn looks_only(axum::extract::State(root): axum::extract::State<Arc<PathBuf>>, req: axum::extract::Request, next: axum::middleware::Next) -> Response {
     let p = req.uri().path();
-    let form = matches!(p, "/post" | "/invoice" | "/pay" | "/bill" | "/company/payment") || (p.starts_with("/invoice/") && p.ends_with("/correct"));
+    let form = matches!(p, "/post" | "/invoice" | "/pay" | "/bill" | "/company/payment" | "/partners/new" | "/agreements/new") || (p.starts_with("/invoice/") && p.ends_with("/correct"));
     if may_change() || !form || !req.method().is_safe() {
         return next.run(req).await;
     }
@@ -768,6 +783,7 @@ fn same_origin(h: &HeaderMap) -> Result<()> {
 fn icon(name: &str) -> Markup {
     let paths: &[&str] = match name {
         "book" => &["M3.5 2.5h9v11h-9z", "M6 2.5v11", "M8 6h3", "M8 9h3"],
+        "people" => &["M8 2.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5", "M3 13.5c0-2.6 2.2-4.2 5-4.2s5 1.6 5 4.2"],
         "inbox" => &["M2 9.5v3a1.5 1.5 0 0 0 1.5 1.5h9a1.5 1.5 0 0 0 1.5-1.5v-3",
                      "M8 2v7.5", "M5 6.5 8 9.5 11 6.5"],
         "outbox" => &["M2 9.5v3a1.5 1.5 0 0 0 1.5 1.5h9a1.5 1.5 0 0 0 1.5-1.5v-3",

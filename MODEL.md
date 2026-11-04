@@ -535,8 +535,8 @@ other (§5.2).
 
 ### 2.9 Partners and agreements
 
-*In the model since 2026-11-04: the state, its rules, guarantees and
-operations. The commands and pages of §5.5 are not built yet.*
+*Built 2026-11-04: the state, its rules, guarantees and operations, and
+the commands and pages of §5.5.*
 
 A **partner** is someone the company invoices or is billed by, pays or is
 paid by, held so that what an invoice prints of them is said once:
@@ -1223,7 +1223,6 @@ browser's **File and book it** is the one such pair: a `file` and the
 
 ### 5.5 Partners and agreements
 
-The commands and pages are not built yet; the operations are (§5).
 Partners and agreements are kept by commands, as declarations are:
 
 ```
@@ -1267,7 +1266,10 @@ partner's address has changed, it issues the same invoice (G-O8).
 In the browser, **Partners** lists each partner with what they owe and are
 owed, their invoices, bills and agreements, the employees apart, each one
 no active agreement pays marked; an agreement's page, its parties, status,
-versions, documents and periods. **Invoices** lists the periods due to
+versions, documents and periods, and its forms: amend, end, file a
+version's document, remove. The web's draft holds the fields the forms ask
+for — lines, reference and note of an invoice, description and postings of
+an entry; the rest are the command line's to set. **Invoices** lists the periods due to
 invoice above the invoices, and the home page those due to pay or receive
 above the entries, each opening its form filled in from its draft and
 period, dated today. Each invoice has **Issue again**, the form filled in from it.

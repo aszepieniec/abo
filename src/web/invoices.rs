@@ -2,11 +2,24 @@
 
 use super::*;
 
-/// `?from=<number>`: filled in as that invoice was, for its correction.
+/// `?from=<number>`: filled in as that invoice was, for its correction;
+/// `?again=<number>`, likewise, for another like it. `?partner=<id>`: to
+/// them. `?agreement=<id>&period=<from>..<to>`: for that period, from the
+/// draft of the version in force then.
 pub(super) async fn invoice_form(Books(s): Books, Query(q): Query<Fields>) -> Response {
     or_error(&s, "Issue an invoice", || {
         let mut f = Fields::new();
-        if let Some(n) = q.get("from") {
+        if let Some(p) = q.get("partner") {
+            f.insert("partner".into(), p.clone());
+        }
+        if let (Some(a), Some(p)) = (q.get("agreement"), q.get("period")) {
+            let period = input::period(p)?;
+            f.extend(views::draft(&s.books, a, &period));
+            f.insert("agreement".into(), a.clone());
+            f.insert("period".into(), format!("{}..{}", period.from, period.to));
+        }
+        let again = q.get("again");
+        if let Some(n) = q.get("from").or(again) {
             let id = input::debt(&s.books, n)?;
             let Some(Kind::Invoice { content: c, .. }) = s.books.entry(id).map(|e| &e.kind) else { bail!("{n} is not an invoice") };
             f.insert("to".into(), c.customer.clone());
@@ -35,10 +48,28 @@ pub(super) async fn invoice_form(Books(s): Books, Query(q): Query<Fields>) -> Re
             }
             // What it replaces, said on it: the cancelled invoice and its credit note.
             let credit = b.entries.iter().enumerate().rev().find(|(_, e)| matches!(e.kind, Kind::CreditNote { of, .. } if of == id)).and_then(|(i, _)| b.number_text(i + 1));
-            let replaces = match credit {
+            let replaces = match credit.filter(|_| again.is_none()) {
                 Some(cn) => format!("Replaces invoice {n}, cancelled by credit note {cn}."),
                 None => String::new(),
             };
+            // To the partner it was to; another like it is for its own period.
+            if let Some(model::To::Partner(p)) = &c.to {
+                f.insert("partner".into(), p.clone());
+            }
+            // Its correction is for what it was for: the credit note leaves
+            // an agreement's period to do again.
+            if let (None, Some(p)) = (again, c.period) {
+                match &c.to {
+                    Some(model::To::Agreement(a)) => {
+                        f.insert("agreement".into(), a.clone());
+                        f.insert("period".into(), format!("{}..{}", p.from, p.to));
+                    }
+                    _ => {
+                        f.insert("period_from".into(), p.from.to_string());
+                        f.insert("period_to".into(), p.to.to_string());
+                    }
+                }
+            }
             f.insert("note".into(), [replaces, c.note.clone()].into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" "));
             if c.commodity != s.books.config.company.currency {
                 f.insert("currency".into(), c.commodity.clone());
@@ -111,7 +142,23 @@ fn invoice_op(b: &model::Books, f: &Fields) -> Result<Op> {
     let pay_to: Vec<String> = f.keys().filter_map(|k| k.strip_prefix("pay-")).map(String::from).collect();
     let customer = f.get("to").cloned().unwrap_or_default().replace("\r\n", "\n");
     let income = Some(get("income")).filter(|i| !i.is_empty());
-    let more = model::InvoiceMore { customer_tax_id: get("customer_tax_id"), income, due_days: None, pay_to, ..Default::default() };
+    // To a partner, or for a period of an agreement, to its party.
+    let to = match (get("partner").as_str(), get("agreement").as_str()) {
+        (_, a) if !a.is_empty() => Some(model::To::Agreement(a.into())),
+        ("", _) => None,
+        (p, _) => Some(model::To::Partner(p.into())),
+    };
+    let period = match (get("period").as_str(), get("period_from").as_str(), get("period_to").as_str()) {
+        ("", "", "") => None,
+        ("", from, to) => Some(input::period(&format!("{from}..{to}"))?),
+        (p, ..) => Some(input::period(p)?),
+    };
+    // A draft's terms, which the form has no field for.
+    let due_days = match get("due_days").as_str() {
+        "" => None,
+        d => Some(d.parse().with_context(|| format!("{d} days is not a whole number of them"))?),
+    };
+    let more = model::InvoiceMore { customer_tax_id: get("customer_tax_id"), income, due_days, pay_to, to, period };
     Ok(Op::Invoice { date, customer, commodity, lines, rate, reason: get("vat_reason"), reference: get("reference"), note: get("note"), pdf: String::new(), more })
 }
 
@@ -248,16 +295,29 @@ pub(super) fn invoice_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>)
     let get = |k: &str| f.get(k).cloned().unwrap_or_default();
     let year = store::today().map(|d| d.year()).unwrap_or_default();
     let next = s.books.next_number(year);
+    let agreement = get("agreement");
+    let party = (!agreement.is_empty()).then(|| input::period(&get("period")).ok().and_then(|p| s.books.party_on(&agreement, p.from).cloned())).flatten();
     html! {
         h1 { "Issue an invoice" }
         @if let Some(e) = error { (refused(e)) }
         form method="post" action="/invoice" {
             (token())
             (lacking(&s.books, f, error))
+            @for k in ["agreement", "period", "due_days"] { @if !get(k).is_empty() { input type="hidden" name=(k) value=(get(k)); } }
             div.box {
-                div.box-header { (icon("outbox")) "Invoice " (next) }
+                div.box-header { (icon("outbox")) "Invoice " (next)
+                    @if !agreement.is_empty() { span.spacer.muted.small { "For " (get("period").replace("..", " – ")) " of " a href={"/agreement/" (enc(&agreement))} { (agreement) } } } }
                 div.box-body {
-                    label.field { "Customer" span.hint { "Name and address, one line each." } textarea name="to" rows="4" required { (get("to")) } }
+                    @if agreement.is_empty() && !s.books.partners.is_empty() {
+                        label.field { "Partner" span.hint { "Their name, address and tax number are printed, unless given below." }
+                            select name="partner" {
+                                option value="" { "— none —" }
+                                @for (id, p) in &s.books.partners { option value=(id) selected[get("partner") == *id] { (p.lines.lines().next().unwrap_or(id)) " (" (id) ")" } }
+                            }
+                        }
+                    }
+                    @if let Some(p) = &party { p.muted.small { "To " a href={"/partner/" (enc(p))} { (p) } ", whom the agreement's schedule names." } }
+                    label.field { "Customer" span.hint { "Name and address, one line each. Blank for the partner's." } textarea name="to" rows="4" { (get("to")) } }
                     label.field { "Lines"
                         span.hint { "One per line: " code { "quantity|unit price|description" } }
                         textarea name="items" rows="4" required placeholder="10|150.00|Consulting, September" { (get("items")) }
@@ -276,6 +336,14 @@ pub(super) fn invoice_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>)
                                 @let k = format!("pay-{id}");
                                 label.choice { input type="checkbox" name=(k) checked[f.contains_key(&k)]; " " (o.printed().label) span.muted.small { " (" (id) ")" } }
                             }
+                        }
+                    }
+                    @if agreement.is_empty() {
+                        fieldset.field {
+                            legend { "Period" }
+                            span.hint { "When the supply was made, printed on it; blank if it is for no period." }
+                            label { "From " input type="date" name="period_from" value=(get("period_from")); }
+                            label { " to " input type="date" name="period_to" value=(get("period_to")); }
                         }
                     }
                     label.field { "Their reference" input type="text" name="reference" value=(get("reference")); }
@@ -299,6 +367,7 @@ pub(super) async fn invoices(Books(s): Books, Query(q): Query<Fields>) -> Respon
         let all: Vec<_> = views::invoices(&s.books, store::today()?).into_iter().filter(|i| !open || i.has_open).rev().collect();
         Ok(html! {
             h1 { "Invoices" }
+            (due_box(&s, true))
             nav.tabs {
                 a href="/invoices" class=(if open { "" } else { "current" }) { (icon("outbox")) " All" }
                 a href="/invoices?open=1" class=(if open { "current" } else { "" }) { (icon("clock")) " Open" }

@@ -67,6 +67,7 @@ pub(super) async fn index(Books(s): Books) -> Response {
                     }
                 }
             }
+            (due_box(&s, false))
             @if !tiles.is_empty() {
                 div.tiles {
                     @for (label, bag) in &tiles {

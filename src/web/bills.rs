@@ -191,6 +191,14 @@ pub(super) fn bill_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>) ->
                         label.field { "Issuer" span.hint { "Who sent it. The document is filed under this name and the date; without a document, not needed." } input type="text" name="issuer" value=(get("issuer")); }
                     }
                     label.field { "Description" span.hint { "Needed to book it; not to file the document alone, to book later." } input type="text" name="description" value=(get("description")); }
+                    @if !s.books.partners.is_empty() {
+                        label.field { "From" span.hint { "The partner who sent it, if they are one. Then two of theirs under one number are one bill." }
+                            select name="partner" {
+                                option value="" { "— not a partner —" }
+                                @for (id, p) in &s.books.partners { option value=(id) selected[get("partner") == *id] { (p.lines.lines().next().unwrap_or(id)) " (" (id) ")" } }
+                            }
+                        }
+                    }
                     label.field { "The supplier's number for it" span.hint { "As the bill prints it, if it has one." } input type="text" name="number" value=(get("number")); }
                     label.field { "Due" span.hint { "If the bill says when." } input type="date" name="due" value=(get("due")); }
                     label.field { "Postings"
@@ -317,7 +325,7 @@ pub(super) async fn bill_submit(Books(mut s): Books, mp: Multipart) -> Response 
         }
         let lines = postings(&s.books, &get("postings"))?;
         let due = if get("due").is_empty() { None } else { Some(input::day(Some(&get("due")))?) };
-        let more = model::BillMore { number: get("number"), due, partner: None };
+        let more = model::BillMore { number: get("number"), due, partner: Some(get("partner")).filter(|p| !p.is_empty()) };
         let again = get("again") == "on";
         let bill = |date, document| Op::Bill { date, description: get("description"), postings: lines.clone(), document, again, more: more.clone() };
         if !get("file").is_empty() {
