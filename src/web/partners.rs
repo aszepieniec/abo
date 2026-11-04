@@ -236,7 +236,7 @@ pub(super) async fn agreement_new_form(Books(s): Books, Query(q): Query<Fields>)
     or_error(&s, "Add an agreement", || {
         let mut f = Fields::new();
         if let Some(p) = q.get("partner") {
-            f.insert(format!("party-{p}"), "on".into());
+            f.insert("party0".into(), p.clone());
             f.insert("party".into(), p.clone());
         }
         Ok(agreement_new(&s, &f, None))
@@ -363,10 +363,17 @@ fn agreement_new(s: &Store, f: &Fields, error: Option<&anyhow::Error>) -> Markup
                     fieldset.field {
                         legend { "Parties" }
                         span.hint { "The partners party to it: one or more." }
-                        @for (id, p) in &s.books.partners {
-                            @let k = format!("party-{id}");
-                            label.choice { input type="checkbox" name=(k) checked[f.contains_key(&k)]; " " (p.lines.lines().next().unwrap_or(id)) span.muted.small { " (" (id) ")" } }
+                        @let chosen = parties_sent(f);
+                        @for (i, chosen) in chosen.iter().enumerate() {
+                            div.party-row {
+                                select name={"party" (i)} aria-label={"Party " (i + 1)} {
+                                    option value="" { "—" }
+                                    @for (id, p) in &s.books.partners { option value=(id) selected[chosen == id] { (p.lines.lines().next().unwrap_or(id)) " (" (id) ")" } }
+                                }
+                                @if i > 0 { button.small.btn-danger.icon-only type="submit" name="drop" value=(i) formnovalidate title="Remove this party" aria-label="Remove this party" { (icon("trash")) } }
+                            }
                         }
+                        div.actions { button.small type="submit" name="more" value="party" formnovalidate { (icon("plus")) " Add a party" } }
                     }
                     (version_fields(&s.books, f))
                     div.actions { button.btn-primary type="submit" { (icon("check")) " Add it" } }
@@ -377,11 +384,31 @@ fn agreement_new(s: &Store, f: &Fields, error: Option<&anyhow::Error>) -> Markup
     }
 }
 
-pub(super) async fn agreement_add(Books(mut s): Books, Form(f): Form<Fields>) -> Response {
+/// The parties a form sent, in order, one select each; one blank at least.
+fn parties_sent(f: &Fields) -> Vec<String> {
+    let v: Vec<String> = (0..).map_while(|i| f.get(&format!("party{i}")).cloned()).collect();
+    if v.is_empty() { vec![String::new()] } else { v }
+}
+
+pub(super) async fn agreement_add(Books(mut s): Books, Form(mut f): Form<Fields>) -> Response {
+    // A party more, or one fewer: the form again, nothing changed.
+    if f.contains_key("more") || f.contains_key("drop") {
+        let mut parties = parties_sent(&f);
+        f.retain(|k, _| !k.starts_with("party") || k == "party");
+        match f.remove("drop").and_then(|i| i.parse::<usize>().ok()) {
+            Some(i) if i < parties.len() && parties.len() > 1 => drop(parties.remove(i)),
+            _ => parties.push(String::new()),
+        }
+        f.remove("more");
+        for (i, p) in parties.into_iter().enumerate() {
+            f.insert(format!("party{i}"), p);
+        }
+        return or_error(&s, "Add an agreement", || Ok(agreement_new(&s, &f, None)));
+    }
     let root = s.root.clone();
     let r = once(Some(&root), f.get("token").map_or("", String::as_str), || {
         let id = f.get("id").map_or("", |v| v.trim()).to_string();
-        let parties: Vec<String> = f.keys().filter_map(|k| k.strip_prefix("party-")).map(String::from).collect();
+        let parties: Vec<String> = parties_sent(&f).into_iter().filter(|p| !p.is_empty()).collect();
         let to = format!("/agreement/{}", enc(&id));
         change(&mut s, &Op::AgreementAdd { id, parties, version: version_of(&f)? }, &[], &to)
     });

@@ -309,15 +309,12 @@ fn request(op: &Op, m: &Books, today: Date) -> Option<(Post, Op)> {
             (urlencoded(&format!("/partner/{}", enc(&id)), fields), Op::PartnerEdit { id, lines: Some(lines), tax_id: Some(t(&tax_id)), employee: Some(employee) })
         }
         Op::PartnerRemove { id } => (urlencoded(&format!("/partner/{}/remove", enc(&id)), vec![]), Op::PartnerRemove { id }),
-        // Parties are ticked, so the form sends each once, in the order of their ids.
+        // A select each, in order; one left blank is no party.
         Op::AgreementAdd { id, parties, version } => {
-            let mut sorted = parties.clone();
-            sorted.sort();
-            sorted.dedup();
-            if sorted != parties || !one_line(&id) || parties.iter().any(|p| !one_line(p)) {
+            if !one_line(&id) || parties.iter().any(|p| !one_line(p) || p.trim().is_empty()) {
                 return None;
             }
-            let ticks: Vec<(String, String)> = parties.iter().map(|p| (format!("party-{p}"), "on".into())).collect();
+            let ticks: Vec<(String, String)> = parties.iter().enumerate().map(|(i, p)| (format!("party{i}"), p.clone())).collect();
             let (mut fields, version) = version_sent(&version)?;
             fields.push(("id", id.clone()));
             fields.extend(ticks.iter().map(|(k, v)| (k.as_str(), v.clone())));

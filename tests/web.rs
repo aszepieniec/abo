@@ -1106,7 +1106,7 @@ fn partners_and_agreements_through_the_pages() {
     assert!(page.contains("Acme GmbH") && page.contains("href=\"/partner/acme\""), "{page}");
 
     let version = [("from", "2026-01-01"), ("until", ""), ("does", "invoice"), ("party", "acme"), ("every", "1"), ("billed", "in-advance"), ("draft-items", "1|110|Hosting"), ("draft-reference", "PO 4471")];
-    let add: Vec<(&str, &str)> = [("token", "a3"), ("id", "hosting"), ("party-acme", "on")].into_iter().chain(version).collect();
+    let add: Vec<(&str, &str)> = [("token", "a3"), ("id", "hosting"), ("party0", "acme")].into_iter().chain(version).collect();
     post("/agreements/new", &add);
     again(&["contracts/hosting.toml"]);
 

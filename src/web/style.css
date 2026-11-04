@@ -119,6 +119,8 @@ ul.tree .grip.stuck { opacity: .35; cursor: not-allowed; }
 ul.tree .bal { margin-left: auto; white-space: nowrap; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }
 ul.tree .act { flex: none; min-width: 34px; margin-left: 20px; display: flex; justify-content: flex-end; }
 button.icon-only { padding: 0 8px; }
+.party-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.party-row select { flex: 1; min-width: 0; }
 ul.tree button.btn-danger[disabled], ul.tree button.btn-danger[disabled]:hover { color: var(--muted); background: var(--inset); border-color: var(--btn-border); opacity: 1; }
 ul.tree > li > details > summary .name { font-weight: 600; }
 ul.tree li.moved > details > summary .name::after { content: " (moved)"; color: var(--muted); font-size: 12px; font-weight: 400; }
