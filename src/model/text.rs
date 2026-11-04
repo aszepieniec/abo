@@ -174,7 +174,7 @@ pub fn parse(f: &Files) -> Result<Books, Vec<String>> {
     };
     let mut m = Books::new(config);
     let dec = |s: &str| Decimal::from_str_exact(s).map_err(|_| format!("{s:?} is not a number"));
-    let date = |s: &str| s.parse::<Date>().map_err(|_| format!("{s:?} is not a date"));
+    let date = |s: &str| super::ymd(s).ok_or(format!("{s:?} is not a date written yyyy-mm-dd"));
     let amt = |s: &str| -> Result<Amount, String> {
         let (q, c) = s.split_once(' ').ok_or(format!("{s:?} is not an amount"))?;
         Ok(Amount { quantity: dec(q)?, commodity: c.into() })

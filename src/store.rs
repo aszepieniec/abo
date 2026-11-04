@@ -82,7 +82,7 @@ fn amiss(kind: AmissKind, text: String) -> anyhow::Error {
 /// The day a change is made: today, or ABO_TODAY, for tests and replays.
 pub fn today() -> Result<model::Date> {
     match std::env::var("ABO_TODAY") {
-        Ok(d) => d.parse().with_context(|| format!("ABO_TODAY={d:?} is not a date")),
+        Ok(d) => model::ymd(&d).with_context(|| format!("ABO_TODAY={d:?} is not a date written yyyy-mm-dd")),
         Err(_) => Ok(jiff::Zoned::now().date()),
     }
 }

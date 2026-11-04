@@ -51,7 +51,7 @@ pub fn day(s: Option<&str>) -> Result<model::Date> {
         // Our words alone: the parser's say how it failed, not what to type.
         Some(s) if s.trim().is_empty() => Err(unreadable("a date is needed, such as 2026-09-30".into())),
         Some(s) if s.trim() == "today" => today(),
-        Some(s) => s.trim().parse().map_err(|_| unreadable(format!("{} is not a date, such as 2026-09-30", s.trim()))),
+        Some(s) => model::ymd(s.trim()).ok_or_else(|| unreadable(format!("{} is not a date: write it yyyy-mm-dd, such as 2026-09-30", s.trim()))),
         None => today(),
     }
 }

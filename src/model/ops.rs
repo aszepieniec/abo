@@ -475,7 +475,7 @@ fn config_problem(root: &toml::Value, key: &str, value: Option<&str>) -> Option<
             let text = v.as_str();
             let ok = match kind {
                 Holds::Text => text.is_some(),
-                Holds::Date => text.is_some_and(|t| t.parse::<Date>().is_ok()),
+                Holds::Date => text.is_some_and(|t| super::ymd(t).is_some()),
                 Holds::Number => text.is_some_and(|t| t.parse::<Decimal>().is_ok()),
                 Holds::WholeNumber => v.is_integer(),
                 Holds::Flag => v.is_bool(),
@@ -486,7 +486,7 @@ fn config_problem(root: &toml::Value, key: &str, value: Option<&str>) -> Option<
                 let at = if path.is_empty() { name.to_string() } else { format!("{}.{name}", path.join(".")) };
                 let given = text.map_or_else(|| v.to_string(), shown);
                 return Some(match kind {
-                    Holds::Date => format!("{at} takes a date, such as 2026-06-30; {given} is not one"),
+                    Holds::Date => format!("{at} takes a date written yyyy-mm-dd, such as 2026-06-30; {given} is not one"),
                     Holds::Number => format!("{at} takes a number, such as 8.1; {given} is not one"),
                     Holds::WholeNumber => format!("{at} takes a whole number; {given} is not one"),
                     Holds::Flag => format!("{at} takes true or false; {given} is not one"),

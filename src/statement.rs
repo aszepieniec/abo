@@ -228,8 +228,8 @@ pub const NET_INCOME: &str = "Net income";
 
 pub fn balance_sheet(s: &Store, date: &str) -> Result<Statement> {
     // -H gives the running balance, and -e is exclusive, so ask for the day after.
-    let end = jiff::civil::Date::strptime("%Y-%m-%d", date)
-        .map_err(|_| anyhow::anyhow!("{date} is not a date, such as 2026-09-30"))?
+    let end = crate::model::ymd(date)
+        .ok_or_else(|| anyhow::anyhow!("{date} is not a date: write it yyyy-mm-dd, such as 2026-09-30"))?
         .tomorrow()?
         .to_string();
     // An exchange, booked at its cost, is equity's conversion, or the sheet

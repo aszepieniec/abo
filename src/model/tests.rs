@@ -2184,3 +2184,20 @@ fn cleared_entries_are_not_reverted(#[strategy(plan())] plan: Vec<Step>, entry: 
     let r = apply(&m, &Op::Revert { entry: id, date: today }, today);
     prop_assert_eq!(r.as_ref().is_err_and(|v| v.iter().any(|v| v.code == "N9")), cleared);
 }
+
+#[test]
+fn dates_are_written_yyyy_mm_dd() {
+    assert_eq!(super::ymd("2026-09-30"), Some(jiff::civil::date(2026, 9, 30)));
+    for s in ["20260930", "2026-9-30", "2026-09-3", "2026-09-30T12:00", "2026-09-30 12:00", "+002026-09-30", "2026-09-30[UTC]", "2026-02-30", " 2026-09-30", "30.09.2026"] {
+        assert_eq!(super::ymd(s), None, "{s}");
+    }
+}
+
+/// Whether `text` holds a date jiff reads that is not written yyyy-mm-dd:
+/// one outside the years 1 to 9999, which an interface refuses unread.
+pub(crate) fn has_unwritable_date(text: &str) -> bool {
+    // A form's body encodes the sign of a year past 9999.
+    let text = text.replace("%2B", "+");
+    text.split(|c: char| c == '=' || c == '&' || c.is_whitespace() || c == '"')
+        .any(|w| w.parse::<jiff::civil::Date>().is_ok() && super::ymd(w).is_none())
+}

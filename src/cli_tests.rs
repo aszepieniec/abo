@@ -274,6 +274,10 @@ fn the_cli_is_the_model(#[strategy(vec(any::<Step>(), 1..30))] plan: Vec<Step>) 
                 // An option's questions may refuse an answer before the model
                 // is asked, in their own words: the model refuses it too.
                 let asked = matches!(op, Op::OptionAdd { .. }) && theirs.is_empty();
+                // A date outside the years 1 to 9999 cannot be written
+                // yyyy-mm-dd: it is refused as unreadable, before the model.
+                let unreadable = theirs.is_empty() && model::tests::has_unwritable_date(&argv.join(" ")) && o.json.as_ref().is_some_and(|j| j["error"].as_str().is_some_and(|e| e.contains("yyyy-mm-dd")));
+                let asked = asked || unreadable;
                 prop_assert!(asked || theirs == ours, "{:?}: rules {:?} where the model {:?}: {}", argv, theirs, ours, o.stderr);
                 prop_assert_eq!((head(&books), store::text_files(&books).unwrap()), before, "{:?} was refused and changed something", argv);
             }
@@ -787,6 +791,11 @@ fn refusals_in_words_name_their_rules(#[strategy(plan())] plan: Vec<Step>, next:
         let unique: BTreeSet<&str> = lines.iter().copied().collect();
         prop_assert_eq!(unique.len(), lines.len(), "{:?} says a problem twice: {}", argv, words);
         prop_assert!(!words.contains(".."), "{:?}: {}", argv, words);
+        return Ok(());
+    }
+    // A date outside the years 1 to 9999 cannot be written yyyy-mm-dd: it
+    // is refused as unreadable, before the model.
+    if model::tests::has_unwritable_date(&argv.join(" ")) && words.contains("yyyy-mm-dd") {
         return Ok(());
     }
     for code in v.iter().map(|v| v.code) {

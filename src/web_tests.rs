@@ -316,6 +316,11 @@ fn the_web_is_the_model(#[strategy(vec(any::<Step>(), 1..25))] plan: Vec<Step>) 
             (200 | 422, Err(_)) if a.body.contains("class=\"problem\"") => {
                 prop_assert_eq!((head(&books), store::text_files(&books).unwrap()), before, "{} was refused and changed something", post.path);
             }
+            // A date outside the years 1 to 9999 cannot be written
+            // yyyy-mm-dd: it is refused as unreadable, before the model.
+            (200 | 422, Err(_)) if model::tests::has_unwritable_date(&String::from_utf8_lossy(&post.body)) && a.body.contains("yyyy-mm-dd") => {
+                prop_assert_eq!((head(&books), store::text_files(&books).unwrap()), before, "{} was refused and changed something", post.path);
+            }
             (200 | 422, Err(v)) => {
                 prop_assert!(a.body.contains("Not done") || a.body.contains("did not go through"), "{}: refused without saying so", post.path);
                 for code in v.iter().map(|v| v.code).filter(|c| *c != "OP") {
