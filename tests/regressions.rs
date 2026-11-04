@@ -2665,3 +2665,23 @@ fn former_employees_are_listed_apart() {
     let said = ok(&dir, &["agreement", "show", "alex"]);
     assert!(said.contains("no signed copy filed: abo file --for alex/1"), "{said}");
 }
+
+/// Shareholders are partners marked so, as employees are: listed under a
+/// heading of their own, one who is also an employee under both.
+#[test]
+fn shareholders_are_listed_apart_and_with_the_employees() {
+    let dir = books("shareholders", &[]);
+    ok(&dir, &["partner", "add", "sam", "--name", "Sam Both", "--employee", "--shareholder"]);
+    ok(&dir, &["partner", "add", "anna", "--name", "Anna Founder", "--shareholder=yes"]);
+    ok(&dir, &["partner", "add", "acme", "--name", "Acme GmbH"]);
+    assert!(read(&dir, "partners.toml").contains("shareholder = true"));
+    let said = ok(&dir, &["partner"]);
+    let (others, rest) = said.split_once("Employees:").unwrap_or_else(|| panic!("{said}"));
+    let (employees, shareholders) = rest.split_once("Shareholders:").unwrap_or_else(|| panic!("{said}"));
+    assert!(others.contains("Acme GmbH") && !others.contains("Anna") && !others.contains("Sam"), "{said}");
+    assert!(employees.contains("Sam Both") && !employees.contains("Anna"), "{said}");
+    assert!(shareholders.contains("Sam Both") && shareholders.contains("Anna Founder") && !shareholders.contains("Acme"), "{said}");
+    ok(&dir, &["partner", "edit", "anna", "--shareholder", "no"]);
+    assert!(!ok(&dir, &["partner"]).contains("Shareholders:\nanna"));
+    refused(&dir, &["partner", "edit", "anna", "--shareholder", "maybe"], "--shareholder takes yes or no");
+}

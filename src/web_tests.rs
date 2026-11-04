@@ -277,12 +277,15 @@ fn request(op: &Op, m: &Books, today: Date) -> Option<(Post, Op)> {
             if partner.employee {
                 fields.push(("employee", "on".into()));
             }
+            if partner.shareholder {
+                fields.push(("shareholder", "on".into()));
+            }
             (urlencoded("/partners/new", fields), Op::PartnerAdd { id: t(&id), partner: model::Partner { lines: lines_sent(name, address), ..partner } })
         }
-        Op::PartnerEdit { id, lines, tax_id, employee } => {
+        Op::PartnerEdit { id, lines, tax_id, employee, shareholder } => {
             let now = m.partners.get(&id)?;
             let lines = lines.unwrap_or(now.lines.clone());
-            let (tax_id, employee) = (tax_id.unwrap_or(now.tax_id.clone()), employee.unwrap_or(now.employee));
+            let (tax_id, employee, shareholder) = (tax_id.unwrap_or(now.tax_id.clone()), employee.unwrap_or(now.employee), shareholder.unwrap_or(now.shareholder));
             let (name, address) = lines.split_once('\n').unwrap_or((&lines, ""));
             if !one_line(name) || address.contains(['\r', '\0']) || !one_line(&tax_id) {
                 return None;
@@ -291,8 +294,11 @@ fn request(op: &Op, m: &Books, today: Date) -> Option<(Post, Op)> {
             if employee {
                 fields.push(("employee", "on".into()));
             }
+            if shareholder {
+                fields.push(("shareholder", "on".into()));
+            }
             let lines = lines_sent(name, address);
-            (urlencoded(&format!("/partner/{}", enc(&id)), fields), Op::PartnerEdit { id, lines: Some(lines), tax_id: Some(t(&tax_id)), employee: Some(employee) })
+            (urlencoded(&format!("/partner/{}", enc(&id)), fields), Op::PartnerEdit { id, lines: Some(lines), tax_id: Some(t(&tax_id)), employee: Some(employee), shareholder: Some(shareholder) })
         }
         Op::PartnerRemove { id } => (urlencoded(&format!("/partner/{}/remove", enc(&id)), vec![]), Op::PartnerRemove { id }),
         // A select each, in order; one left blank is no party.

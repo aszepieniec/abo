@@ -71,6 +71,8 @@ pub struct Partner {
     pub tax_id: String,
     /// One the company employs.
     pub employee: bool,
+    /// One who holds shares in the company.
+    pub shareholder: bool,
 }
 
 /// A contract between the company and one or more partners.

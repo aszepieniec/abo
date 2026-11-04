@@ -1162,6 +1162,16 @@ fn partners_and_agreements_through_the_pages() {
     let (_, _, page) = http(&s, "GET", "/partner/kim", &[]);
     assert!(page.contains("Former employee"), "{page}");
 
+    // A shareholder who is an employee too: a row in each table.
+    post("/partners/new", &[("token", "a23"), ("id", "ann"), ("name", "Ann Both"), ("employee", "on"), ("shareholder", "on")]);
+    again(&["partners.toml"]);
+    let (_, _, page) = http(&s, "GET", "/partners", &[]);
+    let (_, shareholders) = page.split_once("Shareholders</div>").unwrap_or_else(|| panic!("{page}"));
+    let (_, employees) = page.split_once("Employees</div>").unwrap_or_else(|| panic!("{page}"));
+    assert!(shareholders.contains("Ann Both") && employees.contains("Ann Both") && !shareholders.contains("Acme GmbH"), "{page}");
+    let (_, _, page) = http(&s, "GET", "/partner/ann", &[]);
+    assert!(page.contains(">Shareholder<") && page.contains(">Employee<"), "{page}");
+
     post("/agreement/hosting/end", &[("token", "a8"), ("on", "2026-06-30"), ("by", "")]);
     again(&["contracts/hosting.toml"]);
     let (_, _, page) = http(&s, "GET", "/agreement/hosting", &[]);

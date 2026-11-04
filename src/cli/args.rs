@@ -34,7 +34,8 @@ pub(crate) struct Cli {
 #[derive(Subcommand)]
 pub(crate) enum PartnerCmd {
     /// Every partner: what they owe and are owed, and their agreements;
-    /// employees apart. The same as no subcommand. Former employees, those
+    /// employees and shareholders apart, under a heading each. The same as
+    /// no subcommand. Former employees, those
     /// whose agreements have all ended, are counted, not listed.
     List {
         /// List former employees too, under a heading of their own.
@@ -52,6 +53,9 @@ pub(crate) enum PartnerCmd {
         /// One the company employs: yes or no; alone, yes.
         #[arg(long, num_args = 0..=1, default_missing_value = "yes", value_name = "yes|no")]
         employee: Option<String>,
+        /// One who holds shares in the company: yes or no; alone, yes.
+        #[arg(long, num_args = 0..=1, default_missing_value = "yes", value_name = "yes|no")]
+        shareholder: Option<String>,
     },
     /// Change a partner's details. Without flags it asks again, each answer
     /// on the line as it stands. No invoice changes: each keeps what it
@@ -63,6 +67,9 @@ pub(crate) enum PartnerCmd {
         /// One the company employs: yes or no; alone, yes.
         #[arg(long, num_args = 0..=1, default_missing_value = "yes", value_name = "yes|no")]
         employee: Option<String>,
+        /// One who holds shares in the company: yes or no; alone, yes.
+        #[arg(long, num_args = 0..=1, default_missing_value = "yes", value_name = "yes|no")]
+        shareholder: Option<String>,
     },
     /// Remove a partner nothing names: one added by mistake.
     Remove { id: String },

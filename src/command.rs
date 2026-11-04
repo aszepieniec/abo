@@ -158,17 +158,21 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
             if partner.employee {
                 a.push(s("--employee"));
             }
+            if partner.shareholder {
+                a.push(s("--shareholder"));
+            }
             a.extend([s("--"), id.clone()]);
         }
-        Op::PartnerEdit { id, lines, tax_id, employee } => {
+        Op::PartnerEdit { id, lines, tax_id, employee, shareholder } => {
             a = vec![s("partner"), s("edit")];
             if let Some(l) = lines {
                 a.extend(lines_flags(l));
             }
             a.extend(tax_id.iter().map(|t| flag("tax-id", t)));
             a.extend(employee.map(|e| flag("employee", &if e { "yes" } else { "no" })));
+            a.extend(shareholder.map(|e| flag("shareholder", &if e { "yes" } else { "no" })));
             // Given nothing, its tax number as it is: else the command asks.
-            if lines.is_none() && tax_id.is_none() && employee.is_none() {
+            if lines.is_none() && tax_id.is_none() && employee.is_none() && shareholder.is_none() {
                 a.push(flag("tax-id", &m.partners.get(id).map_or("", |p| p.tax_id.as_str())));
             }
             a.extend([s("--"), id.clone()]);

@@ -37,6 +37,8 @@ struct PartnerFile {
     tax_id: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     employee: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    shareholder: bool,
 }
 
 /// contracts/<id>.toml: dates as TOML writes them, unquoted.
@@ -185,7 +187,7 @@ pub fn render(m: &Books) -> Files {
         f.insert("contracts/index".into(), contracts);
     }
     if !m.partners.is_empty() {
-        let partner = m.partners.iter().map(|(id, p)| (id.clone(), PartnerFile { lines: p.lines.clone(), tax_id: p.tax_id.clone(), employee: p.employee })).collect();
+        let partner = m.partners.iter().map(|(id, p)| (id.clone(), PartnerFile { lines: p.lines.clone(), tax_id: p.tax_id.clone(), employee: p.employee, shareholder: p.shareholder })).collect();
         f.insert("partners.toml".into(), toml::to_string(&PartnersFile { partner }).expect("partners render"));
     }
     for (id, a) in &m.agreements {
@@ -381,7 +383,7 @@ pub fn parse(f: &Files) -> Result<Books, Vec<String>> {
     }
     if let Some(text) = f.get("partners.toml") {
         match toml::from_str::<PartnersFile>(text) {
-            Ok(p) => m.partners = p.partner.into_iter().map(|(id, p)| (id, Partner { lines: p.lines, tax_id: p.tax_id, employee: p.employee })).collect(),
+            Ok(p) => m.partners = p.partner.into_iter().map(|(id, p)| (id, Partner { lines: p.lines, tax_id: p.tax_id, employee: p.employee, shareholder: p.shareholder })).collect(),
             Err(e) => errs.push(format!("partners.toml:{}: {}", toml_line(text, &e), e.message())),
         }
     }

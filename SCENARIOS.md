@@ -33,8 +33,10 @@ made: an opening balance about nine months ago, bills from Acme Hosting AG,
 Lex & Partners (part paid) and Devtools Inc (in USD, unpaid), two invoices
 (one settled, one part paid), a bill document from Telecom GmbH filed and not
 booked, and a bank statement recorded a week ago. Acme Hosting AG, the two
-customers, Nordlicht AG, an employee, Sam Example, and two former employees
-are partners. Each has an agreement on record with its signed copy filed:
+customers, Nordlicht AG, an employee, Sam Example, who also holds shares,
+two former employees, and Anna Founder, a shareholder who lent the company
+money, are partners. Each but the two customers has an agreement on record with
+its signed copy filed:
 Nordlicht AG's retainer has an invoice template, and the two months before
 this one are invoiced under it; Sam's salary is booked by hand at the start
 of each month.

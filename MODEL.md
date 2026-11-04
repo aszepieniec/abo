@@ -540,14 +540,18 @@ paid by, held so that what an invoice prints of them is said once:
 struct Partner {
     lines:    Lines,   // their name, then their address, if given, as an invoice prints them
     tax_id:   Text,    // as an invoice prints it; empty where none is given
-    employee: bool,    // one the company employs
+    employee:    bool, // one the company employs
+    shareholder: bool, // one who holds shares in the company
 }
 ```
 
 A partner's name is all that is asked of them: an address or a tax number
 is given where something prints it, and an employee's, which nothing
-prints, may be left out. A partner has no role but one: an **employee** is
-a partner the company employs, listed apart. Whether a partner is a
+prints, may be left out. A partner has two marks, each a yes or a no: an
+**employee** is a partner the company employs, a **shareholder** one who
+holds shares in it, and each is listed apart, one who is both under each.
+abo keeps no share register: how many shares, of which class, since when,
+is the company's register's to say. Whether a partner is a
 customer, a supplier or both is what names them: an invoice, a bill (§2.7).
 A partner's **agreements** are those they are a party to, none or more: the
 agreement holds its parties, and the partner's list is derived from them,
@@ -1180,8 +1184,9 @@ browser's **File and book it** is the one such pair: a `file` and the
 Partners and agreements are kept by commands, as declarations are:
 
 ```
-abo partner   [list]   add <id> [--name --address... --tax-id --employee[=yes|no]]
-              edit <id> [--name --address... --tax-id --employee[=yes|no]]
+abo partner   [list [--former]]
+              add <id> [--name --address... --tax-id --employee[=yes|no] --shareholder[=yes|no]]
+              edit <id> [--name --address... --tax-id --employee[=yes|no] --shareholder[=yes|no]]
               remove <id>
 abo agreement [list]   show <id>   remove <id>
 abo agreement add <id> --partner=<id>... --from=<date> [--until=<date>]
@@ -1216,8 +1221,9 @@ copied, written out: run again after the partner's address has changed, it
 issues the same invoice (G-O8).
 
 In the browser, **Partners** lists each partner with what they owe and are
-owed, their invoices, bills and agreements, the employees apart and former
-employees folded away; an agreement's page, its parties, status, the
+owed, their invoices, bills and agreements, the employees apart, former
+employees folded away, and the shareholders apart, one who is also an
+employee in both tables; an agreement's page, its parties, status, the
 invoices issued under it, its versions with their templates and signed
 copies (each to download, or to upload where none is filed), and its forms:
 amend, end, remove. **Invoice** a party, from the agreement's page, opens
@@ -1395,7 +1401,8 @@ is a problem `parse` reports (§8), and holds every change up until mended.
 ### 7.6 partners.toml and contracts/
 
 Written by `render`. `partners.toml` holds the partners in the order of
-their ids, `tax_id` only when given, `employee` only when true; lines more
+their ids, `tax_id` only when given, `employee` and `shareholder` only when
+true; lines more
 than one are written as TOML's multi-line string:
 
 ```toml
@@ -1410,6 +1417,7 @@ tax_id = "DE123456789"
 [partner.jan]
 lines = "Jan de Vries"
 employee = true
+shareholder = true
 ```
 
 `contracts/<id>.toml` holds one agreement: its parties as given, its status

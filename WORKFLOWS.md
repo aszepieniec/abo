@@ -150,17 +150,20 @@ each problem under its field, saving by the same commands.
 ### A5. Keep partners — Supported (browser, CLI)
 A partner is someone the company invoices or is billed by, pays or is paid
 by: their name, then their address and tax number, either of which may be
-blank, and whether the company employs them. **Partners** lists them with
-what each owes and is owed, and their agreements, the employees apart, and
-former employees — every agreement with them ended — folded away behind
-**Show former employees**. **Add a partner** asks a short name
+blank, whether the company employs them, and whether they hold shares in
+it. **Partners** lists them with what each owes and is owed, and their
+agreements; the employees apart, former employees — every agreement with
+them ended — folded away behind **Show former employees**; and the
+shareholders apart, one who is also an employee in both tables. A partner's
+page marks them Employee, Former employee or Shareholder. **Add a partner** asks a short name
 (`acme`: a-z, 0-9 and `-`, not changed after), the name, the address a line
 each, and the tax number. A partner's page has their invoices, bills and
 agreements, and their details as a form; a change to them changes no
 invoice issued. One nothing names may be removed. CLI: `abo partner [list]`,
 `abo partner add <id>` (asking the name, address and tax number, or
-`--name --address... --tax-id --employee [yes|no]`), `edit <id>`, `remove
-<id>`; `abo partner list --former` lists former employees too.
+`--name --address... --tax-id --employee [yes|no] --shareholder [yes|no]`),
+`edit <id>`, `remove <id>`; `abo partner list --former` lists former
+employees too. No share register is kept: only the mark.
 **Done when** `partners.toml` holds them, and an invoice to one prints their
 name, address and tax number as they were when it was issued.
 

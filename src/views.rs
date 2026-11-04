@@ -308,6 +308,7 @@ pub struct PartnerRow {
     pub lines: String,
     pub tax_id: String,
     pub employee: bool,
+    pub shareholder: bool,
     /// An employee no longer: they have agreements, and every one has
     /// ended before today.
     pub former: bool,
@@ -352,6 +353,7 @@ pub fn partners(b: &Books, today: model::Date) -> Vec<PartnerRow> {
                 lines: p.lines.clone(),
                 tax_id: p.tax_id.clone(),
                 employee: p.employee,
+                shareholder: p.shareholder,
                 former,
                 owed_to: amounts(to),
                 owed_by: amounts(by),

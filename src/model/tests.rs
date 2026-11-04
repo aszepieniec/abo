@@ -262,6 +262,8 @@ pub(crate) enum Draw {
         tax_id: Option<String>,
         #[strategy(proptest::bool::weighted(0.3))]
         employee: bool,
+        #[strategy(proptest::bool::weighted(0.2))]
+        shareholder: bool,
     },
     PartnerEdit {
         which: Index,
@@ -270,6 +272,7 @@ pub(crate) enum Draw {
         #[strategy(proptest::option::of(prop_oneof![Just("DE123456789".to_string()), Just(String::new())]))]
         tax_id: Option<String>,
         employee: Option<bool>,
+        shareholder: Option<bool>,
     },
     PartnerRemove(Index),
     #[weight(3)]
@@ -486,8 +489,8 @@ pub(crate) fn op(d: &Draw, m: &Books, today: Date) -> Option<Op> {
             let (of, date) = pick(&i, &m.prices.keys().cloned().collect::<Vec<_>>()).unwrap_or(("USD".into(), today));
             Op::PriceRemove { of, date }
         }
-        Draw::PartnerAdd { id, lines, tax_id, employee } => Op::PartnerAdd { id, partner: Partner { lines, tax_id: tax_id.unwrap_or_default(), employee } },
-        Draw::PartnerEdit { which, lines, tax_id, employee } => Op::PartnerEdit { id: pick(&which, &partners).unwrap_or_else(|| "zz-none".into()), lines, tax_id, employee },
+        Draw::PartnerAdd { id, lines, tax_id, employee, shareholder } => Op::PartnerAdd { id, partner: Partner { lines, tax_id: tax_id.unwrap_or_default(), employee, shareholder } },
+        Draw::PartnerEdit { which, lines, tax_id, employee, shareholder } => Op::PartnerEdit { id: pick(&which, &partners).unwrap_or_else(|| "zz-none".into()), lines, tax_id, employee, shareholder },
         Draw::PartnerRemove(i) => Op::PartnerRemove { id: pick(&i, &partners).unwrap_or_else(|| "zz-none".into()) },
         Draw::AgreementAdd { id, parties, version } => {
             let parties: Vec<Id> = parties.iter().map(|i| pick(i, &partners).unwrap_or_else(|| "acme".into())).collect();

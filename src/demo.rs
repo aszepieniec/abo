@@ -124,15 +124,17 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
         }
     };
     // Partners: two customers, a customer under a retainer, the hosting
-    // supplier, an employee, and two former ones.
-    let partner = |s: &mut Store, id: &str, lines: &str, tax_id: &str, employee: bool| s.change(&Op::PartnerAdd { id: id.into(), partner: model::Partner { lines: lines.into(), tax_id: tax_id.into(), employee } }, &[]);
-    partner(&mut s, "acme", "Acme Hosting AG\nServer Street 1\n8000 Zurich", "CHE-111.222.333", false)?;
-    partner(&mut s, "customer-one", "Customer One\n1 Customer Lane\n10000 Example City", "", false)?;
-    partner(&mut s, "customer-three", "Customer Three\n3 Example Road\n10000 Example City", "", false)?;
-    partner(&mut s, "nordlicht", "Nordlicht AG\nSeestrasse 12\n8002 Zurich", "CHE-987.654.321", false)?;
-    partner(&mut s, "sam", "Sam Example", "", true)?;
-    partner(&mut s, "alex", "Alex Former", "", true)?;
-    partner(&mut s, "robin", "Robin Former", "", true)?;
+    // supplier, an employee who holds shares, two former employees, and a
+    // founder who holds shares alone.
+    let partner = |s: &mut Store, id: &str, lines: &str, tax_id: &str, employee: bool, shareholder: bool| s.change(&Op::PartnerAdd { id: id.into(), partner: model::Partner { lines: lines.into(), tax_id: tax_id.into(), employee, shareholder } }, &[]);
+    partner(&mut s, "acme", "Acme Hosting AG\nServer Street 1\n8000 Zurich", "CHE-111.222.333", false, false)?;
+    partner(&mut s, "customer-one", "Customer One\n1 Customer Lane\n10000 Example City", "", false, false)?;
+    partner(&mut s, "customer-three", "Customer Three\n3 Example Road\n10000 Example City", "", false, false)?;
+    partner(&mut s, "nordlicht", "Nordlicht AG\nSeestrasse 12\n8002 Zurich", "CHE-987.654.321", false, false)?;
+    partner(&mut s, "sam", "Sam Example", "", true, true)?;
+    partner(&mut s, "anna", "Anna Founder\nLindenweg 4\n8003 Zurich", "", false, true)?;
+    partner(&mut s, "alex", "Alex Former", "", true, false)?;
+    partner(&mut s, "robin", "Robin Former", "", true, false)?;
     let month = |back: i64| now.first_of_month().checked_sub(jiff::Span::new().months(back)).unwrap_or(now);
     // Hosting's contract, on record: paid on each bill.
     let version = model::Version { from: ago(240), until: None, template: None };
@@ -151,6 +153,10 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
     let version = model::Version { from: month(5), until: None, template: None };
     s.change(&Op::AgreementAdd { id: "sam".into(), parties: vec!["sam".into()], version }, &[])?;
     signed(&mut s, "sam", "Sam Example", month(5))?;
+    // The founder's loan to the company, on record with its signed copy.
+    let version = model::Version { from: ago(265), until: None, template: None };
+    s.change(&Op::AgreementAdd { id: "anna-loan".into(), parties: vec!["anna".into()], version }, &[])?;
+    signed(&mut s, "anna-loan", "Anna Founder", ago(265))?;
     // Two who worked for the company once: their contracts, ended.
     for (who, name, from, to) in [("alex", "Alex Former", 260, 120), ("robin", "Robin Former", 250, 60)] {
         let version = model::Version { from: ago(from), until: None, template: None };

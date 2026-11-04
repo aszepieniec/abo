@@ -8,8 +8,11 @@ use super::*;
 pub(super) async fn partners_list(Books(s): Books) -> Response {
     or_error(&s, "Partners", || {
         let all = views::partners(&s.books, store::today()?);
-        let (employees, others): (Vec<_>, Vec<_>) = all.iter().partition(|p| p.employee);
-        let (former, employees): (Vec<_>, Vec<_>) = employees.into_iter().partition(|p| p.former);
+        // A row under each table that is theirs: an employee who is a
+        // shareholder in both.
+        let others: Vec<_> = all.iter().filter(|p| !p.employee && !p.shareholder).collect();
+        let (former, employees): (Vec<_>, Vec<_>) = all.iter().filter(|p| p.employee).partition(|p| p.former);
+        let shareholders: Vec<_> = all.iter().filter(|p| p.shareholder).collect();
         let agreements = views::agreements(&s.books, store::today()?);
         Ok(html! {
             div.head {
@@ -27,6 +30,7 @@ pub(super) async fn partners_list(Books(s): Books) -> Response {
                     (partner_table("Former employees: every agreement with them has ended", &former))
                 }
             }
+            @if !shareholders.is_empty() { (partner_table("Shareholders", &shareholders)) }
             div.box {
                 div.box-header { (icon("book")) "Agreements" }
                 @if agreements.is_empty() {
@@ -108,6 +112,9 @@ fn partner_fields(b: &Model, id: &str) -> Fields {
         if p.employee {
             f.insert("employee".into(), "on".into());
         }
+        if p.shareholder {
+            f.insert("shareholder".into(), "on".into());
+        }
     }
     f
 }
@@ -116,7 +123,8 @@ fn partner_page(s: &Store, p: &views::PartnerRow, f: &Fields, error: Option<&any
     html! {
         div.head {
             h1 { (p.name) " " span.muted.small { (p.id) }
-                @if p.former { " " span.pill { "Former employee" } } @else if p.employee { " " span.pill.pill-info { "Employee" } } }
+                @if p.former { " " span.pill { "Former employee" } } @else if p.employee { " " span.pill.pill-info { "Employee" } }
+                @if p.shareholder { " " span.pill.pill-info { "Shareholder" } } }
             @if may_change() { div.actions { a.btn href={"/invoice?partner=" (enc(&p.id))} { (icon("outbox")) " Invoice them" } } }
         }
         @if let Some(e) = error { (refused(e)) }
@@ -181,6 +189,7 @@ fn partner_form(s: &Store, id: Option<&str>, f: &Fields, error: Option<&anyhow::
                     label.field { "Address" span.hint { "A line each; may be left blank." } textarea name="address" rows="3" { (get("address")) } }
                     label.field { "Tax number" span.hint { "May be left blank." } input type="text" name="tax_id" value=(get("tax_id")); }
                     label.choice { input type="checkbox" name="employee" checked[f.contains_key("employee")]; " The company employs them" }
+                    label.choice { input type="checkbox" name="shareholder" checked[f.contains_key("shareholder")]; " A shareholder of the company" }
                     @if may_change() { div.actions { button.btn-primary type="submit" { (icon("check")) @if id.is_some() { " Save" } @else { " Add" } } } }
                 }
             }
@@ -202,14 +211,15 @@ fn partner_changed(mut s: Store, id: Option<String>, f: Fields) -> Response {
     let root = s.root.clone();
     let lines = [get("name"), get("address")].into_iter().filter(|l| !l.trim().is_empty()).collect::<Vec<_>>().join("\n");
     let employee = f.contains_key("employee");
+    let shareholder = f.contains_key("shareholder");
     let new = id.is_none();
     let id = id.unwrap_or_else(|| get("id"));
     let r = once(Some(&root), &get("token"), || {
         let (op, to) = if new {
-            (Op::PartnerAdd { id: id.clone(), partner: model::Partner { lines, tax_id: get("tax_id"), employee } }, format!("/partner/{}", enc(&id)))
+            (Op::PartnerAdd { id: id.clone(), partner: model::Partner { lines, tax_id: get("tax_id"), employee, shareholder } }, format!("/partner/{}", enc(&id)))
         } else {
             // Sent as it stood, there is nothing to change, and nothing is said.
-            (Op::PartnerEdit { id: id.clone(), lines: Some(lines), tax_id: Some(get("tax_id")), employee: Some(employee) }, format!("/partner/{}", enc(&id)))
+            (Op::PartnerEdit { id: id.clone(), lines: Some(lines), tax_id: Some(get("tax_id")), employee: Some(employee), shareholder: Some(shareholder) }, format!("/partner/{}", enc(&id)))
         };
         if s.change(&op, &[])?.is_none() {
             return Ok(to);

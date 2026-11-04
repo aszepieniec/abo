@@ -17,8 +17,9 @@ pub(crate) fn partner(here: &Path, json: bool, change: Option<PartnerCmd>) -> Re
         Some(PartnerCmd::List { former }) => return list(&s, json, former),
         // ponytail: three questions, asked here; the web's form has the same
         // three fields. Into questions.rs should a third place ask them.
-        Some(PartnerCmd::Add { id, details, employee }) => {
-            let employee = yes_no(employee)?.unwrap_or(false);
+        Some(PartnerCmd::Add { id, details, employee, shareholder }) => {
+            let employee = yes_no("employee", employee)?.unwrap_or(false);
+            let shareholder = yes_no("shareholder", shareholder)?.unwrap_or(false);
             let (name, address, tax_id) = if details.given() || ni() {
                 (details.name.clone().context("a partner's name is needed: --name")?, details.address.join("\n"), details.tax_id.clone().unwrap_or_default())
             } else {
@@ -27,26 +28,27 @@ pub(crate) fn partner(here: &Path, json: bool, change: Option<PartnerCmd>) -> Re
                 let tax_id = read("Tax number (blank for none)", "")?.unwrap_or_default();
                 (name, address, tax_id)
             };
-            Op::PartnerAdd { id, partner: model::Partner { lines: joined(&name, &address), tax_id, employee } }
+            Op::PartnerAdd { id, partner: model::Partner { lines: joined(&name, &address), tax_id, employee, shareholder } }
         }
-        Some(PartnerCmd::Edit { id, details, employee }) => {
+        Some(PartnerCmd::Edit { id, details, employee, shareholder }) => {
             let p = s.books.partners.get(&id);
             let lines = p.map_or("", |p| p.lines.as_str());
             let (name, address) = lines.split_once('\n').unwrap_or((lines, ""));
-            let employee = yes_no(employee)?;
-            if details.given() || employee.is_some() || ni() {
+            let employee = yes_no("employee", employee)?;
+            let shareholder = yes_no("shareholder", shareholder)?;
+            if details.given() || employee.is_some() || shareholder.is_some() || ni() {
                 let lines = (details.name.is_some() || !details.address.is_empty()).then(|| {
                     let address = if details.address.is_empty() { address.to_string() } else { details.address.join("\n") };
                     joined(details.name.as_deref().unwrap_or(name), &address)
                 });
-                Op::PartnerEdit { id, lines, tax_id: details.tax_id.clone(), employee }
+                Op::PartnerEdit { id, lines, tax_id: details.tax_id.clone(), employee, shareholder }
             } else {
                 // Refused as the model refuses it, before any question.
                 let Some(p) = p else { bail!("there is no partner {id}") };
                 let name = prompt_over_until("Name", name, |a| if a.trim().is_empty() { Err("a partner is named".into()) } else { Ok(a.trim().to_string()) })?;
                 let address = prompt_lines_over("Address", &address.lines().collect::<Vec<_>>())?.join("\n");
                 let tax_id = read_over("Tax number (blank for none)", &p.tax_id)?.unwrap_or_default();
-                Op::PartnerEdit { id, lines: Some(joined(&name, &address)), tax_id: Some(tax_id), employee: None }
+                Op::PartnerEdit { id, lines: Some(joined(&name, &address)), tax_id: Some(tax_id), employee: None, shareholder: None }
             }
         }
         Some(PartnerCmd::Remove { id }) => Op::PartnerRemove { id },
@@ -54,11 +56,11 @@ pub(crate) fn partner(here: &Path, json: bool, change: Option<PartnerCmd>) -> Re
     changed(&mut s, &op, &[], json)
 }
 
-fn yes_no(e: Option<String>) -> Result<Option<bool>> {
+fn yes_no(flag: &str, e: Option<String>) -> Result<Option<bool>> {
     e.map(|e| match e.as_str() {
         "yes" => Ok(true),
         "no" => Ok(false),
-        _ => bail!("--employee takes yes or no, not {e}"),
+        _ => bail!("--{flag} takes yes or no, not {e}"),
     })
     .transpose()
 }
@@ -81,7 +83,7 @@ fn amounts(v: &[views::Amount]) -> String {
 fn list(s: &Store, json: bool, with_former: bool) -> Result<()> {
     still(s);
     let all: Vec<_> = views::partners(&s.books, store::today()?).into_iter().collect();
-    let shown: Vec<&views::PartnerRow> = all.iter().filter(|p| with_former || !p.former).collect();
+    let shown: Vec<&views::PartnerRow> = all.iter().filter(|p| with_former || !p.former || p.shareholder).collect();
     emit(json, &shown, || {
         if all.is_empty() {
             return "No partners yet; abo partner add adds one.".into();
@@ -102,9 +104,12 @@ fn list(s: &Store, json: bool, with_former: bool) -> Result<()> {
             }
             out
         };
-        let (employees, others): (Vec<_>, Vec<_>) = all.iter().partition(|p| p.employee);
-        let (former, employees): (Vec<_>, Vec<_>) = employees.into_iter().partition(|p| p.former);
-        let mut out: Vec<String> = others.into_iter().map(row).collect();
+        // A row under each heading that is theirs: an employee who is a
+        // shareholder under both.
+        let others = all.iter().filter(|p| !p.employee && !p.shareholder);
+        let (former, employees): (Vec<_>, Vec<_>) = all.iter().filter(|p| p.employee).partition(|p| p.former);
+        let shareholders: Vec<_> = all.iter().filter(|p| p.shareholder).collect();
+        let mut out: Vec<String> = others.map(row).collect();
         if !employees.is_empty() {
             out.push("Employees:".into());
             out.extend(employees.into_iter().map(row));
@@ -117,6 +122,10 @@ fn list(s: &Store, json: bool, with_former: bool) -> Result<()> {
             }
             (1, false) => out.push("1 former employee; abo partner list --former lists them.".into()),
             (n, false) => out.push(format!("{n} former employees; abo partner list --former lists them.")),
+        }
+        if !shareholders.is_empty() {
+            out.push("Shareholders:".into());
+            out.extend(shareholders.into_iter().map(row));
         }
         out.join("\n")
     })

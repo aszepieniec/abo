@@ -48,7 +48,7 @@ pub enum Op {
     /// Refused if the id is taken.
     PartnerAdd { id: Id, partner: Partner },
     /// The details given; no invoice changes.
-    PartnerEdit { id: Id, lines: Option<String>, tax_id: Option<String>, employee: Option<bool> },
+    PartnerEdit { id: Id, lines: Option<String>, tax_id: Option<String>, employee: Option<bool>, shareholder: Option<bool> },
     /// While nothing names them (I-T2).
     PartnerRemove { id: Id },
     /// An active agreement of one version; refused if the id is taken.
@@ -338,9 +338,9 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
             if m.partners.contains_key(&id) {
                 return Err(format!("there is a partner {} already", shown(&id)));
             }
-            n.partners.insert(id, Partner { lines: lines(&partner.lines), tax_id: partner.tax_id.trim().to_string(), employee: partner.employee });
+            n.partners.insert(id, Partner { lines: lines(&partner.lines), tax_id: partner.tax_id.trim().to_string(), employee: partner.employee, shareholder: partner.shareholder });
         }
-        Op::PartnerEdit { id, lines: l, tax_id, employee } => {
+        Op::PartnerEdit { id, lines: l, tax_id, employee, shareholder } => {
             let p = n.partners.get_mut(&id).ok_or(format!("there is no partner {}", shown(&id)))?;
             if let Some(l) = l {
                 p.lines = lines(&l);
@@ -350,6 +350,9 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
             }
             if let Some(e) = employee {
                 p.employee = e;
+            }
+            if let Some(s) = shareholder {
+                p.shareholder = s;
             }
         }
         Op::PartnerRemove { id } => drop(n.partners.remove(&id).ok_or(format!("there is no partner {}", shown(&id)))?),
