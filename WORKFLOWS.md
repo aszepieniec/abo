@@ -605,6 +605,12 @@ file edited by hand. Fixed, each with a test:
 - Demo: the retainer's template line reads "Retainer"; Sam's salaries are
   entries about their agreement.
 
+After the run, invoicing in arrears: an invoice under an agreement is
+under the version in force on the day it is for, its period's first, not
+its date; and it may be dated after the agreement's last day, its period
+beginning by then. November's retainer, sent on 3 December, is under
+November's terms, and new terms may begin on 1 December.
+
 Reported and left as decided:
 - A contract's terms (250 EUR a month) have no field: the signed copy holds
   them, and the model holds no schedule.

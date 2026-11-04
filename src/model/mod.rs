@@ -231,7 +231,8 @@ pub struct Content {
     /// The agreement it is issued under; then `to` is one of its parties.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agreement: Option<Id>,
-    /// What it is for, when it is for a period: printed, nothing more.
+    /// What it is for, when it is for a period: printed; under an
+    /// agreement, its first day picks the version (`Books::invoice_day`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub period: Option<Period>,
     /// Name, then address, newlines between lines. The name is not blank.
@@ -729,12 +730,6 @@ impl Agreement {
     pub fn template_on(&self, day: Date) -> Option<&BTreeMap<String, String>> {
         self.versions.get(self.in_force(day)?.checked_sub(1)?)?.template.as_ref()
     }
-
-    /// In force on `day`: on or after its first version's `from`, and on or
-    /// before its last day, if it has one.
-    pub fn in_force_on(&self, day: Date) -> bool {
-        self.versions.first().is_some_and(|v| v.from <= day) && self.last_day().is_none_or(|l| day <= l)
-    }
 }
 
 impl Books {
@@ -766,6 +761,16 @@ impl Books {
         match &self.entry(id)?.kind {
             Kind::Plain(_, link) => link.agreement.as_ref(),
             _ => self.under(id),
+        }
+    }
+
+    /// The day invoice `id` is for: its period's first, if it has one, else
+    /// its date. An invoice under an agreement is under the version in
+    /// force then: November's, sent in December, under November's terms.
+    pub fn invoice_day(&self, id: EntryId) -> Option<Date> {
+        match &self.entry(id)?.kind {
+            Kind::Invoice { content, .. } => Some(content.period.map_or(self.entries[id - 1].date, |p| p.from)),
+            _ => None,
         }
     }
 

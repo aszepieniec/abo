@@ -2448,8 +2448,8 @@ fn ended_agreements_stay_ended(#[strategy(plan())] plan: Vec<Step>) {
 }
 
 /// G-T3: an invoice under an agreement is to one of its parties, and one
-/// standing is dated on a day the agreement is in force: from its first
-/// version's first day through its last day.
+/// standing is for a day on or after it begins; one for a period, a period
+/// beginning on or before its last day.
 #[proptest]
 fn invoices_under_an_agreement_are_to_its_parties_while_in_force(#[strategy(plan())] plan: Vec<Step>, which: Index, stranger: Index) {
     walk(&plan, |_, _, n| {
@@ -2457,7 +2457,10 @@ fn invoices_under_an_agreement_are_to_its_parties_while_in_force(#[strategy(plan
         for (id, a) in &n.agreements {
             for e in n.invoices_under(id, &standing) {
                 prop_assert!(n.partner_of(e).is_some_and(|p| a.parties.contains(p)), "{} under {} is to no party of it", e, id);
-                prop_assert!(a.in_force_on(n.entries[e - 1].date), "{} under {} is dated when it is not in force", e, id);
+                let day = n.invoice_day(e).unwrap();
+                prop_assert!(a.versions[0].from <= day, "{} under {} is for {}, before it begins", e, id, day);
+                let period = matches!(&n.entries[e - 1].kind, Kind::Invoice { content, .. } if content.period.is_some());
+                prop_assert!(!period || a.last_day().is_none_or(|l| day <= l), "{} under {} is for a period after its last day", e, id);
             }
         }
         Ok(())
@@ -2489,7 +2492,7 @@ fn what_is_issued_keeps_its_version(#[strategy(plan())] plan: Vec<Step>) {
         let ns = n.standing();
         for (a, ag) in &m.agreements {
             for e in m.invoices_under(a, &m.standing()).into_iter().filter(|&e| ns.get(e).copied().unwrap_or(false)) {
-                let date = m.entries[e - 1].date;
+                let date = m.invoice_day(e).unwrap();
                 if let Some(x) = n.agreements.get(a) {
                     prop_assert_eq!(x.in_force(date), ag.in_force(date), "{:?} moved the version of {} under {}", op, e, a);
                 }
@@ -2500,8 +2503,7 @@ fn what_is_issued_keeps_its_version(#[strategy(plan())] plan: Vec<Step>) {
     // A version on the same terms, from the last invoice's date: refused.
     let (m, today) = end(&plan);
     for (a, ag) in &m.agreements {
-        let Some(&last) = m.invoices_under(a, &m.standing()).iter().max_by_key(|&&e| m.entries[e - 1].date) else { continue };
-        let date = m.entries[last - 1].date;
+        let Some(date) = m.invoices_under(a, &m.standing()).into_iter().filter_map(|e| m.invoice_day(e)).max() else { continue };
         let same = Version { from: date, ..ag.versions.last().unwrap().clone() };
         let r = apply(&m, &Op::Amend { id: a.clone(), version: same }, today);
         prop_assert!(r.as_ref().is_err_and(|v| v.iter().any(|x| x.code == "N10" || x.code == "N11")), "a version from {} was added to {}, invoiced then: {:?}", date, a, r.map(|_| ()));

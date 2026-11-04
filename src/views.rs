@@ -450,7 +450,7 @@ pub fn agreement(b: &Books, id: &str, today: model::Date) -> Option<AgreementVie
         .rev()
         .map(|e| {
             let date = b.entries[e - 1].date;
-            InvoiceUnder { entry: e, date: date.to_string(), what: model::name(b, e), partner: b.partner_of(e).cloned().unwrap_or_default(), version: a.in_force(date).unwrap_or(0) }
+            InvoiceUnder { entry: e, date: date.to_string(), what: model::name(b, e), partner: b.partner_of(e).cloned().unwrap_or_default(), version: b.invoice_day(e).and_then(|d| a.in_force(d)).unwrap_or(0) }
         })
         .collect();
     Some(AgreementView {

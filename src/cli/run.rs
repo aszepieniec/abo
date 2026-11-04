@@ -189,8 +189,9 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 bail!("a customer is needed: --to, a line of theirs each, or --partner");
             }
             // Under an agreement, what is not given is its invoice template's,
-            // of the version in force on the invoice's date.
-            let template = agreement.as_ref().and_then(|a| s.books.agreements.get(a)).and_then(|a| a.template_on(date)).cloned();
+            // of the version in force on the day it is for: its period's first.
+            let day = period.as_ref().map_or(date, |p| p.from);
+            let template = agreement.as_ref().and_then(|a| s.books.agreements.get(a)).and_then(|a| a.template_on(day)).cloned();
             let draft = like.or(template).unwrap_or_default();
             let from = |given: Option<String>, k: &str| given.or_else(|| draft.get(k).cloned()).unwrap_or_default();
             let (reference, note, vat_reason) = (from(reference, "reference"), from(note, "note"), from(vat_reason, "vat_reason"));

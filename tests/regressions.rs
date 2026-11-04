@@ -2735,3 +2735,29 @@ fn an_entry_names_its_partner_and_agreement() {
     ok(&dir, &["agreement", "terminate", "sam", "--until", "2027-07-31"]);
     assert!(ok(&dir, &["partner"]).contains("sam  Sam Example  employee until 2027-07-31"));
 }
+
+/// Invoiced in arrears: an invoice for a period is under the version in
+/// force on its first day, whatever day it is dated; dated after the
+/// agreement's last day, it is issued under it still, for a period that
+/// begins by then.
+#[test]
+fn an_invoice_in_arrears_is_under_the_terms_of_its_period() {
+    let dir = books("arrears", &[]);
+    ok(&dir, &["partner", "add", "nordlicht", "--name", "Nordlicht AG"]);
+    ok(&dir, &["agreement", "add", "retainer", "--partner", "nordlicht", "--from", "2027-01-01", "--template", "items=1|1500|Retainer"]);
+    let invoice = |date: &'static str, period: &'static str| vec!["invoice", "--partner", "nordlicht", "--agreement", "retainer", "--date", date, "--period", period];
+    ok(&dir, &invoice("2027-05-03", "2027-04-01..2027-04-30"));
+    // New terms from May, though April's invoice is dated in May.
+    ok(&dir, &["agreement", "amend", "retainer", "--from", "2027-05-01", "--template", "items=1|1800|Retainer"]);
+    let v = json(&dir, &invoice("2027-05-04", "2027-04-01..2027-04-30"));
+    let april = read(&dir, &format!("invoices/2027/{}.json", v["number"].as_str().unwrap()));
+    assert!(april.contains("\"1500\"") && !april.contains("1800"), "{april}");
+    // May's, sent in June, after the agreement's last day.
+    ok(&dir, &["agreement", "terminate", "retainer", "--until", "2027-05-31"]);
+    let v = json(&dir, &invoice("2027-06-02", "2027-05-01..2027-05-31"));
+    let may = read(&dir, &format!("invoices/2027/{}.json", v["number"].as_str().unwrap()));
+    assert!(may.contains("\"1800\""), "{may}");
+    refused(&dir, &invoice("2027-06-02", "2027-06-01..2027-06-30"), "whose last day is 2027-05-31");
+    let said = ok(&dir, &["agreement", "show", "retainer"]);
+    assert!(said.contains("2027-06-02  invoice 2027-0003  to nordlicht  version 2") && said.contains("2027-05-04  invoice 2027-0002  to nordlicht  version 1"), "{said}");
+}

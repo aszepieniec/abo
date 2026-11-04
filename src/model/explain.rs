@@ -759,11 +759,11 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                 AgreementStatus::Terminated { on } | AgreementStatus::Subsumed { on, .. } => *on,
                 AgreementStatus::Active => return vec![],
             };
-            let late: Vec<EntryId> = m.invoices_under(id, &m_standing).into_iter().filter(|&e| m.entries[e - 1].date > on).collect();
-            let Some(&last) = late.iter().max_by_key(|&&e| m.entries[e - 1].date) else { return vec![] };
-            let date = m.entries[last - 1].date;
+            // Those for a period beginning after its last day would be.
+            let late: Vec<EntryId> = m.invoices_under(id, &m_standing).into_iter().filter(|&e| matches!(&m.entries[e - 1].kind, Kind::Invoice { content, .. } if content.period.is_some_and(|p| p.from > on))).collect();
+            let Some(day) = late.iter().filter_map(|&e| m.invoice_day(e)).max() else { return vec![] };
             let them: Vec<String> = late.iter().map(|&e| name(m, e)).collect();
-            vec![format!("{} {} issued under agreement {id} after {on}; ended on {on}, it would not be in force then: end it on {date} or after", and(&them), if them.len() == 1 { "is" } else { "are" })]
+            vec![format!("{} {} for a period beginning after {on}, under agreement {id}: end it on {day} or after", and(&them), if them.len() == 1 { "is" } else { "are" })]
         }
         "I-T1" | "I-T2" | "I-T3" | "I-T4" | "I-T5" => {
             // As `check` says them, the entry being added called by its kind.

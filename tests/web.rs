@@ -1130,11 +1130,12 @@ fn partners_and_agreements_through_the_pages() {
     let argv = last_argv(&books);
     assert!(argv.contains(&"--agreement=hosting".to_string()) && argv.contains(&"--to=Neue Strasse 9".to_string()) && argv.contains(&"--reference=PO 4471".to_string()), "{argv:?}");
 
-    // Amended after what is invoiced; on or before it, refused, saying why.
-    let mut amend: Vec<(&str, &str)> = version.into_iter().map(|(k, v)| if k == "from" { (k, "2026-01-05") } else { (k, v) }).collect();
+    // Amended after the day what is invoiced is for, its period's first;
+    // on or before it, refused, saying why.
+    let mut amend: Vec<(&str, &str)> = version.into_iter().map(|(k, v)| if k == "from" { (k, "2026-01-01") } else { (k, v) }).collect();
     amend.push(("token", "a5"));
     let (status, _, page) = upload("/agreement/hosting/amend", &amend, None);
-    assert!(status == 422 && page.contains("a new version takes effect after 2026-01-05"), "{status} {page}");
+    assert!(status == 422 && page.contains("a new version takes effect after 2026-01-01"), "{status} {page}");
     let amend: Vec<(&str, &str)> = version.into_iter().map(|(k, v)| match k { "from" => (k, "2026-02-01"), "tpl-items" => (k, "1|120|Hosting"), _ => (k, v) }).chain([("token", "a6")]).collect();
     // The terminal's books lack the invoice the page issued; issue it there too.
     let o = Command::new(env!("CARGO_BIN_EXE_abo")).args(&argv).current_dir(&replay).env("HOME", &base).env("XDG_CONFIG_HOME", &base).stdin(Stdio::null()).output().unwrap();

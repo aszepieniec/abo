@@ -710,7 +710,9 @@ pub(crate) fn partners_and_agreements(m: &Books, standing: &[bool], who: &dyn Fn
         }
     }
     // I-T4: an invoice under an agreement is to one of its parties; a
-    // standing one is dated on a day it is in force.
+    // standing one is for a day on or after it begins, and its period, if
+    // it has one, begins on or before its last day. It may be dated after:
+    // the last month's, invoiced in arrears.
     for (id, &stands) in standing.iter().enumerate().skip(1) {
         let Some(Kind::Invoice { content, .. }) = m.entry(id).map(|e| &e.kind) else { continue };
         let Some(a) = &content.agreement else { continue };
@@ -720,14 +722,15 @@ pub(crate) fn partners_and_agreements(m: &Books, standing: &[bool], who: &dyn Fn
             Some(p) if !ag.parties.contains(p) => no!(@of Subject::Entry(id), "I-T4", "{} is issued under agreement {a}, to {p}, who is not a party to it: {}", who(id), ag.parties.join(", ")),
             _ => {}
         }
-        let date = m.entries[id - 1].date;
-        if stands && !ag.in_force_on(date) {
-            let span = match (ag.versions.first(), ag.last_day()) {
-                (Some(f), Some(l)) => format!("from {} through {l}", f.from),
-                (Some(f), None) => format!("from {}", f.from),
-                _ => "on no day".into(),
-            };
-            no!(@of Subject::Entry(id), "I-T4", "{} is issued under agreement {a} on {date}, and the agreement is in force {span}", who(id));
+        let Some(day) = m.invoice_day(id) else { continue };
+        let first = ag.versions.first().map(|v| v.from);
+        if stands && first.is_some_and(|f| day < f) {
+            no!(@of Subject::Entry(id), "I-T4", "{} is for {day}, under agreement {a}, which begins on {}", who(id), first.unwrap());
+        }
+        if let (true, Some(_), Some(l)) = (stands, content.period, ag.last_day()) {
+            if day > l {
+                no!(@of Subject::Entry(id), "I-T4", "{} is for a period from {day}, under agreement {a}, whose last day is {l}", who(id));
+            }
         }
     }
     // I-T4, of an entry booked by hand: about an agreement, and a partner

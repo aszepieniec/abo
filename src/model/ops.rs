@@ -781,17 +781,17 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
         }
     }
     // What was issued keeps its version: no version takes effect on or
-    // before the date of a standing invoice under the agreement, which was
-    // issued under the one in force then.
+    // before the day a standing invoice under the agreement is for, which
+    // is under the one in force then.
     if let Op::Amend { id, version } = op {
         if let Some(a) = m.agreements.get(id) {
             if a.status != AgreementStatus::Active {
                 no!("N11", "agreement {id} is ended, its last day {}; an agreement ended takes no new version", a.ended_on().unwrap());
             }
             let standing = m.standing();
-            if let Some(last) = m.invoices_under(id, &standing).into_iter().max_by_key(|&e| m.entries[e - 1].date).filter(|&e| version.from <= m.entries[e - 1].date) {
-                let date = m.entries[last - 1].date;
-                no!("N10", "{} is issued under agreement {id} on {date}, under the version in force then; a new version takes effect after {date}", name(m, last));
+            if let Some(last) = m.invoices_under(id, &standing).into_iter().max_by_key(|&e| m.invoice_day(e)).filter(|&e| m.invoice_day(e).is_some_and(|d| version.from <= d)) {
+                let day = m.invoice_day(last).unwrap_or_default();
+                no!("N10", "{} is for {day}, under agreement {id} and the version in force then; a new version takes effect after {day}", name(m, last));
             }
         }
     }

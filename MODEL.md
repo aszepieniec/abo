@@ -616,8 +616,8 @@ one of its parties. An agreement posts nothing itself.
 The **invoice template** is the invoice form's fields, by their names —
 `items`, `reference`, `note`, `currency`, `vat_rate`, `vat_reason`,
 `income`, `due_days` — none blank: an invoice issued under the agreement
-starts from the template of the version in force on its date, and the
-person issuing it says what changes. It is a form's fields, not an invoice:
+starts from the template of the version in force on the day it is for,
+and the person issuing it says what changes. It is a form's fields, not an invoice:
 checked as any text is (I-C1), and for nothing it names, so a template
 naming an account moved since is refused when an invoice is issued from
 it, as the form refuses one typed. It is corrected in a new version.
@@ -639,11 +639,18 @@ corrected, or terms changed again before they took effect. To end an
 agreement as its terms say is to add a version with an `until`; to end it
 otherwise, to terminate it.
 
+**The day an invoice is for** is its period's first day, if it has a
+period, else its date. An invoice under an agreement is under the version
+in force on that day: November's, invoiced in arrears on 3 December, is
+under November's terms, even if new terms began on 1 December. For the
+same reason it may be dated after the agreement's last day, provided its
+period begins by then (I-T4).
+
 **What was issued keeps its version.** The version an invoice was issued
-under is derived — the version in force on its date — so it must stay the
-one in force: a version is not added that takes effect on or before the
-date of a standing invoice under the agreement (N10). New terms begin after
-what has been invoiced.
+under is derived — the version in force on the day it is for — so it must
+stay the one in force: a version is not added that takes effect on or
+before the day a standing invoice under the agreement is for (N10). New
+terms begin after what has been invoiced.
 
 An agreement's documents — the contract, each amendment — are kept as bills'
 documents are, each naming its version (§2.5).
@@ -751,7 +758,7 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 |---|---|---|---|
 | G-T1 | Whatever names a partner or an agreement — an invoice, a bill, an entry, an agreement, a document — names one there is; one is removed exactly when nothing names it | I-T1, I-T2 | `a_partner_is_removable_iff_unnamed`, `an_agreement_is_removable_iff_unnamed` |
 | G-T2 | An agreement is kept as a record: a version once added never changes, and is not removed, nor is a document of one, but by undo; one terminated or subsumed stays so and takes no new version, and no agreement is subsumed, through others, by itself | I-T3, I-T5, N11 | `versions_are_kept`, `ended_agreements_stay_ended` |
-| G-T3 | An invoice under an agreement is to one of its parties, and one standing is dated on a day the agreement is in force; the version in force on its date stays the one it was issued under, while it stands | I-T4, N10 | `invoices_under_an_agreement_are_to_its_parties_while_in_force`, `what_is_issued_keeps_its_version` |
+| G-T3 | An invoice under an agreement is to one of its parties, and one standing is for a day on or after the agreement begins, its period, if any, beginning by its last day; the version in force on the day it is for stays the one it was issued under, while it stands | I-T4, N10 | `invoices_under_an_agreement_are_to_its_parties_while_in_force`, `what_is_issued_keeps_its_version` |
 | G-T4 | What a partner owes, and is owed, in each commodity, is what their debts have open | I-T2, I-P1 | `partners_owe_what_their_debts_have_open` |
 
 ### Whoever runs a command
@@ -987,7 +994,7 @@ neither for an entry made long ago.
   so, whatever either owes; where they name two, their numbers say nothing
   of each other.
 - **N10** No version is added to an agreement that takes effect on or before
-  the date of a standing invoice issued under it: it was issued under the
+  the day a standing invoice issued under it is for: it was issued under the
   version then in force, which is derived, and so must stay in force
   (§2.9).
 - **N11** An agreement not active stays as it is: no version is added to it,
@@ -1013,9 +1020,10 @@ undo, while nothing has happened since.
   `from`. A version's invoice template holds nothing I-C1 refuses in a
   text, and no field but the invoice form's.
 - **I-T4** An invoice under an agreement is to one of its parties, and one
-  standing is dated on a day the agreement is in force: on or after its
-  first version's `from`, and on or before its last day. So an agreement
-  is not ended before an invoice issued under it. A plain entry linked to
+  standing is for a day (§2.9) on or after its first version's `from`. One
+  for a period has its period begin on or before the agreement's last day;
+  it may be dated after, as the last month's is, invoiced in arrears. So an
+  agreement is not ended before a period invoiced under it begins. A plain entry linked to
   an agreement and a partner names one of its parties; on any day, as a
   salary is paid after the contract ends.
 - **I-T5** An agreement is not subsumed by itself, nor by one subsumed,
@@ -1232,7 +1240,8 @@ last day the day before the new one's `--from`. What one command does is
 one change, a line of the log for each operation, as `abo file` and `abo
 agreement subsume` would log it. An invoice issued under an
 agreement takes what it is not given from the invoice template of the
-version in force on its date; logged, what was left blank is written out
+version in force on the day it is for, its `--period`'s first or else its
+date; logged, what was left blank is written out
 blank, so that run again it does not take the template's. An invoice
 issued with `--partner` is logged with the customer and tax number it
 copied, written out: run again after the partner's address has changed, it
