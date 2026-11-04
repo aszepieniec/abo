@@ -2644,3 +2644,21 @@ fn an_agreement_ending_later_is_active_till_then() {
     let t = read(&dir, &format!("invoices/2027/{again}.json"));
     assert!(t.contains("2 Road") && t.contains("PO 7") && t.contains("Support"), "{t}");
 }
+
+/// Former employees, those whose agreements have all ended, were listed
+/// with the current ones; they are counted, and listed with --former only.
+#[test]
+fn former_employees_are_listed_apart() {
+    let dir = books("former", &[]);
+    ok(&dir, &["partner", "add", "sam", "--name", "Sam Now", "--employee"]);
+    ok(&dir, &["partner", "add", "alex", "--name", "Alex Then", "--employee=yes"]);
+    ok(&dir, &["agreement", "add", "alex", "--partner", "alex", "--from", "2026-01-01"]);
+    ok(&dir, &["agreement", "terminate", "alex", "--on", "2026-12-31"]);
+    let said = ok(&dir, &["partner"]);
+    assert!(said.contains("Sam Now") && !said.contains("Alex Then") && said.contains("1 former employee; abo partner list --former"), "{said}");
+    let said = ok(&dir, &["partner", "list", "--former"]);
+    let (now, then) = said.split_once("Former employees").unwrap_or_else(|| panic!("{said}"));
+    assert!(now.contains("Sam Now") && !now.contains("Alex Then") && then.contains("Alex Then"), "{said}");
+    let said = ok(&dir, &["agreement", "show", "alex"]);
+    assert!(said.contains("no signed copy filed: abo file --for alex/1"), "{said}");
+}

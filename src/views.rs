@@ -308,6 +308,9 @@ pub struct PartnerRow {
     pub lines: String,
     pub tax_id: String,
     pub employee: bool,
+    /// An employee no longer: they have agreements, and every one has
+    /// ended before today.
+    pub former: bool,
     /// What the company owes them, on their bills, by commodity.
     pub owed_to: Vec<Amount>,
     /// What they owe the company, on their invoices.
@@ -340,7 +343,9 @@ pub fn partners(b: &Books, today: model::Date) -> Vec<PartnerRow> {
             let amounts = |m: std::collections::BTreeMap<String, Decimal>| m.into_iter().map(|(c, q)| Amount::new(b, q, &c)).collect();
             let agreements: Vec<String> = b.agreements_of(id).into_iter().cloned().collect();
             let pays = |a: &model::Agreement| a.last_day().is_none_or(|l| l >= today) && a.versions.iter().any(|v| v.schedule.as_ref().is_some_and(|s| s.party == *id && s.does == model::Does::Pay));
-            let unpaid = p.employee && !b.agreements.values().any(pays);
+            let of: Vec<&model::Agreement> = agreements.iter().filter_map(|a| b.agreements.get(a)).collect();
+            let former = p.employee && !of.is_empty() && of.iter().all(|a| a.last_day().is_some_and(|l| l < today));
+            let unpaid = p.employee && !former && !b.agreements.values().any(pays);
             let entries = (1..=b.entries.len())
                 .rev()
                 .filter(|&e| matches!(b.entries[e - 1].kind, model::Kind::Bill(..) | model::Kind::Invoice { .. }) && b.partner_of(e) == Some(id))
@@ -352,6 +357,7 @@ pub fn partners(b: &Books, today: model::Date) -> Vec<PartnerRow> {
                 lines: p.lines.clone(),
                 tax_id: p.tax_id.clone(),
                 employee: p.employee,
+                former,
                 owed_to: amounts(to),
                 owed_by: amounts(by),
                 agreements,

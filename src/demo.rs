@@ -126,32 +126,47 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
         }
     };
     // Partners: two customers, a customer under a retainer, the hosting
-    // supplier, and an employee.
+    // supplier, an employee, and two former ones.
     let partner = |s: &mut Store, id: &str, lines: &str, tax_id: &str, employee: bool| s.change(&Op::PartnerAdd { id: id.into(), partner: model::Partner { lines: lines.into(), tax_id: tax_id.into(), employee } }, &[]);
     partner(&mut s, "acme", "Acme Hosting AG\nServer Street 1\n8000 Zurich", "CHE-111.222.333", false)?;
     partner(&mut s, "customer-one", "Customer One\n1 Customer Lane\n10000 Example City", "", false)?;
     partner(&mut s, "customer-three", "Customer Three\n3 Example Road\n10000 Example City", "", false)?;
     partner(&mut s, "nordlicht", "Nordlicht AG\nSeestrasse 12\n8002 Zurich", "CHE-987.654.321", false)?;
     partner(&mut s, "sam", "Sam Example", "", true)?;
+    partner(&mut s, "alex", "Alex Former", "", true)?;
+    partner(&mut s, "robin", "Robin Former", "", true)?;
     let month = |back: i64| now.first_of_month().checked_sub(jiff::Span::new().months(back)).unwrap_or(now);
     let schedule = |party: &str, does, billed, draft: &[(&str, &str)]| Some(model::Schedule { party: party.into(), does, every: 1, billed, draft: draft.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() });
     // Hosting's contract, on record: paid on each bill, nothing scheduled.
     let version = model::Version { from: ago(240), until: None, schedule: None };
     s.change(&Op::AgreementAdd { id: "acme-hosting".into(), parties: vec!["acme".into()], version }, &[])?;
-    if let Ok(bytes) = demo_document(&s.root, "Acme Hosting AG", "Acme Hosting AG, hosting contract", &[], ago(240)) {
+    // Every agreement's first version, with its contract as signed.
+    let signed = |s: &mut Store, id: &str, party: &str, date: model::Date| -> Result<()> {
+        let Ok(bytes) = demo_document(&s.root, party, &format!("{party}, contract"), &[], date) else { return Ok(()) };
         let sha256 = store::sha256(&bytes);
-        let of = Some(model::Of::Version("acme-hosting".into(), 1));
-        let path = model::Document { date: ago(240), name: "acme-hosting-ag".into(), ext: "pdf".into(), of: of.clone() }.path(&sha256);
-        s.change(&Op::File { sha256, date: ago(240), name: "acme-hosting-ag".into(), ext: "pdf".into(), of }, &[(path, bytes)])?;
-    }
+        let of = Some(model::Of::Version(id.into(), 1));
+        let name = crate::repo::slug(party);
+        let path = model::Document { date, name: name.clone(), ext: "pdf".into(), of: of.clone() }.path(&sha256);
+        s.change(&Op::File { sha256, date, name, ext: "pdf".into(), of }, &[(path, bytes)]).map(drop)
+    };
+    signed(&mut s, "acme-hosting", "Acme Hosting AG", ago(240))?;
     // Sam's contract: a salary, paid each month after it.
     let draft = [("description", "Salary, Sam Example"), ("postings", "Expenses:Salary=6000.00 EUR\nAssets:Bank=-6000.00 EUR")];
     let version = model::Version { from: month(5), until: None, schedule: schedule("sam", model::Does::Pay, model::Billed::InArrears, &draft) };
     s.change(&Op::AgreementAdd { id: "sam".into(), parties: vec!["sam".into()], version }, &[])?;
+    signed(&mut s, "sam", "Sam Example", month(5))?;
+    // Two who worked for the company once: their contracts, ended.
+    for (who, name, from, to) in [("alex", "Alex Former", 260, 120), ("robin", "Robin Former", 250, 60)] {
+        let version = model::Version { from: ago(from), until: None, schedule: None };
+        s.change(&Op::AgreementAdd { id: who.into(), parties: vec![who.into()], version }, &[])?;
+        signed(&mut s, who, name, ago(from))?;
+        s.change(&Op::AgreementEnd { id: who.into(), status: model::AgreementStatus::Terminated { on: ago(to) } }, &[])?;
+    }
     // Nordlicht's retainer: invoiced each month, at its start.
     let draft = [("items", "1|1500.00|Retainer, the month"), ("reference", "Retainer")];
     let version = model::Version { from: month(2), until: None, schedule: schedule("nordlicht", model::Does::Invoice, model::Billed::InAdvance, &draft) };
     s.change(&Op::AgreementAdd { id: "nordlicht-retainer".into(), parties: vec!["nordlicht".into()], version }, &[])?;
+    signed(&mut s, "nordlicht-retainer", "Nordlicht AG", month(2))?;
 
     post(&mut s, 270, "Opening balance", vec![p("Assets:Bank", "50000.00", "EUR"), p("Equity:Opening", "-50000.00", "EUR")])?;
     let acme = bill(&mut s, 230, "Acme Hosting AG", "Acme Hosting AG, hosting", vec![p("Expenses:Hosting", "100.00", "EUR"), p("Assets:VAT:Input", "10.00", "EUR"), p("Liabilities:Payable", "-110.00", "EUR")])?;

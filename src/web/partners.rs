@@ -4,11 +4,13 @@
 use super::*;
 
 /// Every partner, what they owe and are owed, their agreements; employees
-/// apart, each one no active agreement pays marked.
+/// apart, each one no active agreement pays marked; former employees
+/// folded away under the current ones.
 pub(super) async fn partners_list(Books(s): Books) -> Response {
     or_error(&s, "Partners", || {
         let all = views::partners(&s.books, store::today()?);
         let (employees, others): (Vec<_>, Vec<_>) = all.iter().partition(|p| p.employee);
+        let (former, employees): (Vec<_>, Vec<_>) = employees.into_iter().partition(|p| p.former);
         let agreements = views::agreements(&s.books, store::today()?);
         Ok(html! {
             div.head {
@@ -19,20 +21,25 @@ pub(super) async fn partners_list(Books(s): Books) -> Response {
                 } }
             }
             (partner_table("Customers and suppliers", &others))
-            @if !employees.is_empty() { (partner_table("Employees", &employees)) }
+            @if !employees.is_empty() || !former.is_empty() { (partner_table("Employees", &employees)) }
+            @if !former.is_empty() {
+                details.former {
+                    summary.btn { (icon("people")) span.closed { " Show former employees (" (former.len()) ")" } span.opened { " Hide former employees" } }
+                    (partner_table("Former employees: every agreement with them has ended", &former))
+                }
+            }
             div.box {
                 div.box-header { (icon("book")) "Agreements" }
                 @if agreements.is_empty() {
                     div.box-body { p.muted { "No agreements yet." } }
                 } @else {
                     table.list {
-                        thead { tr { th { "Agreement" } th { "Parties" } th { "Status" } th { "Due" } } }
+                        thead { tr { th { "Agreement" } th { "Parties" } th { "Status" } } }
                         tbody { @for a in &agreements {
                             tr.row-link {
                                 td { a.stretch href={"/agreement/" (enc(&a.id))} { code { (a.id) } } }
                                 td { (a.parties.join(", ")) }
-                                td { (status_said(a)) }
-                                td { @let due = a.periods.iter().filter(|p| p.due).count(); @if due > 0 { span.pill.pill-warn { (due) " due" } } }
+                                td { (status_said(a)) @if a.versions.iter().any(|v| v.documents.is_empty()) { " " span.pill.pill-warn { "no signed copy" } } }
                             }
                         } }
                     }
@@ -109,7 +116,8 @@ fn partner_fields(b: &Model, id: &str) -> Fields {
 fn partner_page(s: &Store, p: &views::PartnerRow, f: &Fields, error: Option<&anyhow::Error>) -> Markup {
     html! {
         div.head {
-            h1 { (p.name) " " span.muted.small { (p.id) } }
+            h1 { (p.name) " " span.muted.small { (p.id) }
+                @if p.former { " " span.pill { "Former employee" } } @else if p.employee { " " span.pill.pill-info { "Employee" } } }
             @if may_change() { div.actions { a.btn href={"/invoice?partner=" (enc(&p.id))} { (icon("outbox")) " Invoice them" } } }
         }
         @if let Some(e) = error { (refused(e)) }
@@ -463,16 +471,25 @@ fn agreement_page(s: &Store, a: &views::AgreementView, f: &Fields, error: Option
                         _ => p.muted { "A contract on record: nothing is scheduled under it." },
                     }
                     @for (k, x) in &v.draft { div.small { span.muted { (k) ": " } (x.replace('\n', "; ")) } }
-                    @for d in &v.documents { div { a href={"/" (d)} { (icon("doc")) " " (d.rsplit('/').next().unwrap_or(d)) } } }
+                    @if v.documents.is_empty() {
+                        div.flash.flash-warn { (icon("alert")) div { "No signed copy of this version is filed yet." @if may_change() { " Upload the scan, a PDF or a JPEG, below." } } }
+                    }
+                    @for d in &v.documents {
+                        @let file = d.rsplit('/').next().unwrap_or(d);
+                        div.doc-row {
+                            a href={"/" (d)} target="_blank" { (icon("doc")) " " (file) }
+                            a.btn.small href={"/" (d)} download=(file) { (icon("download")) " Download" }
+                        }
+                    }
                     @if may_change() {
                         form.inline method="post" action={"/agreement/" (id) "/file"} enctype="multipart/form-data" {
                             (token())
                             input type="hidden" name="version" value=(v.n);
                             input type="hidden" name="issuer" value=(a.parties.first().cloned().unwrap_or_default());
-                            label { "Its document, as signed " input type="file" name="document" accept="application/pdf,image/*" required; }
+                            label { @if v.documents.is_empty() { "The signed copy " } @else { "Another scan of it " } input type="file" name="document" accept="application/pdf,image/jpeg,image/png,image/webp" required; }
                             label { " dated " input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="date" required value=(v.from); }
                             " "
-                            button.small type="submit" { (icon("upload")) " File it" }
+                            button.small type="submit" { (icon("upload")) " Upload" }
                         }
                     }
                 }

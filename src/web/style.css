@@ -119,6 +119,12 @@ ul.tree .grip.stuck { opacity: .35; cursor: not-allowed; }
 ul.tree .bal { margin-left: auto; white-space: nowrap; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }
 ul.tree .act { flex: none; min-width: 34px; margin-left: 20px; display: flex; justify-content: flex-end; }
 button.icon-only { padding: 0 8px; }
+details.former { margin-bottom: 24px; }
+details.former > summary { list-style: none; margin-bottom: 12px; }
+details.former > summary::-webkit-details-marker { display: none; }
+details.former[open] .closed, details.former:not([open]) .opened { display: none; }
+details.former .box { opacity: .75; border-style: dashed; }
+.doc-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 4px 0 12px; }
 .party-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
 .party-row select { flex: 1; min-width: 0; }
 ul.tree button.btn-danger[disabled], ul.tree button.btn-danger[disabled]:hover { color: var(--muted); background: var(--inset); border-color: var(--btn-border); opacity: 1; }

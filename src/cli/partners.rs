@@ -13,7 +13,8 @@ use std::path::Path;
 pub(crate) fn partner(here: &Path, json: bool, change: Option<PartnerCmd>) -> Result<()> {
     let mut s = Store::open(here)?;
     let op = match change {
-        None | Some(PartnerCmd::List) => return list(&s, json),
+        None => return list(&s, json, false),
+        Some(PartnerCmd::List { former }) => return list(&s, json, former),
         // ponytail: three questions, asked here; the web's form has the same
         // three fields. Into questions.rs should a third place ask them.
         Some(PartnerCmd::Add { id, details, employee }) => {
@@ -77,10 +78,11 @@ fn amounts(v: &[views::Amount]) -> String {
     v.iter().map(|a| a.text(" ")).collect::<Vec<_>>().join(", ")
 }
 
-fn list(s: &Store, json: bool) -> Result<()> {
+fn list(s: &Store, json: bool, with_former: bool) -> Result<()> {
     still(s);
-    let all = views::partners(&s.books, store::today()?);
-    emit(json, &all, || {
+    let all: Vec<_> = views::partners(&s.books, store::today()?).into_iter().collect();
+    let shown: Vec<&views::PartnerRow> = all.iter().filter(|p| with_former || !p.former).collect();
+    emit(json, &shown, || {
         if all.is_empty() {
             return "No partners yet; abo partner add adds one.".into();
         }
@@ -104,10 +106,20 @@ fn list(s: &Store, json: bool) -> Result<()> {
             out
         };
         let (employees, others): (Vec<_>, Vec<_>) = all.iter().partition(|p| p.employee);
+        let (former, employees): (Vec<_>, Vec<_>) = employees.into_iter().partition(|p| p.former);
         let mut out: Vec<String> = others.into_iter().map(row).collect();
         if !employees.is_empty() {
             out.push("Employees:".into());
             out.extend(employees.into_iter().map(row));
+        }
+        match (former.len(), with_former) {
+            (0, _) => {}
+            (_, true) => {
+                out.push("Former employees (every agreement with them has ended):".into());
+                out.extend(former.into_iter().map(row));
+            }
+            (1, false) => out.push("1 former employee; abo partner list --former lists them.".into()),
+            (n, false) => out.push(format!("{n} former employees; abo partner list --former lists them.")),
         }
         out.join("\n")
     })
@@ -126,9 +138,8 @@ pub(crate) fn agreement(here: &Path, json: bool, change: Option<AgreementCmd>) -
                 }
                 all.iter()
                     .map(|a| {
-                        let due = a.periods.iter().filter(|p| p.due).count();
-                        let due = if due > 0 { format!(", {due} due") } else { String::new() };
-                        format!("{}  {}  {}{due}", a.id, status(a), a.parties.join(", "))
+                        let unsigned = if a.versions.iter().any(|v| v.documents.is_empty()) { ", no signed copy" } else { "" };
+                        format!("{}  {}  {}{unsigned}", a.id, status(a), a.parties.join(", "))
                     })
                     .collect::<Vec<_>>()
                     .join("\n")
@@ -184,6 +195,9 @@ fn show(a: &views::AgreementView) -> String {
         }
         for d in &v.documents {
             out += &format!("\n    document: {d}");
+        }
+        if v.documents.is_empty() {
+            out += &format!("\n    no signed copy filed: abo file --for {}/{} --date ... --issuer ... <scan>", a.id, v.n);
         }
     }
     if !a.periods.is_empty() || a.next.is_some() {

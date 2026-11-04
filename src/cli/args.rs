@@ -34,8 +34,13 @@ pub(crate) struct Cli {
 #[derive(Subcommand)]
 pub(crate) enum PartnerCmd {
     /// Every partner: what they owe and are owed, and their agreements;
-    /// employees apart. The same as no subcommand.
-    List,
+    /// employees apart. The same as no subcommand. Former employees, those
+    /// whose agreements have all ended, are counted, not listed.
+    List {
+        /// List former employees too, under a heading of their own.
+        #[arg(long)]
+        former: bool,
+    },
     /// Add a partner. Without flags it asks for the name, then the address
     /// and the tax number, either of which may be left blank.
     Add {

@@ -1136,6 +1136,8 @@ fn partners_and_agreements_through_the_pages() {
     post("/agreement/hosting/amend", &amend);
     again(&["contracts/hosting.toml"]);
 
+    let (_, _, page) = http(&s, "GET", "/agreement/hosting", &[]);
+    assert!(page.contains("No signed copy of this version is filed yet"), "{page}");
     let pdf = b"%PDF-1.4\n% the contract\n%%EOF\n";
     let body = multipart(&[("token", "a7"), ("version", "1"), ("issuer", "acme"), ("date", "2025-12-20")], Some(pdf));
     let (status, _, page) = send(&s, "POST", "/agreement/hosting/file", "multipart/form-data; boundary=b0undary", &body);
@@ -1144,6 +1146,21 @@ fn partners_and_agreements_through_the_pages() {
     assert!(index.contains(" hosting/1\n"), "{index}");
     let (status, _, _) = http(&s, "GET", &format!("/{}", index.split(' ').nth(1).unwrap()), &[]);
     assert_eq!(status, 200);
+    let (_, _, page) = http(&s, "GET", "/agreement/hosting", &[]);
+    assert!(page.contains(&format!("href=\"/{}\" download=", index.split(' ').nth(1).unwrap())), "{page}");
+
+    // A former employee: folded away under the current ones, marked.
+    post("/partners/new", &[("token", "a20"), ("id", "kim"), ("name", "Kim Then"), ("employee", "on")]);
+    again(&["partners.toml"]);
+    post("/agreements/new", &[("token", "a21"), ("id", "kim"), ("party0", "kim"), ("from", "2026-01-01"), ("does", "")]);
+    again(&["contracts/kim.toml"]);
+    post("/agreement/kim/end", &[("token", "a22"), ("on", "2026-02-28"), ("by", "")]);
+    again(&["contracts/kim.toml"]);
+    let (_, _, page) = http(&s, "GET", "/partners", &[]);
+    let (_, former) = page.split_once("<details class=\"former\"").unwrap_or_else(|| panic!("{page}"));
+    assert!(former.contains("Show former employees (1)") && former.contains("Kim Then"), "{page}");
+    let (_, _, page) = http(&s, "GET", "/partner/kim", &[]);
+    assert!(page.contains("Former employee"), "{page}");
 
     post("/agreement/hosting/end", &[("token", "a8"), ("on", "2026-06-30"), ("by", "")]);
     again(&["contracts/hosting.toml"]);
