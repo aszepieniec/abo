@@ -89,18 +89,25 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
                 None
             }
         };
-        s.change(&Op::Bill { date: ago(days), description: description.into(), postings, document, again: false, more: Default::default() }, &[])?;
+        // A bill of Acme Hosting AG is from the partner acme.
+        let partner = issuer.starts_with("Acme").then(|| "acme".to_string());
+        s.change(&Op::Bill { date: ago(days), description: description.into(), postings, document, again: false, more: model::BillMore { partner, ..Default::default() } }, &[])?;
         Ok(s.books.entries.len())
     };
     let pay = |s: &mut Store, days: i64, debt: usize, amount: &str| -> Result<()> {
         s.change(&Op::Pay { debt, date: ago(days), amount: d(amount), from: "Assets:Bank".into(), cost: None }, &[])?;
         Ok(())
     };
-    let invoice = |s: &mut Store, days: i64, customer: &str, lines: &[(&str, &str, &str)]| -> Result<Option<usize>> {
+    // An invoice to a partner, or, with a period, under an agreement: the
+    // customer printed is theirs.
+    let invoice = |s: &mut Store, days: i64, to: model::To, period: Option<model::Period>, lines: &[(&str, &str, &str)]| -> Result<Option<usize>> {
+        let customer = match &to {
+            model::To::Partner(p) | model::To::Agreement(p) => p.clone(),
+        };
         let lines: Vec<model::Line> = lines.iter().map(|(q, u, w)| model::Line { description: w.to_string(), quantity: d(q), unit_price: d(u) }).collect();
         let op = |pdf: String| Op::Invoice {
             date: ago(days),
-            customer: customer.into(),
+            customer: String::new(),
             commodity: "EUR".into(),
             lines: lines.clone(),
             rate: None,
@@ -108,7 +115,7 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
             reference: String::new(),
             note: String::new(),
             pdf,
-            more: Default::default(),
+            more: model::InvoiceMore { to: Some(to.clone()), period, ..Default::default() },
         };
         match crate::invoice::issue(s, op) {
             Ok(i) => Ok(Some(i.entry)),
@@ -118,20 +125,67 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
             }
         }
     };
-    post(&mut s, 270, "Opening balance", vec![p("Assets:Bank", "25000.00", "EUR"), p("Equity:Opening", "-25000.00", "EUR")])?;
+    // Partners: two customers, a customer under a retainer, the hosting
+    // supplier, and an employee.
+    let partner = |s: &mut Store, id: &str, lines: &str, tax_id: &str, employee: bool| s.change(&Op::PartnerAdd { id: id.into(), partner: model::Partner { lines: lines.into(), tax_id: tax_id.into(), employee } }, &[]);
+    partner(&mut s, "acme", "Acme Hosting AG\nServer Street 1\n8000 Zurich", "CHE-123.456.789", false)?;
+    partner(&mut s, "customer-one", "Customer One\n1 Customer Lane\n10000 Example City", "", false)?;
+    partner(&mut s, "customer-three", "Customer Three\n3 Example Road\n10000 Example City", "", false)?;
+    partner(&mut s, "nordlicht", "Nordlicht AG\nSeestrasse 12\n8002 Zurich", "CHE-987.654.321", false)?;
+    partner(&mut s, "sam", "Sam Example", "", true)?;
+    let month = |back: i64| now.first_of_month().checked_sub(jiff::Span::new().months(back)).unwrap_or(now);
+    let schedule = |party: &str, does, billed, draft: &[(&str, &str)]| Some(model::Schedule { party: party.into(), does, every: 1, billed, draft: draft.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() });
+    // Hosting's contract, on record: paid on each bill, nothing scheduled.
+    let version = model::Version { from: ago(240), until: None, schedule: None };
+    s.change(&Op::AgreementAdd { id: "acme-hosting".into(), parties: vec!["acme".into()], version }, &[])?;
+    if let Ok(bytes) = demo_document(&s.root, "Acme Hosting AG", "Acme Hosting AG, hosting contract", &[], ago(240)) {
+        let sha256 = store::sha256(&bytes);
+        let of = Some(model::Of::Version("acme-hosting".into(), 1));
+        let path = model::Document { date: ago(240), name: "acme-hosting-ag".into(), ext: "pdf".into(), of: of.clone() }.path(&sha256);
+        s.change(&Op::File { sha256, date: ago(240), name: "acme-hosting-ag".into(), ext: "pdf".into(), of }, &[(path, bytes)])?;
+    }
+    // Sam's contract: a salary, paid each month after it.
+    let draft = [("description", "Salary, Sam Example"), ("postings", "Expenses:Salary=6000.00 EUR\nAssets:Bank=-6000.00 EUR")];
+    let version = model::Version { from: month(5), until: None, schedule: schedule("sam", model::Does::Pay, model::Billed::InArrears, &draft) };
+    s.change(&Op::AgreementAdd { id: "sam".into(), parties: vec!["sam".into()], version }, &[])?;
+    // Nordlicht's retainer: invoiced each month, at its start.
+    let draft = [("items", "1|1500.00|Retainer, the month"), ("reference", "Retainer 2026")];
+    let version = model::Version { from: month(2), until: None, schedule: schedule("nordlicht", model::Does::Invoice, model::Billed::InAdvance, &draft) };
+    s.change(&Op::AgreementAdd { id: "nordlicht-retainer".into(), parties: vec!["nordlicht".into()], version }, &[])?;
+
+    post(&mut s, 270, "Opening balance", vec![p("Assets:Bank", "50000.00", "EUR"), p("Equity:Opening", "-50000.00", "EUR")])?;
     let acme = bill(&mut s, 230, "Acme Hosting AG", "Acme Hosting AG, hosting", vec![p("Expenses:Hosting", "100.00", "EUR"), p("Assets:VAT:Input", "10.00", "EUR"), p("Liabilities:Payable", "-110.00", "EUR")])?;
     pay(&mut s, 216, acme, "110.00")?;
-    if let Some(one) = invoice(&mut s, 185, "Customer One\n1 Customer Lane\n10000 Example City", &[("10", "500.00", "Consulting")])? {
+    if let Some(one) = invoice(&mut s, 185, model::To::Partner("customer-one".into()), None, &[("10", "500.00", "Consulting")])? {
         pay(&mut s, 170, one, "5500.00")?;
     }
-    post(&mut s, 155, "Salary", vec![p("Expenses:Salary", "6000.00", "EUR"), p("Assets:Bank", "-6000.00", "EUR")])?;
     post(&mut s, 150, "Petty cash", vec![p("Assets:Cash", "500.00", "EUR"), p("Assets:Bank", "-500.00", "EUR")])?;
     post(&mut s, 148, "Paper & Pens, stationery paid in cash", vec![p("Expenses:General", "42.50", "EUR"), p("Assets:Cash", "-42.50", "EUR")])?;
     let lex = bill(&mut s, 95, "Lex & Partners", "Lex & Partners, legal advice", vec![p("Expenses:General", "1200.00", "EUR"), p("Assets:VAT:Input", "120.00", "EUR"), p("Liabilities:Payable", "-1320.00", "EUR")])?;
     pay(&mut s, 65, lex, "500.00")?;
-    if let Some(three) = invoice(&mut s, 50, "Customer Three\n3 Example Road\n10000 Example City", &[("4", "500.00", "Consulting, the month")])? {
+    if let Some(three) = invoice(&mut s, 50, model::To::Partner("customer-three".into()), None, &[("4", "500.00", "Consulting, the month")])? {
         pay(&mut s, 30, three, "1000.00")?;
         pay(&mut s, 15, three, "500.00")?;
+    }
+    // The retainer's months before this one, invoiced, the first paid; this
+    // month's is due. Dated after the last invoice, as numbers follow dates.
+    let retainer = s.books.agreements["nordlicht-retainer"].periods(now);
+    for (k, (_, period)) in retainer.iter().filter(|(_, p)| p.to < now.first_of_month()).enumerate() {
+        let date = period.from.max(ago(49 - k as i64));
+        let days = (now - date).get_days() as i64;
+        if let Some(id) = invoice(&mut s, days, model::To::Agreement("nordlicht-retainer".into()), Some(*period), &[("1", "1500.00", "Retainer, the month")])? {
+            if k == 0 {
+                pay(&mut s, 10, id, "1500.00")?;
+            }
+        }
+    }
+    // Sam's months paid, each the day after it ends; last month's is due.
+    let salary = s.books.agreements["sam"].periods(now);
+    for (_, period) in salary.iter().filter(|(_, p)| p.to < month(1)) {
+        let day = period.to.tomorrow().unwrap_or(period.to);
+        let under = Some(model::For { agreement: "sam".into(), period: *period });
+        let postings = vec![p("Expenses:Salary", "6000.00", "EUR"), p("Assets:Bank", "-6000.00", "EUR")];
+        s.change(&Op::Post { date: day, description: "Salary, Sam Example".into(), postings, under }, &[])?;
     }
     // Owed in another currency: the open total has a line of its own for it.
     let mut owed = p("Liabilities:Payable", "-250.00", "USD");

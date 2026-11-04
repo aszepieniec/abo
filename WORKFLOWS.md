@@ -147,6 +147,43 @@ with Edit and Remove, and a button to add one: the same questions as a form,
 each problem under its field, saving by the same commands.
 **Done when** the next invoice prints the options as they now stand.
 
+### A5. Keep partners — Supported (browser, CLI)
+A partner is someone the company invoices or is billed by, pays or is paid
+by: their name, then their address and tax number, either of which may be
+blank, and whether the company employs them. **Partners** lists them with
+what each owes and is owed, and their agreements, the employees apart, one
+whom no active agreement pays marked. **Add a partner** asks a short name
+(`acme`: a-z, 0-9 and `-`, not changed after), the name, the address a line
+each, and the tax number. A partner's page has their invoices, bills and
+agreements, and their details as a form; a change to them changes no
+invoice issued. One nothing names may be removed. CLI: `abo partner [list]`,
+`abo partner add <id>` (asking the name, address and tax number, or
+`--name --address... --tax-id --employee`), `edit <id>`, `remove <id>`.
+**Done when** `partners.toml` holds them, and an invoice to one prints their
+name, address and tax number as they were when it was issued.
+
+### A6. Keep an agreement — Supported (browser, CLI)
+An agreement is a contract with one or more partners, kept in versions: a
+change of terms adds a version from a day, and those before stay as they
+were. A version may have a schedule: invoice a party, or pay or receive from
+one by an entry, every so many months, each period done from its first day
+(in advance) or from the day after its last (in arrears), from a draft of
+the form. Without one it is a contract on record. **Add an agreement**
+(Partners, or a partner's page) asks its short name, its parties, and its
+first version; its page lists its periods, done or due, its versions, and
+forms to amend it, end it (terminated, or subsumed by another, on a day,
+today unless said), file each version's signed document, and remove it
+while nothing names it. A version that would take effect on or before the
+last day of a period done is refused, saying from when one may; so is
+ending it before a period done ends. CLI: `abo agreement [list]`, `show
+<id>`, `add <id> --partner ... --from ... [--invoice|--pay|--receive <who>
+--every N --in-advance|--in-arrears --draft field=value ...]`, `amend <id>
+--from ...` (what it is not given kept from the version in force), `terminate
+<id> [--on]`, `subsume <id> --by <other> [--on]`, `remove <id>`; `abo file
+--for <id>/<n>` files a version's document under `contracts/`.
+**Done when** `contracts/<id>.toml` holds its versions as added, and an
+agreement ended takes no new version.
+
 ---
 
 ## B. Everyday booking
@@ -228,6 +265,16 @@ write-off moves no money, so another account is refused (MODEL.md N4).
 **Done when** nothing is open, what was open is in that account, and the
 debt shows as written off, not settled.
 
+### B7. Pay or receive a period of an agreement — Supported (browser, CLI)
+A period due to pay (a salary, a rent) or to receive shows on the home page,
+with **Pay it**: the entry form, filled in from the draft, saying the
+period; this month's figures are typed over it. A bill may name the partner
+who sent it (**From**, or `abo bill --partner`): then two of theirs under one
+number are one bill, whatever each owes. CLI: `abo post --agreement <id>
+--period <from>..<to> [--desc ...] [postings]`, the draft's where not given.
+**Done when** the period no longer shows as due, and the entry is tagged
+`agreement:`, `period:` and `partner:` in the journal.
+
 ---
 
 ## C. Invoicing
@@ -298,6 +345,26 @@ receivable in it at its cost in the company's currency, and income and VAT
 in the company's currency; a bill owed in another commodity likewise has
 its expense in the company's currency, and what is owed at its cost. So
 profit and loss is one amount.
+
+### C4. Invoice a partner, or a period of an agreement — Supported (browser, CLI)
+The invoice form's **Partner** fills in their name, address and tax number
+when the customer is left blank; the invoice keeps them as printed. A
+period, from and to, is printed on it. A period due under an agreement shows
+above **Invoices**, with **Invoice it**: the form, filled in from the draft,
+to the party, dated today, saying the period; what is changed this month is
+changed there. Each period is done once: invoicing it again is refused
+until its invoice is cancelled, and correcting that invoice issues the new
+one for the same period. CLI: `abo invoice --partner <id> ...`, or
+`--agreement <id> --period <from>..<to>`, what is not given taken from the
+draft; the log writes out what it copied and what was left blank, so the
+command run again issues the same invoice.
+**Done when** the period no longer shows as due, the invoice's page says the
+period and the agreement, and `hledger reg tag:partner=<id>` lists it.
+
+### C5. Issue again — Supported (browser)
+On an invoice's page, **Issue again** opens the form filled in as it was —
+lines, terms, reference, partner — for another like it, dated today.
+**Done when** the new invoice says what the old one did, numbered next.
 
 ---
 

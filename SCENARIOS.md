@@ -23,6 +23,7 @@ Four people, each on books of their own:
 | 2 | a copy of the demo books | S6–S11 |
 | 3 | a copy of the demo books | S12–S17 |
 | 4 | a copy of the demo books | S18–S25 |
+| 5 | a copy of the demo books | S27–S31 |
 
 Each then does S26 on their own books, last.
 
@@ -31,7 +32,10 @@ The demo books are those of Example Ltd: EUR, VAT by the effective method at
 made: an opening balance about nine months ago, bills from Acme Hosting AG,
 Lex & Partners (part paid) and Devtools Inc (in USD, unpaid), two invoices
 (one settled, one part paid), a bill document from Telecom GmbH filed and not
-booked, and a bank statement recorded a week ago.
+booked, and a bank statement recorded a week ago. Acme Hosting AG, the two
+customers, Nordlicht AG and an employee, Sam Example, are partners; Nordlicht
+AG has a monthly retainer invoiced at the start of each month, this month's
+not yet, and Sam a salary paid after each month, last month's not yet.
 
 A run counts as clean when no person got stuck, misread what abo said, met a
 refusal they could not act on, or saw a character outside printable ASCII on
@@ -149,9 +153,9 @@ quarter?
 month by month?
 
 **S25. Taking things back** (F1, F2, F7). Book a 50.00 EUR taxi fare paid in
-cash, then take it back at once: it was a mistake. Then find the salary
-payment of some months ago and reverse it: it was booked in the wrong period;
-it belongs to April.
+cash, then take it back at once: it was a mistake. Then find the earliest
+salary paid to Sam Example and reverse it: it was booked in the wrong
+period; it belongs to April.
 Afterwards, list what was done to the books today, in order.
 
 ---
@@ -169,6 +173,34 @@ right before the next:
 
 For each: did abo notice? Did it say which file and line? Did it say how to
 put it right? None of these is needed to pass; each is recorded.
+
+---
+
+## 6. Partners and agreements
+
+**S27. A new supplier** (A5, B7). Officeworld GmbH, Industriestrasse 3, 80331
+München, Germany, VAT number DE811234567, now supplies the office. Keep them
+as a partner, and book their bill no. OW-1042 of the 3rd of this month: paper,
+80.00 EUR plus 8.00 EUR VAT, as theirs. Then try to book the same bill no.
+OW-1042 again, for 88.00 EUR in all: it must not get in.
+
+**S28. Cleaning** (A6, B7). From the 1st of last month, Clean & Co (Gasse 7,
+8001 Zürich) clean the office for 250.00 EUR a month, paid from the bank
+after each month, without a bill. Keep the contract, and pay last month's
+cleaning. Pay what Sam Example is owed for last month too: their salary is
+as before.
+
+**S29. The retainer** (C4). Invoice Nordlicht AG this month's retainer.
+Nordlicht's retainer goes up: from the 1st of next month, 1,800.00 EUR a
+month. Afterwards, the retainer must show what was invoiced under which
+terms, and what next month's invoice will say.
+
+**S30. Signed, and ended** (A6). File `contract.pdf` from your home
+directory as Nordlicht's retainer contract, as signed. Sam Example leaves:
+their last day is the last day of this month.
+
+**S31. The same again** (C5). Customer One wants the consulting of their
+invoice again, at the same price, invoiced today.
 
 ---
 
@@ -272,7 +304,7 @@ CLI's alone.
 ## Setting up a run
 
 For each person: a fresh directory under the scratchpad as `$HOME`, holding
-`bill-scan.pdf` (person 2); `$BOOKS` inside it, empty (person 1) or holding
+`bill-scan.pdf` (person 2) or `contract.pdf` (person 5); `$BOOKS` inside it, empty (person 1) or holding
 the demo books (`abo demo --dir $BOOKS/example-ltd`, stopped once it serves);
 git's `user.name` and `user.email` set in that `$HOME`. `abo` on the PATH is a
 wrapper that runs the release build of the commit under test and appends the
