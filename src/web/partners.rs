@@ -323,13 +323,12 @@ const TEMPLATE: [(&str, &str); 8] = [
 fn scan_fields(f: &Fields) -> Markup {
     let get = |k: &str| f.get(k).cloned().unwrap_or_default();
     html! {
-        fieldset.field {
-            legend { "Signed copy" }
+        label.field { "Signed copy"
             span.hint { "The scan as signed, a PDF or a JPEG. Not at hand? Leave it out, and upload it on the agreement's page later." }
-            @if let Some(n) = f.get("document_name") { p.small.muted { (icon("alert")) " Choose " (n) " again: a page cannot keep a file it was sent." } }
+            @if let Some(n) = f.get("document_name") { span.hint { (icon("alert")) " Choose " (n) " again: a page cannot keep a file it was sent." } }
             input type="file" name="document" accept="application/pdf,image/jpeg,image/png,image/webp";
-            label.field { "Signed on" span.hint { "Blank for the day it takes effect." } input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="signed" value=(get("signed")); }
         }
+        label.field { "Signed on" span.hint { "Blank for the day it takes effect." } input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="signed" value=(get("signed")); }
     }
 }
 
