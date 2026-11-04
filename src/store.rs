@@ -216,21 +216,27 @@ impl Store {
         self.write(n, also, &removed, what, argv)
     }
 
-    /// Two operations as one change, one commit, a line of the log each, as
-    /// the command of its part: a document filed and its bill booked, from
-    /// one form. Undo takes back both, as it takes back the commit.
-    pub fn change_pair(&mut self, first: &Op, second: &Op, also: &[(String, Vec<u8>)]) -> Result<Option<String>> {
+    /// Operations as one change, one commit, a line of the log each, as
+    /// the command of its part, a document filed from the file it names:
+    /// a document filed and its bill booked, from one form; an agreement
+    /// added, its signed copy filed, and the one it replaces ended. Undo
+    /// takes back all, as it takes back the commit; none is made if one is
+    /// refused.
+    pub fn change_all(&mut self, ops: &[(&Op, Option<&str>)], also: &[(String, Vec<u8>)]) -> Result<Option<String>> {
         self.changeable()?;
-        let n1 = model::apply(&self.books, first, today()?).map_err(Refused)?;
-        self.mends(&n1)?;
-        let n2 = model::apply(&n1, second, today()?).map_err(Refused)?;
-        self.mends(&n2)?;
-        let before = (crate::command::argv(first, &self.books, None), crate::command::subject(first, &self.books, &n1));
-        let argv = crate::command::argv(second, &n1, None);
-        let what = crate::command::subject(second, &n1, &n2);
-        // The commit's subject says both; each line of the log, its own.
-        let subject = format!("{}; {}", before.1, what.chars().next().map_or(String::new(), |c| c.to_lowercase().collect::<String>() + &what[c.len_utf8()..]));
-        self.write_lines(n2, also, &[], &subject, Some(before), what.as_str(), argv)
+        let mut n = self.books.clone();
+        let mut lines: Vec<(Vec<String>, String)> = vec![];
+        for (op, file) in ops {
+            let next = model::apply(&n, op, today()?).map_err(Refused)?;
+            self.mends(&next)?;
+            lines.push((crate::command::argv(op, &n, *file), crate::command::subject(op, &n, &next)));
+            n = next;
+        }
+        let Some((argv, what)) = lines.pop() else { return Ok(None) };
+        // The commit's subject says all; each line of the log, its own.
+        let lower = |w: &str| w.chars().next().map_or(String::new(), |c| c.to_lowercase().collect::<String>() + &w[c.len_utf8()..]);
+        let subject = lines.iter().map(|(_, w)| w.as_str()).chain([what.as_str()]).enumerate().map(|(i, w)| if i == 0 { w.to_string() } else { lower(w) }).collect::<Vec<_>>().join("; ");
+        self.write_lines(n, also, &[], &subject, lines, what.as_str(), argv)
     }
 
     /// Whether the books may be changed: not while a file holds a change no
@@ -353,13 +359,13 @@ impl Store {
     }
 
     fn write(&mut self, n: Books, also: &[(String, Vec<u8>)], removed: &[String], what: &str, argv: Vec<String>) -> Result<Option<String>> {
-        self.write_lines(n, also, removed, what, None, what, argv)
+        self.write_lines(n, also, removed, what, vec![], what, argv)
     }
 
-    /// `write`, committed as `subject`, with a line of the log before the
-    /// change's own for an operation made in the same commit.
+    /// `write`, committed as `subject`, with lines of the log before the
+    /// change's own for operations made in the same commit.
     #[allow(clippy::too_many_arguments)]
-    fn write_lines(&mut self, n: Books, also: &[(String, Vec<u8>)], removed: &[String], subject: &str, before: Option<(Vec<String>, String)>, what: &str, argv: Vec<String>) -> Result<Option<String>> {
+    fn write_lines(&mut self, n: Books, also: &[(String, Vec<u8>)], removed: &[String], subject: &str, before: Vec<(Vec<String>, String)>, what: &str, argv: Vec<String>) -> Result<Option<String>> {
         let (old, new) = (model::render(&self.books), model::render(&n));
         let on_disk = text_files(&self.root)?;
         let mut paths: Vec<String> = new.iter().filter(|(k, v)| on_disk.get(*k) != Some(v)).map(|(k, _)| k.clone()).collect();
@@ -421,7 +427,7 @@ impl Store {
         if commit.is_empty() {
             return Ok(None);
         }
-        if let Some((argv, what)) = &before {
+        for (argv, what) in &before {
             log(&self.root, &stamp, argv, what, &commit, None);
         }
         log(&self.root, &stamp, &argv, what, &commit, entry);

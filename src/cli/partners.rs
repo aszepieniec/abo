@@ -3,7 +3,7 @@
 
 use super::args::{AgreementCmd, PartnerCmd, PartnerFlags, VersionFlags};
 use super::prompt::*;
-use super::run::{changed, emit, still};
+use super::run::{changed, changed_all, emit, still};
 use crate::model::{self, Op};
 use crate::store::{self, Store};
 use crate::{input, views};
@@ -168,21 +168,58 @@ pub(crate) fn agreement(here: &Path, json: bool, change: Option<AgreementCmd>) -
             let a = views::agreement(&s.books, &id, today).ok_or_else(|| input::not_found(format!("there is no agreement {id}")))?;
             return emit(json, &a, || show(&a));
         }
-        Some(AgreementCmd::Add { id, parties, version }) => {
+        Some(AgreementCmd::Add { id, parties, version, scan, signed, replaces }) => {
             let v = version.version(&s.books, None, false)?;
-            Op::AgreementAdd { id, parties, version: v }
+            // Added, its signed copy filed, the one it replaces ended: one change.
+            let filed = scan.as_ref().map(|p| scanned(p, signed.as_deref(), v.from, &id, 1, parties.first().map_or("", String::as_str))).transpose()?;
+            let ended = replaces.map(|old| -> Result<Op> { Ok(Op::AgreementEnd { id: old, status: model::AgreementStatus::Subsumed { by: id.clone(), on: v.from.yesterday()? } }) }).transpose()?;
+            let add = Op::AgreementAdd { id, parties, version: v };
+            let src = scan.as_ref().map(|p| p.display().to_string());
+            let mut ops: Vec<(&Op, Option<&str>)> = vec![(&add, None)];
+            ops.extend(filed.as_ref().map(|(op, _)| (op, src.as_deref())));
+            ops.extend(ended.as_ref().map(|op| (op, None)));
+            let also: Vec<_> = filed.iter().map(|(_, f)| f.clone()).collect();
+            return changed_all(&mut s, &ops, &also, json);
         }
-        Some(AgreementCmd::Amend { id, version, no_template }) => {
+        Some(AgreementCmd::Amend { id, version, no_template, scan, signed }) => {
             // What is not given is the version's in force from then.
             let from = version.from.as_deref().map(|d| input::day(Some(d))).transpose()?.context("--from is needed: the day the new terms begin")?;
-            let base = s.books.agreements.get(&id).and_then(|a| a.versions.get(a.in_force(from).unwrap_or(a.versions.len()).checked_sub(1)?)).cloned();
-            Op::Amend { version: version.version(&s.books, base.as_ref(), no_template)?, id }
+            let a = s.books.agreements.get(&id);
+            let base = a.and_then(|a| a.versions.get(a.in_force(from).unwrap_or(a.versions.len()).checked_sub(1)?)).cloned();
+            let (n, party) = a.map_or((1, String::new()), |a| (a.versions.len() + 1, a.parties.first().cloned().unwrap_or_default()));
+            let filed = scan.as_ref().map(|p| scanned(p, signed.as_deref(), from, &id, n, &party)).transpose()?;
+            let amend = Op::Amend { version: version.version(&s.books, base.as_ref(), no_template)?, id };
+            let src = scan.as_ref().map(|p| p.display().to_string());
+            let mut ops: Vec<(&Op, Option<&str>)> = vec![(&amend, None)];
+            ops.extend(filed.as_ref().map(|(op, _)| (op, src.as_deref())));
+            let also: Vec<_> = filed.iter().map(|(_, f)| f.clone()).collect();
+            return changed_all(&mut s, &ops, &also, json);
         }
         Some(AgreementCmd::Terminate { id, on }) => Op::AgreementEnd { id, status: model::AgreementStatus::Terminated { on: input::day(on.as_deref())? } },
         Some(AgreementCmd::Subsume { id, by, on }) => Op::AgreementEnd { id, status: model::AgreementStatus::Subsumed { by, on: input::day(on.as_deref())? } },
         Some(AgreementCmd::Remove { id }) => Op::AgreementRemove { id },
     };
     changed(&mut s, &op, &[], json)
+}
+
+/// The scan at `path`, filed as version `n`'s of agreement `id`, dated
+/// `signed` or else `from`, in the name of `party`: the operation and the
+/// file, as `abo file --for` files it.
+fn scanned(path: &std::path::Path, signed: Option<&str>, from: model::Date, id: &str, n: usize, party: &str) -> Result<(Op, (String, Vec<u8>))> {
+    let bytes = std::fs::read(path).with_context(|| format!("{}", path.display()))?;
+    let ext = store::sniff(&bytes).with_context(|| format!("{}", path.display()))?.0.to_string();
+    let name = crate::repo::slug(party);
+    if name.is_empty() {
+        bail!("a party is needed, to name the signed copy after");
+    }
+    let date = match signed {
+        Some(d) => input::day(Some(d))?,
+        None => from,
+    };
+    let sha256 = store::sha256(&bytes);
+    let of = Some(model::Of::Version(id.into(), n));
+    let path = model::Document { date, name: name.clone(), ext: ext.clone(), of: of.clone() }.path(&sha256);
+    Ok((Op::File { sha256, date, name, ext, of }, (path, bytes)))
 }
 
 fn status(a: &views::AgreementView) -> String {

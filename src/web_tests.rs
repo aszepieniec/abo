@@ -138,6 +138,13 @@ fn option_form(was: Option<&str>, id: &str, o: &model::PayOption) -> Option<Post
     Some(urlencoded("/company/payment", fields))
 }
 
+/// A form sent multipart, no file chosen.
+fn multiparted(path: &str, mut fields: Vec<(&str, String)>) -> Post {
+    fields.push(("token", token()));
+    let (ctype, body) = multipart(&fields, None);
+    Post { path: path.into(), ctype, body }
+}
+
 fn urlencoded(path: &str, mut fields: Vec<(&str, String)>) -> Post {
     fields.push(("token", token()));
     Post { path: path.into(), ctype: "application/x-www-form-urlencoded".into(), body: form(&fields) }
@@ -310,11 +317,11 @@ fn request(op: &Op, m: &Books, today: Date) -> Option<(Post, Op)> {
             let (mut fields, version) = version_sent(&version)?;
             fields.push(("id", id.clone()));
             fields.extend(ticks.iter().map(|(k, v)| (k.as_str(), v.clone())));
-            (urlencoded("/agreements/new", fields), Op::AgreementAdd { id: t(&id), parties, version })
+            (multiparted("/agreements/new", fields), Op::AgreementAdd { id: t(&id), parties, version })
         }
         Op::Amend { id, version } => {
             let (fields, version) = version_sent(&version)?;
-            (urlencoded(&format!("/agreement/{}/amend", enc(&id)), fields), Op::Amend { id, version })
+            (multiparted(&format!("/agreement/{}/amend", enc(&id)), fields), Op::Amend { id, version })
         }
         Op::AgreementEnd { id, status } => {
             let (on, by) = match &status {

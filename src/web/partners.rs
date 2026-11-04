@@ -315,6 +315,31 @@ const TEMPLATE: [(&str, &str); 8] = [
     ("due_days", "Payment terms, in days"),
 ];
 
+/// The signed copy, first on the add and amend forms: the scan at hand
+/// is filed with the version; without it, it is uploaded on the page after.
+fn scan_fields(f: &Fields) -> Markup {
+    let get = |k: &str| f.get(k).cloned().unwrap_or_default();
+    html! {
+        fieldset.field {
+            legend { "Signed copy" }
+            span.hint { "The scan as signed, a PDF or a JPEG. Not at hand? Leave it out, and upload it on the agreement's page later." }
+            @if let Some(n) = f.get("document_name") { p.small.muted { (icon("alert")) " Choose " (n) " again: a page cannot keep a file it was sent." } }
+            input type="file" name="document" accept="application/pdf,image/jpeg,image/png,image/webp";
+            label.field { "Signed on" span.hint { "Blank for the day it takes effect." } input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="signed" value=(get("signed")); }
+        }
+    }
+}
+
+/// The signed copy a form sent, filed as version `n`'s of agreement `id`,
+/// in the name of its first party: the operation and the file.
+fn scan_of(f: &Fields, doc: Option<Vec<u8>>, id: &str, n: usize, from: model::Date, party: &str) -> Result<Option<(Op, (String, Vec<u8>))>> {
+    let Some(bytes) = doc else { return Ok(None) };
+    let signed = f.get("signed").map_or("", |v| v.trim());
+    let date = if signed.is_empty() { from } else { input::day(Some(signed))? };
+    let (op, _, file) = filing(bytes, date, party, Some(model::Of::Version(id.into(), n)))?;
+    Ok(Some((op, file)))
+}
+
 /// A version's fields, as the add and amend forms ask them.
 fn version_fields(f: &Fields) -> Markup {
     let get = |k: &str| f.get(k).cloned().unwrap_or_default();
@@ -352,10 +377,11 @@ fn agreement_new(s: &Store, f: &Fields, error: Option<&anyhow::Error>) -> Markup
         @if s.books.partners.is_empty() {
             div.flash.flash-info { (icon("info")) div { "An agreement is with partners: " a href="/partners/new" { "add one" } " first." } }
         }
-        form method="post" action="/agreements/new" {
+        form method="post" action="/agreements/new" enctype="multipart/form-data" {
             (token())
             div.box {
                 div.box-body {
+                    (scan_fields(f))
                     label.field { "Short name" span.hint { "How the books name it: a-z, 0-9 and -, such as acme-hosting. It is not changed after." } input type="text" name="id" required pattern="[a-z0-9-]+" value=(get("id")); }
                     fieldset.field {
                         legend { "Parties" }
@@ -373,6 +399,15 @@ fn agreement_new(s: &Store, f: &Fields, error: Option<&anyhow::Error>) -> Markup
                         div.actions { button.small type="submit" name="more" value="party" formnovalidate { (icon("plus")) " Add a party" } }
                     }
                     (version_fields(f))
+                    @let active: Vec<&String> = s.books.agreements.iter().filter(|(_, a)| a.status == model::AgreementStatus::Active).map(|(id, _)| id).collect();
+                    @if !active.is_empty() {
+                        label.field { "Replaces" span.hint { "An agreement this one takes the place of: it ends, subsumed by this one, the day before this one takes effect. Blank if none." }
+                            select name="replaces" {
+                                option value="" { "— none —" }
+                                @for id in active { @let a = &s.books.agreements[id]; option value=(id) selected[get("replaces") == *id] { (id) " (" (a.parties.join(", ")) ")" } }
+                            }
+                        }
+                    }
                     div.actions { button.btn-primary type="submit" { (icon("check")) " Add it" } }
                 }
             }
@@ -387,7 +422,8 @@ fn parties_sent(f: &Fields) -> Vec<String> {
     if v.is_empty() { vec![String::new()] } else { v }
 }
 
-pub(super) async fn agreement_add(Books(mut s): Books, Form(mut f): Form<Fields>) -> Response {
+pub(super) async fn agreement_add(Books(mut s): Books, mp: Multipart) -> Response {
+    let (mut f, doc) = fields(mp).await;
     // A party more, or one fewer: the form again, nothing changed.
     if f.contains_key("more") || f.contains_key("drop") {
         let mut parties = parties_sent(&f);
@@ -407,7 +443,24 @@ pub(super) async fn agreement_add(Books(mut s): Books, Form(mut f): Form<Fields>
         let id = f.get("id").map_or("", |v| v.trim()).to_string();
         let parties: Vec<String> = parties_sent(&f).into_iter().filter(|p| !p.is_empty()).collect();
         let to = format!("/agreement/{}", enc(&id));
-        change(&mut s, &Op::AgreementAdd { id, parties, version: version_of(&f)? }, &[], &to)
+        let version = version_of(&f)?;
+        // Added, its signed copy filed, and the one it replaces ended: one change.
+        let scan = scan_of(&f, doc, &id, 1, version.from, parties.first().map_or("", String::as_str))?;
+        let replaces = f.get("replaces").map_or("", |v| v.trim()).to_string();
+        let ended = (!replaces.is_empty())
+            .then(|| -> Result<Op> { Ok(Op::AgreementEnd { id: replaces.clone(), status: model::AgreementStatus::Subsumed { by: id.clone(), on: version.from.yesterday()? } }) })
+            .transpose()?;
+        let add = Op::AgreementAdd { id, parties, version };
+        let mut ops: Vec<(&Op, Option<&str>)> = vec![(&add, None)];
+        let also: Vec<(String, Vec<u8>)> = scan.as_ref().map(|(_, file)| file.clone()).into_iter().collect();
+        if let Some((op, _)) = &scan {
+            ops.push((op, None));
+        }
+        if let Some(op) = &ended {
+            ops.push((op, None));
+        }
+        s.change_all(&ops, &also)?;
+        Ok(done(&s, &to))
     });
     match r {
         Ok(to) => Redirect::to(&to).into_response(),
@@ -478,12 +531,13 @@ fn agreement_page(s: &Store, a: &views::AgreementView, f: &Fields, error: Option
             }
         }
         @if may_change() && active {
-            form method="post" action={"/agreement/" (id) "/amend"} {
+            form method="post" action={"/agreement/" (id) "/amend"} enctype="multipart/form-data" {
                 (token())
                 div.box {
                     div.box-header { (icon("pencil")) "Amend: new terms, from a day" }
                     div.box-body {
                         p.muted.small { "A new version; those before stay as they were. It takes effect after every invoice issued under the agreement." }
+                        (scan_fields(f))
                         (version_fields(f))
                         div.actions { button.btn-primary type="submit" { (icon("check")) " Add the version" } }
                     }
@@ -517,10 +571,21 @@ fn agreement_page(s: &Store, a: &views::AgreementView, f: &Fields, error: Option
     }
 }
 
-pub(super) async fn agreement_amend(Books(mut s): Books, Path(id): Path<String>, Form(f): Form<Fields>) -> Response {
+pub(super) async fn agreement_amend(Books(mut s): Books, Path(id): Path<String>, mp: Multipart) -> Response {
+    let (f, doc) = fields(mp).await;
     let root = s.root.clone();
     let to = format!("/agreement/{}", enc(&id));
-    let r = once(Some(&root), f.get("token").map_or("", String::as_str), || change(&mut s, &Op::Amend { id: id.clone(), version: version_of(&f)? }, &[], &to));
+    let r = once(Some(&root), f.get("token").map_or("", String::as_str), || {
+        let version = version_of(&f)?;
+        let (n, party) = s.books.agreements.get(&id).map_or((1, String::new()), |a| (a.versions.len() + 1, a.parties.first().cloned().unwrap_or_default()));
+        let scan = scan_of(&f, doc, &id, n, version.from, &party)?;
+        let amend = Op::Amend { id: id.clone(), version };
+        match &scan {
+            Some((op, file)) => drop(s.change_all(&[(&amend, None), (op, None)], std::slice::from_ref(file))?),
+            None => drop(s.change(&amend, &[])?),
+        }
+        Ok(done(&s, &to))
+    });
     agreement_after(s, &id, &f, r)
 }
 

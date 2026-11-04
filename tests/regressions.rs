@@ -2690,3 +2690,22 @@ fn shareholders_are_listed_apart_and_with_the_employees() {
     assert!(!ok(&dir, &["partner"]).contains("Shareholders:\nanna"));
     refused(&dir, &["partner", "edit", "anna", "--shareholder", "maybe"], "--shareholder takes yes or no");
 }
+
+/// An agreement was added, its signed copy filed, and the one it replaced
+/// ended, by three commands; one does all three, as one change.
+#[test]
+fn an_agreement_comes_with_its_scan_and_replaces_another() {
+    let dir = books("scan-replaces", &[]);
+    ok(&dir, &["partner", "add", "acme", "--name", "Acme GmbH"]);
+    ok(&dir, &["agreement", "add", "old", "--partner", "acme", "--from", "2027-01-01"]);
+    std::fs::write(dir.join("signed.pdf"), b"%PDF-1.4 signed\n%%EOF\n").unwrap();
+    let said = ok(&dir, &["agreement", "add", "new", "--partner", "acme", "--from", "2027-05-01", "--scan", "signed.pdf", "--signed", "2027-04-20", "--replaces", "old"]);
+    assert!(said.contains("Added the agreement new") && said.contains("Filed contracts/new/2027-04-20-acme-") && said.contains("Subsumed the agreement old by new, its last day 2027-04-30"), "{said}");
+    let said = ok(&dir, &["agreement", "show", "old"]);
+    assert!(said.contains("subsumed by new, its last day 2027-04-30"), "{said}");
+    // One change: one undo takes back all three.
+    std::fs::remove_file(dir.join("signed.pdf")).unwrap();
+    ok(&dir, &["undo"]);
+    let said = ok(&dir, &["agreement", "list", "--ended"]);
+    assert!(!said.contains("new  ") && said.contains("old  active"), "{said}");
+}

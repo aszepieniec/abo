@@ -1097,6 +1097,12 @@ fn partners_and_agreements_through_the_pages() {
         let (status, _, page) = http(&s, "POST", path, form);
         assert_eq!(status, 303, "{path}: {page}");
     };
+    // The add and amend forms are multipart: a signed copy may come with them.
+    let upload = |path: &str, form: &[(&str, &str)], doc: Option<&[u8]>| send(&s, "POST", path, "multipart/form-data; boundary=b0undary", &multipart(form, doc));
+    let mpost = |path: &str, form: &[(&str, &str)]| {
+        let (status, _, page) = upload(path, form, None);
+        assert_eq!(status, 303, "{path}: {page}");
+    };
 
     post("/partners/new", &[("token", "a1"), ("id", "acme"), ("name", "Acme GmbH"), ("address", "Hauptstrasse 1\r\n10115 Berlin"), ("tax_id", "DE123456789")]);
     again(&["partners.toml"]);
@@ -1107,7 +1113,7 @@ fn partners_and_agreements_through_the_pages() {
 
     let version = [("from", "2026-01-01"), ("until", ""), ("tpl-items", "1|110|Hosting"), ("tpl-reference", "PO 4471")];
     let add: Vec<(&str, &str)> = [("token", "a3"), ("id", "hosting"), ("party0", "acme")].into_iter().chain(version).collect();
-    post("/agreements/new", &add);
+    mpost("/agreements/new", &add);
     again(&["contracts/hosting.toml"]);
 
     // Invoiced from its page, the form filled from its template.
@@ -1127,13 +1133,13 @@ fn partners_and_agreements_through_the_pages() {
     // Amended after what is invoiced; on or before it, refused, saying why.
     let mut amend: Vec<(&str, &str)> = version.into_iter().map(|(k, v)| if k == "from" { (k, "2026-01-05") } else { (k, v) }).collect();
     amend.push(("token", "a5"));
-    let (status, _, page) = http(&s, "POST", "/agreement/hosting/amend", &amend);
+    let (status, _, page) = upload("/agreement/hosting/amend", &amend, None);
     assert!(status == 422 && page.contains("a new version takes effect after 2026-01-05"), "{status} {page}");
     let amend: Vec<(&str, &str)> = version.into_iter().map(|(k, v)| match k { "from" => (k, "2026-02-01"), "tpl-items" => (k, "1|120|Hosting"), _ => (k, v) }).chain([("token", "a6")]).collect();
     // The terminal's books lack the invoice the page issued; issue it there too.
     let o = Command::new(env!("CARGO_BIN_EXE_abo")).args(&argv).current_dir(&replay).env("HOME", &base).env("XDG_CONFIG_HOME", &base).stdin(Stdio::null()).output().unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    post("/agreement/hosting/amend", &amend);
+    mpost("/agreement/hosting/amend", &amend);
     again(&["contracts/hosting.toml"]);
 
     let (_, _, page) = http(&s, "GET", "/agreement/hosting", &[]);
@@ -1152,7 +1158,7 @@ fn partners_and_agreements_through_the_pages() {
     // A former employee: folded into the employees' table, under a heading.
     post("/partners/new", &[("token", "a20"), ("id", "kim"), ("name", "Kim Then"), ("employee", "on")]);
     again(&["partners.toml"]);
-    post("/agreements/new", &[("token", "a21"), ("id", "kim"), ("party0", "kim"), ("from", "2026-01-01")]);
+    mpost("/agreements/new", &[("token", "a21"), ("id", "kim"), ("party0", "kim"), ("from", "2026-01-01")]);
     again(&["contracts/kim.toml"]);
     post("/agreement/kim/end", &[("token", "a22"), ("on", "2026-02-28"), ("by", "")]);
     again(&["contracts/kim.toml"]);
@@ -1186,6 +1192,20 @@ fn partners_and_agreements_through_the_pages() {
     // Named by an invoice and an agreement, acme is not removed.
     let (status, _, page) = http(&s, "POST", "/partner/acme/remove", &[("token", "a9")]);
     assert!(status == 422 && page.contains("a partner is removed only while nothing names them"), "{status} {page}");
+
+    // Added with its signed copy at hand, replacing another: one change,
+    // the copy filed as its first version's, the other subsumed by it.
+    mpost("/agreements/new", &[("token", "a30"), ("id", "kim-old"), ("party0", "kim"), ("from", "2026-03-01")]);
+    let scan = b"%PDF-1.4\n% the new contract\n%%EOF\n";
+    let (status, _, page) = upload("/agreements/new", &[("token", "a31"), ("id", "kim-new"), ("party0", "kim"), ("from", "2026-05-01"), ("signed", "2026-04-20"), ("replaces", "kim-old")], Some(scan));
+    assert_eq!(status, 303, "{page}");
+    let index = read(&books, "contracts/index");
+    assert!(index.contains(" kim-new/1\n") && index.contains("2026-04-20-kim-"), "{index}");
+    let (_, _, page) = http(&s, "GET", "/agreement/kim-old", &[]);
+    assert!(page.contains("Subsumed by kim-new, its last day 2026-04-30"), "{page}");
+    let log = std::fs::read_to_string(books.join(".abo/log.jsonl")).unwrap_or_default();
+    let commits: Vec<String> = log.lines().rev().take(4).map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["commit"].to_string()).collect();
+    assert!(commits[0] == commits[1] && commits[1] == commits[2] && commits[2] != commits[3], "one commit, a line of the log for each of three changes: {log}");
 
     drop(s);
     std::fs::remove_dir_all(&base).unwrap();

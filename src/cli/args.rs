@@ -112,6 +112,18 @@ pub(crate) enum AgreementCmd {
         parties: Vec<String>,
         #[command(flatten)]
         version: VersionFlags,
+        /// Its signed copy, a PDF or a JPEG, filed with it under
+        /// contracts/. Without one, `abo file --for ID/N` files it later.
+        #[arg(long, value_name = "FILE")]
+        scan: Option<PathBuf>,
+        /// The day it was signed, as its document is dated. Defaults to
+        /// --from.
+        #[arg(long, requires = "scan")]
+        signed: Option<String>,
+        /// An agreement this one takes the place of: it ends, subsumed by
+        /// this one, the day before this one takes effect.
+        #[arg(long, value_name = "AGREEMENT")]
+        replaces: Option<String>,
     },
     /// Add a version: changed terms, from a day. What is not given is kept
     /// from the version in force then. It takes effect after every invoice
@@ -123,6 +135,14 @@ pub(crate) enum AgreementCmd {
         /// The new version has no invoice template.
         #[arg(long)]
         no_template: bool,
+        /// Its signed copy, a PDF or a JPEG, filed with it under
+        /// contracts/. Without one, `abo file --for ID/N` files it later.
+        #[arg(long, value_name = "FILE")]
+        scan: Option<PathBuf>,
+        /// The day it was signed, as its document is dated. Defaults to
+        /// --from.
+        #[arg(long, requires = "scan")]
+        signed: Option<String>,
     },
     /// End an agreement otherwise than its terms say, on a day, its last.
     /// To end it as its terms say, amend it with --until. It is kept, as a

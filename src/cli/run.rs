@@ -763,6 +763,24 @@ pub(crate) fn changed(s: &mut Store, op: &Op, also: &[(String, Vec<u8>)], json: 
     changed_from(s, op, None, also, json)
 }
 
+/// Operations as one change (`Store::change_all`), each said as done.
+pub(crate) fn changed_all(s: &mut Store, ops: &[(&Op, Option<&str>)], also: &[(String, Vec<u8>)], json: bool) -> Result<()> {
+    if let [(op, file)] = ops {
+        return changed_from(s, op, *file, also, json);
+    }
+    let commit = s.change_all(ops, also)?;
+    let lines = store::lines(&s.root);
+    let mut what: Vec<String> = lines.iter().rev().take_while(|l| commit.is_some() && l["commit"].as_str() == commit.as_deref()).map(|l| l["what"].as_str().unwrap_or_default().to_string()).collect();
+    what.reverse();
+    let r = serde_json::json!({ "commit": commit, "what": what });
+    emit(json, &r, || match &commit {
+        None => "Nothing to change: the books say that already.".to_string(),
+        Some(c) => format!("{}.\nCommitted {c}.", what.iter().map(|w| past(w)).collect::<Vec<_>>().join(".\n")),
+    })?;
+    still(s);
+    Ok(())
+}
+
 /// `changed`, a document filed from `file`.
 pub(crate) fn changed_from(s: &mut Store, op: &Op, file: Option<&str>, also: &[(String, Vec<u8>)], json: bool) -> Result<()> {
     let before = s.books.entries.len();

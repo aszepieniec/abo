@@ -1194,7 +1194,8 @@ abo partner   [list [--former]]
 abo agreement [list [--ended]]   show <id>   remove <id>
 abo agreement add <id> --partner=<id>... --from=<date> [--until=<date>]
                        [--template=<field>=<value>... | --template-from=<invoice>]
-abo agreement amend <id> --from=<date> ...  [--no-template]
+                       [--scan=<file> [--signed=<date>]] [--replaces=<id>]
+abo agreement amend <id> --from=<date> ...  [--no-template] [--scan=<file> [--signed=<date>]]
 abo agreement terminate <id> [--on=<date>]  subsume <id> --by=<id> [--on=<date>]
 abo file    --for=<id>/<n> ... <file>
 abo bill    --partner=<id> ...
@@ -1215,7 +1216,12 @@ invoice as **Issue again** fills the form: to its partner as their details
 are now, or to its customer as printed, under its agreement; what else is
 given is taken over it. `terminate` and `subsume` end it on the day they
 are run, unless `--on` says another. `abo file --for` names a bill by its
-id, or an agreement's version as `<id>/<n>`. An invoice issued under an
+id, or an agreement's version as `<id>/<n>`. `add` and `amend` given
+`--scan` file it as the new version's signed copy, dated `--signed` or
+else `--from`; `add --replaces=<old>` subsumes `<old>` by the new one, its
+last day the day before the new one's `--from`. What one command does is
+one change, a line of the log for each operation, as `abo file` and `abo
+agreement subsume` would log it. An invoice issued under an
 agreement takes what it is not given from the invoice template of the
 version in force on its date; logged, what was left blank is written out
 blank, so that run again it does not take the template's. An invoice

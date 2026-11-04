@@ -175,9 +175,13 @@ were. Each version comes with its signed copy, a PDF or a scan, and may
 have an invoice template: the invoice form's fields an invoice issued under
 it starts from. It holds no schedule: nothing falls due under it, and a
 salary or a rent paid under it is booked as any entry is. **Add an
-agreement** (Partners, or a partner's page) asks its short name, its
-parties (a select each, **Add a party** for another), and its first
-version; its page lists the invoices issued under it, with the version each
+agreement** (Partners, or a partner's page) asks first for its signed
+copy, the scan at hand and the day it was signed (left out, it is uploaded
+on the agreement's page later); then its short name, its parties (a select
+each, **Add a party** for another), its first version, and the agreement it
+**Replaces**, if any, which ends subsumed by it the day before it takes
+effect. Added, filed and replaced is one change, which one undo takes back;
+**Amend** asks for the amendment's signed copy first likewise. its page lists the invoices issued under it, with the version each
 was issued under, and an **Invoice** button for each party; its versions,
 one not yet in force marked, each with its signed copy to download, or a
 warning and an upload where none is filed; and forms to amend it (filled in
@@ -188,9 +192,10 @@ issued under it is refused, saying from when one may; so is ending it
 before such an invoice. Ended agreements are folded into the Partners page's
 agreements table, shown by **Show ended agreements**. CLI: `abo agreement
 [list [--ended]]` (ended ones counted, listed with `--ended`), `show <id>`, `add <id>
---partner ... --from ... [--template field=value ...]`, `amend <id> --from
-...` (what it is not given kept from the version in force; `--no-template`
-for none), `terminate <id> [--on]`, `subsume <id> --by <other> [--on]`,
+--partner ... --from ... [--template field=value ...] [--scan <file>
+[--signed <date>]] [--replaces <old>]`, `amend <id> --from ... [--scan
+<file> [--signed <date>]]` (what it is not given kept from the version in
+force; `--no-template` for none), `terminate <id> [--on]`, `subsume <id> --by <other> [--on]`,
 `remove <id>`; `abo file --for <id>/<n>` files a version's signed copy under
 `contracts/`.
 **Done when** `contracts/<id>.toml` holds its versions as added, and an
