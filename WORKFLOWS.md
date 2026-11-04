@@ -483,6 +483,7 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 - **Users** (M5, the rest) — who did what, per person, and who may open which books. More than one set of books is served already (A3).
 - **Bank import** (§11) — statement lines matched against booked items.
 - **Payroll** (§11) — gross to net, payslips.
+- **Export, import, git mirror** (§11) — the books with their history as a download, opened again from one, and pushed to a remote after every commit.
 - **Year-end closing entries** (§12) — until then unclosed profit is a computed equity line.
 
 ---

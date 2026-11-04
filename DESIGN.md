@@ -737,6 +737,40 @@ The AI is worth more here than in bill entry when it does arrive, because
 matching a statement line to a booked payable has genuine ambiguity in it,
 where reading a total off an invoice does not.
 
+### Export, import and a git mirror
+
+Requested 2026-11-04. The books are a git repository, so each of the three is a
+git operation; what is missing is a way to do it from the browser, where
+whoever keeps the books has no shell.
+
+- **Export.** Download the whole repository as one file: `git bundle create -
+  --all`, which is the books with their history. A tarball of the working tree
+  would drop the history, and the history is the audit trail (§1).
+- **Import.** Open books from such a file, or from a URL to clone: the web form
+  of A1 on an empty directory, with `git clone` in place of the questions.
+  Nothing is taken on trust. The clone is read as any books are, against every
+  invariant (MODEL.md §4) and `hledger check`, and refused, and removed, if
+  it fails.
+- **Mirror.** A git remote that abo pushes to after every commit it makes.
+  A failed push never fails the commit or undoes it. The books are right
+  locally, the next commit tries again, and the page says the mirror is
+  behind. The remote is a setting in `abo.toml`; a credential is not. An SSH
+  key or a token lives outside the repository, in `.abo/` or the
+  environment, so that cloning the books never hands it out.
+
+Open questions, to settle before this becomes a milestone:
+
+- **Where the credential comes from under a gateway.** The sandbox (§8) has a
+  network of its own, so a push needs the gateway to let it out, and the key is
+  either the gateway's to hold or the project admin's to upload.
+- **Who may export.** An export is everything, salaries included (Payroll,
+  below). It is a GET, so the gateway's refusal of a viewer's POST does not cover
+  it. Admin only, probably.
+- **Whether import is worth building.** On the CLI it is `git clone`
+  followed by `abo serve`. In the browser it is the way to move books
+  between the gateway projects, and that need arises only when someone moves
+  books.
+
 ### Payroll, with configurable deductions
 
 Run a payroll: gross to net for each employee, the journal entry that books it,
