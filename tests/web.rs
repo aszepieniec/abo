@@ -1111,7 +1111,7 @@ fn partners_and_agreements_through_the_pages() {
     let (_, _, page) = http(&s, "GET", "/partners", &[]);
     assert!(page.contains("Acme GmbH") && page.contains("href=\"/partner/acme\""), "{page}");
 
-    let version = [("from", "2026-01-01"), ("until", ""), ("tpl-items", "1|110|Hosting"), ("tpl-reference", "PO 4471")];
+    let version = [("from", "2026-01-01"), ("until", ""), ("tpl", "on"), ("tpl-items", "1|110|Hosting"), ("tpl-reference", "PO 4471")];
     let add: Vec<(&str, &str)> = [("token", "a3"), ("id", "hosting"), ("party0", "acme")].into_iter().chain(version).collect();
     mpost("/agreements/new", &add);
     again(&["contracts/hosting.toml"]);
@@ -1158,8 +1158,12 @@ fn partners_and_agreements_through_the_pages() {
     // A former employee: folded into the employees' table, under a heading.
     post("/partners/new", &[("token", "a20"), ("id", "kim"), ("name", "Kim Then"), ("employee", "on")]);
     again(&["partners.toml"]);
-    mpost("/agreements/new", &[("token", "a21"), ("id", "kim"), ("party0", "kim"), ("from", "2026-01-01")]);
+    // A template's fields filled, but no template added: none is kept.
+    let (_, _, page) = http(&s, "GET", "/agreements/new", &[]);
+    assert!(page.contains("Add an invoice template") && !page.contains("name=\"tpl\" class=\"template-on\" checked"), "{page}");
+    mpost("/agreements/new", &[("token", "a21"), ("id", "kim"), ("party0", "kim"), ("from", "2026-01-01"), ("tpl-items", "1|1|Not meant")]);
     again(&["contracts/kim.toml"]);
+    assert!(!read(&books, "contracts/kim.toml").contains("Not meant"), "{}", read(&books, "contracts/kim.toml"));
     post("/agreement/kim/end", &[("token", "a22"), ("on", "2026-02-28"), ("by", "")]);
     again(&["contracts/kim.toml"]);
     let (_, _, page) = http(&s, "GET", "/partners", &[]);

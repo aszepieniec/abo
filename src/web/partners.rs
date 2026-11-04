@@ -296,6 +296,9 @@ fn amend_fields(b: &Model, id: &str) -> Result<Fields> {
     let Some(v) = b.agreements.get(id).and_then(|a| a.versions.last()) else { return Ok(f) };
     f.insert("from".into(), store::today()?.to_string());
     f.insert("until".into(), v.until.map(|d| d.to_string()).unwrap_or_default());
+    if v.template.is_some() {
+        f.insert("tpl".into(), "on".into());
+    }
     for (k, x) in v.template.iter().flatten() {
         f.insert(format!("tpl-{k}"), x.clone());
     }
@@ -346,14 +349,25 @@ fn version_fields(f: &Fields) -> Markup {
     html! {
         label.field { "From" span.hint { "The day it takes effect." } input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="from" required value=(get("from")); }
         label.field { "Until" span.hint { "Its last day, if its terms say it ends; blank if not." } input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="until" value=(get("until")); }
-        fieldset.field {
-            legend { "Invoice template" }
-            span.hint { "What an invoice issued under it starts from; each may be left blank. All blank: no template." }
-            @for (k, said) in TEMPLATE {
-                @let name = format!("tpl-{k}");
-                label.field { (said)
-                    @if k == "items" { textarea name=(name) rows="3" { (get(&name)) } }
-                    @else { input type="text" name=(name) value=(get(&name)); }
+        // ponytail: a checkbox and :has, no script, as the folded tables;
+        // what the fields hold is kept only while it is ticked.
+        div.template {
+            label.btn.small.template-toggle {
+                input type="checkbox" name="tpl" class="template-on" checked[f.contains_key("tpl")];
+                span.off { (icon("plus")) " Add an invoice template" }
+                span.on { " Invoice template: untick to have none" }
+            }
+            div.box.template-fields {
+                div.box-header { (icon("outbox")) "Invoice template" }
+                div.box-body {
+                    p.muted.small { "What an invoice issued under this version starts from, each field as on the invoice form; any may be left blank, and each invoice may change it." }
+                    @for (k, said) in TEMPLATE {
+                        @let name = format!("tpl-{k}");
+                        label.field { (said)
+                            @if k == "items" { textarea name=(name) rows="3" { (get(&name)) } }
+                            @else { input type="text" name=(name) value=(get(&name)); }
+                        }
+                    }
                 }
             }
         }
@@ -365,7 +379,8 @@ fn version_of(f: &Fields) -> Result<model::Version> {
     let get = |k: &str| f.get(k).map_or("", |v| v.trim()).replace("\r\n", "\n");
     let from = input::day(Some(&get("from")))?;
     let until = (!get("until").is_empty()).then(|| input::day(Some(&get("until")))).transpose()?;
-    let template: std::collections::BTreeMap<String, String> = TEMPLATE.iter().map(|(k, _)| (k.to_string(), get(&format!("tpl-{k}")))).filter(|(_, v)| !v.is_empty()).collect();
+    // Its fields count only while the template is ticked.
+    let template: std::collections::BTreeMap<String, String> = TEMPLATE.iter().map(|(k, _)| (k.to_string(), get(&format!("tpl-{k}")))).filter(|(_, v)| f.contains_key("tpl") && !v.is_empty()).collect();
     Ok(model::Version { from, until, template: (!template.is_empty()).then_some(template) })
 }
 

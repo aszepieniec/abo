@@ -178,7 +178,8 @@ salary or a rent paid under it is booked as any entry is. **Add an
 agreement** (Partners, or a partner's page) asks first for its signed
 copy, the scan at hand and the day it was signed (left out, it is uploaded
 on the agreement's page later); then its short name, its parties (a select
-each, **Add a party** for another), its first version, and the agreement it
+each, **Add a party** for another), its first version (with no invoice
+template unless **Add an invoice template** opens one), and the agreement it
 **Replaces**, if any, which ends subsumed by it the day before it takes
 effect. Added, filed and replaced is one change, which one undo takes back;
 **Amend** asks for the amendment's signed copy first likewise. its page lists the invoices issued under it, with the version each

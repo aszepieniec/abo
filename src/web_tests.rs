@@ -350,7 +350,7 @@ fn lines_sent(name: &str, address: &str) -> String {
 /// none left none.
 fn version_sent(v: &model::Version) -> Option<(Vec<(&'static str, String)>, model::Version)> {
     const TPL: [(&str, &str); 8] = [("items", "tpl-items"), ("reference", "tpl-reference"), ("note", "tpl-note"), ("currency", "tpl-currency"), ("vat_rate", "tpl-vat_rate"), ("vat_reason", "tpl-vat_reason"), ("income", "tpl-income"), ("due_days", "tpl-due_days")];
-    let mut fields = vec![("from", v.from.to_string()), ("until", v.until.map(|d| d.to_string()).unwrap_or_default())];
+    let mut fields = vec![("from", v.from.to_string()), ("until", v.until.map(|d| d.to_string()).unwrap_or_default()), ("tpl", "on".to_string())];
     let t = v.template.clone().unwrap_or_default();
     if t.keys().any(|k| !TPL.iter().any(|(n, _)| n == k)) || t.values().any(|x| x.contains(['\r', '\0'])) {
         return None;
