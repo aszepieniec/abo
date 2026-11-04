@@ -295,3 +295,271 @@ pub fn vat_taken(b: &Books, c: &model::Content, given: bool) -> (String, String,
     };
     (rate, why, true)
 }
+
+#[derive(serde::Serialize)]
+pub struct PartnerRow {
+    pub id: String,
+    /// Their first line.
+    pub name: String,
+    /// Their name, then their address, newlines between.
+    pub lines: String,
+    pub tax_id: String,
+    pub employee: bool,
+    /// What the company owes them, on their bills, by commodity.
+    pub owed_to: Vec<Amount>,
+    /// What they owe the company, on their invoices.
+    pub owed_by: Vec<Amount>,
+    /// The agreements they are a party to, by id.
+    pub agreements: Vec<String>,
+    /// An employee no active agreement pays (MODEL.md §2.9): shown, as it
+    /// is no rule.
+    pub unpaid: bool,
+    /// Their invoices and bills, by entry, newest first.
+    pub entries: Vec<PartnerEntry>,
+}
+
+#[derive(serde::Serialize)]
+pub struct PartnerEntry {
+    pub entry: usize,
+    pub date: String,
+    /// `invoice 2026-0003`, `bill 12`.
+    pub what: String,
+    pub description: String,
+}
+
+/// Every partner, in the order of their ids; employees too, marked.
+pub fn partners(b: &Books) -> Vec<PartnerRow> {
+    b.partners
+        .iter()
+        .map(|(id, p)| {
+            let (to, by) = b.owed(id);
+            let amounts = |m: std::collections::BTreeMap<String, Decimal>| m.into_iter().map(|(c, q)| Amount::new(b, q, &c)).collect();
+            let agreements: Vec<String> = b.agreements_of(id).into_iter().cloned().collect();
+            let pays = |a: &model::Agreement| a.status == model::AgreementStatus::Active && a.versions.iter().any(|v| v.schedule.as_ref().is_some_and(|s| s.party == *id && s.does == model::Does::Pay));
+            let unpaid = p.employee && !b.agreements.values().any(pays);
+            let entries = (1..=b.entries.len())
+                .rev()
+                .filter(|&e| matches!(b.entries[e - 1].kind, model::Kind::Bill(..) | model::Kind::Invoice { .. }) && b.partner_of(e) == Some(id))
+                .map(|e| PartnerEntry { entry: e, date: b.entries[e - 1].date.to_string(), what: model::name(b, e), description: b.entries[e - 1].description.clone() })
+                .collect();
+            PartnerRow {
+                id: id.clone(),
+                name: p.lines.lines().next().unwrap_or_default().to_string(),
+                lines: p.lines.clone(),
+                tax_id: p.tax_id.clone(),
+                employee: p.employee,
+                owed_to: amounts(to),
+                owed_by: amounts(by),
+                agreements,
+                unpaid,
+                entries,
+            }
+        })
+        .collect()
+}
+
+#[derive(serde::Serialize)]
+pub struct AgreementView {
+    pub id: String,
+    pub parties: Vec<String>,
+    /// active, terminated or subsumed.
+    pub status: &'static str,
+    /// The day it was terminated or subsumed on.
+    pub ended_on: Option<String>,
+    /// The agreement it is subsumed by.
+    pub subsumed_by: Option<String>,
+    /// The earlier of its terms' end and its status's.
+    pub last_day: Option<String>,
+    /// The version in force today.
+    pub in_force: Option<usize>,
+    pub versions: Vec<VersionView>,
+    /// Through today: each done or not, and whether it is due.
+    pub periods: Vec<PeriodView>,
+}
+
+#[derive(serde::Serialize)]
+pub struct VersionView {
+    /// Its place, from 1.
+    pub n: usize,
+    pub from: String,
+    pub until: Option<String>,
+    /// invoice, pay or receive; none for a contract on record.
+    pub does: Option<&'static str>,
+    pub party: Option<String>,
+    pub every: Option<u32>,
+    /// in-advance or in-arrears.
+    pub billed: Option<&'static str>,
+    pub draft: std::collections::BTreeMap<String, String>,
+    /// Its documents' paths.
+    pub documents: Vec<String>,
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct PeriodView {
+    pub agreement: String,
+    /// The version it is of.
+    pub version: usize,
+    pub from: String,
+    pub to: String,
+    /// invoice, pay or receive.
+    pub does: &'static str,
+    pub party: String,
+    /// What did it: `invoice 2026-0003`, `entry 41`.
+    pub done_by: Option<String>,
+    /// The entry that did it.
+    pub entry: Option<usize>,
+    /// Can be done by today, and is not.
+    pub due: bool,
+}
+
+pub fn does_word(d: model::Does) -> &'static str {
+    match d {
+        model::Does::Invoice => "invoice",
+        model::Does::Pay => "pay",
+        model::Does::Receive => "receive",
+    }
+}
+
+pub fn billed_word(b: model::Billed) -> &'static str {
+    match b {
+        model::Billed::InAdvance => "in-advance",
+        model::Billed::InArrears => "in-arrears",
+    }
+}
+
+/// Agreement `id`, its periods through `today`.
+pub fn agreement(b: &Books, id: &str, today: model::Date) -> Option<AgreementView> {
+    let a = b.agreements.get(id)?;
+    let (status, subsumed_by) = match &a.status {
+        model::AgreementStatus::Active => ("active", None),
+        model::AgreementStatus::Terminated { .. } => ("terminated", None),
+        model::AgreementStatus::Subsumed { by, .. } => ("subsumed", Some(by.clone())),
+    };
+    let versions = a
+        .versions
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let s = v.schedule.as_ref();
+            let documents = b.documents.iter().filter(|(_, d)| d.version() == Some((id, i + 1))).map(|(h, d)| d.path(h)).collect();
+            VersionView {
+                n: i + 1,
+                from: v.from.to_string(),
+                until: v.until.map(|d| d.to_string()),
+                does: s.map(|s| does_word(s.does)),
+                party: s.map(|s| s.party.clone()),
+                every: s.map(|s| s.every),
+                billed: s.map(|s| billed_word(s.billed)),
+                draft: s.map(|s| s.draft.clone()).unwrap_or_default(),
+                documents,
+            }
+        })
+        .collect();
+    Some(AgreementView {
+        id: id.into(),
+        parties: a.parties.clone(),
+        status,
+        ended_on: a.ended_on().map(|d| d.to_string()),
+        subsumed_by,
+        last_day: a.last_day().map(|d| d.to_string()),
+        in_force: a.in_force(today),
+        versions,
+        periods: periods(b, id, today),
+    })
+}
+
+/// Agreement `id`'s periods that begin on or before `today`.
+fn periods(b: &Books, id: &str, today: model::Date) -> Vec<PeriodView> {
+    let Some(a) = b.agreements.get(id) else { return vec![] };
+    let done = b.done(&b.standing());
+    let due = b.due(id, today);
+    a.periods(today)
+        .into_iter()
+        .filter_map(|(n, p)| {
+            let s = a.schedule(n)?;
+            let by = done.iter().find(|((x, q), _)| x.as_str() == id && *q == p).map(|(_, e)| e[0]);
+            Some(PeriodView {
+                agreement: id.into(),
+                version: n,
+                from: p.from.to_string(),
+                to: p.to.to_string(),
+                does: does_word(s.does),
+                party: s.party.clone(),
+                done_by: by.map(|e| model::name(b, e)),
+                entry: by,
+                due: due.iter().any(|(_, q)| *q == p),
+            })
+        })
+        .collect()
+}
+
+/// Every agreement, in the order of their ids.
+pub fn agreements(b: &Books, today: model::Date) -> Vec<AgreementView> {
+    b.agreements.keys().filter_map(|id| agreement(b, id, today)).collect()
+}
+
+/// What is due on `today`, of every agreement: to invoice, to pay or to
+/// receive, oldest first.
+pub fn due(b: &Books, today: model::Date) -> Vec<PeriodView> {
+    let mut v: Vec<PeriodView> = b.agreements.keys().flat_map(|id| periods(b, id, today)).filter(|p| p.due).collect();
+    v.sort_by(|x, y| (&x.from, &x.agreement).cmp(&(&y.from, &y.agreement)));
+    v
+}
+
+/// An invoice's or a plain entry's form, filled from it: what it says, by
+/// the form's names, those it leaves as the form would left out. Issue
+/// again, and a draft taken from one, start from it.
+pub fn fields_of(b: &Books, id: usize) -> Option<std::collections::BTreeMap<String, String>> {
+    use model::{InvoiceVat, Kind};
+    let e = b.entry(id)?;
+    let mut f = std::collections::BTreeMap::new();
+    let mut put = |k: &str, v: String| {
+        if !v.is_empty() {
+            f.insert(k.to_string(), v);
+        }
+    };
+    match &e.kind {
+        Kind::Invoice { content: c, .. } => {
+            put("items", c.lines.iter().map(|l| format!("{}|{}|{}", l.quantity.normalize(), l.unit_price.normalize(), l.description)).collect::<Vec<_>>().join("\n"));
+            put("reference", c.reference.clone());
+            put("note", c.note.clone());
+            if c.commodity != b.config.company.currency {
+                put("currency", c.commodity.clone());
+            }
+            match &c.vat {
+                InvoiceVat::Charged { rate } if *rate != b.config.invoice.vat_rate => put("vat_rate", rate.normalize().to_string()),
+                InvoiceVat::Exempt { reason } => {
+                    put("vat_rate", "0".into());
+                    put("vat_reason", reason.clone());
+                }
+                _ => {}
+            }
+            if c.accounts.income != b.config.invoice.income {
+                put("income", c.accounts.income.clone());
+            }
+            let days = (c.due - e.date).get_days() as i64;
+            if days != b.config.invoice.terms_days {
+                put("due_days", days.to_string());
+            }
+        }
+        Kind::Plain(ps, _) => {
+            put("description", e.description.clone());
+            let posting = |p: &model::Posting| {
+                let mut s = format!("{}={} {}", p.account, Amount::new(b, p.amount.quantity, &p.amount.commodity).quantity, p.amount.commodity);
+                if let Some(c) = &p.cost {
+                    s += &format!(" @@ {} {}", c.quantity.abs(), c.commodity);
+                }
+                s
+            };
+            put("postings", ps.iter().map(posting).collect::<Vec<_>>().join("\n"));
+        }
+        _ => return None,
+    }
+    Some(f)
+}
+
+/// The draft agreement `a`'s schedule in force on `period`'s first day
+/// starts what is made for the period from.
+pub fn draft(b: &Books, a: &str, period: &model::Period) -> std::collections::BTreeMap<String, String> {
+    b.agreements.get(a).and_then(|ag| ag.schedule(ag.in_force(period.from)?)).map(|s| s.draft.clone()).unwrap_or_default()
+}

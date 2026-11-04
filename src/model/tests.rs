@@ -322,6 +322,8 @@ pub(crate) struct ScheduleDraw {
     arrears: bool,
     #[strategy(proptest::option::weighted(0.5, prop_oneof![4 => Just("1|110|Hosting".to_string()), 1 => arb::<String>()]))]
     draft: Option<String>,
+    #[strategy(proptest::bool::weighted(0.1))]
+    wrong_field: bool,
 }
 
 impl VersionDraw {
@@ -334,7 +336,12 @@ impl VersionDraw {
             does: [Does::Invoice, Does::Pay, Does::Receive][s.does as usize % 3],
             every: s.every,
             billed: if s.arrears { Billed::InArrears } else { Billed::InAdvance },
-            draft: s.draft.iter().map(|d| ("items".to_string(), d.clone())).collect(),
+            // The form's first field, or now and then the other form's.
+            draft: s.draft.iter().map(|d| {
+                let does = [Does::Invoice, Does::Pay, Does::Receive][s.does as usize % 3];
+                let other = if does == Does::Invoice { Does::Pay } else { Does::Invoice };
+                ((if s.wrong_field { other } else { does }).fields()[0].to_string(), d.clone())
+            }).collect(),
         });
         Version { from, until: self.until.map(|u| days(from, u)), schedule }
     }
@@ -2544,10 +2551,10 @@ fn partners_owe_what_their_debts_have_open(#[strategy(plan())] plan: Vec<Step>) 
     }
 }
 
-/// An operation the command line and the forms do not make yet: of
-/// partners and agreements, which they are being taught (DESIGN §10).
-/// ponytail: the CLI's and the web's properties pass these over until then.
-pub(crate) fn not_in_the_interfaces_yet(op: &Op) -> bool {
+/// An operation the forms do not make yet: of partners and agreements,
+/// which they are being taught. ponytail: the web's properties pass these
+/// over until then.
+pub(crate) fn not_in_the_forms_yet(op: &Op) -> bool {
     match op {
         Op::PartnerAdd { .. } | Op::PartnerEdit { .. } | Op::PartnerRemove { .. } | Op::AgreementAdd { .. } | Op::Amend { .. } | Op::AgreementEnd { .. } | Op::AgreementRemove { .. } => true,
         Op::File { of, .. } => matches!(of, Some(Of::Version(..))),

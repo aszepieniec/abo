@@ -235,9 +235,6 @@ fn the_cli_is_the_model(#[strategy(vec(any::<Step>(), 1..30))] plan: Vec<Step>) 
             prop_assert_eq!(store::text_files(&books).unwrap(), model::render(&now), "after undo");
             continue;
         };
-        if mt::not_in_the_interfaces_yet(&op) {
-            continue;
-        }
         let (argv, model_op) = command(&op, &m, &src.0);
         if argv.iter().any(|a| a.contains('\0')) {
             continue;
@@ -381,7 +378,7 @@ fn what_abo_shows_is_the_models(#[strategy(vec(any::<Step>(), 1..20))] plan: Vec
     for step in &plan {
         today = today.checked_add(jiff::Span::new().days(step.advance)).unwrap();
         let m = store::Store::open(&books).unwrap().books;
-        let Some(op) = mt::op(&step.draw, &m, today).filter(|op| !mt::not_in_the_interfaces_yet(op)) else { continue };
+        let Some(op) = mt::op(&step.draw, &m, today) else { continue };
         let (argv, _) = command(&op, &m, &src.0);
         if !argv.iter().any(|a| a.contains('\0')) {
             abo(&books, today, &argv);
@@ -498,7 +495,6 @@ fn run(plan: &[Step], terse: bool) -> (Dir, PathBuf, Date) {
         today = today.checked_add(jiff::Span::new().days(step.advance)).unwrap();
         let m = store::Store::open(&books).unwrap().books;
         let mut argv = match mt::op(&step.draw, &m, today) {
-            Some(op) if mt::not_in_the_interfaces_yet(&op) => continue,
             Some(op) => command(&op, &m, &src).0,
             None => args(&["undo"]),
         };
@@ -778,7 +774,7 @@ fn a_document_filed_for_a_bill_names_it(#[strategy(plan())] plan: Vec<Step>, bil
 fn refusals_in_words_name_their_rules(#[strategy(plan())] plan: Vec<Step>, next: Draw) {
     let (_parent, books, today) = after(&plan);
     let m = store::Store::open(&books).unwrap().books;
-    let Some(op) = mt::op(&next, &m, today).filter(|op| !mt::not_in_the_interfaces_yet(op)) else { return Ok(()) };
+    let Some(op) = mt::op(&next, &m, today) else { return Ok(()) };
     let src = Dir::new();
     let (argv, model_op) = command(&op, &m, &src.0);
     if argv.iter().any(|a| a.contains('\0')) {

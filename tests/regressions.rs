@@ -1218,6 +1218,15 @@ fn ni_asks_nothing() {
     let o = run(&books, &["payment-options", "edit", "till"]);
     assert!(o.status.success(), "{}", err(&o));
     assert_eq!(read(&books, "abo.toml"), toml);
+    // partner: add needs a name; edit changes nothing.
+    let o = run(&books, &["partner", "add", "acme"]);
+    assert!(!o.status.success() && err(&o).contains("name is needed"), "{}", err(&o));
+    let o = run(&books, &["partner", "add", "acme", "--name", "Acme GmbH"]);
+    assert!(o.status.success(), "{}", err(&o));
+    let partners = read(&books, "partners.toml");
+    let o = run(&books, &["partner", "edit", "acme"]);
+    assert!(o.status.success(), "{}", err(&o));
+    assert_eq!(read(&books, "partners.toml"), partners);
     // Without --ni, an option not there is refused before any question; it panicked.
     let o = abo(&books, &["payment-options", "edit", "nope"]);
     assert!(o.status.code() == Some(1) && err(&o).contains("there is no payment option nope"), "{}", err(&o));

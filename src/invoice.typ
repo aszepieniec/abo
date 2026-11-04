@@ -49,6 +49,7 @@
       align: (left, right),
       [Date], d.date,
       [Due], d.due,
+      ..if at("period") != "" { ([Period], at("period")) } else { () },
       ..if d.reference != "" { ([Your reference], capped(d.reference, 5cm)) } else { () },
     )
   ],

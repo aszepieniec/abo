@@ -32,6 +32,148 @@ pub(crate) struct Cli {
 }
 
 #[derive(Subcommand)]
+pub(crate) enum PartnerCmd {
+    /// Every partner: what they owe and are owed, and their agreements;
+    /// employees apart. The same as no subcommand.
+    List,
+    /// Add a partner. Without flags it asks for the name, then the address
+    /// and the tax number, either of which may be left blank.
+    Add {
+        /// How commands name them: a-z, 0-9 and -, such as acme. It is not
+        /// changed after: invoices and bills name it.
+        id: String,
+        #[command(flatten)]
+        details: PartnerFlags,
+        /// One the company employs.
+        #[arg(long)]
+        employee: bool,
+    },
+    /// Change a partner's details. Without flags it asks again, each answer
+    /// on the line as it stands. No invoice changes: each keeps what it
+    /// printed.
+    Edit {
+        id: String,
+        #[command(flatten)]
+        details: PartnerFlags,
+        /// yes or no.
+        #[arg(long)]
+        employee: Option<String>,
+    },
+    /// Remove a partner nothing names: one added by mistake.
+    Remove { id: String },
+}
+
+#[derive(clap::Args)]
+pub(crate) struct PartnerFlags {
+    /// Their name, as invoices print it.
+    #[arg(long)]
+    pub(crate) name: Option<String>,
+    /// A line of their address. Repeatable; `--address ''` clears it.
+    #[arg(long)]
+    pub(crate) address: Vec<String>,
+    /// Their tax number, as invoices print it; `--tax-id ''` clears it.
+    #[arg(long)]
+    pub(crate) tax_id: Option<String>,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum AgreementCmd {
+    /// Every agreement, with what is due under it today. The same as no
+    /// subcommand.
+    List,
+    /// An agreement: its parties, status, versions and documents, and its
+    /// periods through today, each done or due.
+    Show { id: String },
+    /// Add an agreement with the partners party to it, and its first
+    /// version.
+    Add {
+        /// How commands name it: a-z, 0-9 and -, such as acme-hosting.
+        id: String,
+        /// A party to it, by their id. Repeatable: one or more.
+        #[arg(long = "partner", value_name = "PARTNER")]
+        parties: Vec<String>,
+        #[command(flatten)]
+        version: VersionFlags,
+    },
+    /// Add a version: changed terms, from a day. What is not given is kept
+    /// from the version in force then. It takes effect after every period
+    /// done.
+    Amend {
+        id: String,
+        #[command(flatten)]
+        version: VersionFlags,
+        /// The new version is a contract on record, with no schedule.
+        #[arg(long)]
+        no_schedule: bool,
+    },
+    /// End an agreement otherwise than its terms say, on a day, its last.
+    /// To end it as its terms say, amend it with --until. It is kept, as a
+    /// record.
+    Terminate {
+        id: String,
+        /// Its last day. Defaults to today.
+        #[arg(long)]
+        on: Option<String>,
+    },
+    /// End an agreement because another holds what it agreed from the day
+    /// after: a framework contract, a renegotiation.
+    Subsume {
+        id: String,
+        /// The agreement that holds it now.
+        #[arg(long)]
+        by: String,
+        /// Its last day. Defaults to today.
+        #[arg(long)]
+        on: Option<String>,
+    },
+    /// Remove an agreement nothing names: one added by mistake.
+    Remove { id: String },
+}
+
+#[derive(clap::Args)]
+pub(crate) struct VersionFlags {
+    /// The day it takes effect: any day. Needed to add; to amend, the day
+    /// the new terms begin.
+    #[arg(long)]
+    pub(crate) from: Option<String>,
+    /// Its last day, if its terms say it ends; `--until ''` amends it to
+    /// end none.
+    #[arg(long)]
+    pub(crate) until: Option<String>,
+    /// The partner the company invoices under it: a schedule of invoices.
+    #[arg(long, conflicts_with_all = ["pay", "receive"])]
+    pub(crate) invoice: Option<String>,
+    /// The partner the company pays under it, a salary or a rent, by an
+    /// entry each period.
+    #[arg(long, conflicts_with = "receive")]
+    pub(crate) pay: Option<String>,
+    /// The partner who pays the company under it without an invoice, by an
+    /// entry each period.
+    #[arg(long)]
+    pub(crate) receive: Option<String>,
+    /// Months to each period. Defaults to 1, or, to amend, the version's.
+    #[arg(long)]
+    pub(crate) every: Option<u32>,
+    /// Each period is done from its first day.
+    #[arg(long, conflicts_with = "in_arrears")]
+    pub(crate) in_advance: bool,
+    /// Each period is done from the day after its last.
+    #[arg(long)]
+    pub(crate) in_arrears: bool,
+    /// A field of the form each period starts from, `name=value`:
+    /// items, reference, note, currency, vat_rate, vat_reason, income and
+    /// due_days for invoices; description and postings for entries. Again
+    /// for the same name, another line of it, as items and postings have;
+    /// `name=` alone clears it.
+    #[arg(long = "draft", value_name = "NAME=VALUE")]
+    pub(crate) draft: Vec<String>,
+    /// The draft, from an issued invoice, by its number, or an entry, by its
+    /// id: what it says, as the form is filled from it.
+    #[arg(long, value_name = "INVOICE|ENTRY")]
+    pub(crate) draft_from: Option<String>,
+}
+
+#[derive(Subcommand)]
 pub(crate) enum PaymentCmd {
     /// List the options in the order invoices print them. The same as no
     /// subcommand.
@@ -315,8 +457,16 @@ pub(crate) enum Cmd {
         /// Defaults to today.
         #[arg(long)]
         date: Option<String>,
+        /// Defaults, for a period of an agreement, to its draft's.
         #[arg(long = "desc")]
-        description: String,
+        description: Option<String>,
+        /// The agreement whose period this pays or receives, as its schedule
+        /// says; --period names the period. What is not given is its draft's.
+        #[arg(long)]
+        agreement: Option<String>,
+        /// The period, as `2026-01-01..2026-01-31`: one of the agreement's.
+        #[arg(long)]
+        period: Option<String>,
         /// Each `account=amount`, the amount with its commodity unless it is
         /// the company's, in one word: `Expenses:General=12.50` or
         /// `'Expenses:General=12.50 USD'`.
@@ -333,9 +483,10 @@ pub(crate) enum Cmd {
         #[arg(long)]
         issuer: String,
         /// The bill it is the document of, by its id, when that is booked
-        /// already.
-        #[arg(long = "for", value_name = "BILL")]
-        bill: Option<usize>,
+        /// already; or an agreement's version, as `acme-hosting/2`: its
+        /// contract or amendment as signed, kept under contracts/.
+        #[arg(long = "for", value_name = "BILL|AGREEMENT/N")]
+        bill: Option<String>,
         /// A PDF, JPEG, PNG or WebP.
         src: PathBuf,
     },
@@ -375,6 +526,10 @@ pub(crate) enum Cmd {
         /// then says when it is overdue.
         #[arg(long)]
         due: Option<String>,
+        /// The partner who sent it, by their id. Then two of theirs under
+        /// one number are one bill, whatever each owes.
+        #[arg(long)]
+        partner: Option<String>,
         /// As `abo post` takes them.
         postings: Vec<String>,
     },
@@ -382,8 +537,22 @@ pub(crate) enum Cmd {
     Invoice {
         /// The customer's name, then a line of their address each: repeatable,
         /// as `--to 'Nordlicht AG' --to 'Seestrasse 12' --to '8002 Zurich'`.
-        #[arg(long, required = true)]
+        /// Defaults to the partner's, with --partner or --agreement.
+        #[arg(long)]
         to: Vec<String>,
+        /// The partner it is to, by their id: their name, address and tax
+        /// number are printed, unless --to and --customer-tax-id say others.
+        #[arg(long, conflicts_with = "agreement")]
+        partner: Option<String>,
+        /// The agreement whose period it invoices; --period names the
+        /// period. It is to the party its schedule names, and what is not
+        /// given is its draft's.
+        #[arg(long)]
+        agreement: Option<String>,
+        /// What it is for, as `2026-01-01..2026-01-31`, printed on it: a
+        /// period of the agreement, or of any supply.
+        #[arg(long)]
+        period: Option<String>,
         /// `quantity|unit price|description`, repeatable; a negative quantity,
         /// such as a discount's, as it is: `--item -1|20|Discount`.
         #[arg(long = "item", allow_hyphen_values = true)]
@@ -407,13 +576,13 @@ pub(crate) enum Cmd {
         #[arg(long)]
         currency: Option<String>,
         /// The customer's own order reference.
-        #[arg(long, default_value = "")]
-        reference: String,
+        #[arg(long)]
+        reference: Option<String>,
         /// The id of a payment option to print, repeatable. Defaults to all.
         #[arg(long)]
         pay_to: Vec<String>,
-        #[arg(long, default_value = "")]
-        note: String,
+        #[arg(long)]
+        note: Option<String>,
         /// The customer's tax registration number, printed under their address.
         #[arg(long, default_value = "")]
         customer_tax_id: String,
@@ -429,8 +598,8 @@ pub(crate) enum Cmd {
         preview: Option<PathBuf>,
         /// Why no VAT is charged: needed at 0% unless the company is not VAT
         /// registered.
-        #[arg(long, default_value = "")]
-        vat_reason: String,
+        #[arg(long)]
+        vat_reason: Option<String>,
     },
     /// Profit and loss for a period.
     Pl {
@@ -586,6 +755,18 @@ pub(crate) enum Cmd {
         country: Option<String>,
         #[arg(long)]
         tax_id: Option<String>,
+    },
+    /// Whom invoices go to and bills come from: list them, with what they
+    /// owe and are owed; add, change or remove one.
+    Partner {
+        #[command(subcommand)]
+        change: Option<PartnerCmd>,
+    },
+    /// Contracts with partners, in versions, each with a schedule of what is
+    /// invoiced, paid or received, and when. Without a subcommand, the list.
+    Agreement {
+        #[command(subcommand)]
+        change: Option<AgreementCmd>,
     },
     /// Cancel an issued invoice in full with a credit note, numbered next.
     Credit {

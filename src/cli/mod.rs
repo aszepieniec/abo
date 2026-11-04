@@ -2,6 +2,7 @@
 //! questions it asks on the terminal.
 
 pub(crate) mod args;
+mod partners;
 mod prompt;
 mod run;
 

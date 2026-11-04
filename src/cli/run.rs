@@ -7,6 +7,7 @@ use crate::model::{self, Op};
 use crate::store::{self, Store};
 use crate::{demo, input, logging, preflight, questions, repo, report, statement, views, web};
 use anyhow::{bail, Context as _, Result};
+use rust_decimal::Decimal;
 use std::path::PathBuf;
 
 pub(crate) async fn run(cli: Cli) -> Result<()> {
@@ -110,11 +111,16 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             };
             emit(cli.json, &r, || format!("Books opened in {} ({commit}).\nNext: `abo account add` and `abo post`.{vat}", dir.display()))
         }
-        Cmd::Post { date, description, postings } => {
+        Cmd::Post { date, description, agreement, period, postings } => {
             let mut s = Store::open(&here)?;
+            let under = input::made_for(agreement.as_deref(), period.as_deref())?;
+            // For a period of an agreement, what is not given is its draft's.
+            let draft = under.as_ref().map(|f| views::draft(&s.books, &f.agreement, &f.period)).unwrap_or_default();
+            let description = description.or_else(|| draft.get("description").cloned()).context("--desc is needed: what the entry is")?;
+            let postings = if postings.is_empty() { draft.get("postings").map(|p| p.lines().map(String::from).collect()).unwrap_or_default() } else { postings };
             let postings = postings.iter().map(|p| input::posting(&s.books, p)).collect::<Result<_>>()?;
             let date = input::day(date.as_deref())?;
-            let op = Op::Post { date, description, postings, under: None };
+            let op = Op::Post { date, description, postings, under };
             changed(&mut s, &op, &[], cli.json)
         }
         Cmd::File { date, issuer, bill, src } => {
@@ -127,7 +133,13 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 bail!("an issuer is needed, with letters or digits to name the file after");
             }
             let sha256 = store::sha256(&bytes);
-            let doc = model::Document { date: input::day(Some(&date))?, name, ext, of: bill.map(model::Of::Bill) };
+            // A bill's id, or an agreement's version: `acme-hosting/2`.
+            let of = match bill.as_deref().map(|b| b.rsplit_once('/')) {
+                None => None,
+                Some(Some((a, n))) => Some(model::Of::Version(a.to_string(), n.parse().with_context(|| format!("--for {a}/{n}: {n} is not a version's number"))?)),
+                Some(None) => Some(model::Of::Bill(bill.as_deref().unwrap().parse().context("--for takes a bill's id, or an agreement's version as acme-hosting/2")?)),
+            };
+            let doc = model::Document { date: input::day(Some(&date))?, name, ext, of };
             let path = doc.path(&sha256);
             let op = Op::File { sha256, date: doc.date, name: doc.name.clone(), ext: doc.ext.clone(), of: doc.of.clone() };
             changed_from(&mut s, &op, Some(&src.display().to_string()), &[(path.clone(), bytes)], cli.json)
@@ -137,7 +149,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             let sha256 = input::filed(&s.books, &document)?;
             changed(&mut s, &Op::Unfile { sha256 }, &[], cli.json)
         }
-        Cmd::Bill { date, description, document, again, number, due, postings } => {
+        Cmd::Bill { date, description, document, again, number, due, partner, postings } => {
             let mut s = Store::open(&here)?;
             let document = document.map(|d| input::filed(&s.books, &d)).transpose()?;
             // Dated as its document, unless said; the model refuses another
@@ -147,12 +159,38 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 (d, _) => input::day(d)?,
             };
             let postings = postings.iter().map(|p| input::posting(&s.books, p)).collect::<Result<_>>()?;
-            let more = model::BillMore { number: number.unwrap_or_default(), due: due.map(|d| input::day(Some(&d))).transpose()?, partner: None };
+            let more = model::BillMore { number: number.unwrap_or_default(), due: due.map(|d| input::day(Some(&d))).transpose()?, partner };
             let op = Op::Bill { date, description, postings, document, again, more };
             changed(&mut s, &op, &[], cli.json)
         }
-        Cmd::Invoice { to, items, date, due_days, vat_rate, currency, reference, pay_to, note, customer_tax_id, income, preview, vat_reason } => {
+        Cmd::Invoice { to, partner, agreement, period, items, date, due_days, vat_rate, currency, reference, pay_to, note, customer_tax_id, income, preview, vat_reason } => {
             let mut s = Store::open(&here)?;
+            let under = input::made_for(agreement.as_deref(), period.as_deref())?;
+            let period = period.as_deref().map(input::period).transpose()?;
+            let target = match (partner, agreement) {
+                (Some(p), _) => Some(model::To::Partner(p)),
+                (None, Some(a)) => Some(model::To::Agreement(a)),
+                (None, None) => None,
+            };
+            if to.is_empty() && target.is_none() {
+                bail!("a customer is needed: --to, a line of theirs each, or --partner or --agreement");
+            }
+            // For a period of an agreement, what is not given is its draft's.
+            let draft = under.as_ref().map(|f| views::draft(&s.books, &f.agreement, &f.period)).unwrap_or_default();
+            let from = |given: Option<String>, k: &str| given.or_else(|| draft.get(k).cloned()).unwrap_or_default();
+            let (reference, note, vat_reason) = (from(reference, "reference"), from(note, "note"), from(vat_reason, "vat_reason"));
+            let currency = currency.or_else(|| draft.get("currency").cloned());
+            let income = income.or_else(|| draft.get("income").cloned());
+            let number = |k: &str| draft.get(k).map(|v| v.parse().with_context(|| format!("the agreement's draft: {k} {v} is not a number"))).transpose();
+            let vat_rate = match vat_rate {
+                Some(r) => Some(r),
+                None => number("vat_rate")?,
+            };
+            let due_days = match due_days {
+                Some(d) => Some(d),
+                None => number("due_days")?.map(|d: Decimal| d.try_into().unwrap_or(i64::MAX)),
+            };
+            let items = if items.is_empty() { draft.get("items").map(|i| i.lines().map(String::from).collect()).unwrap_or_default() } else { items };
             let lines: Vec<model::Line> = items.iter().enumerate().map(|(n, raw)| input::line(n + 1, raw)).collect::<Result<_>>()?;
             let commodity = currency.unwrap_or_else(|| s.books.config.company.currency.clone());
             // An option's id, or the start of one alone; anything else the model refuses.
@@ -163,7 +201,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                     _ => id,
                 })
                 .collect();
-            let more = model::InvoiceMore { customer_tax_id, income, due_days, pay_to, ..Default::default() };
+            let more = model::InvoiceMore { customer_tax_id, income, due_days, pay_to, to: target, period };
             let date = input::day(date.as_deref())?;
             // A line each; `\n` within one, as logs written before take it.
             let customer = to.iter().map(|l| l.replace("\\n", "\n")).collect::<Vec<_>>().join("\n");
@@ -194,6 +232,8 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             }
             issue(&mut s, op, cli.json, vat_rate.is_some())
         }
+        Cmd::Partner { change } => super::partners::partner(&here, cli.json, change),
+        Cmd::Agreement { change } => super::partners::agreement(&here, cli.json, change),
         Cmd::Credit { date, note, number } => {
             let mut s = Store::open(&here)?;
             let invoice = input::debt(&s.books, &number)?;

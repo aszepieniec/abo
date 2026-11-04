@@ -89,8 +89,14 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
             // Written out, so that the command books where it booked, however
             // invoice.income is set by then.
             a.push(flag("income", more.income.as_ref().unwrap_or(&m.config.invoice.income)));
+            // Under an agreement, what is left blank is said so: else its
+            // draft's would be taken, run again.
+            let drafted = matches!(more.to, Some(model::To::Agreement(_)));
+            if drafted && more.due_days.is_none() {
+                a.push(flag("due-days", &m.config.invoice.terms_days));
+            }
             for (k, v) in [("vat-reason", reason), ("reference", reference), ("note", note), ("customer-tax-id", tax_id)] {
-                if !v.is_empty() {
+                if !v.is_empty() || (drafted && k != "customer-tax-id") {
                     a.push(flag(k, v));
                 }
             }
@@ -167,6 +173,10 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
             }
             a.extend(tax_id.iter().map(|t| flag("tax-id", t)));
             a.extend(employee.map(|e| flag("employee", &if e { "yes" } else { "no" })));
+            // Given nothing, its tax number as it is: else the command asks.
+            if lines.is_none() && tax_id.is_none() && employee.is_none() {
+                a.push(flag("tax-id", &m.partners.get(id).map_or("", |p| p.tax_id.as_str())));
+            }
             a.extend([s("--"), id.clone()]);
         }
         Op::PartnerRemove { id } => a = vec![s("partner"), s("remove"), s("--"), id.clone()],
@@ -179,6 +189,16 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
         Op::Amend { id, version } => {
             a = vec![s("agreement"), s("amend")];
             a.extend(version_flags(version));
+            // What the command keeps from the version in force, unless told.
+            let base = m.agreements.get(id).and_then(|x| x.versions.get(x.in_force(version.from).unwrap_or(x.versions.len()).checked_sub(1)?));
+            if version.until.is_none() && base.is_some_and(|b| b.until.is_some()) {
+                a.push(s("--until="));
+            }
+            match (&version.schedule, base.and_then(|b| b.schedule.as_ref())) {
+                (None, _) => a.push(s("--no-schedule")),
+                (Some(new), Some(old)) => a.extend(old.draft.keys().filter(|k| !new.draft.contains_key(*k)).map(|k| format!("--draft={k}="))),
+                (Some(_), None) => {}
+            }
             a.extend([s("--"), id.clone()]);
         }
         Op::AgreementEnd { id, status } => {
@@ -229,7 +249,8 @@ fn version_flags(v: &model::Version) -> Vec<String> {
             model::Billed::InAdvance => "--in-advance".into(),
             model::Billed::InArrears => "--in-arrears".into(),
         });
-        a.extend(s.draft.iter().map(|(k, x)| format!("--draft={k}={x}")));
+        // A line each: the first sets the field, each after adds a line.
+        a.extend(s.draft.iter().flat_map(|(k, x)| x.split('\n').map(move |l| format!("--draft={k}={l}"))));
     }
     a
 }

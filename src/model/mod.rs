@@ -117,6 +117,21 @@ pub struct Schedule {
     pub draft: BTreeMap<String, String>,
 }
 
+/// A draft's fields of an invoice, by the invoice form's names.
+pub const INVOICE_FIELDS: [&str; 8] = ["items", "reference", "note", "currency", "vat_rate", "vat_reason", "income", "due_days"];
+/// A draft's fields of an entry, by the entry form's names.
+pub const ENTRY_FIELDS: [&str; 2] = ["description", "postings"];
+
+impl Does {
+    /// The fields of the form its periods are done from.
+    pub fn fields(self) -> &'static [&'static str] {
+        match self {
+            Does::Invoice => &INVOICE_FIELDS,
+            Does::Pay | Does::Receive => &ENTRY_FIELDS,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Does {
     /// An invoice to the party, from the invoice form.

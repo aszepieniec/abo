@@ -38,6 +38,9 @@ pub struct Data {
     pub customer_tax_id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub vat_reason: String,
+    /// What it is for, when for a period: `2026-01-01 – 2026-01-31`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub period: String,
     /// On an invoice in another commodity than the company's: the VAT in the
     /// company currency, and the price it was converted at.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -138,6 +141,7 @@ fn data_of(m: &crate::model::Books, id: usize) -> Result<(Data, bool)> {
         credits_date: if credit { inv.date.to_string() } else { String::new() },
         customer_tax_id: c.customer_tax_id.clone(),
         vat_reason: reason,
+        period: c.period.map(|p| format!("{} – {}", p.from, p.to)).unwrap_or_default(),
         vat_home: home.map(|_| stated(m.home_totals(c).1 * sign, m.places(currency), currency)).unwrap_or_default(),
         vat_home_currency: home.map(|_| currency.clone()).unwrap_or_default(),
         vat_home_price: home.map(|h| format!("1 {} = {} {}, {}", c.commodity, price(h.price.quantity, m.places(&h.price.commodity), &h.price.commodity), h.price.commodity, h.date)).unwrap_or_default(),
@@ -164,6 +168,7 @@ fn unprinted(root: &Path, template: &str, data: &Data) -> Vec<String> {
     [
         ("customer_tax_id", &data.customer_tax_id, "the customer's tax number"),
         ("vat_reason", &data.vat_reason, "why no VAT is charged"),
+        ("period", &data.period, "the period it is for"),
         ("vat_home", &data.vat_home, "the VAT in the company currency"),
     ]
     .into_iter()

@@ -1041,7 +1041,9 @@ undo, while nothing has happened since.
   it has one, on or after its `from`. An ended agreement's day is on or
   after the day before its first version's `from`: one ended before it
   began has no periods. A schedule's `every` is 1 or more, and its draft
-  holds nothing I-C1 refuses in a text.
+  holds nothing I-C1 refuses in a text, and no field but the form's it
+  fills: the invoice form's for a schedule of invoices, the entry form's
+  for one that pays or receives.
 - **I-T4** An invoice or a plain entry that names an agreement has a
   period, and it is one of the agreement's periods, of a version whose
   schedule invoices for an invoice, and pays or receives for an entry; no
@@ -1225,25 +1227,40 @@ The commands and pages are not built yet; the operations are (§5).
 Partners and agreements are kept by commands, as declarations are:
 
 ```
-abo partner   add <id> [--employee]       edit <id>    list   remove <id>
+abo partner   [list]   add <id> [--name --address... --tax-id --employee]
+              edit <id> [--name --address... --tax-id --employee=yes|no]
+              remove <id>
+abo agreement [list]   show <id>   remove <id>
 abo agreement add <id> --partner=<id>... --from=<date> [--until=<date>]
-                       [--invoice|--pay|--receive=<partner> --every=<months>
-                        --in-advance|--in-arrears --draft-from=<invoice or entry>]
-abo agreement amend <id> ...              show <id>    list   remove <id>
-abo agreement terminate <id> --on=<date>  subsume <id> --by=<id> --on=<date>
-abo agreement file <id>/<n> <file>
+                       [--invoice|--pay|--receive=<partner> [--every=<months>]
+                        --in-advance|--in-arrears
+                        [--draft=<field>=<value>... | --draft-from=<invoice or entry>]]
+abo agreement amend <id> --from=<date> ...  [--no-schedule]
+abo agreement terminate <id> [--on=<date>]  subsume <id> --by=<id> [--on=<date>]
+abo file    --for=<id>/<n> ... <file>
+abo bill    --partner=<id> ...
 abo invoice --partner=<id> ...
 abo invoice --agreement=<id> --period=<from>..<to> ...
 abo post    --agreement=<id> --period=<from>..<to> ...
 ```
 
-`partner add` and `edit` ask for the name, then the address and the tax
-number, either of which may be left blank. `amend` takes what `add` takes,
-and what it is not given it keeps from the version in force. `--partner` is
-given once for each party; `--invoice`, `--pay` or `--receive` names the
-party the schedule is with. `--draft-from` fills the draft from an issued
-invoice's content, as **Issue again** fills the form, or from an entry's,
-as the entry form is filled from one. An invoice issued with `--partner` or `--agreement` is logged with the
+`partner add` and `edit`, given no flags, ask for the name, then the
+address and the tax number, either of which may be left blank. `amend`
+takes what `add` takes, and what it is not given it keeps from the version
+in force on its `--from`: `--until=` given empty ends none, and
+`--no-schedule` keeps no schedule. `--partner` is given once for each
+party; `--invoice`, `--pay` or `--receive` names the party the schedule is
+with; `--every` is 1 unless given. `--draft=<field>=<value>` sets a field
+of the draft, and again for the same field adds a line to it; `<field>=`
+alone clears it. `--draft-from` fills the draft from an issued invoice's
+content, as **Issue again** fills the form, or from an entry's, as the
+entry form is filled from one. `terminate` and `subsume` end it on the day
+they are run, unless `--on` says another. `abo file --for` names a bill by
+its id, or an agreement's version as `<id>/<n>`. An invoice or an entry
+for a period of an agreement takes what it is not given from the draft of
+the version in force on the period's first day; logged, what was left
+blank is written out blank, so that run again it does not take the
+draft's. An invoice issued with `--partner` or `--agreement` is logged with the
 customer and tax number it copied, written out: run again after the
 partner's address has changed, it issues the same invoice (G-O8).
 

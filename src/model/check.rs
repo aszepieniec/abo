@@ -710,6 +710,9 @@ pub(crate) fn partners_and_agreements(m: &Books, standing: &[bool], who: &dyn Fn
                 }
                 if s.draft.iter().any(|(k, val)| !text_ok(k) || !lines_ok(val)) {
                     no!("I-T3", "the draft of version {n} of agreement {id} holds a hidden character");
+                } else if let Some(k) = s.draft.keys().find(|k| !s.does.fields().contains(&k.as_str())) {
+                    let form = if s.does == Does::Invoice { "an invoice's" } else { "an entry's" };
+                    no!("I-T3", "the draft of version {n} of agreement {id} has {}, which is not a field of {form} form: {}", super::explain::shown(k), s.does.fields().join(", "));
                 }
             }
         }

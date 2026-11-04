@@ -200,6 +200,8 @@ pub fn explain(m: &Books, op: &Op, n: &Books, v: Vec<Violation>) -> Vec<Violatio
             "I-E0" | "I-E1" => matches!(op, Op::Invoice { .. }) && has("I-I1"),
             // An invoice in a commodity not declared has no price to be booked at.
             "I-E4" => matches!(op, Op::Invoice { .. }) && has("I-A1"),
+            // A version over what is done cuts its period: N10 says why.
+            "I-T4" => matches!(op, Op::Amend { .. }) && has("N10"),
             _ => false,
         }
     });
@@ -749,6 +751,18 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
             };
             let them = if what == "partner" { "them" } else { "it" };
             vec![format!("{} names {what} {id}; a {what} is removed only while nothing names {them}", and(&by))]
+        }
+        // Ended before what is done under it: its periods would be cut.
+        "I-T4" if matches!(op, Op::AgreementEnd { .. }) => {
+            let Op::AgreementEnd { id, status } = op else { unreachable!() };
+            let on = match status {
+                AgreementStatus::Terminated { on } | AgreementStatus::Subsumed { on, .. } => *on,
+                AgreementStatus::Active => return vec![],
+            };
+            let done = m.done(&m_standing);
+            let mut cut: Vec<(Period, EntryId)> = done.into_iter().filter(|((a, p), _)| a.as_str() == id && p.to > on).map(|((_, p), by)| (p, by[0])).collect();
+            cut.sort();
+            cut.iter().map(|(p, by)| format!("{} is for {}..{} of agreement {id}; ended on {on}, the agreement would cut that period short: end it on {} or after", name(m, *by), p.from, p.to, p.to)).collect()
         }
         "I-T1" | "I-T2" | "I-T3" | "I-T4" | "I-T5" => {
             // As `check` says them, the entry being added called by its kind.

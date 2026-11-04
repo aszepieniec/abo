@@ -286,7 +286,7 @@ fn the_web_is_the_model(#[strategy(vec(any::<Step>(), 1..25))] plan: Vec<Step>) 
             prop_assert_eq!(store::text_files(&books).unwrap(), model::render(&now), "after undo");
             continue;
         };
-        if mt::not_in_the_interfaces_yet(&op) {
+        if mt::not_in_the_forms_yet(&op) {
             continue;
         }
         let Some((post, model_op)) = request(&op, &m, today) else { continue };
