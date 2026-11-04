@@ -119,11 +119,11 @@ fn partner_page(s: &Store, p: &views::PartnerRow, f: &Fields, error: Option<&any
         }
         @if p.unpaid { div.flash.flash-warn { (icon("alert")) div { strong { "Employed, and no active agreement pays them" } p { "Add their contract as an agreement that pays them, or say they are not employed." } } } }
         div.box {
-            div.box-header { (icon("book")) "Agreements" }
+            div.box-header { (icon("book")) "Agreements"
+                @if may_change() { span.spacer { a.small href={"/agreements/new?partner=" (enc(&p.id))} { "Add one" } } } }
             div.box-body {
                 @if p.agreements.is_empty() { p.muted { "None." } }
                 @for a in &p.agreements { div { a href={"/agreement/" (enc(a))} { code { (a) } } } }
-                @if may_change() { div.actions { a.btn.small href={"/agreements/new?partner=" (enc(&p.id))} { (icon("plus")) " Add an agreement with them" } } }
             }
         }
         div.box.scroll {
