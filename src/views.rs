@@ -217,7 +217,7 @@ pub fn bills(b: &Books, today: model::Date) -> Vec<BillRow> {
 /// The documents filed and not booked: none names a bill that stands.
 pub fn waiting(b: &Books) -> Vec<String> {
     let standing = b.standing();
-    b.documents.iter().filter(|(_, d)| d.of.is_none_or(|of| !standing[of])).map(|(h, d)| d.path(h)).collect()
+    b.documents.iter().filter(|(_, d)| d.version().is_none() && d.bill().is_none_or(|of| !standing[of])).map(|(h, d)| d.path(h)).collect()
 }
 
 #[derive(serde::Serialize)]

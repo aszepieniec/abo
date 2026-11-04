@@ -37,7 +37,7 @@ pub(super) fn bills(b: &Model) -> Vec<BillRow> {
             BillRow { entry: Some(id), date: e.date, name: e.description.clone(), document: document_of(b, id).map(|(_, p)| p), total, open, status, has_open: !left.is_zero(), number, due, overdue }
         })
         .collect();
-    rows.extend(b.documents.iter().filter(|(_, d)| d.of.is_none_or(|of| !standing[of])).map(|(h, d)| BillRow {
+    rows.extend(b.documents.iter().filter(|(_, d)| d.version().is_none() && d.bill().is_none_or(|of| !standing[of])).map(|(h, d)| BillRow {
         entry: None,
         date: d.date,
         name: d.name.clone(),
@@ -158,7 +158,7 @@ pub(super) fn bill_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>) ->
     let get = |k: &str| f.get(k).cloned().unwrap_or_default();
     let filed = get("file");
     let standing = s.books.standing();
-    let waiting: Vec<String> = s.books.documents.iter().filter(|(_, d)| d.of.is_none_or(|of| !standing[of])).map(|(h, d)| d.path(h)).collect();
+    let waiting: Vec<String> = s.books.documents.iter().filter(|(_, d)| d.version().is_none() && d.bill().is_none_or(|of| !standing[of])).map(|(h, d)| d.path(h)).collect();
     html! {
         h1 { "Book a bill" }
         @if let Some(e) = error { (refused(e)) }
@@ -317,7 +317,7 @@ pub(super) async fn bill_submit(Books(mut s): Books, mp: Multipart) -> Response 
         }
         let lines = postings(&s.books, &get("postings"))?;
         let due = if get("due").is_empty() { None } else { Some(input::day(Some(&get("due")))?) };
-        let more = model::BillMore { number: get("number"), due };
+        let more = model::BillMore { number: get("number"), due, partner: None };
         let again = get("again") == "on";
         let bill = |date, document| Op::Bill { date, description: get("description"), postings: lines.clone(), document, again, more: more.clone() };
         if !get("file").is_empty() {

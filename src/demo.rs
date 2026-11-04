@@ -70,7 +70,7 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
     s.change(&Op::CommodityAdd("USD".into(), 2), &[])?;
     s.change(&Op::PriceAdd { of: "BTC".into(), date: ago(150), price: model::Amount { quantity: d("60000.00"), commodity: "EUR".into() } }, &[])?;
     let post = |s: &mut Store, days: i64, description: &str, postings: Vec<model::Posting>| -> Result<usize> {
-        s.change(&Op::Post { date: ago(days), description: description.into(), postings }, &[])?;
+        s.change(&Op::Post { date: ago(days), description: description.into(), postings, under: None }, &[])?;
         Ok(s.books.entries.len())
     };
     // A bill and its document: a small PDF made with typst, or without typst,
@@ -81,7 +81,7 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
                 let sha256 = store::sha256(&bytes);
                 let doc = model::Document { date: ago(days), name: crate::repo::slug(issuer), ext: "pdf".into(), of: None };
                 let path = doc.path(&sha256);
-                s.change(&Op::File { sha256: sha256.clone(), date: doc.date, name: doc.name, ext: "pdf".into(), bill: None }, &[(path, bytes)])?;
+                s.change(&Op::File { sha256: sha256.clone(), date: doc.date, name: doc.name, ext: "pdf".into(), of: None }, &[(path, bytes)])?;
                 Some(sha256)
             }
             Err(e) => {
@@ -145,7 +145,7 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
             let sha256 = store::sha256(&bytes);
             let doc = model::Document { date: ago(8), name: "telecom-gmbh".into(), ext: "pdf".into(), of: None };
             let path = doc.path(&sha256);
-            s.change(&Op::File { sha256, date: doc.date, name: doc.name, ext: "pdf".into(), bill: None }, &[(path, bytes)])?;
+            s.change(&Op::File { sha256, date: doc.date, name: doc.name, ext: "pdf".into(), of: None }, &[(path, bytes)])?;
         }
         Err(e) => tracing::warn!(%e, "the demo has no bill waiting to be booked"),
     }

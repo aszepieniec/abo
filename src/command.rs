@@ -13,16 +13,22 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
     let flag = |k: &str, v: &dyn std::fmt::Display| format!("--{k}={v}");
     let mut a: Vec<String>;
     match op {
-        Op::Post { date, description, postings } => {
-            a = vec![s("post"), flag("date", date), flag("desc", description), s("--")];
+        Op::Post { date, description, postings, under } => {
+            a = vec![s("post"), flag("date", date), flag("desc", description)];
+            if let Some(f) = under {
+                a.extend([flag("agreement", &f.agreement), flag("period", &period(&f.period))]);
+            }
+            a.push(s("--"));
             a.extend(postings.iter().map(posting));
         }
-        Op::File { sha256, date, name, ext, bill } => {
+        Op::File { sha256, date, name, ext, of } => {
             a = vec![s("file"), flag("date", date), flag("issuer", name)];
-            if let Some(b) = bill {
-                a.push(flag("for", b));
+            match of {
+                Some(model::Of::Bill(b)) => a.push(flag("for", b)),
+                Some(model::Of::Version(id, n)) => a.push(flag("for", &format!("{id}/{n}"))),
+                None => {}
             }
-            let filed = model::Document { date: *date, name: name.clone(), ext: ext.clone(), of: *bill }.path(sha256);
+            let filed = model::Document { date: *date, name: name.clone(), ext: ext.clone(), of: of.clone() }.path(sha256);
             a.extend([s("--"), file.map_or(filed, String::from)]);
         }
         Op::Unfile { sha256 } => a = vec![s("unfile"), s("--"), m.documents.get(sha256).map_or(sha256.clone(), |d| d.path(sha256))],
@@ -37,6 +43,9 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
             if let Some(d) = more.due {
                 a.push(flag("due", &d));
             }
+            if let Some(p) = &more.partner {
+                a.push(flag("partner", p));
+            }
             if *again {
                 a.push(s("--again"));
             }
@@ -47,11 +56,32 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
             // A line of the customer each. ponytail: a `\n` typed within a
             // line is read back as a break, as logs written before have it.
             a = vec![s("invoice"), flag("date", date)];
+            match &more.to {
+                Some(model::To::Partner(p)) => a.push(flag("partner", p)),
+                Some(model::To::Agreement(x)) => a.push(flag("agreement", x)),
+                None => {}
+            }
+            if let Some(p) = &more.period {
+                a.push(flag("period", &period(p)));
+            }
+            // What it copied from the partner, written out: run again after
+            // their address changed, it issues the same invoice (G-O8).
+            let party = match (&more.to, more.period) {
+                (Some(model::To::Partner(p)), _) => m.partners.get(p),
+                (Some(model::To::Agreement(x)), Some(p)) => m.party_on(x, p.from).and_then(|p| m.partners.get(p)),
+                _ => None,
+            };
+            let copied = party.filter(|_| customer.trim().is_empty());
+            let customer = copied.map_or(customer.as_str(), |p| p.lines.as_str());
+            let tax_id = match copied {
+                Some(p) if more.customer_tax_id.trim().is_empty() => &p.tax_id,
+                _ => &more.customer_tax_id,
+            };
             a.extend(customer.split('\n').map(|l| flag("to", &l)));
             a.push(flag("currency", commodity));
             // The rate it took, written out: a default follows from the
             // configuration and the company's tax number, which may change.
-            let r = rate.unwrap_or_else(|| if m.untaxed(&more.customer_tax_id).is_some() { rust_decimal::Decimal::ZERO } else { m.config.invoice.vat_rate });
+            let r = rate.unwrap_or_else(|| if m.untaxed(tax_id).is_some() { rust_decimal::Decimal::ZERO } else { m.config.invoice.vat_rate });
             a.push(flag("vat-rate", &r.normalize()));
             if let Some(d) = more.due_days {
                 a.push(flag("due-days", &d));
@@ -59,7 +89,7 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
             // Written out, so that the command books where it booked, however
             // invoice.income is set by then.
             a.push(flag("income", more.income.as_ref().unwrap_or(&m.config.invoice.income)));
-            for (k, v) in [("vat-reason", reason), ("reference", reference), ("note", note), ("customer-tax-id", &more.customer_tax_id)] {
+            for (k, v) in [("vat-reason", reason), ("reference", reference), ("note", note), ("customer-tax-id", tax_id)] {
                 if !v.is_empty() {
                     a.push(flag(k, v));
                 }
@@ -119,6 +149,87 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
         Op::CommodityRemove(c) => a = vec![s("commodity"), s("remove"), s("--"), c.clone()],
         Op::PriceAdd { of, date, price } => a = vec![s("price"), s("add"), s("--"), date.to_string(), of.clone(), price.quantity.to_string(), price.commodity.clone()],
         Op::PriceRemove { of, date } => a = vec![s("price"), s("remove"), s("--"), date.to_string(), of.clone()],
+        Op::PartnerAdd { id, partner } => {
+            a = vec![s("partner"), s("add")];
+            a.extend(lines_flags(&partner.lines));
+            if !partner.tax_id.is_empty() {
+                a.push(flag("tax-id", &partner.tax_id));
+            }
+            if partner.employee {
+                a.push(s("--employee"));
+            }
+            a.extend([s("--"), id.clone()]);
+        }
+        Op::PartnerEdit { id, lines, tax_id, employee } => {
+            a = vec![s("partner"), s("edit")];
+            if let Some(l) = lines {
+                a.extend(lines_flags(l));
+            }
+            a.extend(tax_id.iter().map(|t| flag("tax-id", t)));
+            a.extend(employee.map(|e| flag("employee", &if e { "yes" } else { "no" })));
+            a.extend([s("--"), id.clone()]);
+        }
+        Op::PartnerRemove { id } => a = vec![s("partner"), s("remove"), s("--"), id.clone()],
+        Op::AgreementAdd { id, parties, version } => {
+            a = vec![s("agreement"), s("add")];
+            a.extend(parties.iter().map(|p| flag("partner", p)));
+            a.extend(version_flags(version));
+            a.extend([s("--"), id.clone()]);
+        }
+        Op::Amend { id, version } => {
+            a = vec![s("agreement"), s("amend")];
+            a.extend(version_flags(version));
+            a.extend([s("--"), id.clone()]);
+        }
+        Op::AgreementEnd { id, status } => {
+            a = match status {
+                model::AgreementStatus::Subsumed { by, on } => vec![s("agreement"), s("subsume"), flag("by", by), flag("on", on)],
+                model::AgreementStatus::Terminated { on } => vec![s("agreement"), s("terminate"), flag("on", on)],
+                // Refused by the model; said as the command that asks it.
+                model::AgreementStatus::Active => vec![s("agreement"), s("terminate")],
+            };
+            a.extend([s("--"), id.clone()]);
+        }
+        Op::AgreementRemove { id } => a = vec![s("agreement"), s("remove"), s("--"), id.clone()],
+    }
+    a
+}
+
+/// `2026-01-01..2026-01-31`.
+fn period(p: &model::Period) -> String {
+    format!("{}..{}", p.from, p.to)
+}
+
+/// A partner's lines as flags: the name, then a line of the address each,
+/// or, with none, the address given empty, as an edit clears it.
+fn lines_flags(lines: &str) -> Vec<String> {
+    let mut it = lines.split('\n');
+    let mut v = vec![format!("--name={}", it.next().unwrap_or(""))];
+    let address: Vec<String> = it.map(|l| format!("--address={l}")).collect();
+    if address.is_empty() {
+        v.push("--address=".into());
+    }
+    v.extend(address);
+    v
+}
+
+/// A version as flags: when, and its schedule, its draft a field each.
+fn version_flags(v: &model::Version) -> Vec<String> {
+    let mut a = vec![format!("--from={}", v.from)];
+    a.extend(v.until.map(|u| format!("--until={u}")));
+    if let Some(s) = &v.schedule {
+        let does = match s.does {
+            model::Does::Invoice => "invoice",
+            model::Does::Pay => "pay",
+            model::Does::Receive => "receive",
+        };
+        a.push(format!("--{does}={}", s.party));
+        a.push(format!("--every={}", s.every));
+        a.push(match s.billed {
+            model::Billed::InAdvance => "--in-advance".into(),
+            model::Billed::InArrears => "--in-arrears".into(),
+        });
+        a.extend(s.draft.iter().map(|(k, x)| format!("--draft={k}={x}")));
     }
     a
 }
@@ -128,7 +239,7 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
 pub fn subject(op: &Op, m: &Books, n: &Books) -> String {
     match op {
         Op::Post { description, .. } => format!("Book {description}"),
-        Op::File { sha256, date, name, ext, bill } => format!("File {}", model::Document { date: *date, name: name.clone(), ext: ext.clone(), of: *bill }.path(sha256)),
+        Op::File { sha256, date, name, ext, of } => format!("File {}", model::Document { date: *date, name: name.clone(), ext: ext.clone(), of: of.clone() }.path(sha256)),
         Op::Unfile { sha256 } => format!("Take out {}", m.documents.get(sha256).map_or(sha256.clone(), |d| d.path(sha256))),
         Op::Bill { description, .. } => format!("Book the bill {description}"),
         Op::Invoice { .. } => format!("Invoice {}", n.number_text(n.entries.len()).unwrap_or_default()),
@@ -155,6 +266,17 @@ pub fn subject(op: &Op, m: &Books, n: &Books) -> String {
         Op::AccountMove { from, to, .. } => format!("Move {from} to {to}"),
         Op::PriceAdd { of, date, .. } => format!("Add the price of {of} on {date}"),
         Op::PriceRemove { of, date } => format!("Take out the price of {of} on {date}"),
+        Op::PartnerAdd { id, .. } => format!("Add the partner {id}"),
+        Op::PartnerEdit { id, .. } => format!("Change the partner {id}"),
+        Op::PartnerRemove { id } => format!("Remove the partner {id}"),
+        Op::AgreementAdd { id, .. } => format!("Add the agreement {id}"),
+        Op::Amend { id, .. } => format!("Amend the agreement {id}: version {}", n.agreements.get(id).map_or(0, |a| a.versions.len())),
+        Op::AgreementEnd { id, status: model::AgreementStatus::Subsumed { by, on } } => format!("The agreement {id} is subsumed by {by} on {on}"),
+        Op::AgreementEnd { id, status } => format!("Terminate the agreement {id}{}", match status {
+            model::AgreementStatus::Terminated { on } => format!(" on {on}"),
+            _ => String::new(),
+        }),
+        Op::AgreementRemove { id } => format!("Remove the agreement {id}"),
     }
 }
 

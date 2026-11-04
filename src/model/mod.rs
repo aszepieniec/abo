@@ -37,6 +37,8 @@ pub type Hash = String;
 pub type Account = String;
 /// Three or more capital letters (I-K0).
 pub type Commodity = String;
+/// A partner's or an agreement's: a-z, 0-9 and `-` (I-T1).
+pub type Id = String;
 
 pub const CLASSES: [&str; 5] = ["Assets", "Liabilities", "Equity", "Income", "Expenses"];
 
@@ -52,8 +54,115 @@ pub struct Books {
     pub entries: Vec<Entry>,
     /// One per account, commodity and date.
     pub statements: BTreeMap<(Account, Commodity, Date), Statement>,
-    /// Bills' documents, by their hash.
+    /// Bills' and agreements' documents, by their hash.
     pub documents: BTreeMap<Hash, Document>,
+    /// Whom invoices go to and bills come from (MODEL.md §2.9).
+    pub partners: BTreeMap<Id, Partner>,
+    /// Contracts with partners, in versions (§2.9).
+    pub agreements: BTreeMap<Id, Agreement>,
+}
+
+/// Someone the company invoices or is billed by, pays or is paid by.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Partner {
+    /// Their name, then their address, if given, as an invoice prints them.
+    pub lines: String,
+    /// As an invoice prints it; empty where none is given.
+    pub tax_id: String,
+    /// One the company employs.
+    pub employee: bool,
+}
+
+/// A contract between the company and one or more partners.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Agreement {
+    /// The partners party to it, as given.
+    pub parties: Vec<Id>,
+    pub status: AgreementStatus,
+    /// In the order added; never changed. Version n is `versions[n - 1]`.
+    pub versions: Vec<Version>,
+}
+
+/// What became of an agreement. Called Status in MODEL.md; a debt's
+/// `Status` has the name here.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AgreementStatus {
+    Active,
+    /// Its last day.
+    Terminated { on: Date },
+    /// Replaced by another, which holds what it agreed from the day after.
+    Subsumed { by: Id, on: Date },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Version {
+    /// When it takes effect: any day.
+    pub from: Date,
+    /// The agreement's last day, if it ends.
+    pub until: Option<Date>,
+    /// What the company invoices, pays or receives under it, and when.
+    pub schedule: Option<Schedule>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Schedule {
+    /// Whom: one of the agreement's parties.
+    pub party: Id,
+    pub does: Does,
+    /// The length of each period, in months: 1 or more.
+    pub every: u32,
+    pub billed: Billed,
+    /// The form's fields, by their names, as each invoice or entry starts
+    /// from them; none blank.
+    pub draft: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Does {
+    /// An invoice to the party, from the invoice form.
+    Invoice,
+    /// An entry paying them, from the entry form: a salary, a rent.
+    Pay,
+    /// An entry of what they pay without an invoice, likewise.
+    Receive,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Billed {
+    InAdvance,
+    InArrears,
+}
+
+/// Both days included.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Period {
+    pub from: Date,
+    pub to: Date,
+}
+
+/// Whom an invoice is issued to: a partner, or, for a period of an
+/// agreement, the agreement, whose schedule names the party.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum To {
+    Partner(Id),
+    Agreement(Id),
+}
+
+/// What a document is the document of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Of {
+    Bill(EntryId),
+    /// An agreement, and the place of the version it is of, from 1.
+    Version(Id, usize),
+}
+
+/// A plain entry's agreement and the period of its schedule it is made for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct For {
+    pub agreement: Id,
+    pub period: Period,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,7 +190,9 @@ pub struct Posting {
 /// them; the others' postings follow from what they hold (`Books::postings`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
-    Plain(Vec<Posting>),
+    /// Booked by hand: anything that balances; when made for a period of an
+    /// agreement's schedule, the agreement and the period.
+    Plain(Vec<Posting>, Option<For>),
     /// A supplier's bill. A debt. What the supplier says of it besides.
     Bill(Vec<Posting>, BillMore),
     /// An invoice abo issued, and its PDF's hash (a check). A debt.
@@ -105,6 +216,8 @@ pub struct BillMore {
     pub number: String,
     /// On or after the bill's own date.
     pub due: Option<Date>,
+    /// Who sent it.
+    pub partner: Option<Id>,
 }
 
 /// What a statement says of an account in a commodity on a date: its
@@ -122,8 +235,9 @@ pub struct PostingRef {
     pub n: usize,
 }
 
-/// A supplier's bill as received, kept as it came. Its path follows from
-/// these and its hash (`path`).
+/// A supplier's bill as received, or an agreement's contract or amendment
+/// as signed, kept as it came. Its path follows from these and its hash
+/// (`path`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Document {
     pub date: Date,
@@ -131,14 +245,20 @@ pub struct Document {
     pub name: String,
     /// `pdf`, `jpg`: lower-case letters and digits.
     pub ext: String,
-    /// The bill it is the document of, once booked.
-    pub of: Option<EntryId>,
+    /// What it is the document of; none: a bill not booked yet.
+    pub of: Option<Of>,
 }
 
 /// What an invoice says. Its amounts, its number and its postings follow.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Content {
+    /// The partner, or the agreement, it is issued under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<To>,
+    /// What it is for, when it is for a period.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period: Option<Period>,
     /// Name, then address, newlines between lines. The name is not blank.
     pub customer: String,
     /// Printed under the address, as cross-border invoices need it.
@@ -472,6 +592,14 @@ pub fn ymd(s: &str) -> Option<Date> {
     form.then(|| s.parse().ok()).flatten()
 }
 
+#[test]
+fn dates_are_written_yyyy_mm_dd() {
+    assert_eq!(ymd("2026-09-30"), Some(jiff::civil::date(2026, 9, 30)));
+    for s in ["20260930", "2026-9-30", "2026-09-3", "2026-09-30T12:00", "2026-09-30 12:00", "+002026-09-30", "2026-09-30[UTC]", "2026-02-30", " 2026-09-30", "30.09.2026"] {
+        assert_eq!(ymd(s), None, "{s}");
+    }
+}
+
 /// The country a tax number names, as an EU VAT number does: a country's
 /// code, then a digit — `IE` of `IE6388047V` — or Austria's `ATU` and
 /// Switzerland's `CHE`. None for a number that names none: `TAX-123`.
@@ -573,9 +701,100 @@ pub fn invoice_path(number: &str, ext: &str) -> String {
 }
 
 impl Document {
-    /// `bills/2026/2026-09-21-acme-1a2b3c4d.pdf`.
+    /// `bills/2026/2026-09-21-acme-1a2b3c4d.pdf`; an agreement's,
+    /// `contracts/acme-hosting/2026-01-05-acme-1a2b3c4d.pdf`.
     pub fn path(&self, sha256: &str) -> String {
-        format!("bills/{:04}/{}-{}-{}.{}", self.date.year(), self.date, self.name, sha256.chars().take(8).collect::<String>(), self.ext)
+        let dir = match &self.of {
+            Some(Of::Version(a, _)) => format!("contracts/{a}"),
+            _ => format!("bills/{:04}", self.date.year()),
+        };
+        format!("{dir}/{}-{}-{}.{}", self.date, self.name, sha256.chars().take(8).collect::<String>(), self.ext)
+    }
+
+    /// The bill it is the document of, if a bill.
+    pub fn bill(&self) -> Option<EntryId> {
+        match self.of {
+            Some(Of::Bill(b)) => Some(b),
+            _ => None,
+        }
+    }
+
+    /// The agreement and version it is the document of, if one.
+    pub fn version(&self) -> Option<(&str, usize)> {
+        match &self.of {
+            Some(Of::Version(a, n)) => Some((a, *n)),
+            _ => None,
+        }
+    }
+}
+
+/// The first day of the month `months` after the month of `d`; none past
+/// the dates abo writes.
+fn month_start(d: Date, months: i64) -> Option<Date> {
+    d.first_of_month().checked_add(jiff::Span::new().try_months(months).ok()?).ok().filter(|x| x.year() <= 9999)
+}
+
+impl Agreement {
+    /// The place, from 1, of the version in force on `day`: the last added
+    /// of those whose `from` is on or before it.
+    pub fn in_force(&self, day: Date) -> Option<usize> {
+        self.versions.iter().rposition(|v| v.from <= day).map(|i| i + 1)
+    }
+
+    /// The day its status ends it on, if it has ended.
+    pub fn ended_on(&self) -> Option<Date> {
+        match &self.status {
+            AgreementStatus::Active => None,
+            AgreementStatus::Terminated { on } | AgreementStatus::Subsumed { on, .. } => Some(*on),
+        }
+    }
+
+    /// The earlier of what its terms say of when it ends — the last
+    /// version's `until` — and the day its status ended it, where either is.
+    pub fn last_day(&self) -> Option<Date> {
+        [self.versions.last().and_then(|v| v.until), self.ended_on()].into_iter().flatten().min()
+    }
+
+    /// Its periods that begin on or before `through`, each with the place of
+    /// the version it is of (§2.9): each version's blocks of whole months,
+    /// cut to the days it is in force and to the agreement's last day.
+    pub fn periods(&self, through: Date) -> Vec<(usize, Period)> {
+        let last = self.last_day();
+        let mut out = vec![];
+        for (i, v) in self.versions.iter().enumerate() {
+            let Some(s) = v.schedule.as_ref().filter(|s| s.every > 0) else { continue };
+            let next = self.versions.get(i + 1).map(|n| n.from.yesterday().unwrap_or(Date::MIN));
+            let end = [next, last].into_iter().flatten().min();
+            for k in 0.. {
+                let Some(block) = month_start(v.from, k * i64::from(s.every)) else { break };
+                let from = block.max(v.from);
+                if from > through || end.is_some_and(|e| from > e) {
+                    break;
+                }
+                let block_end = month_start(v.from, (k + 1) * i64::from(s.every)).and_then(|b| b.yesterday().ok()).unwrap_or(jiff::civil::date(9999, 12, 31));
+                let to = end.map_or(block_end, |e| block_end.min(e));
+                if from <= to {
+                    out.push((i + 1, Period { from, to }));
+                }
+            }
+        }
+        out
+    }
+
+    /// The schedule of version `n`, from 1.
+    pub fn schedule(&self, n: usize) -> Option<&Schedule> {
+        self.versions.get(n.checked_sub(1)?)?.schedule.as_ref()
+    }
+}
+
+impl Billed {
+    /// The first day a period can be done on: its first, in advance; the
+    /// day after its last, in arrears.
+    pub fn doable(self, p: &Period) -> Option<Date> {
+        match self {
+            Billed::InAdvance => Some(p.from),
+            Billed::InArrears => p.to.tomorrow().ok(),
+        }
     }
 }
 
@@ -589,7 +808,91 @@ impl Books {
             entries: vec![],
             statements: BTreeMap::new(),
             documents: BTreeMap::new(),
+            partners: BTreeMap::new(),
+            agreements: BTreeMap::new(),
         }
+    }
+
+    /// The agreement and period entry `id` is made for: a plain entry's, or
+    /// an invoice's issued under an agreement.
+    pub fn made_for(&self, id: EntryId) -> Option<(&Id, Period)> {
+        match &self.entry(id)?.kind {
+            Kind::Plain(_, Some(f)) => Some((&f.agreement, f.period)),
+            Kind::Invoice { content, .. } => match (&content.to, content.period) {
+                (Some(To::Agreement(a)), Some(p)) => Some((a, p)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Whom agreement `a`'s schedule in force on `day` is with.
+    pub fn party_on(&self, a: &str, day: Date) -> Option<&Id> {
+        let ag = self.agreements.get(a)?;
+        Some(&ag.schedule(ag.in_force(day)?)?.party)
+    }
+
+    /// `partner(e)` of MODEL.md §2.7: of a bill, its partner; of an
+    /// invoice, the partner its `to` names, or, as of a plain entry for a
+    /// period, the party its agreement's schedule in force then names; of a
+    /// credit note, a payment or a reversal, that of the entry it names.
+    pub fn partner_of(&self, id: EntryId) -> Option<&Id> {
+        match &self.entry(id)?.kind {
+            Kind::Bill(_, more) => more.partner.as_ref(),
+            Kind::Invoice { content, .. } => match (&content.to, content.period) {
+                (Some(To::Partner(p)), _) => Some(p),
+                (Some(To::Agreement(a)), Some(period)) => self.party_on(a, period.from),
+                _ => None,
+            },
+            Kind::Plain(_, Some(f)) => self.party_on(&f.agreement, f.period.from),
+            k => self.partner_of(k.names().filter(|of| *of < id)?),
+        }
+    }
+
+    /// The agreements partner `p` is a party to.
+    pub fn agreements_of(&self, p: &str) -> Vec<&Id> {
+        self.agreements.iter().filter(|(_, a)| a.parties.iter().any(|x| x == p)).map(|(id, _)| id).collect()
+    }
+
+    /// The standing entries made for each agreement and period.
+    pub fn done(&self, standing: &[bool]) -> BTreeMap<(&Id, Period), Vec<EntryId>> {
+        let mut v: BTreeMap<(&Id, Period), Vec<EntryId>> = BTreeMap::new();
+        for id in (1..=self.entries.len()).filter(|&id| standing[id]) {
+            if let Some((a, p)) = self.made_for(id) {
+                v.entry((a, p)).or_default().push(id);
+            }
+        }
+        v
+    }
+
+    /// `due(a, day)`: the periods of agreement `a` that can be done by `day`
+    /// and are not, each with the place of its version.
+    pub fn due(&self, a: &str, day: Date) -> Vec<(usize, Period)> {
+        let Some(ag) = self.agreements.get(a) else { return vec![] };
+        let standing = self.standing();
+        let done = self.done(&standing);
+        ag.periods(day)
+            .into_iter()
+            .filter(|(n, p)| ag.schedule(*n).and_then(|s| s.billed.doable(p)).is_some_and(|d| d <= day))
+            .filter(|(_, p)| !done.keys().any(|(x, q)| x.as_str() == a && q == p))
+            .collect()
+    }
+
+    /// `owed_to(p, c)` and `owed_by(p, c)`: what is open on the standing
+    /// bills, and on the standing invoices, whose partner is `p`, by
+    /// commodity, nought left out.
+    pub fn owed(&self, p: &str) -> (BTreeMap<Commodity, Decimal>, BTreeMap<Commodity, Decimal>) {
+        let standing = self.standing();
+        let (mut to, mut by) = (BTreeMap::new(), BTreeMap::new());
+        for id in 1..=self.entries.len() {
+            let (Some(debt), true) = (self.debt(id), self.partner_of(id).is_some_and(|x| x == p)) else { continue };
+            let open = self.open(id, &standing);
+            let side = if matches!(self.entries[id - 1].kind, Kind::Bill(..)) { &mut to } else { &mut by };
+            *side.entry(debt.owed.commodity).or_insert(Decimal::ZERO) += open;
+        }
+        to.retain(|_, q: &mut Decimal| !q.is_zero());
+        by.retain(|_, q: &mut Decimal| !q.is_zero());
+        (to, by)
     }
 
     /// The entry with this id: none for a gap, an id taken back by undo.
@@ -605,7 +908,7 @@ impl Books {
     pub fn postings(&self, id: EntryId) -> Vec<Posting> {
         let Some(e) = self.entry(id) else { return vec![] };
         match &e.kind {
-            Kind::Plain(p) | Kind::Bill(p, _) | Kind::Payment { postings: p, .. } => p.clone(),
+            Kind::Plain(p, _) | Kind::Bill(p, _) | Kind::Payment { postings: p, .. } => p.clone(),
             Kind::Invoice { content, .. } => self.invoice_postings(content),
             Kind::CreditNote { of, .. } | Kind::Reversal { of } if *of < id => {
                 self.postings(*of).iter().map(Posting::negated).collect()
@@ -844,7 +1147,7 @@ impl Books {
 
     /// The document bill `id` has, by its hash, if one names it.
     pub fn document_of(&self, id: EntryId) -> Option<(&Hash, &Document)> {
-        self.documents.iter().find(|(_, d)| d.of == Some(id))
+        self.documents.iter().find(|(_, d)| d.bill() == Some(id))
     }
 
     pub fn open(&self, d: EntryId, standing: &[bool]) -> Decimal {

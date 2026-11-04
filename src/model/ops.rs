@@ -9,8 +9,10 @@ use super::*;
 
 #[derive(Clone, Debug)]
 pub enum Op {
-    Post { date: Date, description: String, postings: Vec<Posting> },
-    File { sha256: Hash, date: Date, name: String, ext: String, bill: Option<EntryId> },
+    /// `under`: the agreement and period it is made for, if any.
+    Post { date: Date, description: String, postings: Vec<Posting>, under: Option<For> },
+    /// `of`: the bill, or an agreement's version, it is the document of.
+    File { sha256: Hash, date: Date, name: String, ext: String, of: Option<Of> },
     Unfile { sha256: Hash },
     /// `again`: booked though a standing bill owes the same (N8). `more`:
     /// the supplier's number for it and its due date, each if given.
@@ -44,6 +46,20 @@ pub enum Op {
     CommodityRemove(Commodity),
     PriceAdd { of: Commodity, date: Date, price: Amount },
     PriceRemove { of: Commodity, date: Date },
+    /// Refused if the id is taken.
+    PartnerAdd { id: Id, partner: Partner },
+    /// The details given; no invoice changes.
+    PartnerEdit { id: Id, lines: Option<String>, tax_id: Option<String>, employee: Option<bool> },
+    /// While nothing names them (I-T2).
+    PartnerRemove { id: Id },
+    /// An active agreement of one version; refused if the id is taken.
+    AgreementAdd { id: Id, parties: Vec<Id>, version: Version },
+    /// A version, added after the agreement's last.
+    Amend { id: Id, version: Version },
+    /// Terminated, or subsumed by another, on a day.
+    AgreementEnd { id: Id, status: AgreementStatus },
+    /// One nothing names: added by mistake.
+    AgreementRemove { id: Id },
 }
 
 /// What an invoice may say besides, each with its default: the customer's
@@ -57,6 +73,11 @@ pub struct InvoiceMore {
     pub income: Option<Account>,
     pub due_days: Option<i64>,
     pub pay_to: Vec<String>,
+    /// The partner, or the agreement, it is issued under: the customer and
+    /// their tax number, when not given, are the partner's.
+    pub to: Option<To>,
+    /// What it is for, when for a period.
+    pub period: Option<Period>,
 }
 
 pub fn apply(m: &Books, op: &Op, today: Date) -> Result<Books, Vec<Violation>> {
@@ -79,35 +100,53 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
     let about = |id: EntryId| m.entry(id).map(|e| e.description.clone()).ok_or(format!("no entry has the id {id}"));
     let entry = |date: Date, description: String, kind| Entry { date, description, kind };
     match op.clone() {
-        Op::Post { date, description, postings } => n.entries.push(entry(date, description, Kind::Plain(postings))),
-        Op::File { sha256, date, name, ext, bill } => {
+        Op::Post { date, description, postings, under } => n.entries.push(entry(date, description, Kind::Plain(postings, under))),
+        Op::File { sha256, date, name, ext, of } => {
             if let Some(d) = m.documents.get(&sha256) {
-                let booked = d.of.filter(|of| m.standing()[*of]).map(|of| format!(", the document of {}", super::explain::name(m, of))).unwrap_or_default();
+                let booked = match &d.of {
+                    Some(Of::Bill(b)) if m.standing()[*b] => format!(", the document of {}", super::explain::name(m, *b)),
+                    Some(Of::Version(a, v)) => format!(", the document of version {v} of agreement {a}"),
+                    _ => String::new(),
+                };
                 return Err(format!("this document is filed already, as {}{booked}", d.path(&sha256)));
             }
-            n.documents.insert(sha256, Document { date, name, ext, of: bill });
+            n.documents.insert(sha256, Document { date, name, ext, of });
         }
         Op::Unfile { sha256 } => match m.documents.get(&sha256) {
+            Some(Document { of: Some(Of::Version(a, v)), .. }) => return Err(format!("this is the document of version {v} of agreement {a}; an agreement's documents are kept with it, as a record")),
             // As Bill: a reverted bill's document is booked by none.
-            Some(d) if d.of.is_none_or(|of| !m.standing()[of]) => drop(n.documents.remove(&sha256)),
-            Some(d) => return Err(format!("{} is the document of {}; revert the bill first", d.path(&sha256), name(m, d.of.unwrap_or_default()))),
+            Some(d) if d.bill().is_none_or(|of| !m.standing()[of]) => drop(n.documents.remove(&sha256)),
+            Some(d) => return Err(format!("{} is the document of {}; revert the bill first", d.path(&sha256), name(m, d.bill().unwrap_or_default()))),
             None => return Err("no document is filed with this hash".into()),
         },
         Op::Bill { date, description, postings, document, more, .. } => {
-            let more = BillMore { number: more.number.trim().to_string(), due: more.due };
+            let more = BillMore { number: more.number.trim().to_string(), due: more.due, partner: more.partner };
             n.entries.push(entry(date, description, Kind::Bill(postings, more)));
             if let Some(h) = document {
                 let standing = m.standing();
                 match n.documents.get_mut(&h) {
+                    Some(d) if d.version().is_some() => return Err(format!("{} is an agreement's document, not a bill's", d.path(&h))),
                     Some(d) if d.date != date => return Err(format!("{} is dated {}; a bill is dated as its document", d.path(&h), d.date)),
-                    Some(d) if d.of.is_none_or(|of| !standing[of]) => d.of = Some(next),
-                    Some(d) => return Err(format!("{} is the document of {}, which stands", d.path(&h), name(m, d.of.unwrap_or_default()))),
+                    Some(d) if d.bill().is_none_or(|of| !standing[of]) => d.of = Some(Of::Bill(next)),
+                    Some(d) => return Err(format!("{} is the document of {}, which stands", d.path(&h), name(m, d.bill().unwrap_or_default()))),
                     None => return Err("no document is filed with this hash".into()),
                 }
             }
         }
-        Op::Invoice { date, customer, commodity, lines, rate, reason, reference, note, pdf, more } => {
+        Op::Invoice { date, mut customer, commodity, lines, rate, reason, reference, note, pdf, mut more } => {
             let c = &m.config;
+            // Whom it is to: the partner named, or the agreement's party.
+            let party = match (&more.to, more.period) {
+                (Some(To::Partner(p)), _) => Some(p.clone()),
+                (Some(To::Agreement(a)), Some(period)) => m.party_on(a, period.from).cloned(),
+                _ => None,
+            };
+            if let Some(p) = party.and_then(|p| m.partners.get(&p)).filter(|_| customer.trim().is_empty()) {
+                customer = p.lines.clone();
+                if more.customer_tax_id.trim().is_empty() {
+                    more.customer_tax_id = p.tax_id.clone();
+                }
+            }
             // Unless given: none where the sale is known to be taxed elsewhere.
             let rate = rate.unwrap_or_else(|| if m.untaxed(&more.customer_tax_id).is_some() { Decimal::ZERO } else { c.invoice.vat_rate });
             let vat = match (&c.vat, rate) {
@@ -139,7 +178,7 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
             let pay_to = ids.into_iter().map(|id| c.payment[id].printed()).collect();
             let accounts = InvoiceAccounts { receivable: c.invoice.receivable.clone(), income: more.income.clone().unwrap_or_else(|| c.invoice.income.clone()), output };
             let first = customer.lines().next().unwrap_or("").trim().to_string();
-            let content = Content { customer, customer_tax_id: more.customer_tax_id, commodity, home, lines, vat, due, pay_to, reference, note, accounts };
+            let content = Content { to: more.to, period: more.period, customer, customer_tax_id: more.customer_tax_id, commodity, home, lines, vat, due, pay_to, reference, note, accounts };
             n.entries.push(entry(date, String::new(), Kind::Invoice { content: Box::new(content), pdf }));
             // The number first: a name may begin with what the date line
             // reads as a status or a code, `*` or `(`; and `;` would begin a
@@ -264,7 +303,7 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
                 .flat_map(|((a, c), q)| [Posting::new(&new(&a), q, &c), Posting::new(&a, -q, &c)])
                 .collect();
             if !postings.is_empty() {
-                n.entries.push(entry(date, format!("Move {from} to {to}"), Kind::Plain(postings)));
+                n.entries.push(entry(date, format!("Move {from} to {to}"), Kind::Plain(postings, None)));
             }
             let c = &mut n.config;
             let mut named: Vec<&mut Account> = vec![&mut c.invoice.receivable, &mut c.invoice.income];
@@ -300,8 +339,54 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
         Op::PriceRemove { of, date } => {
             n.prices.remove(&(of.clone(), date)).ok_or(format!("there is no price of {} on {date}", shown(&of)))?;
         }
+        Op::PartnerAdd { id, partner } => {
+            if m.partners.contains_key(&id) {
+                return Err(format!("there is a partner {} already", shown(&id)));
+            }
+            n.partners.insert(id, Partner { lines: lines(&partner.lines), tax_id: partner.tax_id.trim().to_string(), employee: partner.employee });
+        }
+        Op::PartnerEdit { id, lines: l, tax_id, employee } => {
+            let p = n.partners.get_mut(&id).ok_or(format!("there is no partner {}", shown(&id)))?;
+            if let Some(l) = l {
+                p.lines = lines(&l);
+            }
+            if let Some(t) = tax_id {
+                p.tax_id = t.trim().to_string();
+            }
+            if let Some(e) = employee {
+                p.employee = e;
+            }
+        }
+        Op::PartnerRemove { id } => drop(n.partners.remove(&id).ok_or(format!("there is no partner {}", shown(&id)))?),
+        Op::AgreementAdd { id, parties, version } => {
+            if m.agreements.contains_key(&id) {
+                return Err(format!("there is an agreement {} already", shown(&id)));
+            }
+            n.agreements.insert(id, Agreement { parties, status: AgreementStatus::Active, versions: vec![drafted(version)] });
+        }
+        Op::Amend { id, version } => n.agreements.get_mut(&id).ok_or(format!("there is no agreement {}", shown(&id)))?.versions.push(drafted(version)),
+        Op::AgreementEnd { id, status } => {
+            if status == AgreementStatus::Active {
+                return Err("an agreement is ended by terminating it or by its being subsumed by another".into());
+            }
+            n.agreements.get_mut(&id).ok_or(format!("there is no agreement {}", shown(&id)))?.status = status;
+        }
+        Op::AgreementRemove { id } => drop(n.agreements.remove(&id).ok_or(format!("there is no agreement {}", shown(&id)))?),
     }
     Ok(n)
+}
+
+/// A partner's lines as kept: each trimmed, the blank ones left out.
+fn lines(s: &str) -> String {
+    s.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n")
+}
+
+/// A version as kept: its draft without the fields left blank.
+fn drafted(mut v: Version) -> Version {
+    if let Some(s) = &mut v.schedule {
+        s.draft.retain(|_, x| !x.trim().is_empty());
+    }
+    v
 }
 
 /// Undo (MODEL.md §5.3): from the books `after` the last operation, and the
@@ -557,9 +642,12 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
             dated.push(*date);
             touched.push(*date);
         }
-        Op::File { date, .. } => {
+        Op::File { date, of, .. } => {
             dated.push(*date);
-            touched.push(*date);
+            // An agreement's document changes no figure of a period.
+            if !matches!(of, Some(Of::Version(..))) {
+                touched.push(*date);
+            }
         }
         Op::Unfile { sha256 } => touched.extend(m.documents.get(sha256).map(|d| d.date)),
         Op::PriceAdd { date, .. } => {
@@ -651,15 +739,24 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
     if let (Op::Bill { again, .. }, Some(new), Some(e)) = (op, n.debt(n.entries.len()).filter(|_| added.is_some()), added) {
         let standing = m.standing();
         let near = |d: Date| (d - e.date).get_days().abs() <= BILL_WEEK;
-        let number = match &e.kind {
-            Kind::Bill(_, more) => more.number.as_str(),
-            _ => "",
+        let (number, partner) = match &e.kind {
+            Kind::Bill(_, more) => (more.number.as_str(), more.partner.as_ref()),
+            _ => ("", None),
         };
-        let same_number = |k: &Kind| matches!(k, Kind::Bill(_, more) if !number.is_empty() && more.number == number);
+        // Bills of two partners: their numbers say nothing of each other.
+        let same_number = |k: &Kind| matches!(k, Kind::Bill(_, more) if !number.is_empty() && more.number == number && !matches!((partner, &more.partner), (Some(a), Some(b)) if a != b));
         let owes_same = |id: EntryId| standing[id] && matches!(m.entries[id - 1].kind, Kind::Bill(..)) && m.debt(id).as_ref() == Some(&new);
+        // Of one partner, under one number of theirs, whatever either owes.
+        let same_partner = |id: EntryId| partner.is_some() && standing[id] && matches!(&m.entries[id - 1].kind, Kind::Bill(_, more) if more.partner.as_ref() == partner);
         let mut q = new.owed.quantity;
         q.rescale(m.places(&new.owed.commodity));
-        if let Some(id) = (1..=m.entries.len()).find(|&id| owes_same(id) && same_number(&m.entries[id - 1].kind)) {
+        if let Some(id) = (1..=m.entries.len()).find(|&id| same_partner(id) && same_number(&m.entries[id - 1].kind)) {
+            v.push(Violation {
+                code: "N8",
+                what: format!("{}, dated {}, is the bill of partner {} under their number {number}; a supplier numbers each bill once, so this is that bill", name(m, id), m.entries[id - 1].date, partner.unwrap()),
+                of: Subject::Field("number"),
+            });
+        } else if let Some(id) = (1..=m.entries.len()).find(|&id| owes_same(id) && same_number(&m.entries[id - 1].kind)) {
             v.push(Violation {
                 code: "N8",
                 what: format!("{}, dated {}, under the supplier's number {number}, owes the same, {q} {}, on {}; a supplier numbers each bill once, so this is that bill", name(m, id), m.entries[id - 1].date, new.owed.commodity, new.account),
@@ -667,6 +764,24 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
             });
         } else if let Some(id) = (1..=m.entries.len()).find(|&id| !again && owes_same(id) && near(m.entries[id - 1].date)) {
             no!("N8", "{}, dated {} owes the same, {q} {}, on {}; to book another like it, say it is another", name(m, id), m.entries[id - 1].date, new.owed.commodity, new.account);
+        }
+    }
+    // What was done stays done: no version takes effect on or before the
+    // last day of a period done, which was made under the one then in force.
+    if let Op::Amend { id, version } = op {
+        if let Some(a) = m.agreements.get(id) {
+            if a.status != AgreementStatus::Active {
+                no!("N11", "agreement {id} has ended, on {}; an agreement ended takes no new version", a.ended_on().unwrap());
+            }
+            let standing = m.standing();
+            if let Some(((_, p), _)) = m.done(&standing).into_iter().filter(|((x, _), _)| *x == id).max_by_key(|((_, p), _)| p.to).filter(|((_, p), _)| version.from <= p.to) {
+                no!("N10", "the period {}..{} of agreement {id} is done, under the version in force then; a new version takes effect after {}", p.from, p.to, p.to);
+            }
+        }
+    }
+    if let Op::AgreementEnd { id, .. } = op {
+        if let Some(a) = m.agreements.get(id).filter(|a| a.status != AgreementStatus::Active) {
+            no!("N11", "agreement {id} has ended already, on {}; what became of it does not change but by undo", a.ended_on().unwrap());
         }
     }
     v

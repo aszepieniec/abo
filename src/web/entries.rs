@@ -212,8 +212,9 @@ pub(super) fn filing(bytes: Vec<u8>, date: model::Date, issuer: &str, bill: Opti
         bail!("an issuer is needed, with letters or digits to name the file after");
     }
     let sha256 = store::sha256(&bytes);
-    let path = model::Document { date, name: name.clone(), ext: ext.into(), of: bill }.path(&sha256);
-    Ok((Op::File { sha256, date, name, ext: ext.into(), bill }, path.clone(), (path, bytes)))
+    let of = bill.map(model::Of::Bill);
+    let path = model::Document { date, name: name.clone(), ext: ext.into(), of: of.clone() }.path(&sha256);
+    Ok((Op::File { sha256, date, name, ext: ext.into(), of }, path.clone(), (path, bytes)))
 }
 
 pub(super) async fn entry_file(Books(mut s): Books, Path(id): Path<String>, mp: Multipart) -> Response {
@@ -389,7 +390,7 @@ pub(super) async fn post_submit(Books(mut s): Books, Form(f): Form<Fields>) -> R
     let r = once(Some(&root), &get("token"), || {
         let date = input::day(Some(&get("date")))?;
         let lines = postings(&s.books, &get("postings"))?;
-        change(&mut s, &Op::Post { date, description: get("description"), postings: lines }, &[], "/")
+        change(&mut s, &Op::Post { date, description: get("description"), postings: lines, under: None }, &[], "/")
     });
     match r {
         Ok(to) => Redirect::to(&to).into_response(),

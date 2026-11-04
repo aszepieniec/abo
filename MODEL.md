@@ -535,8 +535,8 @@ other (§5.2).
 
 ### 2.9 Partners and agreements
 
-*Specified ahead of the code (2026-10-10, refined 2026-10-14): this section,
-and the rules, guarantees and operations that name it, are not built yet.*
+*In the model since 2026-11-04: the state, its rules, guarantees and
+operations. The commands and pages of §5.5 are not built yet.*
 
 A **partner** is someone the company invoices or is billed by, pays or is
 paid by, held so that what an invoice prints of them is said once:
@@ -1018,17 +1018,15 @@ neither for an entry made long ago.
 - **N10** No version is added to an agreement that takes effect on or before
   the last day of a period a standing invoice or entry names: it was made
   under the version then in force, which is derived, and so must stay in
-  force (§2.9). Not built yet.
+  force (§2.9).
 - **N11** An agreement not active stays as it is: no version is added to it,
-  and its status does not change (§2.9). Not built yet.
+  and its status does not change (§2.9).
 
 The conditions hold of every operation but `undo`, which takes back the last
 one and makes no change of its own: a period closed by mistake is reopened by
 undo, while nothing has happened since.
 
 ### 4.10 Partners and agreements
-
-Not built yet (§2.9).
 
 - **I-T1** Partner and agreement ids are well formed: one or more of a-z, 0-9
   and `-`. A partner is named on their first line, and their tax number, if
@@ -1223,8 +1221,8 @@ browser's **File and book it** is the one such pair: a `file` and the
 
 ### 5.5 Partners and agreements
 
-Not built yet (§2.9). Partners and agreements are kept by commands, as
-declarations are:
+The commands and pages are not built yet; the operations are (§5).
+Partners and agreements are kept by commands, as declarations are:
 
 ```
 abo partner   add <id> [--employee]       edit <id>    list   remove <id>
@@ -1427,56 +1425,77 @@ is a problem `parse` reports (§8), and holds every change up until mended.
 
 ### 7.6 partners.toml and contracts/
 
-Not built yet (§2.9). Written by `render`. `partners.toml` holds the
-partners in the order of their ids, `tax_id` only when given, `employee`
-only when true:
+Written by `render`. `partners.toml` holds the partners in the order of
+their ids, `tax_id` only when given, `employee` only when true; lines more
+than one are written as TOML's multi-line string:
 
 ```toml
 [partner.acme]
-lines  = "Acme GmbH\nHauptstrasse 1\n10115 Berlin\nGermany"
+lines = """
+Acme GmbH
+Hauptstrasse 1
+10115 Berlin
+Germany"""
 tax_id = "DE123456789"
 
 [partner.jan]
-lines    = "Jan de Vries"
+lines = "Jan de Vries"
 employee = true
 ```
 
 `contracts/<id>.toml` holds one agreement: its parties as given, its status
-— with `on`, and `by` where it is subsumed — and its versions in the order
-added, a schedule's draft's fields in a fixed order, those blank left out:
+— `active`, `terminated` with its day, or `subsumed` with the agreement and
+`on` — and its versions in the order added, each date a TOML date, a
+schedule's draft the form's fields by their names, in the order of the
+names, those blank left out:
 
 ```toml
 parties = ["acme"]
-status  = "active"
+status = "active"
 
 [[version]]
-from    = 2026-01-01
+from = 2026-01-01
 invoice = "acme"
-every   = 1
-billed  = "in-advance"
-draft   = { items = "1|110|Hosting", reference = "PO 4471" }
+every = 1
+billed = "in-advance"
+
+[version.draft]
+items = "1|110|Hosting"
+reference = "PO 4471"
 
 [[version]]
-from    = 2027-01-01
+from = 2027-01-01
 invoice = "acme"
-every   = 3
-billed  = "in-advance"
-draft   = { items = "1|320|Hosting, a quarter", reference = "PO 4471" }
+every = 3
+billed = "in-advance"
+
+[version.draft]
+items = "1|320|Hosting, a quarter"
+reference = "PO 4471"
 ```
 
 ```toml
 parties = ["jan"]
-status  = { terminated = 2026-12-31 }
+
+[status]
+terminated = 2026-12-31
 
 [[version]]
-from   = 2026-03-01
-pay    = "jan"
-every  = 1
+from = 2026-03-01
+pay = "jan"
+every = 1
 billed = "in-arrears"
-draft  = { description = "Salary", postings = "Expenses:Salaries|3000.00 EUR;Liabilities:Wage tax|-600.00 EUR;Assets:Bank|" }
+
+[version.draft]
+description = "Salary"
+postings = """
+Expenses:Salaries=3000.00 EUR
+Liabilities:Wage tax=-600.00 EUR
+Assets:Bank=-2400.00 EUR"""
 ```
 
-A version without a schedule has `from` and, if it ends, `until`, and
+A subsumed agreement's status is `[status]` with `subsumed = "<id>"` and
+`on = <date>`. A version without a schedule has `from` and, if it ends, `until`, and
 nothing else. An invoice's and a plain entry's `partner:` tag is derived,
 written for hledger and a person reading the journal, so that `hledger reg
 tag:partner=acme` lists a partner's bills, invoices and entries; a bill's is

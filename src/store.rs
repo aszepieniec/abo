@@ -150,8 +150,13 @@ pub(crate) fn text_files(root: &Path) -> Result<Files> {
             add(format!("invoices/{year}/{name}"))?;
         }
     }
-    if root.join("bills/index").is_file() {
-        add("bills/index".into())?;
+    for rel in ["bills/index", "contracts/index", "partners.toml"] {
+        if root.join(rel).is_file() {
+            add(rel.into())?;
+        }
+    }
+    for name in list("contracts").into_iter().filter(|n| n.ends_with(".toml")) {
+        add(format!("contracts/{name}"))?;
     }
     Ok(f)
 }
@@ -327,7 +332,7 @@ impl Store {
     /// The books' files that hold a change not committed: another file is
     /// not abo's to sign or to hold up.
     pub fn edited(&self) -> Result<Vec<String>> {
-        let ours = ["status", "--porcelain", "--untracked-files=no", "--", "abo.toml", "journal", "invoices", "bills", "templates"];
+        let ours = ["status", "--porcelain", "--untracked-files=no", "--", "abo.toml", "journal", "invoices", "bills", "contracts", "partners.toml", "templates"];
         Ok(repo::git_in(&self.root, &ours)?.lines().map(|l| l.get(3..).unwrap_or(l).to_string()).collect())
     }
 
@@ -473,7 +478,7 @@ impl Store {
     /// text changed; a document and a PDF named, their bytes not shown.
     pub fn diff(&self, commit: &str) -> Result<String> {
         let stat = repo::git_in(&self.root, &["show", "--format=%s%n", "--stat", commit, "--"])?;
-        let patch = repo::git_in(&self.root, &["show", "--format=", "--patch", commit, "--", ".", ":(exclude)bills/*/*", ":(exclude)invoices/*/*.pdf"])?;
+        let patch = repo::git_in(&self.root, &["show", "--format=", "--patch", commit, "--", ".", ":(exclude)bills/*/*", ":(exclude)contracts/*/*", ":(exclude)invoices/*/*.pdf"])?;
         Ok(format!("{stat}{patch}"))
     }
 
@@ -521,9 +526,10 @@ fn head_files(root: &Path) -> Result<Files> {
 
 /// The text files `render` writes, as commit `rev` has them.
 fn files_at(root: &Path, rev: &str) -> Result<Files> {
-    let names = repo::git_in(root, &["ls-tree", "-r", "--name-only", rev, "--", "abo.toml", "journal", "invoices", "bills/index"])?;
+    let names = repo::git_in(root, &["ls-tree", "-r", "--name-only", rev, "--", "abo.toml", "journal", "invoices", "bills/index", "contracts", "partners.toml"])?;
     let mut f = Files::new();
-    for rel in names.lines().filter(|n| *n == "abo.toml" || *n == "bills/index" || n.ends_with(".journal") || n.ends_with(".json")) {
+    let contract = |n: &str| n == "contracts/index" || n.strip_prefix("contracts/").is_some_and(|c| c.ends_with(".toml") && !c.contains('/'));
+    for rel in names.lines().filter(|n| ["abo.toml", "bills/index", "partners.toml"].contains(n) || contract(n) || n.ends_with(".journal") || n.ends_with(".json")) {
         f.insert(rel.to_string(), repo::git_in(root, &["show", &format!("{rev}:{rel}")])?);
     }
     Ok(f)

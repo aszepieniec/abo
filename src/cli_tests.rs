@@ -163,14 +163,14 @@ fn flag(name: &str, v: impl std::fmt::Display) -> String {
 /// name a file after.
 fn command(op: &Op, m: &Books, src: &Path) -> (Vec<String>, Option<Op>) {
     match op {
-        Op::File { sha256, date, name, ext, bill } => {
+        Op::File { sha256, date, name, ext, of } => {
             // A PDF's header, then what makes it this one; one file to each
             // document, so a logged `file` reads its own again.
             let bytes = [b"%PDF-1.4\n%%EOF\n".as_slice(), sha256.as_bytes()].concat();
             let path = src.join(format!("doc-{}.{ext}", &store::sha256(sha256.as_bytes())[..16]));
             std::fs::write(&path, &bytes).unwrap();
             let slug = crate::repo::slug(name);
-            let model_op = (!slug.is_empty()).then(|| Op::File { sha256: store::sha256(&bytes), date: *date, name: slug, ext: ext.clone(), bill: *bill });
+            let model_op = (!slug.is_empty()).then(|| Op::File { sha256: store::sha256(&bytes), date: *date, name: slug, ext: ext.clone(), of: of.clone() });
             (crate::command::argv(op, m, Some(&path.display().to_string())), model_op)
         }
         // Added through its questions: what is blank is what they offer.
@@ -235,6 +235,9 @@ fn the_cli_is_the_model(#[strategy(vec(any::<Step>(), 1..30))] plan: Vec<Step>) 
             prop_assert_eq!(store::text_files(&books).unwrap(), model::render(&now), "after undo");
             continue;
         };
+        if mt::not_in_the_interfaces_yet(&op) {
+            continue;
+        }
         let (argv, model_op) = command(&op, &m, &src.0);
         if argv.iter().any(|a| a.contains('\0')) {
             continue;
@@ -378,7 +381,7 @@ fn what_abo_shows_is_the_models(#[strategy(vec(any::<Step>(), 1..20))] plan: Vec
     for step in &plan {
         today = today.checked_add(jiff::Span::new().days(step.advance)).unwrap();
         let m = store::Store::open(&books).unwrap().books;
-        let Some(op) = mt::op(&step.draw, &m, today) else { continue };
+        let Some(op) = mt::op(&step.draw, &m, today).filter(|op| !mt::not_in_the_interfaces_yet(op)) else { continue };
         let (argv, _) = command(&op, &m, &src.0);
         if !argv.iter().any(|a| a.contains('\0')) {
             abo(&books, today, &argv);
@@ -495,6 +498,7 @@ fn run(plan: &[Step], terse: bool) -> (Dir, PathBuf, Date) {
         today = today.checked_add(jiff::Span::new().days(step.advance)).unwrap();
         let m = store::Store::open(&books).unwrap().books;
         let mut argv = match mt::op(&step.draw, &m, today) {
+            Some(op) if mt::not_in_the_interfaces_yet(&op) => continue,
             Some(op) => command(&op, &m, &src).0,
             None => args(&["undo"]),
         };
@@ -761,10 +765,10 @@ fn a_document_filed_for_a_bill_names_it(#[strategy(plan())] plan: Vec<Step>, bil
     let n = store::Store::open(&books).unwrap().books;
     let hash = store::sha256(bytes.as_bytes());
     if o.ok {
-        prop_assert_eq!(n.documents[&hash].of, Some(b));
+        prop_assert_eq!(n.documents[&hash].bill(), Some(b));
         prop_assert!(books.join(n.documents[&hash].path(&hash)).is_file());
     } else {
-        prop_assert!(m.documents.contains_key(&hash) || m.documents.values().any(|d| d.of == Some(b)) || model::apply(&m, &Op::File { sha256: hash, date: today, name: "acme-ag".into(), ext: "pdf".into(), bill: Some(b) }, today).is_err(), "{}", o.stderr);
+        prop_assert!(m.documents.contains_key(&hash) || m.documents.values().any(|d| d.bill() == Some(b)) || model::apply(&m, &Op::File { sha256: hash, date: today, name: "acme-ag".into(), ext: "pdf".into(), of: Some(model::Of::Bill(b)) }, today).is_err(), "{}", o.stderr);
     }
 }
 
@@ -774,7 +778,7 @@ fn a_document_filed_for_a_bill_names_it(#[strategy(plan())] plan: Vec<Step>, bil
 fn refusals_in_words_name_their_rules(#[strategy(plan())] plan: Vec<Step>, next: Draw) {
     let (_parent, books, today) = after(&plan);
     let m = store::Store::open(&books).unwrap().books;
-    let Some(op) = mt::op(&next, &m, today) else { return Ok(()) };
+    let Some(op) = mt::op(&next, &m, today).filter(|op| !mt::not_in_the_interfaces_yet(op)) else { return Ok(()) };
     let src = Dir::new();
     let (argv, model_op) = command(&op, &m, &src.0);
     if argv.iter().any(|a| a.contains('\0')) {

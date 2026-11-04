@@ -132,7 +132,7 @@ fn numbers(m: &Books) -> Vec<Decimal> {
     let mut v = vec![];
     for e in &m.entries {
         match &e.kind {
-            Kind::Plain(ps) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. } => {
+            Kind::Plain(ps, _) | Kind::Bill(ps, _) | Kind::Payment { postings: ps, .. } => {
                 for p in ps {
                     v.push(p.amount.quantity);
                     v.extend(p.cost.as_ref().map(|c| c.quantity));
@@ -167,10 +167,19 @@ fn dates(m: &Books) -> Vec<Date> {
         _ => None,
     }));
     for e in &m.entries {
-        if let Kind::Invoice { content, .. } = &e.kind {
-            v.push(content.due);
-            v.extend(content.home.as_ref().map(|h| h.date));
+        match &e.kind {
+            Kind::Invoice { content, .. } => {
+                v.push(content.due);
+                v.extend(content.home.as_ref().map(|h| h.date));
+                v.extend(content.period.iter().flat_map(|p| [p.from, p.to]));
+            }
+            Kind::Plain(_, Some(f)) => v.extend([f.period.from, f.period.to]),
+            _ => {}
         }
+    }
+    for a in m.agreements.values() {
+        v.extend(a.ended_on());
+        v.extend(a.versions.iter().flat_map(|x| [Some(x.from), x.until]).flatten());
     }
     v.extend(m.prices.keys().map(|k| k.1));
     v.extend(m.statements.keys().map(|k| k.2));
@@ -391,7 +400,7 @@ pub fn check(m: &Books) -> Vec<Violation> {
         if !hash_ok(h) || !slug_ok(&d.name) || d.ext.is_empty() || !d.ext.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()) {
             no!("I-B1", "{} is not a document's path", d.path(h));
         }
-        if let Some(of) = d.of {
+        if let Some(of) = d.bill() {
             match m.entry(of) {
                 Some(Entry { kind: Kind::Bill(..), date, .. }) if *date != d.date => no!("I-B1", "{} is dated {}, and names bill {of}, dated {date}; a bill is dated as its document", d.path(h), d.date),
                 Some(Entry { kind: Kind::Bill(..), .. }) => {}
@@ -441,6 +450,7 @@ pub fn check(m: &Books) -> Vec<Violation> {
                     // A rate so small its VAT rounds away is nought, which needs a reason.
                     (charged && vat <= Decimal::ZERO, "charges a VAT of nought; at 0% say why no VAT"),
                     (c.due < e.date, "is due before its date"),
+                    (c.period.is_some_and(|p| p.to < p.from), "is for a period that ends before it begins"),
                     (!reason_ok, "is at 0% without saying why"),
                     (!home_ok, "converts at a price not above nought, or in its own commodity"),
                     (c.home.is_some() && !total.is_zero() && { let (n, v) = m.home_totals(c); (n + v).is_zero() }, "comes to nought in the company currency at its price"),
@@ -503,7 +513,7 @@ pub fn check(m: &Books) -> Vec<Violation> {
             Kind::Bill(..) | Kind::Invoice { .. } => m.debt(id),
             Kind::Payment { of, .. } => m.debt(*of),
             Kind::Reversal { .. } | Kind::CreditNote { .. } | Kind::Gone => continue,
-            Kind::Plain(_) => None,
+            Kind::Plain(..) => None,
         };
         let there: Vec<Posting> = m.postings(id).into_iter().filter(|p| on.contains(&p.account)).collect();
         if there.len() > 1 || there.iter().any(|p| own.as_ref().is_none_or(|d| d.account != p.account)) {
@@ -559,6 +569,9 @@ pub fn check(m: &Books) -> Vec<Violation> {
         }
     }
 
+    // 4.10 Partners and agreements.
+    v.extend(partners_and_agreements(m, &standing, &|id| super::explain::name(m, id)));
+
     // 3.8 Configuration.
     let c = &m.config;
     let co = &c.company;
@@ -594,6 +607,164 @@ pub fn check(m: &Books) -> Vec<Violation> {
     }
     if c.invoice.terms_days < 0 {
         no!("I-C3", "terms are not below nought");
+    }
+    v
+}
+
+/// A partner's or an agreement's id (I-T1): one or more of a-z, 0-9 and `-`.
+pub fn id_ok(id: &str) -> bool {
+    !id.is_empty() && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// I-T1 to I-T5, each entry said as `who` names it: by its number or id in
+/// books read, as "this invoice" in a refusal of the operation adding it.
+pub(crate) fn partners_and_agreements(m: &Books, standing: &[bool], who: &dyn Fn(EntryId) -> String) -> Vec<Violation> {
+    let mut v = vec![];
+    macro_rules! no {
+        (@of $of:expr, $code:literal, $($t:tt)*) => { v.push(Violation { code: $code, what: format!($($t)*), of: $of }) };
+        ($code:literal, $($t:tt)*) => { v.push(Violation::new($code, format!($($t)*))) };
+    }
+    // I-T1.
+    for (id, p) in &m.partners {
+        if !id_ok(id) {
+            no!("I-T1", "{} is not a partner's id: one or more of a-z, 0-9 and -", super::explain::shown(id));
+        }
+        if !lines_ok(&p.lines) || p.lines.lines().next().is_none_or(|l| l.trim().is_empty()) {
+            no!("I-T1", "partner {id} has no name on their first line, or a hidden character in what they say");
+        }
+        if !text_ok(&p.tax_id) {
+            no!("I-T1", "partner {id}'s tax number is one line, with nothing hidden");
+        }
+    }
+    for id in m.agreements.keys().filter(|id| !id_ok(id)) {
+        no!("I-T1", "{} is not an agreement's id: one or more of a-z, 0-9 and -", super::explain::shown(id));
+    }
+    // I-T2: what names a partner or an agreement names one there is.
+    let partner = |p: &str| m.partners.contains_key(p);
+    let agreement = |a: &str| m.agreements.contains_key(a);
+    for id in 1..=m.entries.len() {
+        let Some(e) = m.entry(id) else { continue };
+        let named: Option<(&str, &str)> = match &e.kind {
+            Kind::Bill(_, BillMore { partner: Some(p), .. }) => (!partner(p)).then_some(("partner", p.as_str())),
+            Kind::Invoice { content, .. } => match &content.to {
+                Some(To::Partner(p)) if !partner(p) => Some(("partner", p.as_str())),
+                Some(To::Agreement(a)) if !agreement(a) => Some(("agreement", a.as_str())),
+                _ => None,
+            },
+            Kind::Plain(_, Some(f)) => (!agreement(&f.agreement)).then_some(("agreement", f.agreement.as_str())),
+            _ => None,
+        };
+        if let Some((what, x)) = named {
+            no!(@of Subject::Entry(id), "I-T2", "{} names {what} {}, and there is none", who(id), super::explain::shown(x));
+        }
+    }
+    for (id, a) in &m.agreements {
+        for p in a.parties.iter().filter(|p| !partner(p)) {
+            no!("I-T2", "agreement {id} has party {}, and there is no such partner", super::explain::shown(p));
+        }
+        for (n, s) in a.versions.iter().enumerate().filter_map(|(n, x)| Some((n + 1, x.schedule.as_ref()?))) {
+            // A party missing is said of the agreement's parties, above.
+            if !partner(&s.party) && !a.parties.contains(&s.party) {
+                no!("I-T2", "version {n} of agreement {id} is with {}, and there is no such partner", super::explain::shown(&s.party));
+            }
+        }
+        if let AgreementStatus::Subsumed { by, .. } = &a.status {
+            if !agreement(by) {
+                no!("I-T2", "agreement {id} is subsumed by {}, and there is no such agreement", super::explain::shown(by));
+            }
+        }
+    }
+    for (h, d) in &m.documents {
+        if let Some((a, n)) = d.version() {
+            if !m.agreements.get(a).is_some_and(|x| (1..=x.versions.len()).contains(&n)) {
+                no!("I-T2", "{} is the document of version {n} of agreement {}, and there is no such version", d.path(h), super::explain::shown(a));
+            }
+        }
+    }
+    // I-T3.
+    for (id, a) in &m.agreements {
+        if a.parties.is_empty() {
+            no!("I-T3", "agreement {id} has no party");
+        }
+        let parties: BTreeSet<&Id> = a.parties.iter().collect();
+        if parties.len() < a.parties.len() {
+            no!("I-T3", "agreement {id} has a party twice");
+        }
+        if a.versions.is_empty() {
+            no!("I-T3", "agreement {id} has no version");
+        }
+        for (i, x) in a.versions.iter().enumerate() {
+            let n = i + 1;
+            if i > 0 && x.from < a.versions[i - 1].from {
+                no!("I-T3", "version {n} of agreement {id} takes effect on {}, before version {i}, on {}", x.from, a.versions[i - 1].from);
+            }
+            if x.until.is_some_and(|u| u < x.from) {
+                no!("I-T3", "version {n} of agreement {id} ends before it takes effect");
+            }
+            if let Some(s) = &x.schedule {
+                if !parties.contains(&s.party) {
+                    no!("I-T3", "version {n} of agreement {id} is with {}, who is not a party to it", super::explain::shown(&s.party));
+                }
+                if s.every == 0 {
+                    no!("I-T3", "version {n} of agreement {id} has periods of no months; a period is a month or more");
+                }
+                if s.draft.iter().any(|(k, val)| !text_ok(k) || !lines_ok(val)) {
+                    no!("I-T3", "the draft of version {n} of agreement {id} holds a hidden character");
+                }
+            }
+        }
+        if let (Some(end), Some(first)) = (a.ended_on(), a.versions.first()) {
+            if end.tomorrow().is_ok_and(|d| d < first.from) {
+                no!("I-T3", "agreement {id} ends on {end}, before the day before it began, {}", first.from);
+            }
+        }
+    }
+    // I-T4.
+    let mut made: BTreeMap<(&Id, Period), EntryId> = BTreeMap::new();
+    for id in 1..=m.entries.len() {
+        let Some(e) = m.entry(id) else { continue };
+        let for_invoice = matches!(e.kind, Kind::Invoice { .. });
+        if let Kind::Invoice { content, .. } = &e.kind {
+            if matches!(content.to, Some(To::Agreement(_))) && content.period.is_none() {
+                no!(@of Subject::Entry(id), "I-T4", "{} is issued under an agreement, and says no period", who(id));
+            }
+        }
+        let Some((a, p)) = m.made_for(id) else { continue };
+        let Some(ag) = m.agreements.get(a) else { continue };
+        let of_version = ag.periods(p.from).into_iter().find(|(_, q)| *q == p).map(|(n, _)| n);
+        let does = of_version.and_then(|n| ag.schedule(n)).map(|s| s.does);
+        let fits = match does {
+            Some(Does::Invoice) => for_invoice,
+            Some(Does::Pay | Does::Receive) => !for_invoice,
+            None => false,
+        };
+        let range = format!("{}..{}", p.from, p.to);
+        if does.is_none() {
+            no!(@of Subject::Entry(id), "I-T4", "{} is for {range}, which is not a period of agreement {a}", who(id));
+        } else if !fits {
+            let what = if for_invoice { "an invoice; its schedule then books entries" } else { "an entry; its schedule then issues invoices" };
+            no!(@of Subject::Entry(id), "I-T4", "{} is for {range} of agreement {a}, which is not done by {what}", who(id));
+        }
+        if standing[id] {
+            if let Some(other) = made.insert((a, p), id) {
+                no!(@of Subject::Entry(id), "I-T4", "{} and {} are both for {range} of agreement {a}; a period is done once", who(other), who(id));
+            }
+        }
+    }
+    // I-T5: no agreement is subsumed, through others, by itself.
+    for id in m.agreements.keys() {
+        let mut at = id;
+        let mut seen = BTreeSet::new();
+        while let Some(AgreementStatus::Subsumed { by, .. }) = m.agreements.get(at).map(|a| &a.status) {
+            if by == id {
+                no!("I-T5", "agreement {id} is subsumed, through others or directly, by itself");
+                break;
+            }
+            if !seen.insert(by) {
+                break;
+            }
+            at = by;
+        }
     }
     v
 }

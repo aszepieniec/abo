@@ -423,9 +423,13 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
             vec![format!("{what} cannot be dated before the {} it {does} ({})", called(m, of), e.date)]
         }
         "I-B1" => {
-            let Op::File { sha256, date, name: issuer, ext, bill } = op else { return vec![] };
+            let Op::File { sha256, date, name: issuer, ext, of } = op else { return vec![] };
+            let bill = match of {
+                Some(Of::Bill(b)) => Some(b),
+                _ => None,
+            };
             let mut v = vec![];
-            let path = Document { date: *date, name: issuer.clone(), ext: ext.clone(), of: None }.path(sha256);
+            let path = Document { date: *date, name: issuer.clone(), ext: ext.clone(), of: of.clone() }.path(sha256);
             if !hash_ok(sha256) {
                 v.push("the document's hash is not 64 lower-case hex digits, a SHA-256".into());
             }
@@ -737,6 +741,50 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
             }
             v
         }
+        "I-T2" if matches!(op, Op::PartnerRemove { .. } | Op::AgreementRemove { .. }) => {
+            let (what, id, by) = match op {
+                Op::PartnerRemove { id } => ("partner", id, naming_partner(m, id)),
+                Op::AgreementRemove { id } => ("agreement", id, naming_agreement(m, id)),
+                _ => unreachable!(),
+            };
+            let them = if what == "partner" { "them" } else { "it" };
+            vec![format!("{} names {what} {id}; a {what} is removed only while nothing names {them}", and(&by))]
+        }
+        "I-T1" | "I-T2" | "I-T3" | "I-T4" | "I-T5" => {
+            // As `check` says them, the entry being added called by its kind.
+            let this = |id: EntryId| match n.entry(id).map(|e| &e.kind) {
+                _ if id < next || !added => name(m, id),
+                Some(Kind::Invoice { .. }) => "this invoice".into(),
+                Some(Kind::Bill(..)) => "this bill".into(),
+                _ => "this entry".into(),
+            };
+            let plain = super::check::partners_and_agreements(n, &n_standing, &|id| name(n, id));
+            let said = super::check::partners_and_agreements(n, &n_standing, &this);
+            plain.into_iter().zip(said).filter(|(p, _)| p.code == code && these.iter().any(|x| x.what == p.what)).map(|(_, s)| s.what).collect()
+        }
         _ => vec![],
     }
+}
+
+/// What names partner `p`, as a person names each: entries, agreements.
+fn naming_partner(m: &Books, p: &str) -> Vec<String> {
+    let mut v: Vec<String> = (1..=m.entries.len())
+        .filter(|&id| match m.entry(id).map(|e| &e.kind) {
+            Some(Kind::Bill(_, more)) => more.partner.as_deref() == Some(p),
+            Some(Kind::Invoice { content, .. }) => content.to == Some(To::Partner(p.into())),
+            _ => false,
+        })
+        .map(|id| name(m, id))
+        .collect();
+    v.extend(m.agreements.iter().filter(|(_, a)| a.parties.iter().any(|x| x == p) || a.versions.iter().any(|x| x.schedule.as_ref().is_some_and(|s| s.party == p))).map(|(id, _)| format!("agreement {id}")));
+    v
+}
+
+/// What names agreement `a`: entries made for it, its documents, and the
+/// agreements it subsumes.
+fn naming_agreement(m: &Books, a: &str) -> Vec<String> {
+    let mut v: Vec<String> = (1..=m.entries.len()).filter(|&id| m.made_for(id).is_some_and(|(x, _)| x == a) || matches!(m.entry(id).map(|e| &e.kind), Some(Kind::Invoice { content, .. }) if content.to == Some(To::Agreement(a.into())))).map(|id| name(m, id)).collect();
+    v.extend(m.documents.iter().filter(|(_, d)| d.version().is_some_and(|(x, _)| x == a)).map(|(h, d)| d.path(h)));
+    v.extend(m.agreements.iter().filter(|(_, x)| matches!(&x.status, AgreementStatus::Subsumed { by, .. } if by == a)).map(|(id, _)| format!("agreement {id}")));
+    v
 }

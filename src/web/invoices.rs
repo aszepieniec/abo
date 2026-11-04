@@ -111,7 +111,7 @@ fn invoice_op(b: &model::Books, f: &Fields) -> Result<Op> {
     let pay_to: Vec<String> = f.keys().filter_map(|k| k.strip_prefix("pay-")).map(String::from).collect();
     let customer = f.get("to").cloned().unwrap_or_default().replace("\r\n", "\n");
     let income = Some(get("income")).filter(|i| !i.is_empty());
-    let more = model::InvoiceMore { customer_tax_id: get("customer_tax_id"), income, due_days: None, pay_to };
+    let more = model::InvoiceMore { customer_tax_id: get("customer_tax_id"), income, due_days: None, pay_to, ..Default::default() };
     Ok(Op::Invoice { date, customer, commodity, lines, rate, reason: get("vat_reason"), reference: get("reference"), note: get("note"), pdf: String::new(), more })
 }
 

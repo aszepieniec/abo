@@ -114,7 +114,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             let mut s = Store::open(&here)?;
             let postings = postings.iter().map(|p| input::posting(&s.books, p)).collect::<Result<_>>()?;
             let date = input::day(date.as_deref())?;
-            let op = Op::Post { date, description, postings };
+            let op = Op::Post { date, description, postings, under: None };
             changed(&mut s, &op, &[], cli.json)
         }
         Cmd::File { date, issuer, bill, src } => {
@@ -127,9 +127,9 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 bail!("an issuer is needed, with letters or digits to name the file after");
             }
             let sha256 = store::sha256(&bytes);
-            let doc = model::Document { date: input::day(Some(&date))?, name, ext, of: bill };
+            let doc = model::Document { date: input::day(Some(&date))?, name, ext, of: bill.map(model::Of::Bill) };
             let path = doc.path(&sha256);
-            let op = Op::File { sha256, date: doc.date, name: doc.name.clone(), ext: doc.ext.clone(), bill };
+            let op = Op::File { sha256, date: doc.date, name: doc.name.clone(), ext: doc.ext.clone(), of: doc.of.clone() };
             changed_from(&mut s, &op, Some(&src.display().to_string()), &[(path.clone(), bytes)], cli.json)
         }
         Cmd::Unfile { document } => {
@@ -147,7 +147,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 (d, _) => input::day(d)?,
             };
             let postings = postings.iter().map(|p| input::posting(&s.books, p)).collect::<Result<_>>()?;
-            let more = model::BillMore { number: number.unwrap_or_default(), due: due.map(|d| input::day(Some(&d))).transpose()? };
+            let more = model::BillMore { number: number.unwrap_or_default(), due: due.map(|d| input::day(Some(&d))).transpose()?, partner: None };
             let op = Op::Bill { date, description, postings, document, again, more };
             changed(&mut s, &op, &[], cli.json)
         }
@@ -163,7 +163,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                     _ => id,
                 })
                 .collect();
-            let more = model::InvoiceMore { customer_tax_id, income, due_days, pay_to };
+            let more = model::InvoiceMore { customer_tax_id, income, due_days, pay_to, ..Default::default() };
             let date = input::day(date.as_deref())?;
             // A line each; `\n` within one, as logs written before take it.
             let customer = to.iter().map(|l| l.replace("\\n", "\n")).collect::<Vec<_>>().join("\n");

@@ -151,13 +151,13 @@ fn request(op: &Op, m: &Books, today: Date) -> Option<(Post, Op)> {
     let t = |s: &str| s.trim().to_string();
     let one_line = |s: &str| !s.contains(['\n', '\r', '\0']);
     Some(match op.clone() {
-        Op::Post { date, description, postings } => {
+        Op::Post { date, description, postings, .. } => {
             if !one_line(&description) || postings.iter().any(|p| !one_line(&posting(p))) {
                 return None;
             }
             let lines = postings.iter().map(posting).collect::<Vec<_>>().join("\n");
             let p = urlencoded("/post", vec![("date", date.to_string()), ("description", description.clone()), ("postings", lines)]);
-            (p, Op::Post { date, description: t(&description), postings })
+            (p, Op::Post { date, description: t(&description), postings, under: None })
         }
         Op::Bill { date, description, postings, document, again, more } => {
             if !one_line(&description) || postings.iter().any(|p| !one_line(&posting(p))) || !one_line(&more.number) {
@@ -179,7 +179,7 @@ fn request(op: &Op, m: &Books, today: Date) -> Option<(Post, Op)> {
                 None => date,
             };
             let (ctype, body) = multipart(&fields, None);
-            (Post { path: "/bill".into(), ctype, body }, Op::Bill { date, description: t(&description), postings, document, again, more: model::BillMore { number: t(&more.number), due: more.due } })
+            (Post { path: "/bill".into(), ctype, body }, Op::Bill { date, description: t(&description), postings, document, again, more: model::BillMore { number: t(&more.number), due: more.due, partner: None } })
         }
         Op::Unfile { sha256 } => {
             let file = m.documents.get(&sha256).map_or(sha256.clone(), |d| d.path(&sha256));
@@ -286,6 +286,9 @@ fn the_web_is_the_model(#[strategy(vec(any::<Step>(), 1..25))] plan: Vec<Step>) 
             prop_assert_eq!(store::text_files(&books).unwrap(), model::render(&now), "after undo");
             continue;
         };
+        if mt::not_in_the_interfaces_yet(&op) {
+            continue;
+        }
         let Some((post, model_op)) = request(&op, &m, today) else { continue };
         let a = send(server.port, "POST", &post.path, &post.ctype, &post.body, None);
         prop_assert!(matches!(a.status, 200 | 303 | 422), "{} answered {}: {}", post.path, a.status, a.body);

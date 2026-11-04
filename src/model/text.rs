@@ -22,6 +22,135 @@ struct CreditFile {
     pdf: Hash,
 }
 
+/// partners.toml.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PartnersFile {
+    partner: BTreeMap<Id, PartnerFile>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PartnerFile {
+    lines: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    tax_id: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    employee: bool,
+}
+
+/// contracts/<id>.toml: dates as TOML writes them, unquoted.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContractFile {
+    parties: Vec<Id>,
+    status: StatusFile,
+    #[serde(rename = "version")]
+    versions: Vec<VersionFile>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+enum StatusFile {
+    /// `active`.
+    Word(String),
+    Terminated { terminated: toml::value::Datetime },
+    Subsumed { subsumed: Id, on: toml::value::Datetime },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VersionFile {
+    from: toml::value::Datetime,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    until: Option<toml::value::Datetime>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    invoice: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pay: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    receive: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    every: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    billed: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    draft: BTreeMap<String, String>,
+}
+
+fn tdate(d: Date) -> toml::value::Datetime {
+    let date = toml::value::Date { year: d.year() as u16, month: d.month() as u8, day: d.day() as u8 };
+    toml::value::Datetime { date: Some(date), time: None, offset: None }
+}
+
+/// A date, and nothing else: no time, no offset.
+fn from_tdate(t: &toml::value::Datetime) -> Result<Date, String> {
+    match (t.date, t.time, t.offset) {
+        (Some(d), None, None) => jiff::civil::Date::new(d.year as i16, d.month as i8, d.day as i8).map_err(|_| format!("{t} is not a date")),
+        _ => Err(format!("{t} is not a date alone")),
+    }
+}
+
+fn contract_file(a: &Agreement) -> ContractFile {
+    let status = match &a.status {
+        AgreementStatus::Active => StatusFile::Word("active".into()),
+        AgreementStatus::Terminated { on } => StatusFile::Terminated { terminated: tdate(*on) },
+        AgreementStatus::Subsumed { by, on } => StatusFile::Subsumed { subsumed: by.clone(), on: tdate(*on) },
+    };
+    let versions = a
+        .versions
+        .iter()
+        .map(|v| {
+            let s = v.schedule.as_ref();
+            let with = |d: Does| s.filter(|s| s.does == d).map(|s| s.party.clone());
+            VersionFile {
+                from: tdate(v.from),
+                until: v.until.map(tdate),
+                invoice: with(Does::Invoice),
+                pay: with(Does::Pay),
+                receive: with(Does::Receive),
+                every: s.map(|s| s.every),
+                billed: s.map(|s| match s.billed {
+                    Billed::InAdvance => "in-advance".into(),
+                    Billed::InArrears => "in-arrears".into(),
+                }),
+                draft: s.map(|s| s.draft.clone()).unwrap_or_default(),
+            }
+        })
+        .collect();
+    ContractFile { parties: a.parties.clone(), status, versions }
+}
+
+fn agreement_of(f: ContractFile) -> Result<Agreement, String> {
+    let status = match f.status {
+        StatusFile::Word(w) if w == "active" => AgreementStatus::Active,
+        StatusFile::Word(w) => return Err(format!("status {} is not active, terminated or subsumed", super::explain::shown(&w))),
+        StatusFile::Terminated { terminated } => AgreementStatus::Terminated { on: from_tdate(&terminated)? },
+        StatusFile::Subsumed { subsumed, on } => AgreementStatus::Subsumed { by: subsumed, on: from_tdate(&on)? },
+    };
+    let mut versions = vec![];
+    for v in f.versions {
+        let with: Vec<(Does, Id)> = [(Does::Invoice, v.invoice), (Does::Pay, v.pay), (Does::Receive, v.receive)].into_iter().filter_map(|(d, p)| Some((d, p?))).collect();
+        let schedule = match (&with[..], v.every, v.billed.as_deref()) {
+            ([], None, None) if v.draft.is_empty() => None,
+            ([(does, party)], Some(every), Some(b)) => Some(Schedule {
+                party: party.clone(),
+                does: *does,
+                every,
+                billed: match b {
+                    "in-advance" => Billed::InAdvance,
+                    "in-arrears" => Billed::InArrears,
+                    _ => return Err(format!("billed {} is not in-advance or in-arrears", super::explain::shown(b))),
+                },
+                draft: v.draft,
+            }),
+            _ => return Err("a version's schedule is one of invoice, pay or receive, with every and billed".into()),
+        };
+        versions.push(Version { from: from_tdate(&v.from)?, until: v.until.as_ref().map(from_tdate).transpose()?, schedule });
+    }
+    Ok(Agreement { parties: f.parties, status, versions })
+}
+
 /// `8.10` as `8.1`: in abo.toml and the .json files a number is written in
 /// its shortest form, so that one value is one text.
 fn short(d: &mut Decimal) {
@@ -88,9 +217,20 @@ pub fn render(m: &Books) -> Files {
     }
     f.insert("journal/main.journal".into(), main);
 
-    if !m.documents.is_empty() {
-        let index = m.documents.iter().map(|(h, d)| format!("{h} {} {}\n", d.path(h), d.of.map_or("-".into(), |id| id.to_string())));
-        f.insert("bills/index".into(), index.collect());
+    let bills: String = m.documents.iter().filter(|(_, d)| d.version().is_none()).map(|(h, d)| format!("{h} {} {}\n", d.path(h), d.bill().map_or("-".into(), |id| id.to_string()))).collect();
+    if !bills.is_empty() {
+        f.insert("bills/index".into(), bills);
+    }
+    let contracts: String = m.documents.iter().filter_map(|(h, d)| Some(format!("{h} {} {}/{}\n", d.path(h), d.version()?.0, d.version()?.1))).collect();
+    if !contracts.is_empty() {
+        f.insert("contracts/index".into(), contracts);
+    }
+    if !m.partners.is_empty() {
+        let partner = m.partners.iter().map(|(id, p)| (id.clone(), PartnerFile { lines: p.lines.clone(), tax_id: p.tax_id.clone(), employee: p.employee })).collect();
+        f.insert("partners.toml".into(), toml::to_string(&PartnersFile { partner }).expect("partners render"));
+    }
+    for (id, a) in &m.agreements {
+        f.insert(format!("contracts/{id}.toml"), toml::to_string(&contract_file(a)).expect("an agreement renders"));
     }
     f
 }
@@ -99,8 +239,15 @@ fn entry(m: &Books, id: EntryId, e: &Entry, f: &mut Files) -> String {
     let mut tags: Vec<(&str, String)> = vec![("id", id.to_string())];
     let number = m.number_text(id).unwrap_or_default();
     let json = |n: &str| invoice_path(n, "json");
+    // Derived, for hledger and a person reading: `tag:partner=acme`.
+    let partner = m.partner_of(id).cloned();
     match &e.kind {
-        Kind::Plain(_) => {}
+        Kind::Plain(_, None) => {}
+        Kind::Plain(_, Some(f)) => {
+            tags.push(("agreement", f.agreement.clone()));
+            tags.push(("period", format!("{}..{}", f.period.from, f.period.to)));
+            tags.extend(partner.map(|p| ("partner", p)));
+        }
         Kind::Bill(_, more) => {
             tags.push(("bill", String::new()));
             if !more.number.is_empty() {
@@ -109,9 +256,11 @@ fn entry(m: &Books, id: EntryId, e: &Entry, f: &mut Files) -> String {
             if let Some(d) = more.due {
                 tags.push(("due", d.to_string()));
             }
+            tags.extend(more.partner.clone().map(|p| ("partner", p)));
         }
         Kind::Invoice { content, pdf } => {
             tags.push(("invoice", number.clone()));
+            tags.extend(partner.map(|p| ("partner", p)));
             let mut content = (**content).clone();
             for l in &mut content.lines {
                 short(&mut l.quantity);
@@ -160,15 +309,20 @@ fn statement(m: &Books, key: &(Account, Commodity, Date), s: &Statement) -> Stri
     t + &posting_line(&key.0, &amount(m, &Amount { quantity: Decimal::ZERO, commodity: key.1.clone() }), &assertion)
 }
 
+/// The line of `text` a TOML error is at: where its span starts, or, past
+/// the end, the last line.
+fn toml_line(text: &str, e: &toml::de::Error) -> usize {
+    let at = e.span().map_or(1, |r| text[..r.start.min(text.len())].matches('\n').count() + 1);
+    at.min(text.lines().count().max(1))
+}
+
 /// The state the files say, or every place they cannot be read.
 pub fn parse(f: &Files) -> Result<Books, Vec<String>> {
     let mut errs = vec![];
     let config = match f.get("abo.toml").map(|t| toml::from_str::<Config>(t)) {
         Some(Ok(c)) => c,
         Some(Err(e)) => {
-            let text = &f["abo.toml"];
-            let line = e.span().map_or(1, |r| text[..r.start.min(text.len())].matches('\n').count() + 1);
-            return Err(vec![format!("abo.toml:{line}: {}", e.message())]);
+            return Err(vec![format!("abo.toml:{}: {}", toml_line(&f["abo.toml"], &e), e.message())]);
         }
         None => return Err(vec!["abo.toml: missing".into()]),
     };
@@ -244,19 +398,43 @@ pub fn parse(f: &Files) -> Result<Books, Vec<String>> {
         m.entries.push(Entry::gone());
     }
 
-    for (i, line) in f.get("bills/index").map(String::as_str).unwrap_or("").lines().enumerate() {
-        let r = (|| -> Result<(), String> {
-            let [h, path, of] = line.split(' ').collect::<Vec<_>>()[..] else { return Err("not a hash, a path and a bill".into()) };
-            let rest = path.strip_prefix("bills/").and_then(|p| p.split_once('/')).ok_or("not a path under bills/")?.1;
-            let (stem, ext) = rest.rsplit_once('.').ok_or("no extension")?;
-            let (d, stem) = stem.split_at_checked(10).ok_or("no date")?;
-            let (name, _) = stem.strip_prefix('-').and_then(|s| s.rsplit_once('-')).ok_or("no name")?;
-            let of = if of == "-" { None } else { Some(of.parse().map_err(|_| "not an entry")?) };
-            m.documents.insert(h.into(), Document { date: date(d)?, name: name.into(), ext: ext.into(), of });
-            Ok(())
-        })();
-        if let Err(e) = r {
-            errs.push(format!("bills/index:{}: {e}", i + 1));
+    for index in ["bills/index", "contracts/index"] {
+        let contracts = index == "contracts/index";
+        for (i, line) in f.get(index).map(String::as_str).unwrap_or("").lines().enumerate() {
+            let r = (|| -> Result<(), String> {
+                let [h, path, of] = line.split(' ').collect::<Vec<_>>()[..] else { return Err(format!("not a hash, a path and {}", if contracts { "a version" } else { "a bill" })) };
+                let top = if contracts { "contracts/" } else { "bills/" };
+                let rest = path.strip_prefix(top).and_then(|p| p.split_once('/')).ok_or(format!("not a path under {top}"))?.1;
+                let (stem, ext) = rest.rsplit_once('.').ok_or("no extension")?;
+                let (d, stem) = stem.split_at_checked(10).ok_or("no date")?;
+                let (name, _) = stem.strip_prefix('-').and_then(|s| s.rsplit_once('-')).ok_or("no name")?;
+                let of = match (contracts, of) {
+                    (false, "-") => None,
+                    (false, b) => Some(Of::Bill(b.parse().map_err(|_| "not an entry")?)),
+                    (true, v) => {
+                        let (a, n) = v.rsplit_once('/').ok_or("not an agreement and a version")?;
+                        Some(Of::Version(a.into(), n.parse().map_err(|_| "not a version's number")?))
+                    }
+                };
+                m.documents.insert(h.into(), Document { date: date(d)?, name: name.into(), ext: ext.into(), of });
+                Ok(())
+            })();
+            if let Err(e) = r {
+                errs.push(format!("{index}:{}: {e}", i + 1));
+            }
+        }
+    }
+    if let Some(text) = f.get("partners.toml") {
+        match toml::from_str::<PartnersFile>(text) {
+            Ok(p) => m.partners = p.partner.into_iter().map(|(id, p)| (id, Partner { lines: p.lines, tax_id: p.tax_id, employee: p.employee })).collect(),
+            Err(e) => errs.push(format!("partners.toml:{}: {}", toml_line(text, &e), e.message())),
+        }
+    }
+    for (name, text) in f.range("contracts/".to_string()..).take_while(|(k, _)| k.starts_with("contracts/")) {
+        let Some(id) = name.strip_prefix("contracts/").and_then(|n| n.strip_suffix(".toml")).filter(|n| !n.contains('/')) else { continue };
+        match toml::from_str::<ContractFile>(text).map_err(|e| (toml_line(text, &e), e.message().to_string())).and_then(|c| agreement_of(c).map_err(|e| (1, e))) {
+            Ok(a) => drop(m.agreements.insert(id.into(), a)),
+            Err((line, e)) => errs.push(format!("{name}:{line}: {e}")),
         }
     }
     if errs.is_empty() {
@@ -320,15 +498,26 @@ fn parse_block(
         let path = invoice_path(number, "json");
         f.get(&path).ok_or(format!("{path} is missing"))
     };
-    let kind = match tags.iter().map(|(k, _)| *k).collect::<Vec<_>>()[..] {
-        ["id"] => Kind::Plain(postings),
-        ["id", "bill"] | ["id", "bill", "number"] | ["id", "bill", "due"] | ["id", "bill", "number", "due"] => {
+    let names: Vec<&str> = tags.iter().map(|(k, _)| *k).collect();
+    // The kind's own tags, then those it may have, in their order: the
+    // partner of an invoice or a plain entry is derived, and read past.
+    let may = |own: &[&str], then: &[&str]| names.len() >= own.len() && names[..own.len()] == *own && {
+        let mut rest = then.iter();
+        names[own.len()..].iter().all(|n| rest.any(|t| t == n))
+    };
+    let kind = match names[..] {
+        ["id"] => Kind::Plain(postings, None),
+        _ if may(&["id", "agreement", "period"], &["partner"]) => {
+            let (from, to) = tag("period").unwrap().split_once("..").ok_or("a period is <from>..<to>")?;
+            Kind::Plain(postings, Some(For { agreement: tag("agreement").unwrap().into(), period: Period { from: date(from)?, to: date(to)? } }))
+        }
+        _ if may(&["id", "bill"], &["number", "due", "partner"]) => {
             let due = tag("due").map(date).transpose()?;
-            Kind::Bill(postings, BillMore { number: tag("number").unwrap_or_default().to_string(), due })
+            Kind::Bill(postings, BillMore { number: tag("number").unwrap_or_default().to_string(), due, partner: tag("partner").map(String::from) })
         }
         ["id", "pays"] => Kind::Payment { of: id(tag("pays").unwrap())?, postings },
         ["id", "reverses"] => Kind::Reversal { of: id(tag("reverses").unwrap())? },
-        ["id", "invoice"] => {
+        _ if may(&["id", "invoice"], &["partner"]) => {
             let file: InvoiceFile = serde_json::from_str(read_json(tag("invoice").unwrap())?).map_err(|e| e.to_string())?;
             Kind::Invoice { content: Box::new(file.content), pdf: file.pdf }
         }

@@ -138,11 +138,14 @@ src/web/          axum + maud: a module per page's area, the forms, the opening
 
 No `lib.rs`/`bin/` split, no workspace, no crate-per-module.
 
-The tests are run with `cargo test --no-fail-fast`. Two in
+The tests are run with `cargo test --no-fail-fast`: without the flag cargo
+stops at the first test binary that fails and never runs `tests/`. Two in
 `src/model/tests.rs`, `every_rule_is_checked` and `every_guarantee_is_tested`,
-fail until what MODEL.md has and the code has not (partners, agreements) is
-built: they are the list of it. Without the flag cargo stops at them and
-never runs `tests/`.
+hold MODEL.md and the code to each other: a rule or a guarantee written
+ahead of the code fails them until it is built. The CLI's and the web's
+properties pass over the operations the command line and the forms do not
+make yet, as `not_in_the_interfaces_yet` lists them: partners and
+agreements, until those are built there.
 
 ### Three invariants that keep future work cheap
 
