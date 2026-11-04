@@ -483,6 +483,11 @@ every asset account holding something, bar the VAT ones, and output less input
 VAT when input tax is deductible. On a phone the sidebar becomes a bar of
 icons across the top.
 
+Each item in the sidebar is one word, and the word need not be the model's:
+`/declarations` is Accounts, `/post` is Entry. Partners and agreements
+(MODEL.md §2.9) will be one item, Partners. An agreement is reached from the
+pages of its parties, and its own pages keep Partners as the current item.
+
 Notices come in five kinds — error, warning, information, change, success —
 and each has its own colour and icon, one set for light and one for dark.
 They never follow the palette: the colour says what kind of message it is, so
