@@ -3,6 +3,7 @@ mod command;
 mod demo;
 mod input;
 mod invoice;
+mod links;
 mod model;
 mod pdf;
 mod questions;

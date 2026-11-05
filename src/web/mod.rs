@@ -113,6 +113,9 @@ fn company_app(root: PathBuf) -> Router {
         .route("/company/terms", post(terms))
         .route("/company/tax-return", get(tax_return).post(tax_return_submit))
         .route("/export", get(export))
+        .route("/export/{token}", get(export_link))
+        .route("/company/links", post(link_make))
+        .route("/company/links/revoke", post(link_revoke))
         // ponytail: a copy of the books whole, PDFs and all, in one request;
         // past 1 GiB, upload in parts.
         .route("/company/import", post(import_update).layer(DefaultBodyLimit::max(IMPORT_LIMIT)))
@@ -672,7 +675,11 @@ fn author(h: &HeaderMap) -> std::result::Result<Option<(String, Option<String>)>
 }
 
 async fn log(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
-    let (method, path) = (req.method().clone(), req.uri().path().to_string());
+    let (method, mut path) = (req.method().clone(), req.uri().path().to_string());
+    // A download link's token is a key: never written down.
+    if path.starts_with("/export/") {
+        path = "/export/<link>".into();
+    }
     let start = Instant::now();
     let res = next.run(req).await;
     let (status, ms) = (res.status().as_u16(), start.elapsed().as_millis());

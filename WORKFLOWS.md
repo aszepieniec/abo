@@ -210,8 +210,10 @@ the company and the moment, to the second, in the server's local time
 (`example-ltd-2026-11-05-134205.bundle`). `git clone <file>` opens it, and there `abo log` and undo work as they did. Behind
 The gateway, for its admin role alone; without a gateway, for anyone. On the CLI it
 is `git bundle` itself. Refused while a change abo did not make is there
-(F8). A script fetches the same link, `curl -fOJ <url>/export`, signed in
-as an admin as a person is (DESIGN §8).
+(F8). For a script, an admin makes a **download link** on the same page:
+an address that is its own key (`curl -fOJ <address>`, no sign-in), with
+a label and a last day, or none; listed with who made it and when it was
+last used, and revoked there (DESIGN §8).
 **Done when** the file clones into the same books with the same log, and
 no role but admin gets it.
 

@@ -32,7 +32,7 @@ M6 built: each company installs as an app; not yet tried on a real phone
 | Invoice PDF | typst template, `typst compile` shelled out | One page, fixed grid. Layout lives in a `.typ` template, not in Rust. Compiler is Apache-2.0, offline, no account. |
 | Git access | shell out to `git` | Smaller than `git2`/libgit2 by a wide margin. |
 | Web UI | axum + maud, server-rendered, one hand-written stylesheet | No SPA, no npm, no build step, no WASM. HTML escaping comes from maud. One hand-written stylesheet, not a framework — see §7. |
-| Deployment | localhost; behind a gateway when reachable | abo is not responsible for authentication: no login, no users, no TLS. The gateway, in front, is all three. See §8. |
+| Deployment | localhost; behind a gateway when reachable | abo is not responsible for authentication: no login, no users, no TLS. The gateway, in front, is all three. See §8. One exception: a download link, an address that is its own key, for a script to fetch the books whole. The gateway has no credential to give a script, and the key opens one read-only route and nothing else. |
 | Tax | three scheme *shapes* in code (`none` / `flat` / `effective`); every rate, rule and name in config | The shape changes what a *correct booking* is, so the validator must know it. Rates and local rules differ everywhere and are data. See §6. |
 | Commodities | multi-commodity from the start | hledger already is. Cash, bank and wallet balances are all just asset accounts. |
 | Phone app | PWA over the existing server-rendered pages | See §7. |
@@ -670,12 +670,29 @@ salaries included, and the gateway lets every role GET. Asked for by another
 role it says "Admin only", and the company page leaves its button out.
 Test: `tests/web.rs` `the_books_download_whole`.
 
-A script fetches the same URL (`curl -fOJ <url>/export`), and signs in as
-a person does: behind a gateway, with a gateway credential of the admin role.
-abo issues no key of its own for it. A key would be a login, which abo
-does not have (§1), and one in a URL is kept by every log and history it
-passes through. The answer is `Cache-Control: no-store`, so no proxy or
-browser cache keeps a copy. A cross-site page can make a signed-in
+A script fetches the books through a **download link**,
+`/export/<token>`, with `curl -fOJ <address>` and no sign-in: the address
+is the key (§1's one exception). It is admin's to make and revoke, on the
+company page, with a label, and with a last day, through which it answers,
+or none. The page lists each link with who made it, when, and when it was
+last used. That is the only sign of who uses it, since the key names no
+one.
+- The token is 256 bits from `/dev/urandom`, shown once when it is made.
+  abo keeps only its SHA-256, in `.abo/export-links.json`, outside git: not
+  exported, not replayed, not carried by an import. The file gives no
+  working address.
+- A wrong, revoked or expired token is answered as any page not there, a
+  404, so tokens that once were cannot be told from those that never were.
+  The route asks no the gateway role: the key is the credential.
+- abo's request log writes `/export/<link>` in its place, and the link's
+  label and id. The page showing the address is `no-store`. The gateway's logs,
+  and every proxy's, are theirs: a key in a URL is written down wherever
+  it passes, which is why links offer a last day 90 days on.
+- Behind a gateway it needs the gateway to forward `/export/*` without a session. A
+  the gateway that does not keeps them working only without a gateway.
+
+Every answer of the books whole is `Cache-Control: no-store`, so no proxy
+or browser cache keeps a copy. A cross-site page can make a signed-in
 browser fetch it, but it cannot read the answer (abo sends no CORS
 headers). It costs the server a bundle each time. Admin only, that is
 accepted.

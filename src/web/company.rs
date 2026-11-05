@@ -10,6 +10,7 @@ pub(super) async fn company_view(Books(s): Books, Query(q): Query<Fields>) -> Re
         "older" => Some(("info", "Nothing taken in: these books hold all the file does, and changes made since.".to_string())),
         n => n.parse::<usize>().ok().map(|n| ("success", format!("Brought up to date: {n} change{} taken in from the file.", if n == 1 { "" } else { "s" }))),
     });
+    let imported = imported.or(q.contains_key("revoked").then(|| ("success", "Download link revoked: it answers no more.".to_string())));
     or_error(&s, "The company", || {
         Ok(html! {
             @if let Some((kind, text)) = &imported {
@@ -32,6 +33,22 @@ pub(super) async fn export(Books(s): Books) -> Response {
         };
         return (StatusCode::FORBIDDEN, page(&s, "Admin only", body)).into_response();
     }
+    bundle(&s)
+}
+
+/// The books through a download link, for a script: the link is the
+/// credential, no the gateway role is asked. A wrong, revoked or expired link is
+/// not found, as any page that is not there.
+pub(super) async fn export_link(Books(s): Books, Path(token): Path<String>) -> Response {
+    let Some(l) = store::today().ok().and_then(|today| crate::links::check(&s.root, &token, today)) else {
+        return or_error(&s, "Not found", || Err(input::not_found("there is no such page".into())));
+    };
+    info!(link = %l.id, label = %l.label, "books downloaded through a link");
+    bundle(&s)
+}
+
+/// The books with their history, as the file Download the books gives.
+fn bundle(s: &Store) -> Response {
     let bundle = (|| -> Result<Vec<u8>> {
         s.changeable()?;
         let o = std::process::Command::new("git").args(["bundle", "create", "-", "--all"]).current_dir(&s.root).output()?;
@@ -46,7 +63,110 @@ pub(super) async fn export(Books(s): Books) -> Response {
             // Kept by no cache on the way, nor the browser's: it is everything.
             ([("content-type", "application/octet-stream".to_string()), ("content-disposition", format!("attachment; filename=\"{name}\"")), ("cache-control", "no-store".into()), ("x-content-type-options", "nosniff".into())], b).into_response()
         }
-        Err(e) => or_error(&s, "Download the books", || Err(e)),
+        Err(e) => or_error(s, "Download the books", || Err(e)),
+    }
+}
+
+/// The download links, for scripts: each with when it was made and by
+/// whom, its last day, when it was last used, and Revoke; and the form that
+/// makes one, offering a last day 90 days on, which may be left blank.
+fn links_box(s: &Store) -> Markup {
+    let today = store::today().unwrap_or_default();
+    let links = crate::links::list(&s.root);
+    let offered = today.checked_add(jiff::Span::new().days(90)).map(|d| d.to_string()).unwrap_or_default();
+    html! {
+        div.box-body {
+            p.muted.small {
+                "For a script, a download link: an address that is its own key, so a script fetches the file with "
+                code { "curl -fOJ <address>" } " and no sign-in. " code { "-f" } " fails rather than save a page that says why not."
+            }
+            @if !links.is_empty() {
+                table.list {
+                    tbody {
+                        @for l in &links {
+                            tr {
+                                td {
+                                    strong { (l.label) }
+                                    div.muted.small { "Made by " (l.by) " on " (l.made.get(..10).unwrap_or_default()) }
+                                }
+                                td.small {
+                                    @match l.until {
+                                        Some(u) if l.expired(today) => { "Ended " (u) }
+                                        Some(u) => { "Through " (u) }
+                                        None => "No last day",
+                                    }
+                                    div.muted { @match &l.used { Some(u) => { "Last used " (u.get(..16).unwrap_or_default().replace('T', " ")) }, None => "Not used yet" } }
+                                }
+                                td {
+                                    form method="post" action="/company/links/revoke" {
+                                        (token())
+                                        input type="hidden" name="id" value=(l.id);
+                                        button.btn-danger type="submit" { (icon("trash")) " Revoke" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            form method="post" action="/company/links" {
+                label.field { "Label" span.hint { "What fetches through it, to tell it from others." } input type="text" name="label" placeholder="nightly backup" required; }
+                label.field { "Last day" span.hint { "It answers through this day. Blank: until it is revoked." }
+                    input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="until" value=(offered); }
+                div.actions { button type="submit" { (icon("plus")) " Make a download link" } }
+            }
+        }
+    }
+}
+
+/// Who makes a download link: as the gateway names them, else git's name.
+fn maker() -> String {
+    crate::repo::AUTHOR.try_with(|(n, _)| n.clone()).unwrap_or_else(|_| crate::repo::git_identity().0)
+}
+
+/// Make a download link, admin only: the page that shows its address, this
+/// once. ponytail: no one-time token, since the address is not to be kept
+/// for a resend; sent twice, it makes two links, both listed to revoke.
+pub(super) async fn link_make(Books(s): Books, Form(f): Form<Fields>) -> Response {
+    if !may_export() {
+        return export(Books(s)).await;
+    }
+    let mut r = or_error(&s, "Download link", || {
+        let today = store::today()?;
+        let until = f.get("until").map(|u| u.trim()).filter(|u| !u.is_empty()).map(|u| input::day(Some(u))).transpose()?;
+        let (l, token) = crate::links::make(&s.root, f.get("label").map_or("", String::as_str), &maker(), until, today)?;
+        info!(link = %l.id, label = %l.label, "download link made");
+        Ok(html! {
+            h1 { "Download link made" }
+            div.flash.flash-ok role="status" { (icon("success")) div {
+                strong { (l.label) }
+                p { "Copy " a href={"/export/" (token)} download { "this link" } "'s address now: it is shown this once, and abo keeps no copy it could show again. "
+                    (match l.until { Some(u) => format!("It answers through {u}."), None => "It has no last day: it answers until it is revoked.".into() }) }
+            } }
+            p.muted.small { "Whoever has the address has the books, salaries included. Keep it as a password is kept, out of anything shared, and revoke it on the company page once it is not needed." }
+            div.actions { span.nav { a.btn href="/company" { (icon("left")) " The company" } } }
+        })
+    });
+    // The page holds the key: kept by no cache, nor the browser's history.
+    r.headers_mut().insert("cache-control", axum::http::HeaderValue::from_static("no-store"));
+    r
+}
+
+/// Revoke a download link, admin only: it answers as a wrong one does.
+pub(super) async fn link_revoke(Books(s): Books, Form(f): Form<Fields>) -> Response {
+    if !may_export() {
+        return export(Books(s)).await;
+    }
+    let root = s.root.clone();
+    let r = once(Some(&root), f.get("token").map_or("", String::as_str), || {
+        let id = f.get("id").map_or("", String::as_str);
+        crate::links::revoke(&root, id)?;
+        info!(link = %id, "download link revoked");
+        Ok("/company?revoked=1".to_string())
+    });
+    match r {
+        Ok(to) => Redirect::to(&to).into_response(),
+        Err(e) => or_error(&s, "Revoke a download link", || Err(e)),
     }
 }
 
@@ -219,12 +339,8 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
             div.box-body {
                 p.muted.small { "One file holding the books and their whole history: every entry, document and change, and who made it. " code { "git clone" } " opens it." }
                 div.actions { a.btn href="/export" download { (icon("download")) " Download the books" } }
-                p.muted.small {
-                    "For a script, the same file at " a href="/export" { "this link" } ", which answers a plain GET: "
-                    code { "curl -fOJ <the link's address>" } " saves it under its own name, and fails rather than saving a page that says why not. "
-                    @if crate::repo::AUTHOR.try_with(|_| ()).is_ok() { "The script signs in to the gateway as someone of the admin role, as a person does: abo gives no key of its own." }
-                }
             }
+            (links_box(s))
             div.box-body {
                 p.muted.small { "A newer copy of these books, from such a file: taken in only if it holds every change made here and more since, so that nothing here is lost. If both have changes of their own, nothing is taken in, and the page says how to put them together on the command line." }
                 form method="post" action="/company/import" enctype="multipart/form-data" {

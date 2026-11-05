@@ -1360,3 +1360,44 @@ fn books_are_opened_and_brought_up_to_date_from_a_file() {
     drop((a, b, c));
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// Download links: an address that is its own key, made and revoked by an
+/// admin alone; it answers whatever role or none, until revoked; a wrong
+/// one is not found.
+#[test]
+fn a_download_link_is_its_own_key() {
+    let base = std::env::temp_dir().join(format!("abo-links-web-{}", std::process::id()));
+    let (books, s) = company_books(&base);
+    let get = |path: &str, headers: &str| {
+        let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
+        write!(c, "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n{headers}\r\n").unwrap();
+        let mut out = Vec::new();
+        c.read_to_end(&mut out).unwrap();
+        let at = out.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        (String::from_utf8_lossy(&out[9..12]).parse::<u16>().unwrap(), out[at + 4..].to_vec())
+    };
+    let writer = "X-Gateway-User: bob\r\nX-Gateway-Role: write\r\n";
+    assert_eq!(http_as(&s, writer, "POST", "/company/links", &[("label", "nightly"), ("until", "")]).0, 403);
+    let admin = "X-Gateway-User: zoe\r\nX-Gateway-Name: Zoe\r\nX-Gateway-Role: admin\r\n";
+    let (status, _, page) = http_as(&s, admin, "POST", "/company/links", &[("label", "nightly"), ("until", "")]);
+    assert!(status == 200 && page.to_ascii_lowercase().contains("cache-control: no-store") && page.contains("shown this once"), "{page}");
+    let path = page.split("href=\"/export/").nth(1).and_then(|r| r.split('"').next()).map(|t| format!("/export/{t}")).unwrap();
+    assert!(!std::fs::read_to_string(books.join(".abo/export-links.json")).unwrap().contains(&path[8..]), "the key is not kept");
+
+    // It answers a script with no sign-in, and a viewer, alike.
+    for h in ["", "X-Gateway-User: amy\r\nX-Gateway-Role: view\r\n"] {
+        let (status, bundle) = get(&path, h);
+        assert!(status == 200 && bundle.starts_with(b"# v"), "{status}");
+    }
+    let company = http_as(&s, admin, "GET", "/company", &[]).2;
+    assert!(company.contains("nightly") && company.contains("Made by Zoe") && company.contains("Last used") && company.contains("No last day"), "{company}");
+    assert_eq!(get(&format!("{}0", &path[..path.len() - 1]), "").0, 404, "a wrong key");
+
+    let id = company.split("name=\"id\" value=\"").nth(1).and_then(|r| r.split('"').next()).unwrap().to_string();
+    assert_eq!(http_as(&s, writer, "POST", "/company/links/revoke", &[("token", "r0"), ("id", &id)]).0, 403);
+    let (status, to, _) = http_as(&s, admin, "POST", "/company/links/revoke", &[("token", "r1"), ("id", &id)]);
+    assert_eq!((status, to.as_str()), (303, "/company?revoked=1"));
+    assert_eq!(get(&path, "").0, 404, "revoked");
+    drop(s);
+    let _ = std::fs::remove_dir_all(&base);
+}
