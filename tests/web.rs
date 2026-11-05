@@ -1252,6 +1252,13 @@ fn the_books_download_whole() {
         let mut out = Vec::new();
         c.read_to_end(&mut out).unwrap();
         let at = out.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let head = String::from_utf8_lossy(&out[..at]).to_ascii_lowercase();
+        if out.starts_with(b"HTTP/1.1 200") {
+            // Named for the company and the moment, to the second.
+            let name = head.split("filename=\"").nth(1).and_then(|n| n.split('"').next()).unwrap_or_default().to_string();
+            let stamp = name.strip_prefix("test-ltd-").and_then(|n| n.strip_suffix(".bundle")).unwrap_or_default();
+            assert!(stamp.len() == 17 && jiff::civil::DateTime::strptime("%Y-%m-%d-%H%M%S", stamp).is_ok(), "{name}");
+        }
         (String::from_utf8_lossy(&out[9..12]).parse().unwrap(), out[at + 4..].to_vec())
     };
     for role in ["view", "write"] {

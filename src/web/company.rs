@@ -27,7 +27,9 @@ pub(super) async fn export(Books(s): Books) -> Response {
     })();
     match bundle {
         Ok(b) => {
-            let name = format!("{}-{}.bundle", crate::repo::slug(&s.books.config.company.name), store::today().map(|d| d.to_string()).unwrap_or_default());
+            // To the second, the server's local time, and no colon, which some
+            // systems refuse in a file's name: example-ltd-2026-11-05-134205.
+            let name = format!("{}-{}.bundle", crate::repo::slug(&s.books.config.company.name), jiff::Zoned::now().strftime("%Y-%m-%d-%H%M%S"));
             ([("content-type", "application/octet-stream".to_string()), ("content-disposition", format!("attachment; filename=\"{name}\""))], b).into_response()
         }
         Err(e) => or_error(&s, "Download the books", || Err(e)),

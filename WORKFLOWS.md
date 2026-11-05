@@ -205,8 +205,9 @@ agreement ended takes no new version.
 ### A7. Download the books — Supported (browser)
 **Download the books** on the company page gives one file, the books and
 their whole history (`git bundle create - --all`): every entry, document
-and change, and who made it, each commit with its command. `git clone
-<file>` opens it, and there `abo log` and undo work as they did. Behind
+and change, and who made it, each commit with its command. It is named for
+the company and the moment, to the second, in the server's local time
+(`example-ltd-2026-11-05-134205.bundle`). `git clone <file>` opens it, and there `abo log` and undo work as they did. Behind
 The gateway, for its admin role alone; without a gateway, for anyone. On the CLI it
 is `git bundle` itself. Refused while a change abo did not make is there
 (F8).
