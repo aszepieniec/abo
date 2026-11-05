@@ -1246,6 +1246,8 @@ fn export(s: &Server, headers: &str) -> (u16, Vec<u8>) {
     let at = out.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
     let head = String::from_utf8_lossy(&out[..at]).to_ascii_lowercase();
     if out.starts_with(b"HTTP/1.1 200") {
+        // Kept by no cache: it is everything.
+        assert!(head.contains("cache-control: no-store"), "{head}");
         // Named for the company and the moment, to the second.
         let name = head.split("filename=\"").nth(1).and_then(|n| n.split('"').next()).unwrap_or_default().to_string();
         let stamp = name.strip_prefix("test-ltd-").and_then(|n| n.strip_suffix(".bundle")).unwrap_or_default();
@@ -1272,6 +1274,7 @@ fn the_books_download_whole() {
     let admin = "X-Gateway-User: zoe\r\nX-Gateway-Role: admin\r\n";
     assert!(http_as(&s, admin, "GET", "/company", &[]).2.contains("Download the books"));
     assert_eq!(fetch(admin).0, 200);
+    assert!(http(&s, "GET", "/company", &[]).2.contains("curl -fOJ"));
     let (status, bundle) = fetch("");
     assert!(status == 200 && bundle.starts_with(b"# v"), "{status}");
 

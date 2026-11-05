@@ -43,7 +43,8 @@ pub(super) async fn export(Books(s): Books) -> Response {
             // To the second, the server's local time, and no colon, which some
             // systems refuse in a file's name: example-ltd-2026-11-05-134205.
             let name = format!("{}-{}.bundle", crate::repo::slug(&s.books.config.company.name), jiff::Zoned::now().strftime("%Y-%m-%d-%H%M%S"));
-            ([("content-type", "application/octet-stream".to_string()), ("content-disposition", format!("attachment; filename=\"{name}\""))], b).into_response()
+            // Kept by no cache on the way, nor the browser's: it is everything.
+            ([("content-type", "application/octet-stream".to_string()), ("content-disposition", format!("attachment; filename=\"{name}\"")), ("cache-control", "no-store".into()), ("x-content-type-options", "nosniff".into())], b).into_response()
         }
         Err(e) => or_error(&s, "Download the books", || Err(e)),
     }
@@ -218,6 +219,11 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
             div.box-body {
                 p.muted.small { "One file holding the books and their whole history: every entry, document and change, and who made it. " code { "git clone" } " opens it." }
                 div.actions { a.btn href="/export" download { (icon("download")) " Download the books" } }
+                p.muted.small {
+                    "For a script, the same file at " a href="/export" { "this link" } ", which answers a plain GET: "
+                    code { "curl -fOJ <the link's address>" } " saves it under its own name, and fails rather than saving a page that says why not. "
+                    @if crate::repo::AUTHOR.try_with(|_| ()).is_ok() { "The script signs in to the gateway as someone of the admin role, as a person does: abo gives no key of its own." }
+                }
             }
             div.box-body {
                 p.muted.small { "A newer copy of these books, from such a file: taken in only if it holds every change made here and more since, so that nothing here is lost. If both have changes of their own, nothing is taken in, and the page says how to put them together on the command line." }

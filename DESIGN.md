@@ -666,6 +666,16 @@ salaries included, and the gateway lets every role GET. Asked for by another
 role it says "Admin only", and the company page leaves its button out.
 Test: `tests/web.rs` `the_books_download_whole`.
 
+A script fetches the same URL (`curl -fOJ <url>/export`), and signs in as
+a person does: behind a gateway, with a gateway credential of the admin role.
+abo issues no key of its own for it. A key would be a login, which abo
+does not have (§1), and one in a URL is kept by every log and history it
+passes through. The answer is `Cache-Control: no-store`, so no proxy or
+browser cache keeps a copy. A cross-site page can make a signed-in
+browser fetch it, but it cannot read the answer (abo sends no CORS
+headers). It costs the server a bundle each time. Admin only, that is
+accepted.
+
 The CSRF check above stays abo's: it guards a person's own browser against
 other pages, with or without a gateway in front.
 
