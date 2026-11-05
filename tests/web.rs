@@ -222,7 +222,7 @@ fn new_company() {
 /// A garbled header is refused, not taken for none.
 #[test]
 fn behind_a_gateway_the_person_is_the_author() {
-    let base = std::env::temp_dir().join(format!("abo-web-the gateway-{}", std::process::id()));
+    let base = std::env::temp_dir().join(format!("abo-web-gateway-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     let (data, home) = (base.join("data"), base.join("home"));
     std::fs::create_dir_all(&data).unwrap();
@@ -233,7 +233,7 @@ fn behind_a_gateway_the_person_is_the_author() {
     let zoe = "X-Gateway-User: zoe\r\nX-Gateway-Name: Zo%C3%AB M%C3%BCller\r\nX-Gateway-Email: zoe@example.invalid\r\nX-Gateway-Role: admin\r\n";
     let (_, _, page) = http_as(&s, zoe, "GET", "/new", &[]);
     assert!(page.contains("name=\"currency\"") && !page.contains("git_name"), "{page}");
-    let new = [("token", "t1"), ("name", "The gateway Ltd"), ("address", "1 Street"), ("p0.kind", "skip"), ("p.n", "1"), ("currency", "CHF"), ("method", "none")];
+    let new = [("token", "t1"), ("name", "Gateway Ltd"), ("address", "1 Street"), ("p0.kind", "skip"), ("p.n", "1"), ("currency", "CHF"), ("method", "none")];
     let (status, to, page) = http_as(&s, zoe, "POST", "/new", &new);
     assert_eq!((status, to.as_str()), (303, "/"), "{page}");
     // No full name, no email: the user name, and git's email.
@@ -1257,7 +1257,7 @@ fn export(s: &Server, headers: &str) -> (u16, Vec<u8>) {
 }
 
 /// Download the books: a git bundle that `git clone` opens, with its log;
-/// for the gateway's admin, or where there is no the gateway; not while a change abo did
+/// for the gateway's admin, or where there is no gateway; not while a change abo did
 /// not make is there.
 #[test]
 fn the_books_download_whole() {

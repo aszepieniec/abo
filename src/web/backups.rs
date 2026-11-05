@@ -82,7 +82,7 @@ pub(super) async fn export(Books(s): Books) -> Response {
 }
 
 /// The books through a download link, for a script: the link is the
-/// credential, no the gateway role is asked. A wrong, revoked or expired link is
+/// credential, no gateway role is asked. A wrong, revoked or expired link is
 /// not found, as any page that is not there.
 pub(super) async fn export_link(Books(s): Books, Path(token): Path<String>) -> Response {
     let Some(l) = store::today().ok().and_then(|today| crate::links::check(&s.root, &token, today)) else {
@@ -218,8 +218,8 @@ fn public(h: &HeaderMap, path: &str) -> Option<String> {
 fn a_link_is_shown_where_a_browser_outside_reaches_it() {
     let h = |pairs: &[(&'static str, &str)]| pairs.iter().map(|(k, v)| (axum::http::HeaderName::from_static(k), v.parse().unwrap())).collect::<HeaderMap>();
     assert_eq!(public(&h(&[("host", "127.0.0.1:8801")]), "/export/ab").as_deref(), Some("http://127.0.0.1:8801/export/ab"));
-    let the gateway = h(&[("host", "books.example.org"), ("x-forwarded-proto", "https"), ("x-forwarded-prefix", "/alice/acme/")]);
-    assert_eq!(public(&the gateway, "/export/ab").as_deref(), Some("https://books.example.org/alice/acme/export/ab"));
+    let behind = h(&[("host", "books.example.org"), ("x-forwarded-proto", "https"), ("x-forwarded-prefix", "/alice/acme/")]);
+    assert_eq!(public(&behind, "/export/ab").as_deref(), Some("https://books.example.org/alice/acme/export/ab"));
     assert_eq!(public(&h(&[("host", "a.example'><b")]), "/x"), None);
     assert_eq!(public(&h(&[("host", "a.example"), ("x-forwarded-proto", "javascript")]), "/x"), None);
 }

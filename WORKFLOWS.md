@@ -94,7 +94,7 @@ what it is for; a missing `typst` is a warning. The server reads `abo.toml` and
 the journal afresh on every request, so an edit to either — a closed period, a
 new rate, a declared account — applies without a restart. Served for others
 behind a gateway, the gateway's config for abo must hold what DESIGN §8, "Behind
-The gateway: what abo's gateway config must say", lists: every top-level route in
+a gateway: what the gateway's config for abo must say", lists: every top-level route in
 `reserved`, and `/export/{token}` in `token_paths`.
 **Done when** the front page shows the company, its balances and recent
 entries; on an empty directory, the form that opens the books (A1), and once
@@ -211,7 +211,7 @@ their whole history (`git bundle create - --all`): every entry, document
 and change, and who made it, each commit with its command. It is named for
 the company and the moment, to the second, in the server's local time
 (`example-ltd-2026-11-05-134205.bundle`). `git clone <file>` opens it, and there `abo log` and undo work as they did. Behind
-The gateway, for its admin role alone; without a gateway, for anyone. On the CLI it
+a gateway, for its admin role alone; without a gateway, for anyone. On the CLI it
 is `git bundle` itself. Refused while a change abo did not make is there
 (F8). For a script, an admin makes a **download link** on the same page:
 an address that is its own key (`curl -fOJ <address>`, no sign-in), with
@@ -603,7 +603,7 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 - **Bank import** (§11) — statement lines matched against booked items.
 - **Payroll** (§11) — gross to net, payslips.
-- **Git mirror** (§11) — pushed to a remote after every commit, with a key the project admin uploads on Backups; waits on a gateway letting the sandbox reach the remote. Export and import are A7 and A8.
+- **Git mirror** (§11) — pushed to a remote after every commit, with a key the project admin uploads on Backups; waits on the gateway letting the sandbox reach the remote. Export and import are A7 and A8.
 - **Year-end closing entries** (§12) — until then unclosed profit is a computed equity line.
 
 ---

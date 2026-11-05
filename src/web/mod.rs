@@ -554,7 +554,7 @@ fn may_change() -> bool {
 }
 
 /// Whether the person asking may download the books whole: the gateway's admin
-/// role, or anyone where there is no the gateway. An export is everything,
+/// role, or anyone where there is no gateway. An export is everything,
 /// salaries included, and a GET, which the gateway lets every role make.
 fn may_export() -> bool {
     ADMIN.try_with(|a| *a).unwrap_or(false)
@@ -648,7 +648,7 @@ async fn scope(req: axum::extract::Request, next: axum::middleware::Next) -> Res
     let looks = req.method() == axum::http::Method::GET;
     let who = author(req.headers());
     let view = view_only(req.headers());
-    // No the gateway header at all: no the gateway, one person at their own computer.
+    // No gateway header at all: no gateway, one person at their own computer.
     // A user the gateway names with no role is not taken for admin: export is
     // the one check the gateway does not make itself.
     let h = req.headers();
@@ -665,7 +665,7 @@ async fn scope(req: axum::extract::Request, next: axum::middleware::Next) -> Res
     }
 }
 
-/// The author of what a request changes, from a gateway's headers (its app
+/// The author of what a request changes, from the gateway's headers (its app
 /// contract, item 9): the person's full name, else their user name; their
 /// email, if given, else git's. None without `X-Gateway-User`: abo is then not
 /// behind a gateway, and git's own identity stands. A header there but garbled

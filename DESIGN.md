@@ -14,7 +14,7 @@ adding it is stated.
 Status: M0-M4 built — `abo init`, `post`, `file`, `bill`, `invoice`,
 `reconcile`, `clear`, `revert`, `undo`, `company`, `payment-options`, `pl`, `bs`,
 `vat`, `balance`, `register`, `log`, `serve`, `demo`. M5: `abo serve` serves
-one company; users come from a gateway, in front of it.
+one company; users come from the gateway, in front of it.
 M6 built: each company installs as an app; not yet tried on a real phone
 (WORKFLOWS.md G1). Partners and agreements (MODEL.md §2.9): `partner`,
 `agreement`, and their pages under Partners.
@@ -37,7 +37,7 @@ M6 built: each company installs as an app; not yet tried on a real phone
 | Commodities | multi-commodity from the start | hledger already is. Cash, bank and wallet balances are all just asset accounts. |
 | Phone app | PWA over the existing server-rendered pages | See §7. |
 | Questions | every command that asks takes `--ni`, and then asks nothing: each question takes what it offers, as a flag left out does, and a yes or no is no | A script, a model's tool call or the gateway must never wait on stdin. Under `--ni` a question reached all the same is an error, not a wait (`tests/regressions.rs` `ni_asks_nothing`). A new command that asks adds its case there. |
-| `abo init` | opens the books in the directory it is run in, or `--dir`, which is there and empty | As `git init`. The web form does the same on an empty directory, so a gateway project is one company. |
+| `abo init` | opens the books in the directory it is run in, or `--dir`, which is there and empty | As `git init`. The web form does the same on an empty directory, so a project behind a gateway is one company. |
 
 ### Crates
 
@@ -651,7 +651,7 @@ factors), the roles on a project (view, write, admin), and TLS. The gateway runs
 each project's abo in a sandbox on a network of its own, so the gateway is the
 only one that reaches the port.
 
-What abo takes from a gateway is who is asking: `X-Gateway-User`, `X-Gateway-Name`
+What abo takes from the gateway is who is asking: `X-Gateway-User`, `X-Gateway-Name`
 and `X-Gateway-Email`, the author of the commits a request makes. It trusts
 them because only the gateway can send them; the gateway replaces any a browser sends.
 A role abo does not check: the gateway refuses a viewer's POST before abo sees it.
@@ -663,13 +663,13 @@ disabled. Test: `tests/web.rs` `a_viewer_is_offered_no_change`, which
 crawls every page as a viewer.
 
 One GET abo does check: **Download the books** (`/export`), for the gateway's
-admin role alone, or anyone where no the gateway is in front; **Bring the books
+admin role alone, or anyone where no gateway is in front; **Bring the books
 up to date** (`/backups/import`) is admin's alone too, as is the
 **Backups** page that holds both, and the download links. Admin means `X-Gateway-Role: admin`. A
-request with no the gateway header at all counts too, because then there is no
-The gateway in front: one person at their own computer. A user the gateway names with
+request with no gateway header at all counts too, because then there is no
+gateway in front: one person at their own computer. A user the gateway names with
 no role does not count. The gateway makes no check of its own on a GET, so a
-The gateway sending the user without the role fails closed, not open. It is everything,
+gateway sending the user without the role fails closed, not open. It is everything,
 salaries included, and the gateway lets every role GET. Asked for by another
 role it says "Admin only", and the sidebar leaves Backups out.
 Test: `tests/web.rs` `the_books_download_whole`.
@@ -690,14 +690,14 @@ one.
   books already. Links made when only the hash was kept show none.
 - A wrong, revoked or expired token is answered as any page not there, a
   404, so tokens that once were cannot be told from those that never were.
-  The route asks no the gateway role: the key is the credential.
+  The route asks no gateway role: the key is the credential.
 - abo's request log writes `/export/<link>` in its place, and the link's
   label and id. The page showing the address is `no-store`. The gateway's logs,
   and every proxy's, are theirs: a key in a URL is written down wherever
   it passes. A link may be given a last day; by default it has none and
   answers until revoked.
-- Behind a gateway, the gateway forwards them without a session (its README,
-  contract item 12), as abo's gateway config declares: `token_paths =
+- Behind a gateway, the gateway forwards them without a session (its contract,
+  item 12), as the gateway's config for abo declares: `token_paths =
   ["/export/{token}"]`, with `export` in `reserved`. Only a GET or HEAD
   whose path is exactly `/export/<64 lowercase hex>` qualifies. The gateway
   strips every client `X-Gateway-*` header, cookie and `X-Forwarded-*`,
@@ -709,7 +709,7 @@ one.
   address with a Copy button. Made, it is back to Backups, the link's id
   in the URL and never its key. The page is `no-store`. The address shown
   is the one a browser outside reaches,
-  `https://<domain>/<owner>/<project>/export/<token>`, built from a gateway's
+  `https://<domain>/<owner>/<project>/export/<token>`, built from the gateway's
   `X-Forwarded-Proto`, `Host` and `X-Forwarded-Prefix` (without a gateway,
   this server's).
 
@@ -724,19 +724,19 @@ other pages, with or without a gateway in front.
 
 ---
 
-### Behind a gateway: what abo's gateway config must say
+### Behind a gateway: what the gateway's config for abo must say
 
 The gateway serves abo from a config of its own, kept with the gateway's deployment,
 not in this repository. These lines are abo's requirements of it; without
 them the pages behind a prefix, the download links and Backups break.
 
 ```toml
-# Every top-level route abo serves (the gateway contract item 4), so that the gateway
+# Every top-level route abo serves (the gateway's contract, item 4), so that the gateway
 # adds the project's prefix to abo's root-relative links and sends these
 # paths to abo. A route added to abo's router is added here.
 reserved = ["account", "agreement", "agreements", "apple-touch-icon.png", "backups", "bill", "bills", "company", "contracts", "declarations", "entry", "export", "icon-192.png", "icon-512.png", "import", "invoice", "invoices", "log", "manifest.webmanifest", "new", "partner", "partners", "pay", "post", "reconcile", "report", "undo", "write-off"]
 
-# Download links (the gateway contract item 12): reached with no session, the
+# Download links (the gateway's contract, item 12): reached with no session, the
 # token being the credential, which abo checks.
 token_paths = ["/export/{token}"]
 ```
@@ -746,7 +746,7 @@ fails when a route is added to abo and not here.
 
 What the gateway does with them is the gateway's, and abo needs none of it: a token
 link's request comes with `X-Gateway-Role: anonymous` and nothing else of
-The gateway's; a wrong token is abo's 404, and the gateway may turn a 404 for a
+the gateway's; a wrong token is abo's 404, and the gateway may turn a 404 for a
 project that does not exist into its login redirect, so that a stranger
 cannot tell which projects exist.
 
