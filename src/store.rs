@@ -378,8 +378,6 @@ impl Store {
         if paths.is_empty() {
             return Ok(None);
         }
-        // The entry it adds, if it adds one, for whoever reads the log.
-        let entry = (n.entries.len() > self.books.entries.len()).then_some(n.entries.len());
         let kept: Vec<(String, Option<Vec<u8>>)> = paths.iter().map(|p| (p.clone(), std::fs::read(self.root.join(p)).ok())).collect();
         let stamp = Stamp::now(&self.root)?;
         let r = (|| -> Result<String> {
@@ -402,8 +400,8 @@ impl Store {
             if repo::git_in(&self.root, &staged).is_ok() {
                 return Ok(String::new());
             }
-            let mut changes: Vec<Change> = before.iter().map(|(a, w)| (a.as_slice(), w.as_str(), None)).collect();
-            changes.push((&argv, what, entry));
+            let mut changes: Vec<(&[String], &str)> = before.iter().map(|(a, w)| (a.as_slice(), w.as_str())).collect();
+            changes.push((&argv, what));
             let msg = message(subject, &changes);
             let mut commit = vec!["commit", "-q", "-m", &msg, "--"];
             commit.extend(paths.iter().map(String::as_str));
@@ -505,7 +503,7 @@ impl Store {
             put(&self.root, main, model::render(&undone)[main].as_bytes())?;
             repo::git_in(&self.root, &["add", "--", main])?;
         }
-        repo::git_env(&self.root, &["commit", "-q", "--amend", "-m", &message(&what, &[(&argv, &what, None)])], &stamp.env())?;
+        repo::git_env(&self.root, &["commit", "-q", "--amend", "-m", &message(&what, &[(&argv, &what)])], &stamp.env())?;
         let commit = repo::git_in(&self.root, &["rev-parse", "--short", "HEAD"])?.trim().to_string();
         *self = Store::open(&self.root)?;
         Ok(commit)
@@ -549,27 +547,27 @@ fn put(root: &Path, rel: &str, bytes: &[u8]) -> Result<()> {
     std::fs::write(&p, bytes).with_context(|| rel.to_string())
 }
 
-/// A commit's message: its subject, then a line for each change it holds,
-/// `Abo: {"argv":..,"what":..,"entry":..}`, which `lines` reads back as the
-/// log. The subject is put on one line, so that no text typed into it can
-/// make a line of its own.
-fn message(subject: &str, changes: &[Change]) -> String {
-    let mut m = format!("{}\n\n", subject.replace(['\n', '\r'], " "));
-    for (argv, what, entry) in changes {
-        m += &format!("{LINE}{}\n", serde_json::json!({ "argv": argv, "what": what, "entry": entry }));
+/// A commit's message: its subject, then the command of each operation it
+/// holds, as it would be typed (`command::shell`), to copy into a terminal.
+/// Where it holds more than one, each command has a comment before it that
+/// says what it did. Subject and comments are put on one line first, so
+/// that no text typed into them makes a line of its own.
+fn message(subject: &str, changes: &[(&[String], &str)]) -> String {
+    let one = |t: &str| t.replace(['\n', '\r'], " ");
+    let mut m = format!("{}\n\n", one(subject));
+    for (argv, what) in changes {
+        if changes.len() > 1 {
+            m += &format!("# {}\n", one(what));
+        }
+        m += &format!("{}\n", crate::command::shell(&argv.iter().map(String::as_str).collect::<Vec<_>>()));
     }
     m
 }
 
-const LINE: &str = "Abo: ";
-
-/// A change a commit holds: its command, what it did, the entry it added.
-type Change<'a> = (&'a [String], &'a str, Option<usize>);
-
-/// The log's lines, oldest first: who, when, the command, its commit, the
-/// entry it added. Read from the commits abo made, so the books' history
-/// carries it wherever they go. A record of what was done, not a source of
-/// the books (MODEL.md §5.4).
+/// The log's lines, oldest first: who, when, the command, what it did, its
+/// commit. Read from the commits abo made, so the books' history carries it
+/// wherever they go. A record of what was done, not a source of the books
+/// (MODEL.md §5.4).
 pub fn lines(root: &Path) -> Vec<serde_json::Value> {
     // ponytail: books from before commits carried their lines kept them in
     // .abo/log.jsonl; read first, as every one is older than any commit's.
@@ -577,11 +575,14 @@ pub fn lines(root: &Path) -> Vec<serde_json::Value> {
     let out = repo::git_in(root, &["log", "--reverse", "--format=%h%x1f%an%x1f%ae%x1f%aI%x1f%B%x1e"]).unwrap_or_default();
     for c in out.split('\x1e') {
         let [commit, who, email, at, body] = c.trim_start().splitn(5, '\x1f').collect::<Vec<_>>()[..] else { continue };
-        let Some((_, changes)) = body.split_once("\n\n") else { continue };
-        for l in changes.lines().filter_map(|l| l.strip_prefix(LINE)) {
-            if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(l) {
-                (v["commit"], v["who"], v["email"], v["at"]) = (commit.into(), who.into(), email.into(), at.into());
-                all.push(v);
+        let Some((subject, changes)) = body.split_once("\n\n") else { continue };
+        let mut said = None;
+        for l in changes.lines() {
+            if let Some(w) = l.strip_prefix("# ") {
+                said = Some(w);
+            } else if let Some(argv) = crate::command::unshell(l) {
+                let what = said.take().unwrap_or(subject);
+                all.push(serde_json::json!({ "at": at, "who": who, "email": email, "argv": argv, "what": what, "commit": commit }));
             }
         }
     }
@@ -621,7 +622,7 @@ pub fn init(dir: &Path, config: model::Config, author: Option<(String, String)>,
         let stamp = Stamp::now(dir).map_err(|_| NoIdentity)?;
         repo::git_in(dir, &["add", "-A"])?;
         let what = format!("Open the books for {}", b.config.company.name);
-        repo::git_env(dir, &["commit", "-q", "-m", &message(&what, &[(&argv, &what, None)])], &stamp.env())?;
+        repo::git_env(dir, &["commit", "-q", "-m", &message(&what, &[(&argv, &what)])], &stamp.env())?;
         Ok(repo::git_in(dir, &["rev-parse", "--short", "HEAD"])?.trim().to_string())
     })();
     // As it was: gone if made here, else empty again.

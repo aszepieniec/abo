@@ -142,8 +142,9 @@ pub(super) fn toast(s: &Store, n: usize) -> Option<Markup> {
     let commit = line["commit"].as_str();
     let said = change_said(s, &line)?;
     // A link to the PDF where the change issued one.
-    // By the entry the change added, if it was an invoice or a credit note.
-    let number = line["entry"].as_u64().and_then(|id| s.books.number_text(id as usize));
+    // By the number its subject ends with, if it issued an invoice or a credit note.
+    let issued = matches!(line["argv"][0].as_str(), Some("invoice" | "credit"));
+    let number = line["what"].as_str().and_then(|w| w.rsplit(' ').next()).filter(|n| issued && s.has_pdf(n)).map(String::from);
     Some(html! {
         div.flash.flash-ok.toast role="status" {
             (icon("success"))

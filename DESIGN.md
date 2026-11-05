@@ -564,14 +564,21 @@ The first line is always `abo init`. An action in the browser is logged as the
 command it amounts to; the bill form is two, `abo file` and `abo bill`.
 
 A line is kept in the message of the commit the change makes, after its
-subject, as `Abo: {"argv": [...], "what": "...", "entry": 3}`, one for each
-operation it holds; the subject is put on one line first, so that no text
-typed into it makes a line of its own. Its stamp is git's: the author name
-and email, and the second the operation began, as both author and committer
-date. An invoice PDF carries the stamp as its creation date. So the log goes
-wherever the history goes — a clone, a bundle, a mirror — and undo there
-takes back the last change as it would here. Books from before kept their
-lines in `.abo/log.jsonl`; it is read first, as all of them are older.
+subject: the command as it would be typed, to copy into a terminal.
+
+    Book Two words
+
+    abo post --date=2026-11-05 '--desc=Two words' -- 'Expenses:General=3 EUR' 'Assets:Bank=-3 EUR'
+
+A commit of two operations, as the bill form makes, has two commands, each
+after a comment that says what it did, so that the two can be pasted
+together. The subject and the comments are put on one line first, so that no
+text typed into them makes a line of its own. The stamp is git's: the author
+name and email, and the second the operation began, as both author and
+committer date. An invoice PDF carries the stamp as its creation date. So the
+log goes wherever the history goes — a clone, a bundle, a mirror — and undo
+there takes back the last change as it would here. Books from before kept
+their lines in `.abo/log.jsonl`; it is read first, as all of them are older.
 The log is a record of what was done, not a source of the books: they
 are read from their files alone, and the git history is what restores them
 (MODEL.md §5.4).

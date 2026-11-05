@@ -1543,24 +1543,42 @@ fn the_log_holds_what_types_back_to_the_same_change() {
     assert!(log.contains("'--desc=Two words'") || log.contains("--desc 'Two words'"), "{log}");
 }
 
-/// The log is the commits': a clone of the books has it whole, and undo
-/// there takes back the last change, with no file beside the history.
+/// The log is the commits': a clone of the books has it whole, undo there
+/// takes back the last change, and a commit's command, pasted into a shell,
+/// makes its change again.
 #[test]
 fn the_log_travels_with_the_books() {
     let dir = books("log-clone", &[]);
     ok(&dir, &["post", "--desc", "Fees", "Expenses:General=10", "Assets:Bank=-10"]);
-    let copy = dir.with_file_name("copy");
-    let o = Command::new("git").args(["clone", "-q", dir.to_str().unwrap(), copy.to_str().unwrap()]).output().unwrap();
-    assert!(o.status.success(), "{}", err(&o));
+    let git = |d: &Path, args: &[&str]| Command::new("git").args(args).current_dir(d).output().unwrap();
+    let clone = |name: &str| {
+        let c = dir.with_file_name(name);
+        assert!(git(&dir, &["clone", "-q", ".", c.to_str().unwrap()]).status.success());
+        // Who makes a change is not the books': a clone names them anew.
+        git(&c, &["config", "user.name", "c"]);
+        git(&c, &["config", "user.email", "c@example.invalid"]);
+        c
+    };
+    let copy = clone("copy");
     assert!(!copy.join(".abo").exists());
-    // Who makes a change is not the books': a clone names them anew.
-    for (k, v) in [("user.name", "c"), ("user.email", "c@example.invalid")] {
-        Command::new("git").args(["config", k, v]).current_dir(&copy).output().unwrap();
-    }
     assert_eq!(log_jsonl(&copy), log_jsonl(&dir));
     assert_eq!(log_len(&copy), 2);
     assert!(log_jsonl(&copy).contains("\"--desc=Fees\""));
     assert!(ok(&copy, &["undo"]).contains("Fees"));
+
+    // On books that never had the change, as undo leaves its id spent.
+    let fresh = clone("fresh");
+    git(&fresh, &["reset", "-q", "--hard", "HEAD~1"]);
+    let body = String::from_utf8(git(&dir, &["log", "-1", "--format=%b"]).stdout).unwrap();
+    assert!(body.starts_with("abo post "), "{body}");
+    let bin = Path::new(env!("CARGO_BIN_EXE_abo")).parent().unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let o = Command::new("sh").args(["-c", &body]).current_dir(&fresh).env("PATH", path).env("ABO_TODAY", TODAY).stdin(Stdio::null()).output().unwrap();
+    assert!(o.status.success(), "{}", err(&o));
+    for f in std::fs::read_dir(dir.join("journal")).unwrap() {
+        let f = format!("journal/{}", f.unwrap().file_name().to_str().unwrap());
+        assert_eq!(read(&fresh, &f), read(&dir, &f), "{f}");
+    }
 }
 
 #[test]

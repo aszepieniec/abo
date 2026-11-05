@@ -402,9 +402,39 @@ pub fn shell(words: &[&str]) -> String {
     std::iter::once("abo".to_string()).chain(words.iter().map(quote)).collect::<Vec<_>>().join(" ")
 }
 
+/// The words of a command as `shell` writes it, `abo` left off: None for a
+/// line that is not one.
+pub fn unshell(line: &str) -> Option<Vec<String>> {
+    let (mut words, mut w, mut quoted, mut any) = (vec![], String::new(), false, false);
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match (c, quoted) {
+            ('\'', _) => (quoted, any) = (!quoted, true),
+            ('\\', false) => w.push(chars.next()?),
+            (' ', false) => {
+                if any || !w.is_empty() {
+                    words.push(std::mem::take(&mut w));
+                }
+                any = false;
+            }
+            _ => w.push(c),
+        }
+    }
+    if quoted {
+        return None;
+    }
+    if any || !w.is_empty() {
+        words.push(w);
+    }
+    (words.first().map(String::as_str) == Some("abo")).then(|| words.split_off(1))
+}
+
 #[test]
 fn a_command_is_shown_as_a_shell_takes_it() {
-    assert_eq!(shell(&["pay", "9", "--cost=11 USD", "--to=a'b", ""]), "abo pay 9 '--cost=11 USD' '--to=a'\\''b' ''");
+    let words = ["pay", "9", "--cost=11 USD", "--to=a'b", ""];
+    assert_eq!(shell(&words), "abo pay 9 '--cost=11 USD' '--to=a'\\''b' ''");
+    assert_eq!(unshell(&shell(&words)).unwrap(), words);
+    assert_eq!(unshell("Book entry 3"), None);
 }
 
 /// A change as done, from `what`, which names it as a commit does: its
