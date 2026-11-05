@@ -1550,7 +1550,8 @@ With the model, one set of invariants holds, and the 76 rule-version switches ar
   part of the state. An invoice's content and its PDF's hash are.
 - **The log** and the rest of `.abo/` are working state, as today.
 - **Reports** are functions of the state, not part of it.
-- **Users** (M5) would add an author to each operation, not new state.
+- **Users** are the gateway's (DESIGN §8): the author of a commit is the person
+  the gateway names, and no state.
 - **Payroll** is booked, not computed: what is withheld and owed on a salary
   is said by whoever runs it, in the entry booked from the payslip.
 
