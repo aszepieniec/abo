@@ -1408,7 +1408,7 @@ fn a_download_link_is_its_own_key() {
         assert!(status == 200 && bundle.starts_with(b"# v"), "{status}");
     }
     let company = http_as(&s, admin, "GET", "/backups", &[]).2;
-    assert!(company.contains("nightly") && company.contains("Made by Zoe") && company.contains("Last used") && company.contains("No last day"), "{company}");
+    assert!(company.contains("nightly") && company.contains("made by Zoe") && company.contains("last used") && company.contains("No last day"), "{company}");
     assert_eq!(get(&format!("{}0", &path[..path.len() - 1]), "").0, 404, "a wrong key");
 
     let id = company.split("name=\"id\" value=\"").nth(1).and_then(|r| r.split('"').next()).unwrap().to_string();
