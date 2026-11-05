@@ -203,7 +203,7 @@ force; `--no-template` for none), `terminate <id> [--on]`, `subsume <id> --by <o
 agreement ended takes no new version.
 
 ### A7. Download the books — Supported (browser)
-**Download the books** on the company page gives one file, the books and
+**Download the books** on **Backups**, in the sidebar, gives one file, the books and
 their whole history (`git bundle create - --all`): every entry, document
 and change, and who made it, each commit with its command. It is named for
 the company and the moment, to the second, in the server's local time
@@ -224,7 +224,7 @@ and only plain files, no link or submodule.
 - **Where no books are yet**, beside the questions of A1: **Or open books
   kept elsewhere** clones the file there, with the name and email for its
   commits (the gateway names them itself). Refused, the directory is left empty.
-- **On the company page, under Download the books**, admin only: **Bring
+- **On Backups, under Download the books**, admin only: **Bring
   the books up to date** takes in a newer copy, only forward: when the file
   holds every change these do and more since. A file of the same books says
   nothing to take in; an older one, nothing taken in. When each has changes

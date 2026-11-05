@@ -482,7 +482,10 @@ VAT when input tax is deductible. On a phone the sidebar becomes a bar of
 icons across the top.
 
 Each item in the sidebar is one word, and the word need not be the model's:
-`/declarations` is Accounts, `/post` is Entry. Partners and agreements
+`/declarations` is Accounts, `/post` is Entry. Backups, last, is admin's
+alone (§8): the books whole as a file, a newer copy taken in, and download
+links. It is the server's keeping of the books, not the company's, so it is
+not on the company page. Partners and agreements
 (MODEL.md §2.9) will be one item, Partners. An agreement is reached from the
 pages of its parties, and its own pages keep Partners as the current item.
 
@@ -661,19 +664,20 @@ crawls every page as a viewer.
 
 One GET abo does check: **Download the books** (`/export`), for the gateway's
 admin role alone, or anyone where no the gateway is in front; **Bring the books
-up to date** (`/company/import`) is admin's alone too. Admin means `X-Gateway-Role: admin`. A
+up to date** (`/backups/import`) is admin's alone too, as is the
+**Backups** page that holds both, and the download links. Admin means `X-Gateway-Role: admin`. A
 request with no the gateway header at all counts too, because then there is no
 The gateway in front: one person at their own computer. A user the gateway names with
 no role does not count. The gateway makes no check of its own on a GET, so a
 The gateway sending the user without the role fails closed, not open. It is everything,
 salaries included, and the gateway lets every role GET. Asked for by another
-role it says "Admin only", and the company page leaves its button out.
+role it says "Admin only", and the sidebar leaves Backups out.
 Test: `tests/web.rs` `the_books_download_whole`.
 
 A script fetches the books through a **download link**,
 `/export/<token>`, with `curl -fOJ <address>` and no sign-in: the address
-is the key (§1's one exception). It is admin's to make and revoke, on the
-company page, with a label, and with a last day, through which it answers,
+is the key (§1's one exception). It is admin's to make and revoke, on
+Backups, with a label, and with a last day, through which it answers,
 or none. The page lists each link with who made it, when, and when it was
 last used. That is the only sign of who uses it, since the key names no
 one.
@@ -695,7 +699,7 @@ one.
   strips every client `X-Gateway-*` header, cookie and `X-Forwarded-*`,
   sends `X-Gateway-Role: anonymous`, and allows 10 a minute per address.
   Anything else goes through the gateway's login as before.
-- Made, it is back to the company page, the link's id in the URL and never
+- Made, it is back to Backups, the link's id in the URL and never
   its key. The page shows the address in the link's row, once, with a Copy
   button, and is `no-store`. Until then the server holds the address in
   memory, for ten minutes at most. Shown again, the page says to make
@@ -809,7 +813,7 @@ Requested 2026-11-04. The books are a git repository, so each of the three is a
 git operation; what is missing is a way to do it from the browser, where
 whoever keeps the books has no shell.
 
-- **Export.** Built: **Download the books** on the company page, admin only
+- **Export.** Built: **Download the books** on Backups, admin only
   (§8). Download the whole repository as one file: `git bundle create -
   --all`, which is the books with their history. A tarball of the working tree
   would drop the history, and the history is the audit trail (§1). The log
@@ -900,7 +904,7 @@ Each with the trigger for revisiting.
 |---|---|
 | Account / commodity editor UI | You are editing `accounts.journal` weekly. It is `$EDITOR` plus `hledger check accounts`. |
 | Database | Never, for the books. Users are the gateway's (§8). |
-| Client-side JavaScript | A workflow genuinely cannot be a form submission. The one so far: a download link's Copy button, since the clipboard is the browser's alone; an inline handler, and the address beside it can be selected without it. |
+| Client-side JavaScript beyond small touches | A workflow genuinely cannot be a form submission. Two small touches so far, each with the page working without it: a form's Save button lit once a field differs (`EDITS`), and a download link's Copy button, since the clipboard is the browser's alone. |
 | Bootstrap, Tailwind, or any CSS framework | The hand-written stylesheet stops fitting on one screen, or a component needs behaviour rather than style. |
 | An icon font or an icon package | You need more than about twenty icons. |
 | JSON API | A native phone client is chosen (§7). |

@@ -3,6 +3,7 @@
 //! operation the store applies, logged as the command that makes the same
 //! change in a terminal. Handlers never shell out to the CLI.
 
+mod backups;
 mod bills;
 mod books;
 mod company;
@@ -16,6 +17,7 @@ mod pay;
 mod reconcile;
 mod reports;
 
+use backups::*;
 use bills::*;
 use books::*;
 use company::*;
@@ -114,11 +116,12 @@ fn company_app(root: PathBuf) -> Router {
         .route("/company/tax-return", get(tax_return).post(tax_return_submit))
         .route("/export", get(export))
         .route("/export/{token}", get(export_link))
-        .route("/company/links", post(link_make))
-        .route("/company/links/revoke", post(link_revoke))
+        .route("/backups/links", post(link_make))
+        .route("/backups/links/revoke", post(link_revoke))
         // ponytail: a copy of the books whole, PDFs and all, in one request;
         // past 1 GiB, upload in parts.
-        .route("/company/import", post(import_update).layer(DefaultBodyLimit::max(IMPORT_LIMIT)))
+        .route("/backups", get(backups_view))
+        .route("/backups/import", post(import_update).layer(DefaultBodyLimit::max(IMPORT_LIMIT)))
         .route("/bills/{*rest}", get(bill_doc))
         .route("/partners", get(partners_list))
         .route("/partners/new", get(partner_new).post(partner_add))
@@ -431,6 +434,7 @@ fn page_with(s: &Store, title: &str, body: Markup, with_banner: bool) -> Html<St
         ("/declarations", "coins", "Accounts", "/declarations"),
         ("/company", "pencil", "Company", "/company"),
         ("/log", "clock", "Log", "/log"),
+        ("/backups", "download", "Backups", "/backups"),
     ];
     let here = PATH.try_with(String::clone).unwrap_or_default();
     // An agreement's pages are under Partners, as DESIGN §7 has it.
@@ -453,7 +457,7 @@ fn page_with(s: &Store, title: &str, body: Markup, with_banner: bool) -> Html<St
                         a.brand href="/company" title="The company" { span.mark { "abo" } span.name { (s.books.config.company.name) } }
                         nav {
                             // Entry is only a form.
-                            @for (href, ic, label, section) in nav.into_iter().filter(|n| n.0 != "/post" || may_change()) {
+                            @for (href, ic, label, section) in nav.into_iter().filter(|n| (n.0 != "/post" || may_change()) && (n.0 != "/backups" || may_export())) {
                                 a href=(href) class=[current(section).then_some("current")] { (icon(ic)) span { (label) } }
                             }
                         }

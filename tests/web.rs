@@ -1270,12 +1270,16 @@ fn the_books_download_whole() {
     for role in ["view", "write", "Admin"] {
         let h = format!("X-Gateway-User: bob\r\nX-Gateway-Role: {role}\r\n");
         assert_eq!(fetch(&h).0, 403, "{role}");
-        assert!(!http_as(&s, &h, "GET", "/company", &[]).2.contains("Download the books"), "{role}");
+        // No Backups in the sidebar, and the page itself refused.
+        assert!(!http_as(&s, &h, "GET", "/company", &[]).2.contains("href=\"/backups\""), "{role}");
+        assert_eq!(http_as(&s, &h, "GET", "/backups", &[]).0, 403, "{role}");
     }
     let admin = "X-Gateway-User: zoe\r\nX-Gateway-Role: admin\r\n";
-    assert!(http_as(&s, admin, "GET", "/company", &[]).2.contains("Download the books"));
+    let company = http_as(&s, admin, "GET", "/company", &[]).2;
+    assert!(company.contains("href=\"/backups\"") && !company.contains("Download the books"), "Backups is the sidebar's, not the company's");
+    assert!(http_as(&s, admin, "GET", "/backups", &[]).2.contains("Download the books"));
     assert_eq!(fetch(admin).0, 200);
-    assert!(http(&s, "GET", "/company", &[]).2.contains("curl -fOJ"));
+    assert!(http(&s, "GET", "/backups", &[]).2.contains("curl -fOJ"));
     let (status, bundle) = fetch("");
     assert!(status == 200 && bundle.starts_with(b"# v"), "{status}");
 
@@ -1329,14 +1333,14 @@ fn books_are_opened_and_brought_up_to_date_from_a_file() {
     // Brought forward, by an admin alone; then nothing more to take in; an older file changes nothing.
     book(&a, "a2", "Second");
     let second = export(&a, "").1;
-    let update = |t: &str, file: &[u8], headers: &str| send_with(&b, headers, "POST", "/company/import", MP, &multipart(&[("token", t)], Some(file)));
+    let update = |t: &str, file: &[u8], headers: &str| send_with(&b, headers, "POST", "/backups/import", MP, &multipart(&[("token", t)], Some(file)));
     assert_eq!(update("u0", &second, "X-Gateway-User: bob\r\nX-Gateway-Role: write\r\n").0, 403);
     let (status, to, _) = update("u1", &second, "");
-    assert_eq!((status, to.as_str()), (303, "/company?imported=1"));
+    assert_eq!((status, to.as_str()), (303, "/backups?imported=1"));
     assert!(http(&b, "GET", &to, &[]).2.contains("Brought up to date: 1 change taken in"));
     assert_eq!(log_jsonl(&there), log_jsonl(&books));
-    assert_eq!(update("u2", &second, "").1, "/company?imported=same");
-    assert_eq!(update("u3", &first, "").1, "/company?imported=older");
+    assert_eq!(update("u2", &second, "").1, "/backups?imported=same");
+    assert_eq!(update("u3", &first, "").1, "/backups?imported=older");
 
     // Each with a change of its own: nothing taken in, and how to merge.
     book(&a, "a3", "Here");
@@ -1377,23 +1381,23 @@ fn a_download_link_is_its_own_key() {
         (String::from_utf8_lossy(&out[9..12]).parse::<u16>().unwrap(), out[at + 4..].to_vec())
     };
     let writer = "X-Gateway-User: bob\r\nX-Gateway-Role: write\r\n";
-    assert_eq!(http_as(&s, writer, "POST", "/company/links", &[("label", "nightly"), ("until", "")]).0, 403);
+    assert_eq!(http_as(&s, writer, "POST", "/backups/links", &[("label", "nightly"), ("until", "")]).0, 403);
     let admin = "X-Gateway-User: zoe\r\nX-Gateway-Name: Zoe\r\nX-Gateway-Role: admin\r\n";
     // Made, back to the company, the link's id in the address and not its key;
     // the page shows its address there, once, to copy.
-    let (status, to, _) = http_as(&s, admin, "POST", "/company/links", &[("label", "nightly"), ("until", "")]);
-    assert!(status == 303 && to.starts_with("/company?made=") && to.ends_with("#links") && !to.contains("/export/"), "{to}");
+    let (status, to, _) = http_as(&s, admin, "POST", "/backups/links", &[("label", "nightly"), ("until", "")]);
+    assert!(status == 303 && to.starts_with("/backups?made=") && to.ends_with("#links") && !to.contains("/export/"), "{to}");
     let (_, _, page) = http_as(&s, admin, "GET", to.trim_end_matches("#links"), &[]);
     assert!(page.to_ascii_lowercase().contains("cache-control: no-store") && page.contains("shown this once") && page.contains("navigator.clipboard"), "{page}");
     let again = http_as(&s, admin, "GET", to.trim_end_matches("#links"), &[]).2;
     assert!(!again.contains("/export/") && again.contains("shown once, when it is made"), "shown once only: {again}");
     // Shown at the address the gateway gives it.
     let behind = format!("{admin}X-Forwarded-Proto: https\r\nX-Forwarded-Prefix: /alice/acme\r\n");
-    let (_, there, _) = http_as(&s, &behind, "POST", "/company/links", &[("label", "elsewhere"), ("until", "")]);
+    let (_, there, _) = http_as(&s, &behind, "POST", "/backups/links", &[("label", "elsewhere"), ("until", "")]);
     let there = http_as(&s, &behind, "GET", there.trim_end_matches("#links"), &[]).2;
     assert!(there.contains("value=\"https://127.0.0.1:") && there.contains("/alice/acme/export/"), "{there}");
     // Refused, the company page says why.
-    let (status, _, refused) = http_as(&s, admin, "POST", "/company/links", &[("label", " "), ("until", "")]);
+    let (status, _, refused) = http_as(&s, admin, "POST", "/backups/links", &[("label", " "), ("until", "")]);
     assert!(status == 422 && refused.contains("A label is needed"), "{status} {refused}");
     let path = page.split("/export/").nth(1).and_then(|r| r.get(..64)).map(|t| format!("/export/{t}")).unwrap();
     assert!(!std::fs::read_to_string(books.join(".abo/export-links.json")).unwrap().contains(&path[8..]), "the key is not kept");
@@ -1403,14 +1407,14 @@ fn a_download_link_is_its_own_key() {
         let (status, bundle) = get(&path, h);
         assert!(status == 200 && bundle.starts_with(b"# v"), "{status}");
     }
-    let company = http_as(&s, admin, "GET", "/company", &[]).2;
+    let company = http_as(&s, admin, "GET", "/backups", &[]).2;
     assert!(company.contains("nightly") && company.contains("Made by Zoe") && company.contains("Last used") && company.contains("No last day"), "{company}");
     assert_eq!(get(&format!("{}0", &path[..path.len() - 1]), "").0, 404, "a wrong key");
 
     let id = company.split("name=\"id\" value=\"").nth(1).and_then(|r| r.split('"').next()).unwrap().to_string();
-    assert_eq!(http_as(&s, writer, "POST", "/company/links/revoke", &[("token", "r0"), ("id", &id)]).0, 403);
-    let (status, to, _) = http_as(&s, admin, "POST", "/company/links/revoke", &[("token", "r1"), ("id", &id)]);
-    assert_eq!((status, to.as_str()), (303, "/company?revoked=1"));
+    assert_eq!(http_as(&s, writer, "POST", "/backups/links/revoke", &[("token", "r0"), ("id", &id)]).0, 403);
+    let (status, to, _) = http_as(&s, admin, "POST", "/backups/links/revoke", &[("token", "r1"), ("id", &id)]);
+    assert_eq!((status, to.as_str()), (303, "/backups?revoked=1"));
     assert_eq!(get(&path, "").0, 404, "revoked");
     drop(s);
     let _ = std::fs::remove_dir_all(&base);
