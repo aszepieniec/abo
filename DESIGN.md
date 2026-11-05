@@ -660,7 +660,8 @@ disabled. Test: `tests/web.rs` `a_viewer_is_offered_no_change`, which
 crawls every page as a viewer.
 
 One GET abo does check: **Download the books** (`/export`), for the gateway's
-admin role alone, or anyone where no the gateway is in front. It is everything,
+admin role alone, or anyone where no the gateway is in front; **Bring the books
+up to date** (`/company/import`) is admin's alone too. It is everything,
 salaries included, and the gateway lets every role GET. Asked for by another
 role it says "Admin only", and the company page leaves its button out.
 Test: `tests/web.rs` `the_books_download_whole`.
@@ -773,11 +774,16 @@ whoever keeps the books has no shell.
   wrote into the books' `.git/config`, which is who works on them here and
   not part of them. Changes not committed (WORKFLOWS F8) hold an export up,
   as they hold every change.
-- **Import.** Open books from such a file, or from a URL to clone: the web form
-  of A1 on an empty directory, with `git clone` in place of the questions.
-  Nothing is taken on trust. The clone is read as any books are, against every
-  invariant (MODEL.md §4) and `hledger check`, and refused, and removed, if
-  it fails.
+- **Import.** Built (WORKFLOWS A8), from such a file, two ways: on the form
+  of A1 on an empty directory, `git clone` in place of the questions; and,
+  admin only, under Download the books, a newer copy taken in only as a fast
+  forward. Diverged, nothing is taken in, and the page gives the `git merge`
+  that puts them together by hand: abo does not merge books. Nothing is
+  taken on trust. The clone is read as any books are, against every
+  invariant (MODEL.md §4) and hledger, with only plain files (a link could
+  serve a file outside the books), and refused, and removed or reset, if it
+  fails. From a URL to clone: not built; add it when books move between
+  machines that can reach each other.
 - **Mirror.** A git remote that abo pushes to after every commit it makes.
   A failed push never fails the commit or undoes it. The books are right
   locally, the next commit tries again, and the page says the mirror is
@@ -790,10 +796,6 @@ Open questions, to settle before this becomes a milestone:
 - **Where the credential comes from under a gateway.** The sandbox (§8) has a
   network of its own, so a push needs the gateway to let it out, and the key is
   either the gateway's to hold or the project admin's to upload.
-- **Whether import is worth building.** On the CLI it is `git clone`
-  followed by `abo serve`. In the browser it is the way to move books
-  between the gateway projects, and that need arises only when someone moves
-  books.
 
 ### Payroll, with configurable deductions
 

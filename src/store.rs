@@ -619,18 +619,149 @@ pub fn init(dir: &Path, config: model::Config, author: Option<(String, String)>,
         repo::git_env(dir, &["commit", "-q", "-m", &message(&what, &[(&argv, &what)])], &stamp.env())?;
         Ok(repo::git_in(dir, &["rev-parse", "--short", "HEAD"])?.trim().to_string())
     })();
-    // As it was: gone if made here, else empty again.
     if r.is_err() {
-        if made {
-            let _ = std::fs::remove_dir_all(dir);
-        } else if let Ok(rd) = std::fs::read_dir(dir) {
-            for e in rd.flatten() {
-                let p = e.path();
-                let _ = if p.is_dir() && !p.is_symlink() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
-            }
-        }
+        as_it_was(dir, made);
     }
     r
+}
+
+/// A directory books were refused in, as it was: gone if made for them,
+/// else empty again.
+fn as_it_was(dir: &Path, made: bool) {
+    if made {
+        let _ = std::fs::remove_dir_all(dir);
+    } else if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            let _ = if p.is_dir() && !p.is_symlink() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+        }
+    }
+}
+
+/// Whether the books at `root` may be taken in from elsewhere: read with no
+/// problem, and hledger reads their journal. Nothing in a file is taken on
+/// trust.
+fn sound(root: &Path) -> Result<()> {
+    let s = Store::open(root)?;
+    if !s.problems.is_empty() {
+        bail!("the books in the file hold problems:\n  {}", s.problems.join("\n  "));
+    }
+    if !s.reportable() {
+        bail!("hledger cannot read the journal of the books in the file");
+    }
+    Ok(())
+}
+
+/// Whether commit `rev` holds only plain files: a link could have the books
+/// serve a file outside them, and a submodule fetch from elsewhere.
+fn plain(root: &Path, rev: &str) -> Result<()> {
+    let tree = repo::git_in(root, &["ls-tree", "-r", "-z", rev])?;
+    if let Some(e) = tree.split('\0').find(|e| e.starts_with("120000 ") || e.starts_with("160000 ")) {
+        bail!("the file's books hold {}, which is a link or a submodule, not a file", e.split('\t').nth(1).unwrap_or(e));
+    }
+    Ok(())
+}
+
+/// Open the books in the empty directory `dir` from `bundle`, a file
+/// Download the books gave (`git bundle`): cloned, and checked as any books
+/// are, with `author` set in the clone as `init` sets it, for whoever
+/// changes them here. Refused, the directory is left as it was.
+pub fn import(dir: &Path, bundle: &Path, author: Option<(String, String)>) -> Result<()> {
+    let made = !dir.exists();
+    if !made && std::fs::read_dir(dir)?.next().is_some() {
+        bail!("{} already holds something; books are opened from a file only in an empty directory", dir.display());
+    }
+    let r = (|| -> Result<()> {
+        let to = dir.to_str().context("the directory's name is not text")?;
+        repo::git_in(dir.parent().unwrap_or(Path::new(".")), &["clone", "-q", "--", &bundle.display().to_string(), to])
+            .map_err(|e| anyhow::anyhow!("the file is not books Download the books gave: {e}"))?;
+        // Where it came from is a file gone by now.
+        repo::git_in(dir, &["remote", "remove", "origin"])?;
+        plain(dir, "HEAD")?;
+        for (key, value) in author.iter().flat_map(|(n, e)| [("user.name", n), ("user.email", e)]) {
+            if !value.is_empty() {
+                repo::git_in(dir, &["config", key, value])?;
+            }
+        }
+        Stamp::now(dir).map_err(|_| NoIdentity)?;
+        sound(dir)
+    })();
+    if r.is_err() {
+        as_it_was(dir, made);
+    }
+    r
+}
+
+/// What a newer copy of the books made of these (`Store::update`).
+#[derive(Debug, PartialEq)]
+pub enum Update {
+    /// The file holds what these do.
+    Same,
+    /// These hold all the file does, and more since: nothing taken in.
+    Older,
+    /// Brought forward by this many changes.
+    Newer(usize),
+    /// Each holds changes the other does not: nothing taken in. The file's
+    /// are kept at `IMPORTED`, to merge on the command line.
+    Diverged,
+}
+
+/// These books and a file of them went apart (`Update::Diverged`): merged by
+/// hand, on the command line, in the books' directory.
+#[derive(Debug)]
+pub struct Diverged(pub PathBuf);
+
+impl Diverged {
+    /// The commands that merge them.
+    pub fn commands(&self) -> String {
+        format!("cd {}\ngit merge {IMPORTED}\n# mend what clashes, then\ngit commit\nabo check", crate::command::shell(&[self.0.to_str().unwrap_or_default()]).trim_start_matches("abo "))
+    }
+}
+
+impl std::fmt::Display for Diverged {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "these books and the file each hold changes the other does not, so nothing was taken in; merge them on the command line:\n{}", self.commands())
+    }
+}
+
+impl std::error::Error for Diverged {}
+
+/// Where a copy of the books taken in is kept, to merge by hand when it
+/// and these went apart.
+pub const IMPORTED: &str = "refs/abo/imported";
+
+impl Store {
+    /// Bring the books forward to those in `bundle`: taken in only when the
+    /// file holds every change these do and more after them, so that
+    /// nothing here is lost, and then checked as any books are. Anything
+    /// else changes nothing.
+    pub fn update(&mut self, bundle: &Path) -> Result<Update> {
+        self.changeable()?;
+        let git = |args: &[&str]| repo::git_in(&self.root, args);
+        let fetched = format!("+HEAD:{IMPORTED}");
+        git(&["fetch", "-q", "--no-tags", "--", &bundle.display().to_string(), &fetched]).map_err(|e| anyhow::anyhow!("the file is not books Download the books gave: {e}"))?;
+        let rev = |r: &str| git(&["rev-parse", "--verify", "-q", r]).map(|h| h.trim().to_string());
+        let (head, new) = (rev("HEAD")?, rev(IMPORTED)?);
+        let below = |a: &str, b: &str| git(&["merge-base", "--is-ancestor", a, b]).is_ok();
+        if head == new {
+            return Ok(Update::Same);
+        }
+        if below(&new, &head) {
+            return Ok(Update::Older);
+        }
+        if !below(&head, &new) {
+            return Ok(Update::Diverged);
+        }
+        plain(&self.root, &new)?;
+        let n = git(&["rev-list", "--count", &format!("{head}..{new}")])?.trim().parse().unwrap_or(0);
+        git(&["merge", "-q", "--ff-only", IMPORTED])?;
+        if let Err(e) = sound(&self.root) {
+            git(&["reset", "-q", "--hard", &head])?;
+            return Err(e);
+        }
+        *self = Store::open(&self.root)?;
+        Ok(Update::Newer(n))
+    }
 }
 
 impl Store {

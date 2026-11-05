@@ -214,6 +214,25 @@ is `git bundle` itself. Refused while a change abo did not make is there
 **Done when** the file clones into the same books with the same log, and
 no role but admin gets it.
 
+### A8. Open, or bring up to date, books from such a file — Supported (browser)
+Two places take a file A7 gave, each checked as any books are before they
+are taken in: read with no problem (MODEL.md §4), hledger reads the journal,
+and only plain files, no link or submodule.
+- **Where no books are yet**, beside the questions of A1: **Or open books
+  kept elsewhere** clones the file there, with the name and email for its
+  commits (the gateway names them itself). Refused, the directory is left empty.
+- **On the company page, under Download the books**, admin only: **Bring
+  the books up to date** takes in a newer copy, only forward: when the file
+  holds every change these do and more since. A file of the same books says
+  nothing to take in; an older one, nothing taken in. When each has changes
+  of its own, nothing is taken in, and the page gives the commands that
+  merge them by hand, in the books' directory: `git merge
+  refs/abo/imported`, mend what clashes, `git commit`, `abo check`. The
+  file's changes are kept at that ref until the next.
+On the CLI both are git: `git clone <file>`, and `git pull <file>`.
+**Done when** a file opens the same books with the same log, a newer one
+brings them forward, and nothing made here is ever lost to one.
+
 ---
 
 ## B. Everyday booking
@@ -575,7 +594,7 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 - **Bank import** (§11) — statement lines matched against booked items.
 - **Payroll** (§11) — gross to net, payslips.
-- **Import, git mirror** (§11) — books opened again from a download, and pushed to a remote after every commit. Export is A7.
+- **Git mirror** (§11) — pushed to a remote after every commit. Export and import are A7 and A8.
 - **Year-end closing entries** (§12) — until then unclosed profit is a computed equity line.
 
 ---

@@ -1237,6 +1237,23 @@ fn log_jsonl(dir: &Path) -> String {
     v.iter().map(|l| format!("{l}\n")).collect()
 }
 
+/// GET /export with `headers`: the status, and the body's bytes.
+fn export(s: &Server, headers: &str) -> (u16, Vec<u8>) {
+    let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
+    write!(c, "GET /export HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n{headers}\r\n").unwrap();
+    let mut out = Vec::new();
+    c.read_to_end(&mut out).unwrap();
+    let at = out.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    let head = String::from_utf8_lossy(&out[..at]).to_ascii_lowercase();
+    if out.starts_with(b"HTTP/1.1 200") {
+        // Named for the company and the moment, to the second.
+        let name = head.split("filename=\"").nth(1).and_then(|n| n.split('"').next()).unwrap_or_default().to_string();
+        let stamp = name.strip_prefix("test-ltd-").and_then(|n| n.strip_suffix(".bundle")).unwrap_or_default();
+        assert!(stamp.len() == 17 && jiff::civil::DateTime::strptime("%Y-%m-%d-%H%M%S", stamp).is_ok(), "{name}");
+    }
+    (String::from_utf8_lossy(&out[9..12]).parse().unwrap(), out[at + 4..].to_vec())
+}
+
 /// Download the books: a git bundle that `git clone` opens, with its log;
 /// for the gateway's admin, or where there is no the gateway; not while a change abo did
 /// not make is there.
@@ -1246,21 +1263,7 @@ fn the_books_download_whole() {
     let (books, s) = company_books(&base);
     let post = [("token", "e1"), ("date", "2026-03-01"), ("description", "Opening"), ("postings", "Assets:Bank=5 EUR\nEquity:Opening=-5 EUR")];
     assert_eq!(http(&s, "POST", "/post", &post).0, 303);
-    let fetch = |headers: &str| -> (u16, Vec<u8>) {
-        let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
-        write!(c, "GET /export HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n{headers}\r\n").unwrap();
-        let mut out = Vec::new();
-        c.read_to_end(&mut out).unwrap();
-        let at = out.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
-        let head = String::from_utf8_lossy(&out[..at]).to_ascii_lowercase();
-        if out.starts_with(b"HTTP/1.1 200") {
-            // Named for the company and the moment, to the second.
-            let name = head.split("filename=\"").nth(1).and_then(|n| n.split('"').next()).unwrap_or_default().to_string();
-            let stamp = name.strip_prefix("test-ltd-").and_then(|n| n.strip_suffix(".bundle")).unwrap_or_default();
-            assert!(stamp.len() == 17 && jiff::civil::DateTime::strptime("%Y-%m-%d-%H%M%S", stamp).is_ok(), "{name}");
-        }
-        (String::from_utf8_lossy(&out[9..12]).parse().unwrap(), out[at + 4..].to_vec())
-    };
+    let fetch = |headers: &str| export(&s, headers);
     for role in ["view", "write"] {
         let h = format!("X-Gateway-User: bob\r\nX-Gateway-Role: {role}\r\n");
         assert_eq!(fetch(&h).0, 403, "{role}");
@@ -1286,5 +1289,70 @@ fn the_books_download_whole() {
     let page = String::from_utf8_lossy(&page);
     assert!(status != 200 && page.contains("abo.toml") && !page.contains("# v"), "{status} {page}");
     drop(s);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Import, both ways: books opened from a file in an empty directory, and
+/// brought forward by a newer one, only ever forward; when both went on
+/// apart, nothing is taken in and the page gives the commands that merge.
+#[test]
+fn books_are_opened_and_brought_up_to_date_from_a_file() {
+    const MP: &str = "multipart/form-data; boundary=b0undary";
+    let base = std::env::temp_dir().join(format!("abo-import-{}", std::process::id()));
+    let (books, a) = company_books(&base);
+    let book = |s: &Server, t: &str, d: &str| {
+        let post = [("token", t), ("date", "2026-03-01"), ("description", d), ("postings", "Assets:Bank=5 EUR\nEquity:Opening=-5 EUR")];
+        assert_eq!(http(s, "POST", "/post", &post).0, 303);
+    };
+    book(&a, "a1", "First");
+    let first = export(&a, "").1;
+
+    // Opened from it, where no books are yet.
+    let there = base.join("there");
+    std::fs::create_dir_all(&there).unwrap();
+    let b = serve(&there, &base);
+    assert!(http(&b, "GET", "/", &[]).2.contains("Open the books from it"));
+    let (status, _, page) = send(&b, "POST", "/import", MP, &multipart(&[("token", "i0")], Some(b"not books")));
+    assert!(status == 422 && page.contains("not books Download the books gave"), "{page}");
+    assert_eq!(std::fs::read_dir(&there).unwrap().count(), 0, "a refused file leaves the directory empty");
+    let (status, _, page) = send(&b, "POST", "/import", MP, &multipart(&[("token", "i1")], Some(&first)));
+    assert!(status == 422 && page.contains("A name and an email are needed"), "nobody to name on its commits: {page}");
+    assert_eq!(std::fs::read_dir(&there).unwrap().count(), 0);
+    let (status, to, page) = send(&b, "POST", "/import", MP, &multipart(&[("token", "i2"), ("git_name", "Bea"), ("git_email", "bea@example.invalid")], Some(&first)));
+    assert_eq!((status, to.as_str()), (303, "/"), "{page}");
+    assert_eq!(log_jsonl(&there), log_jsonl(&books));
+
+    // Brought forward, by an admin alone; then nothing more to take in; an older file changes nothing.
+    book(&a, "a2", "Second");
+    let second = export(&a, "").1;
+    let update = |t: &str, file: &[u8], headers: &str| send_with(&b, headers, "POST", "/company/import", MP, &multipart(&[("token", t)], Some(file)));
+    assert_eq!(update("u0", &second, "X-Gateway-User: bob\r\nX-Gateway-Role: write\r\n").0, 403);
+    let (status, to, _) = update("u1", &second, "");
+    assert_eq!((status, to.as_str()), (303, "/company?imported=1"));
+    assert!(http(&b, "GET", &to, &[]).2.contains("Brought up to date: 1 change taken in"));
+    assert_eq!(log_jsonl(&there), log_jsonl(&books));
+    assert_eq!(update("u2", &second, "").1, "/company?imported=same");
+    assert_eq!(update("u3", &first, "").1, "/company?imported=older");
+
+    // Each with a change of its own: nothing taken in, and how to merge.
+    book(&a, "a3", "Here");
+    book(&b, "b1", "There");
+    let before = log_jsonl(&there);
+    let (status, _, page) = update("u4", &export(&a, "").1, "");
+    assert!(status == 422 && page.contains("git merge refs/abo/imported") && page.contains("abo check"), "{page}");
+    assert_eq!(log_jsonl(&there), before);
+
+    // A link in the books could have them serve a file outside: refused.
+    std::os::unix::fs::symlink("/etc/passwd", books.join("notes.lnk")).unwrap();
+    let git = |args: &[&str]| assert!(Command::new("git").args(args).current_dir(&books).env("HOME", &base).output().unwrap().status.success(), "{args:?}");
+    git(&["add", "notes.lnk"]);
+    git(&["commit", "-qm", "A link"]);
+    let elsewhere = base.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let c = serve(&elsewhere, &base);
+    let (status, _, page) = send(&c, "POST", "/import", MP, &multipart(&[("token", "l1"), ("git_name", "C"), ("git_email", "c@example.invalid")], Some(&export(&a, "").1)));
+    assert!(status == 422 && page.contains("notes.lnk, which is a link"), "{page}");
+    assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+    drop((a, b, c));
     let _ = std::fs::remove_dir_all(&base);
 }

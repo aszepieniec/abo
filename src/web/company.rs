@@ -2,9 +2,22 @@
 
 use super::*;
 
-pub(super) async fn company_view(Books(s): Books) -> Response {
+pub(super) async fn company_view(Books(s): Books, Query(q): Query<Fields>) -> Response {
     let f = company_fields(&s);
-    or_error(&s, "The company", || Ok(company_page(&s, &f, &Problems::new(), None)))
+    // What bringing the books up to date made of them; words of ours, never the query's.
+    let imported = q.get("imported").and_then(|i| match i.as_str() {
+        "same" => Some(("info", "Nothing to take in: the file holds what these books do.".to_string())),
+        "older" => Some(("info", "Nothing taken in: these books hold all the file does, and changes made since.".to_string())),
+        n => n.parse::<usize>().ok().map(|n| ("success", format!("Brought up to date: {n} change{} taken in from the file.", if n == 1 { "" } else { "s" }))),
+    });
+    or_error(&s, "The company", || {
+        Ok(html! {
+            @if let Some((kind, text)) = &imported {
+                div class={"flash flash-" (if *kind == "success" { "ok" } else { "info" })} role="status" { (icon(kind)) div { strong { (text) } } }
+            }
+            (company_page(&s, &f, &Problems::new(), None))
+        })
+    })
 }
 
 /// The books with their history, as one file: a git bundle, which `git
@@ -33,6 +46,31 @@ pub(super) async fn export(Books(s): Books) -> Response {
             ([("content-type", "application/octet-stream".to_string()), ("content-disposition", format!("attachment; filename=\"{name}\""))], b).into_response()
         }
         Err(e) => or_error(&s, "Download the books", || Err(e)),
+    }
+}
+
+/// Bring the books forward to a newer copy of them, a file Download the
+/// books gave: only when it holds every change these do and more, checked
+/// as any books are. Admin only, as the download is.
+pub(super) async fn import_update(Books(mut s): Books, mp: Multipart) -> Response {
+    let (f, doc) = fields(mp).await;
+    if !may_export() {
+        return export(Books(s)).await;
+    }
+    let root = s.root.clone();
+    let r = once(Some(&root), f.get("token").map_or("", String::as_str), || {
+        let to = match with_bundle(doc, |b| s.update(b))? {
+            store::Update::Same => "same".to_string(),
+            store::Update::Older => "older".to_string(),
+            store::Update::Newer(n) => n.to_string(),
+            store::Update::Diverged => return Err(store::Diverged(root.clone()).into()),
+        };
+        info!(books = %root.display(), outcome = %to, "books brought forward from a file");
+        Ok(format!("/company?imported={to}"))
+    });
+    match r {
+        Ok(to) => Redirect::to(&to).into_response(),
+        Err(e) => or_error(&s, "Bring the books up to date", || Err(e)),
     }
 }
 
@@ -180,6 +218,14 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
             div.box-body {
                 p.muted.small { "One file holding the books and their whole history: every entry, document and change, and who made it. " code { "git clone" } " opens it." }
                 div.actions { a.btn href="/export" download { (icon("download")) " Download the books" } }
+            }
+            div.box-body {
+                p.muted.small { "A newer copy of these books, from such a file: taken in only if it holds every change made here and more since, so that nothing here is lost. If both have changes of their own, nothing is taken in, and the page says how to put them together on the command line." }
+                form method="post" action="/company/import" enctype="multipart/form-data" {
+                    (token())
+                    label.field { "The file" input type="file" name="document" accept=".bundle" required; }
+                    div.actions { button type="submit" { (icon("upload")) " Bring the books up to date" } }
+                }
             }
         } }
     }

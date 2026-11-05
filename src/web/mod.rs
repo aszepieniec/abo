@@ -113,6 +113,9 @@ fn company_app(root: PathBuf) -> Router {
         .route("/company/terms", post(terms))
         .route("/company/tax-return", get(tax_return).post(tax_return_submit))
         .route("/export", get(export))
+        // ponytail: a copy of the books whole, PDFs and all, in one request;
+        // past 1 GiB, upload in parts.
+        .route("/company/import", post(import_update).layer(DefaultBodyLimit::max(IMPORT_LIMIT)))
         .route("/bills/{*rest}", get(bill_doc))
         .route("/partners", get(partners_list))
         .route("/partners/new", get(partner_new).post(partner_add))
@@ -233,6 +236,12 @@ fn said(e: &anyhow::Error) -> Markup {
     }
     if let Some(a) = e.downcast_ref::<store::Amiss>() {
         return amiss(a.kind, &a.text);
+    }
+    if let Some(d) = e.downcast_ref::<store::Diverged>() {
+        return html! {
+            p { "These books and the file each hold changes the other does not, so nothing was taken in. Put them together on the command line, in the books' directory:" }
+            pre { (d.commands()) }
+        };
     }
     html! { p { (sentence(&format!("{e:#}"))) } }
 }
@@ -534,6 +543,20 @@ fn may_change() -> bool {
 /// salaries included, and a GET, which the gateway lets every role make.
 fn may_export() -> bool {
     ADMIN.try_with(|a| *a).unwrap_or(false)
+}
+
+/// How large a file of the books may be uploaded.
+const IMPORT_LIMIT: usize = 1 << 30;
+
+/// The uploaded file of the books, written where git can read it: a file of
+/// its own in the temp directory, removed once `act` is done with it.
+fn with_bundle<T>(bytes: Option<Vec<u8>>, act: impl FnOnce(&std::path::Path) -> Result<T>) -> Result<T> {
+    let bytes = bytes.context("choose the file Download the books gave")?;
+    let tmp = std::env::temp_dir().join(format!("abo-import-{}-{}.bundle", std::process::id(), &store::sha256(&bytes)[..16]));
+    std::fs::write(&tmp, &bytes)?;
+    let r = act(&tmp);
+    let _ = std::fs::remove_file(&tmp);
+    r
 }
 
 /// Whether `X-Gateway-Role` gives only the view role. write and admin change
