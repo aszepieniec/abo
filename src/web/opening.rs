@@ -113,7 +113,8 @@ pub(super) async fn import_new(axum::extract::State(root): axum::extract::State<
         let author = ["git_name", "git_email"].map(|k| f.get(k).map_or("", |v| v.trim()).to_string());
         super::with_bundle(doc, |b| store::import(&root, b, Some((author[0].clone(), author[1].clone()))))?;
         info!(books = %root.display(), "books opened from a file");
-        Ok("/".to_string())
+        // To their history, which says what came with them.
+        Ok("/log?opened=1".to_string())
     });
     match opened {
         Ok(to) => Redirect::to(&to).into_response(),

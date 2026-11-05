@@ -1541,6 +1541,8 @@ fn the_log_holds_what_types_back_to_the_same_change() {
     ok(&dir, &["post", "--desc", "Two words", "Expenses:General=1", "Assets:Bank=-1"]);
     let log = ok(&dir, &["log", "--last", "1"]);
     assert!(log.contains("'--desc=Two words'") || log.contains("--desc 'Two words'"), "{log}");
+    // Who made it, on the line, not only in --json (second backups run, 2026-11-05).
+    assert!(log.contains("by t: abo post"), "{log}");
 }
 
 /// The log is the commits': a clone of the books has it whole, undo there

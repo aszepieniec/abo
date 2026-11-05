@@ -453,12 +453,14 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
                 rows.iter()
                     .map(|l| {
                         let argv: Vec<&str> = l["argv"].as_array().into_iter().flatten().filter_map(|a| a.as_str()).collect();
+                        // Who made it, as the commit names them: the question a log is asked first.
                         format!(
-                            "{:>4}  {}  {:<9} {}\n      {}",
+                            "{:>4}  {}  {:<9} {}\n      by {}: {}",
                             l["line"].as_u64().unwrap_or_default(),
                             l["at"].as_str().unwrap_or_default().get(..16).unwrap_or_default().replace('T', " "),
                             l["commit"].as_str().unwrap_or_default(),
                             l["what"].as_str().unwrap_or_default(),
+                            l["who"].as_str().filter(|w| !w.is_empty()).unwrap_or("someone unnamed"),
                             crate::command::shell(&argv),
                         )
                     })

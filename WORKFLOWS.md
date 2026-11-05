@@ -219,19 +219,22 @@ no role but admin gets it.
 
 ### A8. Open, or bring up to date, books from such a file — Supported (browser)
 Two places take a file A7 gave, each checked as any books are before they
-are taken in: read with no problem (MODEL.md §4), hledger reads the journal,
+are brought in: read with no problem (MODEL.md §4), hledger reads the journal,
 and only plain files, no link or submodule.
 - **Where no books are yet**, beside the questions of A1: **Or open books
   kept elsewhere** clones the file there, with the name and email for its
-  commits (the gateway names them itself). Refused, the directory is left empty.
-- **On Backups, under Download the books**, admin only: **Bring
-  the books up to date** takes in a newer copy, only forward: when the file
-  holds every change these do and more since. A file of the same books says
-  nothing to take in; an older one, nothing taken in. When each has changes
-  of its own, nothing is taken in, and the page gives the commands that
-  merge them by hand, in the books' directory: `git merge
-  refs/abo/imported`, mend what clashes, `git commit`, `abo check`. The
-  file's changes are kept at that ref until the next.
+  commits (the gateway names them itself). Opened, it is the Log, which says the
+  history came with them. Refused, the directory is left empty.
+- **On Backups, Bring the books up to date**, admin only: a newer copy
+  brought in, only forward: when the file holds every change these do and
+  more since. The page then names each change brought in. A file of the
+  same books says nothing to bring in; an older one, nothing brought in.
+  When each has changes of its own, nothing is brought in, and the page
+  lists the changes each holds that the other does not, says that whoever
+  runs abo's server puts them together, and folds away for them the
+  commands: `git merge refs/abo/imported`, mend what clashes, `git
+  commit`, `abo check`. The file's changes are kept at that ref until the
+  next.
 On the CLI both are git: `git clone <file>`, and `git pull <file>`.
 **Done when** a file opens the same books with the same log, a newer one
 brings them forward, and nothing made here is ever lost to one.
@@ -601,6 +604,42 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 - **Year-end closing entries** (§12) — until then unclosed profit is a computed equity line.
 
 ---
+
+## Backups, web and CLI runs of 2026-11-05: found and fixed
+
+Section 7 (S32 to S36): two people in the browser, on a copy of the demo
+books and on an empty directory, and one on the command line, fetching
+the books through a download link. All finished; all three copies of the
+books passed `abo check`. Fixed, each with a test:
+
+- The download links' table ran past its box in a narrower window,
+  hiding Revoke and Copy. Revoke sits beside Copy under each link, the
+  columns are text that wraps (a date never splitting), and in a narrow
+  box Creator, Made and Last used give way.
+- Two copies gone apart was a dead end in the browser: shell commands for
+  someone with no shell. The page lists the changes each holds that the
+  other does not, says that whoever runs abo's server puts them together,
+  and folds the commands away for them.
+- `abo log` said who made a change only under `--json`: each line now
+  says `by <name>`.
+- A newer copy brought in said how many changes, not which: it names
+  them. Opening books from a file landed on Books with no word: it is the
+  Log, which says the history came with them.
+- The upload sat in a box headed "The books, whole": Download and Bring
+  the books up to date are boxes of their own, and the act is "brought
+  in" throughout.
+- A link's last day came filled in 90 days on, so a link nobody looked at
+  would stop by itself: it starts blank, answering until revoked.
+- Nothing said that an address gives the books away: Download links says
+  so.
+
+Reported and left as decided:
+- Making and revoking links is not in the Log: links are outside the
+  books, and the server's log records them.
+- No abo command opens a fetched file: `git clone` does, as A8 says.
+- The undo of person 7 was written as "Office", not the name they gave:
+  the run's servers had `GIT_AUTHOR_NAME` set in their environment, which
+  git puts first. Not abo's.
 
 ## Partners and agreements, second CLI and web runs of 2026-11-04: found and fixed
 

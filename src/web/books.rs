@@ -252,6 +252,10 @@ pub(super) async fn activity(Books(s): Books, Query(q): Query<Fields>) -> Respon
         let from = since.clone().or_else(|| lines.first().map(|(_, l)| on(l)));
         let to = until.clone().or_else(|| today.clone());
         Ok(html! {
+            // Just opened from a file: its history, below, came with it.
+            @if q.contains_key("opened") {
+                div.flash.flash-ok role="status" { (icon("success")) div { strong { "Books opened from the file, with their history: " (all.len()) " change" @if all.len() != 1 { "s" } ", listed below, each as it was made." } } }
+            }
             h1 { "Log" }
             form.one-row.range method="get" action="/log" {
                 label.field { "From" input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="since" value=[from.as_ref()]; }

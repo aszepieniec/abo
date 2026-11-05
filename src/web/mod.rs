@@ -244,9 +244,17 @@ fn said(e: &anyhow::Error) -> Markup {
         return amiss(a.kind, &a.text);
     }
     if let Some(d) = e.downcast_ref::<store::Diverged>() {
+        // What each holds that the other does not, for the bookkeeper to judge;
+        // the merge is a shell's, so whoever runs abo's server does it.
+        let list = |changes: &[String]| html! { ul.reasons { @for c in changes { li { (c) } } } };
         return html! {
-            p { "These books and the file each hold changes the other does not, so nothing was taken in. Put them together on the command line, in the books' directory:" }
-            pre { (d.commands()) }
+            p { "These books and the file each hold changes the other does not, so nothing was brought in: bringing the file in would lose the changes made here." }
+            p { strong { "Made here, not in the file:" } }
+            (list(&d.here))
+            p { strong { "In the file, not made here:" } }
+            (list(&d.file))
+            p { "Putting the two together is done on the server's command line, by whoever runs abo's server: please tell them. Or make the file's changes here again by hand, if they are few." }
+            details.tech { summary { "For whoever runs abo" } pre { (d.commands()) } }
         };
     }
     html! { p { (sentence(&format!("{e:#}"))) } }

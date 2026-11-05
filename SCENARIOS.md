@@ -24,6 +24,9 @@ Four people, each on books of their own:
 | 3 | a copy of the demo books | S12–S17 |
 | 4 | a copy of the demo books | S18–S25 |
 | 5 | a copy of the demo books | S27–S31 |
+| 6 | a copy of the demo books, in the browser | S32, S34, S35 |
+| 7 | an empty data directory, in the browser | S33 |
+| 8 | a copy of the demo books, on the command line | S36 |
 
 Each then does S26 on their own books, last.
 
@@ -206,6 +209,37 @@ last day of this month. Until then they are an employee as before.
 
 **S31. The same again** (C5). Customer One wants the consulting of their
 invoice again, at the same price, invoiced today.
+
+## 7. Backups
+
+**S32. A copy to keep** (A7). Download the books as they are today, to keep
+a copy of them with their whole history.
+
+**S33. Back from a copy** (A8). The computer the books were kept on is
+gone. `example-ltd.bundle`, in your home directory, is the copy that was
+kept. Open the books again from it, here, where there are no books yet,
+and make sure their history came with them: who booked the opening
+balance, and on what day? Then take back the last change that was made
+before the copy was kept.
+
+**S34. The accountant's copy** (A8). Your accountant went on working on a
+copy of the books at home, and sends it back as `newer.bundle`, in your
+home directory. Bring the books up to date with it. A week later another
+copy arrives, `other.bundle`, from someone who also went on working on a
+copy of their own while you did on yours: try it too, and find out what is
+to be done with it.
+
+**S35. A nightly backup** (A7). A script on the office server is to fetch
+the books every night, without signing in. Give it an address to fetch
+them from, labelled "office server", that stops working at the end of next
+month, and say what the address is. An address made earlier for a test, if
+there is one, is to stop working now.
+
+**S36. A copy by script** (A7, A8, F2). The office server's script fetches
+the books from the address in `$LINK`. Fetch them with it into your home
+directory, as the script would, and open the books from what it fetched.
+Who made the last change in them, and with what command? Then, in that
+copy, book 20.00 EUR of postage paid in cash today, and take it back again.
 
 ---
 

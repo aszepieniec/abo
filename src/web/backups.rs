@@ -10,16 +10,25 @@ pub(super) async fn backups_view(Books(s): Books, Query(q): Query<Fields>, heade
     }
     // What was just done here; words of ours, never the query's.
     let done = q.get("imported").and_then(|i| match i.as_str() {
-        "same" => Some(("info", "Nothing to take in: the file holds what these books do.".to_string())),
-        "older" => Some(("info", "Nothing taken in: these books hold all the file does, and changes made since.".to_string())),
-        n => n.parse::<usize>().ok().map(|n| ("success", format!("Brought up to date: {n} change{} taken in from the file.", if n == 1 { "" } else { "s" }))),
+        "same" => Some(("info", "Nothing to bring in: the file holds what these books do.".to_string())),
+        "older" => Some(("info", "Nothing brought in: these books hold all the file does, and changes made since.".to_string())),
+        n => n.parse::<usize>().ok().map(|n| ("success", format!("Brought up to date: {n} change{} brought in from the file.", if n == 1 { "" } else { "s" }))),
     });
+    // The changes brought in, by name: the last n commits, as nothing is
+    // made between bringing them in and this page. ponytail: a change made
+    // in between would be listed in place of the first of them.
+    let brought: Vec<String> = q.get("imported").and_then(|n| n.parse::<usize>().ok()).filter(|n| *n > 0).map(|n| {
+        crate::repo::git_in(&s.root, &["log", "--reverse", "--date=short", "--format=%ad · %an · %s", "-n", &n.min(50).to_string()]).unwrap_or_default().lines().map(String::from).collect()
+    }).unwrap_or_default();
     let done = done.or(q.contains_key("revoked").then(|| ("success", "Download link revoked: it answers no more.".to_string())));
     let done = done.or(q.contains_key("made").then(|| ("success", "Download link made: its address is below, to copy.".to_string())));
     let mut r = or_error(&s, "Backups", || {
         Ok(html! {
             @if let Some((kind, text)) = &done {
-                div class={"flash flash-" (if *kind == "success" { "ok" } else { "info" })} role="status" { (icon(kind)) div { strong { (text) } } }
+                div class={"flash flash-" (if *kind == "success" { "ok" } else { "info" })} role="status" { (icon(kind)) div {
+                    strong { (text) }
+                    @if !brought.is_empty() { ul.reasons { @for c in &brought { li { (c) } } } }
+                } }
             }
             (backups_page(&s, None, &headers))
         })
@@ -29,19 +38,23 @@ pub(super) async fn backups_view(Books(s): Books, Query(q): Query<Fields>, heade
     r
 }
 
-/// The page: the books whole, then the download links.
+/// The page: the books as one file, to download; a newer copy, to bring
+/// in; then the download links.
 fn backups_page(s: &Store, refused: Option<&anyhow::Error>, headers: &HeaderMap) -> Markup {
     html! {
         h1 { "Backups" }
         @if let Some(e) = refused { (super::refused(e)) }
         div.box {
-            div.box-header { (icon("download")) "The books, whole" }
+            div.box-header { (icon("download")) "Download the books" }
             div.box-body {
-                p.muted.small { "One file holding the books and their whole history: every entry, document and change, and who made it. " code { "git clone" } " opens it." }
+                p.muted.small { "One file holding the books and their whole history: every entry, document and change, and who made it. To open the books from it again, abo offers it where there are no books yet; " code { "git clone" } " opens it too." }
                 div.actions { a.btn href="/export" download { (icon("download")) " Download the books" } }
             }
+        }
+        div.box {
+            div.box-header { (icon("upload")) "Bring the books up to date" }
             div.box-body {
-                p.muted.small { "A newer copy of these books, from such a file: taken in only if it holds every change made here and more since, so that nothing here is lost. If both have changes of their own, nothing is taken in, and the page says how to put them together on the command line." }
+                p.muted.small { "From a newer copy of these books, a file Download the books gave: brought in only if it holds every change made here and more since, so that nothing here is lost. If each has changes of its own, nothing is brought in, and the page lists them." }
                 form method="post" action="/backups/import" enctype="multipart/form-data" {
                     (token())
                     label.field { "The file" input type="file" name="document" accept=".bundle" required; }
@@ -106,54 +119,54 @@ fn bundle(s: &Store) -> Response {
 fn links_box(s: &Store, headers: &HeaderMap) -> Markup {
     let today = store::today().unwrap_or_default();
     let links = crate::links::list(&s.root);
-    let offered = today.checked_add(jiff::Span::new().days(90)).map(|d| d.to_string()).unwrap_or_default();
     html! {
         div.box #links {
             div.box-header { (icon("download")) "Download links" }
             div.box-body {
                 p.muted.small {
                     "Addresses that are their own key, for scripts: one fetches the books' file with "
-                    code { "curl -fOJ <address>" } " and no sign-in. " code { "-f" } " fails rather than save a page that says why not."
+                    code { "curl -fOJ <address>" } " and no sign-in. " code { "-f" } " fails rather than save a page that says why not. "
+                    "Whoever has an address has the books, salaries included: keep it as a password is kept, and revoke it once it is not needed."
                 }
                 @if !links.is_empty() {
                     // A tbody a link: its row of columns, then its address across
-                    // them, lit together under the pointer.
+                    // them with Copy and Revoke, lit together under the pointer.
+                    // The columns hold text alone, which wraps, so the table keeps
+                    // within its box however narrow (first backups run, 2026-11-05).
                     table.list.links {
-                        thead { tr { th { "Label" } th.wide { "Creator" } th.wide { "Made" } th { "Last day" } th.wide { "Last used" } th {} } }
+                        thead { tr { th { "Label" } th.wide { "Creator" } th.wide { "Made" } th { "Last day" } th.wide { "Last used" } } }
                         @for l in &links {
                             tbody {
                                 tr {
                                     td { strong { (l.label) } }
                                     td.wide { @if l.by.is_empty() { span.muted { "unknown" } } @else { (l.by) } }
-                                    td.wide.date { (l.made.get(..10).unwrap_or_default()) }
+                                    td.wide.date { span.nowrap { (l.made.get(..10).unwrap_or_default()) } }
                                     td.date {
                                         @match l.until {
-                                            Some(u) if l.expired(today) => { span.muted { "ended " (u) } }
-                                            Some(u) => { (u) }
+                                            Some(u) if l.expired(today) => { span.muted { "ended " span.nowrap { (u) } } }
+                                            Some(u) => { span.nowrap { (u) } }
                                             None => span.muted { "none" },
                                         }
                                     }
-                                    td.wide.date { @match &l.used { Some(u) => { (u.get(..16).unwrap_or_default().replace('T', " ")) }, None => span.muted { "never" } } }
-                                    td.actions-cell {
-                                        form method="post" action="/backups/links/revoke" {
-                                            (token())
-                                            input type="hidden" name="id" value=(l.id);
-                                            button.btn-danger.small type="submit" { (icon("trash")) " Revoke" }
-                                        }
-                                    }
+                                    td.wide.date { @match &l.used { Some(u) => { span.nowrap { (u.get(..10).unwrap_or_default()) } " " span.nowrap { (u.get(11..16).unwrap_or_default()) } }, None => span.muted { "never" } } }
                                 }
                                 // Its address, to copy. The clipboard is the browser's
                                 // alone, hence the script. A link made when only its
                                 // hash was kept has none to show.
                                 tr.address {
-                                    td colspan="6" {
-                                        @if l.token.is_empty() {
-                                            span.muted.small { "Its address was not kept: make another link to have one to copy, and revoke this one." }
-                                        } @else {
-                                            @let path = format!("/export/{}", l.token);
-                                            div.copy {
+                                    td colspan="5" {
+                                        div.copy {
+                                            @if l.token.is_empty() {
+                                                span.muted.small { "Its address was not kept: make another link to have one to copy, and revoke this one." }
+                                            } @else {
+                                                @let path = format!("/export/{}", l.token);
                                                 input type="text" readonly value=(public(headers, &path).unwrap_or(path)) aria-label={ "The address of " (l.label) };
                                                 button.small type="button" title="Copy the address" onclick="navigator.clipboard.writeText(this.previousElementSibling.value).then(() => { this.lastChild.textContent = ' Copied'; })" { (icon("copy")) " Copy" }
+                                            }
+                                            form method="post" action="/backups/links/revoke" {
+                                                (token())
+                                                input type="hidden" name="id" value=(l.id);
+                                                button.btn-danger.small type="submit" title={ "Revoke " (l.label) } { (icon("trash")) " Revoke" }
                                             }
                                         }
                                     }
@@ -175,8 +188,8 @@ fn links_box(s: &Store, headers: &HeaderMap) -> Markup {
                         div.box-body {
                             form method="post" action="/backups/links" {
                                 label.field { "Label" span.hint { "What fetches through it, to tell it from others." } input type="text" name="label" placeholder="nightly backup" required; }
-                                label.field { "Last day" span.hint { "It answers through this day. Blank: until it is revoked." }
-                                    input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="until" value=(offered); }
+                                label.field { "Last day" span.hint { "Optional. Blank, it answers until it is revoked; given, through this day and no later." }
+                                    input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="until"; }
                                 div.actions { button.btn-primary type="submit" { (icon("check")) " Make the link" } }
                             }
                         }
@@ -271,7 +284,7 @@ pub(super) async fn import_update(Books(mut s): Books, mp: Multipart) -> Respons
             store::Update::Same => "same".to_string(),
             store::Update::Older => "older".to_string(),
             store::Update::Newer(n) => n.to_string(),
-            store::Update::Diverged => return Err(store::Diverged(root.clone()).into()),
+            store::Update::Diverged(d) => return Err(d.into()),
         };
         info!(books = %root.display(), outcome = %to, "books brought forward from a file");
         Ok(format!("/backups?imported={to}"))

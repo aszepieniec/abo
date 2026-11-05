@@ -1327,7 +1327,9 @@ fn books_are_opened_and_brought_up_to_date_from_a_file() {
     assert!(status == 422 && page.contains("A name and an email are needed"), "nobody to name on its commits: {page}");
     assert_eq!(std::fs::read_dir(&there).unwrap().count(), 0);
     let (status, to, page) = send(&b, "POST", "/import", MP, &multipart(&[("token", "i2"), ("git_name", "Bea"), ("git_email", "bea@example.invalid")], Some(&first)));
-    assert_eq!((status, to.as_str()), (303, "/"), "{page}");
+    // To the Log, which says the history came with them (backups run, 2026-11-05).
+    assert_eq!((status, to.as_str()), (303, "/log?opened=1"), "{page}");
+    assert!(http(&b, "GET", &to, &[]).2.contains("Books opened from the file, with their history: 2 changes"));
     assert_eq!(log_jsonl(&there), log_jsonl(&books));
 
     // Brought forward, by an admin alone; then nothing more to take in; an older file changes nothing.
@@ -1337,7 +1339,9 @@ fn books_are_opened_and_brought_up_to_date_from_a_file() {
     assert_eq!(update("u0", &second, "X-Gateway-User: bob\r\nX-Gateway-Role: write\r\n").0, 403);
     let (status, to, _) = update("u1", &second, "");
     assert_eq!((status, to.as_str()), (303, "/backups?imported=1"));
-    assert!(http(&b, "GET", &to, &[]).2.contains("Brought up to date: 1 change taken in"));
+    // Named, what was brought in (backups run, 2026-11-05).
+    let brought = http(&b, "GET", &to, &[]).2;
+    assert!(brought.contains("Brought up to date: 1 change brought in") && brought.contains("Book Second"), "{brought}");
     assert_eq!(log_jsonl(&there), log_jsonl(&books));
     assert_eq!(update("u2", &second, "").1, "/backups?imported=same");
     assert_eq!(update("u3", &first, "").1, "/backups?imported=older");
@@ -1348,6 +1352,10 @@ fn books_are_opened_and_brought_up_to_date_from_a_file() {
     let before = log_jsonl(&there);
     let (status, _, page) = update("u4", &export(&a, "").1, "");
     assert!(status == 422 && page.contains("git merge refs/abo/imported") && page.contains("abo check"), "{page}");
+    // Each side's own changes, named, and who merges them (second backups run, 2026-11-05).
+    let side = |h: &str| page.split(h).nth(1).and_then(|r| r.split("</ul>").next()).unwrap_or_default().to_string();
+    assert!(side("Made here, not in the file:").contains("Book There") && side("In the file, not made here:").contains("Book Here"), "{page}");
+    assert!(page.contains("whoever runs abo's server"), "{page}");
     assert_eq!(log_jsonl(&there), before);
 
     // A link in the books could have them serve a file outside: refused.
@@ -1385,6 +1393,9 @@ fn a_download_link_is_its_own_key() {
     let admin = "X-Gateway-User: zoe\r\nX-Gateway-Name: Zoe\r\nX-Gateway-Role: admin\r\n";
     // Made, back to Backups, the link's id in the address and not its key;
     // the page lists it, its address to copy, and is kept by no cache.
+    // The last day starts blank: until revoked (backups run, 2026-11-05).
+    let form = http_as(&s, admin, "GET", "/backups", &[]).2;
+    assert!(form.contains("name=\"until\">") || form.contains("name=\"until\";"), "no last day offered");
     let (status, to, _) = http_as(&s, admin, "POST", "/backups/links", &[("label", "nightly"), ("until", "")]);
     assert!(status == 303 && to.starts_with("/backups?made=") && to.ends_with("#links") && !to.contains("/export/"), "{to}");
     let (_, _, page) = http_as(&s, admin, "GET", to.trim_end_matches("#links"), &[]);

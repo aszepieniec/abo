@@ -375,12 +375,22 @@ form.inline { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wr
 .period .pair select { width: auto; flex: 1 1 0; min-width: 5.5rem; }
 /* A download link's address, just made, with its Copy button. */
 div.copy { display: flex; align-items: stretch; gap: 8px; }
-/* Download links: a tbody a link, its columns then its address across them;
-   no stripes, a rule between links, both rows lit under the pointer. */
+/* Download links: a tbody a link, its columns then its address across them
+   with Copy and Revoke; no stripes, a rule between links, both rows lit
+   under the pointer. The columns are text that wraps, so the table keeps
+   within its box. */
 table.list.links tbody tr { background: none; }
 table.list.links tbody + tbody { border-top: 1px solid var(--card-border); }
 table.list.links tbody:hover { background: var(--hover); }
-table.list.links td { vertical-align: middle; padding-top: 6px; padding-bottom: 6px; white-space: nowrap; }
+table.list.links td { vertical-align: middle; padding-top: 6px; padding-bottom: 6px; }
+table.list.links td, table.list.links th { padding-right: 12px; }
+/* A date never splits; Last used may, between its day and its time. */
+table.list.links td.date { width: auto; white-space: normal; }
+table.list.links td.date span.nowrap { white-space: nowrap; }
+/* In a narrow box, the label, its last day and its address alone. */
+#links { container-type: inline-size; }
+@container (max-width: 600px) { table.list.links .wide { display: none; } }
 table.list.links tr.address td { padding-top: 0; padding-bottom: 10px; }
-table.list.links td.actions-cell { text-align: right; width: 1%; }
+table.list.links div.copy form { display: contents; }
+table.list.links div.copy > span { flex: 1; align-self: center; }
 div.copy input { flex: 1; min-width: 0; margin: 0; height: 32px; padding: 0 10px; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }

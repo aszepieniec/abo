@@ -483,7 +483,7 @@ icons across the top.
 
 Each item in the sidebar is one word, and the word need not be the model's:
 `/declarations` is Accounts, `/post` is Entry. Backups, last, is admin's
-alone (§8): the books whole as a file, a newer copy taken in, and download
+alone (§8): the books whole as a file, a newer copy brought in, and download
 links. It is the server's keeping of the books, not the company's, so it is
 not on the company page. Partners and agreements
 (MODEL.md §2.9) will be one item, Partners. An agreement is reached from the
@@ -694,7 +694,8 @@ one.
 - abo's request log writes `/export/<link>` in its place, and the link's
   label and id. The page showing the address is `no-store`. The gateway's logs,
   and every proxy's, are theirs: a key in a URL is written down wherever
-  it passes, which is why links offer a last day 90 days on.
+  it passes. A link may be given a last day; by default it has none and
+  answers until revoked.
 - Behind a gateway, the gateway forwards them without a session (its README,
   contract item 12), as abo's gateway config declares: `token_paths =
   ["/export/{token}"]`, with `export` in `reserved`. Only a GET or HEAD
@@ -828,8 +829,9 @@ whoever keeps the books has no shell.
   as they hold every change.
 - **Import.** Built (WORKFLOWS A8), from such a file, two ways: on the form
   of A1 on an empty directory, `git clone` in place of the questions; and,
-  admin only, under Download the books, a newer copy taken in only as a fast
-  forward. Diverged, nothing is taken in, and the page gives the `git merge`
+  admin only, on Backups, a newer copy brought in only as a fast
+  forward. Diverged, nothing is brought in, and the page lists each side's
+  own changes and gives, for whoever runs the server, the `git merge`
   that puts them together by hand: abo does not merge books. Nothing is
   taken on trust. The clone is read as any books are, against every
   invariant (MODEL.md §4) and hledger, with only plain files (a link could

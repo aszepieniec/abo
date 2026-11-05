@@ -703,18 +703,24 @@ pub enum Update {
     Newer(usize),
     /// Each holds changes the other does not: nothing taken in. The file's
     /// are kept at `IMPORTED`, to merge on the command line.
-    Diverged,
+    Diverged(Diverged),
 }
 
 /// These books and a file of them went apart (`Update::Diverged`): merged by
-/// hand, on the command line, in the books' directory.
-#[derive(Debug)]
-pub struct Diverged(pub PathBuf);
+/// hand, on the command line, in the books' directory. With the changes
+/// each holds that the other does not, oldest first, each as `day · who ·
+/// what`, so whoever looks can judge what merging means.
+#[derive(Debug, PartialEq)]
+pub struct Diverged {
+    pub root: PathBuf,
+    pub here: Vec<String>,
+    pub file: Vec<String>,
+}
 
 impl Diverged {
     /// The commands that merge them.
     pub fn commands(&self) -> String {
-        format!("cd {}\ngit merge {IMPORTED}\n# mend what clashes, then\ngit commit\nabo check", crate::command::shell(&[self.0.to_str().unwrap_or_default()]).trim_start_matches("abo "))
+        format!("cd {}\ngit merge {IMPORTED}\n# mend what clashes, then\ngit commit\nabo check", crate::command::shell(&[self.root.to_str().unwrap_or_default()]).trim_start_matches("abo "))
     }
 }
 
@@ -750,7 +756,10 @@ impl Store {
             return Ok(Update::Older);
         }
         if !below(&head, &new) {
-            return Ok(Update::Diverged);
+            let only = |range: String| -> Result<Vec<String>> {
+                Ok(git(&["log", "--reverse", "--date=short", "--format=%ad · %an · %s", &range])?.lines().map(String::from).collect())
+            };
+            return Ok(Update::Diverged(Diverged { root: self.root.clone(), here: only(format!("{new}..{head}"))?, file: only(format!("{head}..{new}"))? }));
         }
         plain(&self.root, &new)?;
         let n = git(&["rev-list", "--count", &format!("{head}..{new}")])?.trim().parse().unwrap_or(0);
