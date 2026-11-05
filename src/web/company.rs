@@ -102,64 +102,67 @@ fn links_box(s: &Store, shown: Option<&(String, String)>) -> Markup {
     let links = crate::links::list(&s.root);
     let offered = today.checked_add(jiff::Span::new().days(90)).map(|d| d.to_string()).unwrap_or_default();
     html! {
-        div.box-body {
-            p.muted.small {
-                "For a script, a download link: an address that is its own key, so a script fetches the file with "
-                code { "curl -fOJ <address>" } " and no sign-in. " code { "-f" } " fails rather than save a page that says why not."
-            }
-            @if !links.is_empty() {
-                table.list {
-                    tbody {
-                        @for l in &links {
-                            tr {
-                                td {
-                                    strong { (l.label) }
-                                    div.muted.small { "Made by " (l.by) " on " (l.made.get(..10).unwrap_or_default()) }
-                                    // Just made: its address, to copy now. The one script on
-                                    // the pages: the clipboard is the browser's alone.
-                                    @if let Some((_, address)) = shown.filter(|(id, _)| *id == l.id) {
-                                        div.copy {
-                                            input type="text" readonly value=(address) aria-label="The link's address";
-                                            button type="button" onclick="navigator.clipboard.writeText(this.previousElementSibling.value).then(() => { this.lastChild.textContent = ' Copied'; })" { (icon("copy")) " Copy" }
+        div.box #links {
+            div.box-header { (icon("download")) "Download links" }
+            div.box-body {
+                p.muted.small {
+                    "Addresses that are their own key, for scripts: one fetches the books' file with "
+                    code { "curl -fOJ <address>" } " and no sign-in. " code { "-f" } " fails rather than save a page that says why not."
+                }
+                @if !links.is_empty() {
+                    table.list {
+                        tbody {
+                            @for l in &links {
+                                tr {
+                                    td {
+                                        strong { (l.label) }
+                                        div.muted.small { "Made by " (l.by) " on " (l.made.get(..10).unwrap_or_default()) }
+                                        // Just made: its address, to copy now. The one script on
+                                        // the pages: the clipboard is the browser's alone.
+                                        @if let Some((_, address)) = shown.filter(|(id, _)| *id == l.id) {
+                                            div.copy {
+                                                input type="text" readonly value=(address) aria-label="The link's address";
+                                                button type="button" onclick="navigator.clipboard.writeText(this.previousElementSibling.value).then(() => { this.lastChild.textContent = ' Copied'; })" { (icon("copy")) " Copy" }
+                                            }
                                         }
                                     }
-                                }
-                                td.small {
-                                    @match l.until {
-                                        Some(u) if l.expired(today) => { "Ended " (u) }
-                                        Some(u) => { "Through " (u) }
-                                        None => "No last day",
+                                    td.small {
+                                        @match l.until {
+                                            Some(u) if l.expired(today) => { "Ended " (u) }
+                                            Some(u) => { "Through " (u) }
+                                            None => "No last day",
+                                        }
+                                        div.muted { @match &l.used { Some(u) => { "Last used " (u.get(..16).unwrap_or_default().replace('T', " ")) }, None => "Not used yet" } }
                                     }
-                                    div.muted { @match &l.used { Some(u) => { "Last used " (u.get(..16).unwrap_or_default().replace('T', " ")) }, None => "Not used yet" } }
-                                }
-                                td {
-                                    form method="post" action="/company/links/revoke" {
-                                        (token())
-                                        input type="hidden" name="id" value=(l.id);
-                                        button.btn-danger type="submit" { (icon("trash")) " Revoke" }
+                                    td {
+                                        form method="post" action="/company/links/revoke" {
+                                            (token())
+                                            input type="hidden" name="id" value=(l.id);
+                                            button.btn-danger type="submit" { (icon("trash")) " Revoke" }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
-            }
-            // The fields only once asked for: a checkbox and :has, no
-            // script, as an agreement's invoice template.
-            div.template {
-                label.btn.small.template-toggle {
-                    input type="checkbox" class="template-on";
-                    span.off { (icon("plus")) " Add a download link" }
-                    span.on { "Cancel" }
-                }
-                div.box.template-fields {
-                    div.box-header { (icon("download")) "New download link" }
-                    div.box-body {
-                        form method="post" action="/company/links" {
-                            label.field { "Label" span.hint { "What fetches through it, to tell it from others." } input type="text" name="label" placeholder="nightly backup" required; }
-                            label.field { "Last day" span.hint { "It answers through this day. Blank: until it is revoked." }
-                                input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="until" value=(offered); }
-                            div.actions { button.btn-primary type="submit" { (icon("check")) " Make the link" } }
+                // The fields only once asked for: a checkbox and :has, no
+                // script, as an agreement's invoice template.
+                div.template {
+                    label.btn.small.template-toggle {
+                        input type="checkbox" class="template-on";
+                        span.off { (icon("plus")) " Add a download link" }
+                        span.on { "Cancel" }
+                    }
+                    div.box.template-fields {
+                        div.box-header { (icon("download")) "New download link" }
+                        div.box-body {
+                            form method="post" action="/company/links" {
+                                label.field { "Label" span.hint { "What fetches through it, to tell it from others." } input type="text" name="label" placeholder="nightly backup" required; }
+                                label.field { "Last day" span.hint { "It answers through this day. Blank: until it is revoked." }
+                                    input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="until" value=(offered); }
+                                div.actions { button.btn-primary type="submit" { (icon("check")) " Make the link" } }
+                            }
                         }
                     }
                 }
@@ -402,13 +405,12 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
                 @if may_change() { div.actions { a.btn href="/company/payment" { (icon("plus")) " Add a payment option" } } }
             }
         }
-        @if may_export() { div.box #links {
+        @if may_export() { div.box {
             div.box-header { (icon("download")) "The books, whole" }
             div.box-body {
                 p.muted.small { "One file holding the books and their whole history: every entry, document and change, and who made it. " code { "git clone" } " opens it." }
                 div.actions { a.btn href="/export" download { (icon("download")) " Download the books" } }
             }
-            (links_box(s, shown))
             div.box-body {
                 p.muted.small { "A newer copy of these books, from such a file: taken in only if it holds every change made here and more since, so that nothing here is lost. If both have changes of their own, nothing is taken in, and the page says how to put them together on the command line." }
                 form method="post" action="/company/import" enctype="multipart/form-data" {
@@ -418,6 +420,7 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
                 }
             }
         } }
+        @if may_export() { (links_box(s, shown)) }
     }
 }
 
