@@ -171,11 +171,14 @@ fn command(op: &Op, m: &Books, src: &Path) -> (Vec<String>, Option<Op>) {
             std::fs::write(&path, &bytes).unwrap();
             let slug = crate::repo::slug(name);
             let model_op = (!slug.is_empty()).then(|| Op::File { sha256: store::sha256(&bytes), date: *date, name: slug, ext: ext.clone(), of: of.clone() });
-            (crate::command::argv(op, m, Some(&path.display().to_string())), model_op)
+            // Typed as a person would, the file named where it lies.
+            let mut a = crate::command::argv(op, m);
+            *a.last_mut().unwrap() = path.display().to_string();
+            (a, model_op)
         }
         // Added through its questions: what is blank is what they offer.
-        Op::OptionAdd { id, option } => (crate::command::argv(op, m, None), Some(Op::OptionAdd { id: id.clone(), option: offered(m, option.clone()) })),
-        _ => (crate::command::argv(op, m, None), Some(op.clone())),
+        Op::OptionAdd { id, option } => (crate::command::argv(op, m), Some(Op::OptionAdd { id: id.clone(), option: offered(m, option.clone()) })),
+        _ => (crate::command::argv(op, m), Some(op.clone())),
     }
 }
 
@@ -814,20 +817,39 @@ pub(crate) fn without_pdfs(mut m: Books) -> Books {
     m
 }
 
+/// G-O8: every command in the commits of `books`, `abo init` first, run in
+/// order in an empty directory on `day`, each document read where the books
+/// file it. The books it makes, or the command that did not run.
+pub(crate) fn replayed(books: &Path, day: Date) -> Result<(Dir, PathBuf), String> {
+    let parent = Dir::new();
+    let again = parent.0.join("again");
+    std::fs::create_dir_all(&again).unwrap();
+    for l in store::lines(books) {
+        let mut argv: Vec<String> = l["argv"].as_array().unwrap().iter().filter_map(|a| a.as_str().map(String::from)).collect();
+        // The document from the commit that filed it: it may be taken out since.
+        if argv[0] == "file" {
+            let at = argv.len() - 1;
+            let bytes = Command::new("git").args(["show", &format!("{}:{}", l["commit"].as_str().unwrap(), argv[at])]).current_dir(books).output().unwrap().stdout;
+            let doc = parent.0.join(argv[at].replace('/', "-"));
+            std::fs::write(&doc, bytes).unwrap();
+            argv[at] = doc.display().to_string();
+        }
+        let o = abo(&again, day, &argv);
+        if !o.ok {
+            return Err(format!("{argv:?} did not run again: {}", o.stderr));
+        }
+    }
+    Ok((parent, again))
+}
+
 /// The log holds each change as the command that makes it again: a plan run
-/// as a person would type it, defaults left to abo, then its log run on
-/// books opened alike, a year and more later, gives the same books.
+/// as a person would type it, defaults left to abo, then the commands its
+/// commits hold run in an empty directory, a year and more later, give the
+/// same books.
 #[proptest(cases(12))]
 fn the_log_makes_each_change_again(#[strategy(plan())] plan: Vec<Step>) {
     let (_parent, books, today) = run(&plan, true);
-    let (_again_parent, again) = opened();
-    let later = today.checked_add(jiff::Span::new().days(400)).unwrap();
-    let setup = store::lines(&again).len();
-    for l in &store::lines(&books)[setup..] {
-        let argv: Vec<String> = l["argv"].as_array().unwrap().iter().filter_map(|a| a.as_str()).filter(|a| *a != "--json").map(String::from).collect();
-        let o = abo(&again, later, &argv);
-        prop_assert!(o.ok, "{:?}, logged, did not run again: {}", argv, o.stderr);
-    }
+    let (_again_parent, again) = replayed(&books, today.checked_add(jiff::Span::new().days(400)).unwrap()).map_err(TestCaseError::fail)?;
     let theirs = store::Store::open(&books).unwrap().books;
     let ours = store::Store::open(&again).unwrap().books;
     prop_assert_eq!(without_pdfs(ours), without_pdfs(theirs));

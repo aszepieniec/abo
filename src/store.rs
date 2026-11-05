@@ -197,16 +197,10 @@ impl Store {
     /// books did not hold, and makes the files it writes as abo writes them.
     /// None where the change changes nothing: no commit, no line.
     pub fn change(&mut self, op: &Op, also: &[(String, Vec<u8>)]) -> Result<Option<String>> {
-        self.change_from(op, None, also)
-    }
-
-    /// `change`, a document filed from `file`, which the log names for
-    /// `abo file` to read again.
-    pub fn change_from(&mut self, op: &Op, file: Option<&str>, also: &[(String, Vec<u8>)]) -> Result<Option<String>> {
         self.changeable()?;
         let n = model::apply(&self.books, op, today()?).map_err(Refused)?;
         self.mends(&n)?;
-        let argv = crate::command::argv(op, &self.books, file);
+        let argv = crate::command::argv(op, &self.books);
         let what = crate::command::subject(op, &self.books, &n);
         let what = what.as_str();
         let removed: Vec<String> = match op {
@@ -217,19 +211,19 @@ impl Store {
     }
 
     /// Operations as one change, one commit, a line of the log each, as
-    /// the command of its part, a document filed from the file it names:
+    /// the command of its part:
     /// a document filed and its bill booked, from one form; an agreement
     /// added, its signed copy filed, and the one it replaces ended. Undo
     /// takes back all, as it takes back the commit; none is made if one is
     /// refused.
-    pub fn change_all(&mut self, ops: &[(&Op, Option<&str>)], also: &[(String, Vec<u8>)]) -> Result<Option<String>> {
+    pub fn change_all(&mut self, ops: &[&Op], also: &[(String, Vec<u8>)]) -> Result<Option<String>> {
         self.changeable()?;
         let mut n = self.books.clone();
         let mut lines: Vec<(Vec<String>, String)> = vec![];
-        for (op, file) in ops {
+        for op in ops {
             let next = model::apply(&n, op, today()?).map_err(Refused)?;
             self.mends(&next)?;
-            lines.push((crate::command::argv(op, &n, *file), crate::command::subject(op, &n, &next)));
+            lines.push((crate::command::argv(op, &n), crate::command::subject(op, &n, &next)));
             n = next;
         }
         let Some((argv, what)) = lines.pop() else { return Ok(None) };

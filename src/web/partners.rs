@@ -478,14 +478,10 @@ pub(super) async fn agreement_add(Books(mut s): Books, mp: Multipart) -> Respons
             .then(|| -> Result<Op> { Ok(Op::AgreementEnd { id: replaces.clone(), status: model::AgreementStatus::Subsumed { by: id.clone(), on: version.from.yesterday()? } }) })
             .transpose()?;
         let add = Op::AgreementAdd { id, parties, version };
-        let mut ops: Vec<(&Op, Option<&str>)> = vec![(&add, None)];
+        let mut ops: Vec<&Op> = vec![&add];
         let also: Vec<(String, Vec<u8>)> = scan.as_ref().map(|(_, file)| file.clone()).into_iter().collect();
-        if let Some((op, _)) = &scan {
-            ops.push((op, None));
-        }
-        if let Some(op) = &ended {
-            ops.push((op, None));
-        }
+        ops.extend(scan.as_ref().map(|(op, _)| op));
+        ops.extend(ended.as_ref());
         s.change_all(&ops, &also)?;
         Ok(done(&s, &to))
     });
@@ -625,7 +621,7 @@ pub(super) async fn agreement_amend(Books(mut s): Books, Path(id): Path<String>,
         let scan = scan_of(&f, doc, &id, n, version.from, &party)?;
         let amend = Op::Amend { id: id.clone(), version };
         match &scan {
-            Some((op, file)) => drop(s.change_all(&[(&amend, None), (op, None)], std::slice::from_ref(file))?),
+            Some((op, file)) => drop(s.change_all(&[&amend, op], std::slice::from_ref(file))?),
             None => drop(s.change(&amend, &[])?),
         }
         Ok(done(&s, &to))

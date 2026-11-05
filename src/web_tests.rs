@@ -3,7 +3,7 @@
 //! books once; a post from another site changes nothing; the data
 //! directory's form opens books as `abo init` does.
 
-use crate::cli_tests::{abo, after, exe, head, offered, opened, plan, posting, without_pdfs, Dir};
+use crate::cli_tests::{after, exe, head, offered, opened, plan, posting, replayed, without_pdfs, Dir};
 use crate::model::tests::{self as mt, Step};
 use crate::model::{self, Books, Date, Op};
 use crate::store;
@@ -442,21 +442,9 @@ fn the_web_is_the_model(#[strategy(vec(any::<Step>(), 1..25))] plan: Vec<Step>) 
             (status, expected) => prop_assert!(false, "{}: the page answered {} where the model {:?}\n{}", post.path, status, expected.map(|_| ()).map_err(|v| v.iter().map(|v| v.code).collect::<Vec<_>>()), a.body.chars().take(2000).collect::<String>()),
         }
     }
-    // G-O8 for the forms: what the web logged, run in a terminal on books
-    // opened alike, a year on, makes the same books. A document uploaded is
-    // read where the web filed it.
-    let (_again_parent, again) = opened();
-    let later = today.checked_add(jiff::Span::new().days(400)).unwrap();
-    let setup = store::lines(&again).len();
-    for l in &store::lines(&books)[setup..] {
-        let mut argv: Vec<String> = l["argv"].as_array().unwrap().iter().filter_map(|a| a.as_str().map(String::from)).collect();
-        if argv[0] == "file" {
-            let at = argv.len() - 1;
-            argv[at] = books.join(&argv[at]).display().to_string();
-        }
-        let o = abo(&again, later, &argv);
-        prop_assert!(o.ok, "{:?}, logged by the web, did not run in a terminal: {}", argv, o.stderr);
-    }
+    // G-O8 for the forms: what the web logged, run in a terminal in an
+    // empty directory, a year on, makes the same books.
+    let (_again_parent, again) = replayed(&books, today.checked_add(jiff::Span::new().days(400)).unwrap()).map_err(TestCaseError::fail)?;
     let ours = store::Store::open(&again).unwrap().books;
     prop_assert_eq!(without_pdfs(ours), without_pdfs(now), "the web's log, run again, made other books");
 }

@@ -182,10 +182,9 @@ pub(crate) fn agreement(here: &Path, json: bool, change: Option<AgreementCmd>) -
             let filed = scan.as_ref().map(|p| scanned(p, signed.as_deref(), v.from, &id, 1, parties.first().map_or("", String::as_str))).transpose()?;
             let ended = replaces.map(|old| -> Result<Op> { Ok(Op::AgreementEnd { id: old, status: model::AgreementStatus::Subsumed { by: id.clone(), on: v.from.yesterday()? } }) }).transpose()?;
             let add = Op::AgreementAdd { id, parties, version: v };
-            let src = scan.as_ref().map(|p| p.display().to_string());
-            let mut ops: Vec<(&Op, Option<&str>)> = vec![(&add, None)];
-            ops.extend(filed.as_ref().map(|(op, _)| (op, src.as_deref())));
-            ops.extend(ended.as_ref().map(|op| (op, None)));
+            let mut ops: Vec<&Op> = vec![&add];
+            ops.extend(filed.as_ref().map(|(op, _)| op));
+            ops.extend(ended.as_ref());
             let also: Vec<_> = filed.iter().map(|(_, f)| f.clone()).collect();
             return changed_all(&mut s, &ops, &also, json);
         }
@@ -197,9 +196,8 @@ pub(crate) fn agreement(here: &Path, json: bool, change: Option<AgreementCmd>) -
             let (n, party) = a.map_or((1, String::new()), |a| (a.versions.len() + 1, a.parties.first().cloned().unwrap_or_default()));
             let filed = scan.as_ref().map(|p| scanned(p, signed.as_deref(), from, &id, n, &party)).transpose()?;
             let amend = Op::Amend { version: version.version(&s.books, base.as_ref(), no_template)?, id };
-            let src = scan.as_ref().map(|p| p.display().to_string());
-            let mut ops: Vec<(&Op, Option<&str>)> = vec![(&amend, None)];
-            ops.extend(filed.as_ref().map(|(op, _)| (op, src.as_deref())));
+            let mut ops: Vec<&Op> = vec![&amend];
+            ops.extend(filed.as_ref().map(|(op, _)| op));
             let also: Vec<_> = filed.iter().map(|(_, f)| f.clone()).collect();
             return changed_all(&mut s, &ops, &also, json);
         }

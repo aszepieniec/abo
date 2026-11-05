@@ -772,7 +772,7 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | G-O5 | Every command does what its operation does in the model: taken exactly when the model takes it; then the files say the model's state, with every document and PDF beside them; refused, with the rules the model names, in JSON and in words, and nothing written; undo as §5.3. What the commands show is the model's | §5 | `the_cli_is_the_model`, `refusals_in_words_name_their_rules`, `what_abo_shows_is_the_models`, `lists_show_what_the_books_hold`, `reports_read_the_books_as_the_model_does`, `a_key_set_reads_back_through_the_cli`, `company_changes_only_what_it_is_told`, `payment_options_follow_add_edit_remove`, `pay_takes_what_is_open_from_money`, `record_all_clears_everything`, `a_document_filed_for_a_bill_names_it` |
 | G-O6 | Changes sent at once are each made, one after another | §5 | `changes_at_once_are_each_made` |
 | G-O7 | `abo init`, and the form that asks its questions in the browser, open books that read with no problem, configured as told; or refuse and leave nothing behind | §2.8 | `init_opens_valid_books_or_nothing`, `a_new_company_opens_like_init` |
-| G-O8 | The log holds each change as the command that makes it again, whoever made it, a terminal or a form: every part of the operation written out, so that run on the books as they were, on any later day, it makes the same change. One function writes an operation as its command, another as its commit's subject | §5 | `the_log_makes_each_change_again`, `the_web_is_the_model` |
+| G-O8 | Every commit abo makes holds the command of each of its operations (§5.4), whoever made it, a terminal or a form: every part of the operation written out, a document named where it is filed. The commands of all of them, run in order in an empty directory, `abo init` first, on any later day, each document read from the commit that filed it, make the same books, invoice PDFs aside: one made again is made at another moment, by whatever typst and fonts are there. Commits abo did not make, and books from before commits held their commands, are outside it. One function writes an operation as its command, another as its commit's subject | §5 | `the_log_makes_each_change_again`, `the_web_is_the_model` |
 | G-O9 | A report changes nothing in the books, wherever it is told to write: a PDF, or hledger's output file, goes outside them or is refused | §5 | `a_report_changes_nothing_in_the_books` |
 | G-O11 | Every amount in a command's JSON is `{quantity, commodity}`: the number to its commodity's places, the commodity apart, and nothing of how to write it, which is the reader's to choose; what cannot be read as typed ends abo with 2, as a usage error | §5 | `amounts_in_json_are_quantity_and_commodity`, `an_unreadable_date_exits_2` |
 | G-O12 | An id once given names that entry, or a gap, ever after: no operation and no undo gives it again; an invoice or credit note issued is not undone | §2.3, §5.3 | `ids_are_never_given_twice`, `issued_invoices_are_not_undone` |
@@ -1187,10 +1187,13 @@ last operation, and is allowed while nothing has happened since.
 ### 5.4 The log
 
 Each operation writes its line into the message of the commit it makes: the
-command as it would be typed, and the stamp as the commit's author and date. The log is a record of what was done, not a source of the state:
-the state is read from the files alone. Replaying it needs what the commands
-read besides — the documents filed, the templates as they were — so the git
-history, not the log, is what restores a state.
+command as it would be typed, and the stamp as the commit's author and date.
+A document is named where it is filed, so the bytes the command reads are in
+the commit beside it. The log is a record of what was done, not a source of
+the state: the state is read from the files alone. Replayed, it makes the
+same state (G-O8), but for what no command holds: an invoice PDF made again,
+and what a commit abo did not make changed. So the git history, not the log,
+is what restores a state.
 
 Two operations may be made as one change: the second applied to the state
 the first leaves, each checked as if alone, neither made if either is

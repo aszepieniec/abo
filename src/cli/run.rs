@@ -137,7 +137,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             let doc = model::Document { date: input::day(Some(&date))?, name, ext, of };
             let path = doc.path(&sha256);
             let op = Op::File { sha256, date: doc.date, name: doc.name.clone(), ext: doc.ext.clone(), of: doc.of.clone() };
-            changed_from(&mut s, &op, Some(&src.display().to_string()), &[(path.clone(), bytes)], cli.json)
+            changed(&mut s, &op, &[(path.clone(), bytes)], cli.json)
         }
         Cmd::Unfile { document } => {
             let mut s = Store::open(&here)?;
@@ -760,14 +760,10 @@ pub(crate) fn statement(
 }
 
 /// Make a change, and say what it made.
-pub(crate) fn changed(s: &mut Store, op: &Op, also: &[(String, Vec<u8>)], json: bool) -> Result<()> {
-    changed_from(s, op, None, also, json)
-}
-
 /// Operations as one change (`Store::change_all`), each said as done.
-pub(crate) fn changed_all(s: &mut Store, ops: &[(&Op, Option<&str>)], also: &[(String, Vec<u8>)], json: bool) -> Result<()> {
-    if let [(op, file)] = ops {
-        return changed_from(s, op, *file, also, json);
+pub(crate) fn changed_all(s: &mut Store, ops: &[&Op], also: &[(String, Vec<u8>)], json: bool) -> Result<()> {
+    if let [op] = ops {
+        return changed(s, op, also, json);
     }
     let commit = s.change_all(ops, also)?;
     let lines = store::lines(&s.root);
@@ -782,10 +778,10 @@ pub(crate) fn changed_all(s: &mut Store, ops: &[(&Op, Option<&str>)], also: &[(S
     Ok(())
 }
 
-/// `changed`, a document filed from `file`.
-pub(crate) fn changed_from(s: &mut Store, op: &Op, file: Option<&str>, also: &[(String, Vec<u8>)], json: bool) -> Result<()> {
+/// Make a change, and say what it made.
+pub(crate) fn changed(s: &mut Store, op: &Op, also: &[(String, Vec<u8>)], json: bool) -> Result<()> {
     let before = s.books.entries.len();
-    let commit = s.change_from(op, file, also)?;
+    let commit = s.change(op, also)?;
     // As the log has it, which is the commit's subject.
     let what = store::lines(&s.root).last().and_then(|l| l["what"].as_str().map(String::from)).unwrap_or_default();
     let what = what.as_str();

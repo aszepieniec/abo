@@ -6,9 +6,9 @@
 use crate::model::{self, Books, Op, OptionChange};
 
 /// `abo <argv>` that makes `op` on `m`, every part written out, so that it
-/// makes the same change on any later day. `file` is where a document came
-/// from, for `abo file` to read again; without it, where it is filed.
-pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
+/// makes the same change on any later day; a document named where it is
+/// filed (G-O8).
+pub fn argv(op: &Op, m: &Books) -> Vec<String> {
     let s = |x: &str| x.to_string();
     let flag = |k: &str, v: &dyn std::fmt::Display| format!("--{k}={v}");
     let mut a: Vec<String>;
@@ -28,7 +28,9 @@ pub fn argv(op: &Op, m: &Books, file: Option<&str>) -> Vec<String> {
                 None => {}
             }
             let filed = model::Document { date: *date, name: name.clone(), ext: ext.clone(), of: of.clone() }.path(sha256);
-            a.extend([s("--"), file.map_or(filed, String::from)]);
+            // Where it is filed, from wherever it was read: in the books, beside
+            // the command, on any machine.
+            a.extend([s("--"), filed]);
         }
         Op::Unfile { sha256 } => a = vec![s("unfile"), s("--"), m.documents.get(sha256).map_or(sha256.clone(), |d| d.path(sha256))],
         Op::Bill { date, description, postings, document, again, more } => {

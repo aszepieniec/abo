@@ -349,7 +349,7 @@ pub(super) async fn bill_submit(Books(mut s): Books, mp: Multipart) -> Response 
                 let (op, _, file) = filing(bytes, date, &get("issuer"), None)?;
                 let Op::File { sha256, .. } = &op else { unreachable!() };
                 let booked = bill(date, Some(sha256.clone()));
-                s.change_all(&[(&op, None), (&booked, None)], &[file])?;
+                s.change_all(&[&op, &booked], &[file])?;
                 Ok(done(&s, "/bills"))
             }
             None => change(&mut s, &bill(date, None), &[], "/bills"),
