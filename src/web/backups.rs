@@ -141,18 +141,12 @@ fn links_box(s: &Store, shown: Option<&(String, String)>) -> Markup {
                     table.list {
                         tbody {
                             @for l in &links {
-                                tr {
+                                @let shown = shown.filter(|(id, _)| *id == l.id);
+                                // One line a link: what it is, when it answers, Revoke.
+                                tr.link {
                                     td {
                                         strong { (l.label) }
-                                        div.muted.small { "Made " @if !l.by.is_empty() { "by " (l.by) " " } "on " (l.made.get(..10).unwrap_or_default()) }
-                                        // Just made: its address, to copy now. The one script on
-                                        // the pages: the clipboard is the browser's alone.
-                                        @if let Some((_, address)) = shown.filter(|(id, _)| *id == l.id) {
-                                            div.copy {
-                                                input type="text" readonly value=(address) aria-label="The link's address";
-                                                button.small type="button" onclick="navigator.clipboard.writeText(this.previousElementSibling.value).then(() => { this.lastChild.textContent = ' Copied'; })" { (icon("copy")) " Copy" }
-                                            }
-                                        }
+                                        span.muted.small { " · made " @if !l.by.is_empty() { "by " (l.by) " " } "on " (l.made.get(..10).unwrap_or_default()) }
                                     }
                                     td.small {
                                         @match l.until {
@@ -160,13 +154,25 @@ fn links_box(s: &Store, shown: Option<&(String, String)>) -> Markup {
                                             Some(u) => { "Through " (u) }
                                             None => "No last day",
                                         }
-                                        div.muted { @match &l.used { Some(u) => { "Last used " (u.get(..16).unwrap_or_default().replace('T', " ")) }, None => "Not used yet" } }
+                                        span.muted { " · " @match &l.used { Some(u) => { "last used " (u.get(..16).unwrap_or_default().replace('T', " ")) }, None => "not used yet" } }
                                     }
-                                    td {
+                                    td.actions-cell {
                                         form method="post" action="/backups/links/revoke" {
                                             (token())
                                             input type="hidden" name="id" value=(l.id);
                                             button.btn-danger.small type="submit" { (icon("trash")) " Revoke" }
+                                        }
+                                    }
+                                }
+                                // Just made: its address, to copy now, across the row.
+                                // The clipboard is the browser's alone, hence the script.
+                                @if let Some((_, address)) = shown {
+                                    tr.link-address {
+                                        td colspan="3" {
+                                            div.copy {
+                                                input type="text" readonly value=(address) aria-label="The link's address";
+                                                button.small type="button" onclick="navigator.clipboard.writeText(this.previousElementSibling.value).then(() => { this.lastChild.textContent = ' Copied'; })" { (icon("copy")) " Copy" }
+                                            }
                                         }
                                     }
                                 }
