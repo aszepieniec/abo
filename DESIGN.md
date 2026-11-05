@@ -72,7 +72,7 @@ company-books/
   contracts/acme-hosting.toml   # an agreement: parties, status, versions
   contracts/acme-hosting/…      # its signed contract and amendments
   contracts/index         # every contract document: its hash, path and version
-  .abo/                   # gitignored: the log, typst's scratch files
+  .abo/                   # gitignored: typst's scratch files, the lock
 ```
 
 What the files say, and how, is MODEL.md's: §2 the state, §7 its one text.
@@ -554,8 +554,8 @@ looks.
 Logging is `tracing`, off for the short-lived commands and `abo=info` for these
 two. `RUST_LOG` overrides it.
 
-Separately, every change to the books appends one line to `.abo/log.jsonl`,
-from the CLI and the browser alike, and nothing else does: not a read, not a
+Separately, every change to the books writes one line of the log, from the
+CLI and the browser alike, and nothing else does: not a read, not a
 refusal, not a PDF of a report. A line is the `abo` command that made the
 change, as an argument vector, with every default it used written out — the
 date that was today, the VAT rate from `abo.toml`, the payment options an
@@ -563,16 +563,21 @@ invoice printed — so that the same command means the same thing on any day.
 The first line is always `abo init`. An action in the browser is logged as the
 command it amounts to; the bill form is two, `abo file` and `abo bill`.
 
-Beside the command is its stamp: git's author name and email and the second
-the operation began. Every commit the operation makes carries the stamp as
-both author and committer date, and an invoice PDF carries it as its creation
-date. The log is a record of what was done, not a source of the books: they
+A line is kept in the message of the commit the change makes, after its
+subject, as `Abo: {"argv": [...], "what": "...", "entry": 3}`, one for each
+operation it holds; the subject is put on one line first, so that no text
+typed into it makes a line of its own. Its stamp is git's: the author name
+and email, and the second the operation began, as both author and committer
+date. An invoice PDF carries the stamp as its creation date. So the log goes
+wherever the history goes — a clone, a bundle, a mirror — and undo there
+takes back the last change as it would here. Books from before kept their
+lines in `.abo/log.jsonl`; it is read first, as all of them are older.
+The log is a record of what was done, not a source of the books: they
 are read from their files alone, and the git history is what restores them
 (MODEL.md §5.4).
 
 `/log` and `abo log` show the lines, each with the command as it would be
-typed and, on `/log`, the diff its commit made. The log is working state like
-the rest of `.abo/` and is not committed.
+typed and, on `/log`, the diff its commit made.
 
 ### Phone
 A **PWA** over the same server-rendered pages: a manifest plus a responsive
@@ -748,7 +753,12 @@ whoever keeps the books has no shell.
 
 - **Export.** Download the whole repository as one file: `git bundle create -
   --all`, which is the books with their history. A tarball of the working tree
-  would drop the history, and the history is the audit trail (§1).
+  would drop the history, and the history is the audit trail (§1). The log
+  is in the commits (§7), so it goes too. What does not: `.abo/`, typst's
+  scratch files and the lock, and the git identity `abo init --git-name`
+  wrote into the books' `.git/config`, which is who works on them here and
+  not part of them. Changes not committed (WORKFLOWS F8) hold an export up,
+  as they hold every change.
 - **Import.** Open books from such a file, or from a URL to clone: the web form
   of A1 on an empty directory, with `git clone` in place of the questions.
   Nothing is taken on trust. The clone is read as any books are, against every

@@ -378,6 +378,8 @@ impl Store {
         if paths.is_empty() {
             return Ok(None);
         }
+        // The entry it adds, if it adds one, for whoever reads the log.
+        let entry = (n.entries.len() > self.books.entries.len()).then_some(n.entries.len());
         let kept: Vec<(String, Option<Vec<u8>>)> = paths.iter().map(|p| (p.clone(), std::fs::read(self.root.join(p)).ok())).collect();
         let stamp = Stamp::now(&self.root)?;
         let r = (|| -> Result<String> {
@@ -400,7 +402,10 @@ impl Store {
             if repo::git_in(&self.root, &staged).is_ok() {
                 return Ok(String::new());
             }
-            let mut commit = vec!["commit", "-q", "-m", subject, "--"];
+            let mut changes: Vec<Change> = before.iter().map(|(a, w)| (a.as_slice(), w.as_str(), None)).collect();
+            changes.push((&argv, what, entry));
+            let msg = message(subject, &changes);
+            let mut commit = vec!["commit", "-q", "-m", &msg, "--"];
             commit.extend(paths.iter().map(String::as_str));
             repo::git_env(&self.root, &commit, &stamp.env())?;
             Ok(repo::git_in(&self.root, &["rev-parse", "--short", "HEAD"])?.trim().to_string())
@@ -421,17 +426,8 @@ impl Store {
                 return Err(e);
             }
         };
-        // The entry it added, if it added one, for whoever reads the log.
-        let entry = (n.entries.len() > self.books.entries.len()).then_some(n.entries.len());
         self.books = n;
-        if commit.is_empty() {
-            return Ok(None);
-        }
-        for (argv, what) in &before {
-            log(&self.root, &stamp, argv, what, &commit, None);
-        }
-        log(&self.root, &stamp, &argv, what, &commit, entry);
-        Ok(Some(commit))
+        Ok((!commit.is_empty()).then_some(commit))
     }
 
     /// Why the last change cannot be taken back, if it cannot: `undo`
@@ -509,9 +505,8 @@ impl Store {
             put(&self.root, main, model::render(&undone)[main].as_bytes())?;
             repo::git_in(&self.root, &["add", "--", main])?;
         }
-        repo::git_env(&self.root, &["commit", "-q", "--amend", "-m", &what], &stamp.env())?;
+        repo::git_env(&self.root, &["commit", "-q", "--amend", "-m", &message(&what, &[(&argv, &what, None)])], &stamp.env())?;
         let commit = repo::git_in(&self.root, &["rev-parse", "--short", "HEAD"])?.trim().to_string();
-        log(&self.root, &stamp, &argv, &what, &commit, None);
         *self = Store::open(&self.root)?;
         Ok(commit)
     }
@@ -554,22 +549,43 @@ fn put(root: &Path, rel: &str, bytes: &[u8]) -> Result<()> {
     std::fs::write(&p, bytes).with_context(|| rel.to_string())
 }
 
-/// `.abo/log.jsonl`, a line a change: who, when, the command, its commit.
-/// A record of what was done, not a source of the books (MODEL.md §5.4).
-fn log(root: &Path, s: &Stamp, argv: &[String], what: &str, commit: &str, entry: Option<usize>) {
-    use std::io::Write as _;
-    let line = serde_json::json!({ "at": s.at(), "who": s.name, "email": s.email, "argv": argv, "what": what, "commit": commit, "entry": entry });
-    let r = std::fs::create_dir_all(root.join(".abo"))
-        .and_then(|_| std::fs::OpenOptions::new().create(true).append(true).open(root.join(".abo/log.jsonl")))
-        .and_then(|mut f| writeln!(f, "{line}"));
-    if let Err(e) = r {
-        eprintln!("warning: could not write the log: {e}");
+/// A commit's message: its subject, then a line for each change it holds,
+/// `Abo: {"argv":..,"what":..,"entry":..}`, which `lines` reads back as the
+/// log. The subject is put on one line, so that no text typed into it can
+/// make a line of its own.
+fn message(subject: &str, changes: &[Change]) -> String {
+    let mut m = format!("{}\n\n", subject.replace(['\n', '\r'], " "));
+    for (argv, what, entry) in changes {
+        m += &format!("{LINE}{}\n", serde_json::json!({ "argv": argv, "what": what, "entry": entry }));
     }
+    m
 }
 
-/// The log's lines, oldest first.
+const LINE: &str = "Abo: ";
+
+/// A change a commit holds: its command, what it did, the entry it added.
+type Change<'a> = (&'a [String], &'a str, Option<usize>);
+
+/// The log's lines, oldest first: who, when, the command, its commit, the
+/// entry it added. Read from the commits abo made, so the books' history
+/// carries it wherever they go. A record of what was done, not a source of
+/// the books (MODEL.md §5.4).
 pub fn lines(root: &Path) -> Vec<serde_json::Value> {
-    std::fs::read_to_string(root.join(".abo/log.jsonl")).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
+    // ponytail: books from before commits carried their lines kept them in
+    // .abo/log.jsonl; read first, as every one is older than any commit's.
+    let mut all: Vec<serde_json::Value> = std::fs::read_to_string(root.join(".abo/log.jsonl")).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let out = repo::git_in(root, &["log", "--reverse", "--format=%h%x1f%an%x1f%ae%x1f%aI%x1f%B%x1e"]).unwrap_or_default();
+    for c in out.split('\x1e') {
+        let [commit, who, email, at, body] = c.trim_start().splitn(5, '\x1f').collect::<Vec<_>>()[..] else { continue };
+        let Some((_, changes)) = body.split_once("\n\n") else { continue };
+        for l in changes.lines().filter_map(|l| l.strip_prefix(LINE)) {
+            if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(l) {
+                (v["commit"], v["who"], v["email"], v["at"]) = (commit.into(), who.into(), email.into(), at.into());
+                all.push(v);
+            }
+        }
+    }
+    all
 }
 
 /// Open new books in `dir`: the configuration, the accounts it names and a
@@ -605,10 +621,8 @@ pub fn init(dir: &Path, config: model::Config, author: Option<(String, String)>,
         let stamp = Stamp::now(dir).map_err(|_| NoIdentity)?;
         repo::git_in(dir, &["add", "-A"])?;
         let what = format!("Open the books for {}", b.config.company.name);
-        repo::git_env(dir, &["commit", "-q", "-m", &what], &stamp.env())?;
-        let commit = repo::git_in(dir, &["rev-parse", "--short", "HEAD"])?.trim().to_string();
-        log(dir, &stamp, &argv, &what, &commit, None);
-        Ok(commit)
+        repo::git_env(dir, &["commit", "-q", "-m", &message(&what, &[(&argv, &what, None)])], &stamp.env())?;
+        Ok(repo::git_in(dir, &["rev-parse", "--short", "HEAD"])?.trim().to_string())
     })();
     // As it was: gone if made here, else empty again.
     if r.is_err() {

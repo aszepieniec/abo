@@ -49,16 +49,6 @@ impl Stamp {
             ("GIT_COMMITTER_DATE", d),
         ]
     }
-
-    /// ISO 8601, at the stamp's own offset.
-    pub fn at(&self) -> String {
-        let n = |r| self.tz.get(r).and_then(|s: &str| s.parse::<i32>().ok()).unwrap_or(0);
-        let sign = if self.tz.starts_with('-') { -1 } else { 1 };
-        let offset = jiff::tz::Offset::from_seconds(sign * (n(1..3) * 3600 + n(3..5) * 60)).unwrap_or(jiff::tz::Offset::UTC);
-        jiff::Timestamp::from_second(self.time)
-            .map(|t| t.to_zoned(offset.to_time_zone()).strftime("%Y-%m-%dT%H:%M:%S%:z").to_string())
-            .unwrap_or_default()
-    }
 }
 
 tokio::task_local! {

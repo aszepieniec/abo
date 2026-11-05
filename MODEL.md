@@ -1186,8 +1186,8 @@ last operation, and is allowed while nothing has happened since.
 
 ### 5.4 The log
 
-Each operation appends its line to `.abo/log.jsonl` as today: the command and
-its stamp. The log is a record of what was done, not a source of the state:
+Each operation writes its line into the message of the commit it makes: the
+command, and the stamp as the commit's author and date. The log is a record of what was done, not a source of the state:
 the state is read from the files alone. Replaying it needs what the commands
 read besides — the documents filed, the templates as they were — so the git
 history, not the log, is what restores a state.

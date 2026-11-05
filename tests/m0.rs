@@ -77,7 +77,7 @@ fn m0() {
 
     // the log holds the changes, each as the command that made it: init,
     // then the entry; the refusals below change nothing and are not there
-    let log = std::fs::read_to_string(dir.join(".abo/log.jsonl")).unwrap();
+    let log = log_jsonl(&dir);
     let lines: Vec<serde_json::Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(lines.len(), 2, "{log}");
     assert_eq!(lines[0]["argv"][0], "init");
@@ -782,4 +782,11 @@ fn paying_invoices() {
     }
 
     std::fs::remove_dir_all(&base).unwrap();
+}
+
+/// The log, a JSON line a change, as `abo log --json` gives it.
+fn log_jsonl(dir: &Path) -> String {
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_abo")).args(["--json", "log", "--since", "1900-01-01"]).current_dir(dir).output().unwrap();
+    let v: Vec<serde_json::Value> = serde_json::from_slice(&o.stdout).unwrap_or_default();
+    v.iter().map(|l| format!("{l}\n")).collect()
 }

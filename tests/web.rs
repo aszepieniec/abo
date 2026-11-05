@@ -364,7 +364,7 @@ fn company_books(base: &Path) -> (std::path::PathBuf, Server) {
 
 /// The last line of the log's command.
 fn last_argv(books: &Path) -> Vec<String> {
-    let log = std::fs::read_to_string(books.join(".abo/log.jsonl")).unwrap();
+    let log = log_jsonl(books);
     serde_json::from_str::<serde_json::Value>(log.lines().last().unwrap()).unwrap()["argv"]
         .as_array()
         .unwrap()
@@ -574,7 +574,7 @@ fn first_web_run() {
     let (status, _, page) = send(&s, "POST", "/bill", MP, &multipart(&bill, Some(b"%PDF-1.4\n% two\n%%EOF\n")));
     assert_eq!(status, 303, "{page}");
     assert_eq!(commits().trim().parse::<u32>().unwrap(), before.trim().parse::<u32>().unwrap() + 1);
-    let log = std::fs::read_to_string(books.join(".abo/log.jsonl")).unwrap();
+    let log = log_jsonl(&books);
     let last: Vec<serde_json::Value> = log.lines().rev().take(2).map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!((last[1]["argv"][0].as_str(), last[0]["argv"][0].as_str()), (Some("file"), Some("bill")));
     assert_eq!(last[0]["commit"], last[1]["commit"]);
@@ -1222,10 +1222,17 @@ fn partners_and_agreements_through_the_pages() {
     assert!(index.contains(" kim-new/1\n") && index.contains("2026-04-20-kim-"), "{index}");
     let (_, _, page) = http(&s, "GET", "/agreement/kim-old", &[]);
     assert!(page.contains("Subsumed by kim-new, its last day 2026-04-30"), "{page}");
-    let log = std::fs::read_to_string(books.join(".abo/log.jsonl")).unwrap_or_default();
+    let log = log_jsonl(&books);
     let commits: Vec<String> = log.lines().rev().take(4).map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["commit"].to_string()).collect();
     assert!(commits[0] == commits[1] && commits[1] == commits[2] && commits[2] != commits[3], "one commit, a line of the log for each of three changes: {log}");
 
     drop(s);
     std::fs::remove_dir_all(&base).unwrap();
+}
+
+/// The log, a JSON line a change, as `abo log --json` gives it.
+fn log_jsonl(dir: &Path) -> String {
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_abo")).args(["--json", "log", "--since", "1900-01-01"]).current_dir(dir).output().unwrap();
+    let v: Vec<serde_json::Value> = serde_json::from_slice(&o.stdout).unwrap_or_default();
+    v.iter().map(|l| format!("{l}\n")).collect()
 }

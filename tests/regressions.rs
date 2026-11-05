@@ -93,7 +93,7 @@ fn read(dir: &Path, rel: &str) -> String {
 }
 
 fn log_len(dir: &Path) -> usize {
-    read(dir, ".abo/log.jsonl").lines().count()
+    log_jsonl(dir).lines().count()
 }
 
 /// An invoice of one line for `total`, charging no VAT, numbered `n`: its
@@ -420,7 +420,7 @@ fn an_ambiguous_id_names_only_what_it_matches() {
     assert!(!o.status.success() && err(&o).contains("crypto, crypto-eth") && !err(&o).contains("bank"), "{}", err(&o));
     // Removed by the start of its id, it is logged by the whole of it.
     ok(&dir, &["payment-options", "remove", "crypto-e"]);
-    let last = read(&dir, ".abo/log.jsonl").lines().last().unwrap().to_string();
+    let last = log_jsonl(&dir).lines().last().unwrap().to_string();
     assert!(last.contains("payment option crypto-eth"), "{last}");
 }
 
@@ -1536,11 +1536,31 @@ fn an_exchange_leaves_the_balance_sheet_nil() {
 fn the_log_holds_what_types_back_to_the_same_change() {
     let dir = books("log-defaults", &[]);
     ok(&dir, &["post", "--desc", "Fees", "Expenses:General=10", "Assets:Bank=-10"]);
-    let line = read(&dir, ".abo/log.jsonl");
+    let line = log_jsonl(&dir);
     assert!(line.contains(&format!("\"--date={TODAY}\"")), "{line}");
     ok(&dir, &["post", "--desc", "Two words", "Expenses:General=1", "Assets:Bank=-1"]);
     let log = ok(&dir, &["log", "--last", "1"]);
     assert!(log.contains("'--desc=Two words'") || log.contains("--desc 'Two words'"), "{log}");
+}
+
+/// The log is the commits': a clone of the books has it whole, and undo
+/// there takes back the last change, with no file beside the history.
+#[test]
+fn the_log_travels_with_the_books() {
+    let dir = books("log-clone", &[]);
+    ok(&dir, &["post", "--desc", "Fees", "Expenses:General=10", "Assets:Bank=-10"]);
+    let copy = dir.with_file_name("copy");
+    let o = Command::new("git").args(["clone", "-q", dir.to_str().unwrap(), copy.to_str().unwrap()]).output().unwrap();
+    assert!(o.status.success(), "{}", err(&o));
+    assert!(!copy.join(".abo").exists());
+    // Who makes a change is not the books': a clone names them anew.
+    for (k, v) in [("user.name", "c"), ("user.email", "c@example.invalid")] {
+        Command::new("git").args(["config", k, v]).current_dir(&copy).output().unwrap();
+    }
+    assert_eq!(log_jsonl(&copy), log_jsonl(&dir));
+    assert_eq!(log_len(&copy), 2);
+    assert!(log_jsonl(&copy).contains("\"--desc=Fees\""));
+    assert!(ok(&copy, &["undo"]).contains("Fees"));
 }
 
 #[test]
@@ -1680,7 +1700,7 @@ fn an_invoice_abroad_charges_no_vat_unless_told() {
     assert_eq!(json(&dir, &["invoice", "--to", "D", "--item", "1|100|x", "--customer-tax-id", "DE999", "--date", "2026-03-01"])["total"]["quantity"], "110.00");
     assert_eq!(json(&dir, &["invoice", "--to", "B", "--item", "1|100|x", "--customer-tax-id", "IE6388047V", "--vat-rate", "10", "--date", "2026-03-01"])["total"]["quantity"], "110.00");
     // The log writes out the rate taken.
-    assert!(read(&dir, ".abo/log.jsonl").contains("--vat-rate=0"));
+    assert!(log_jsonl(&dir).contains("--vat-rate=0"));
 }
 
 // ---- known faults, fixed 2026-10-05 ----
@@ -1808,7 +1828,7 @@ fn the_same_bill_twice_is_booked_only_when_said_to_be_another() {
     ok(&dir, &bill);
     refused(&dir, &bill, "N8");
     ok(&dir, &[&bill[..], &["--again"]].concat());
-    assert!(read(&dir, ".abo/log.jsonl").contains("--again"));
+    assert!(log_jsonl(&dir).contains("--again"));
 }
 
 /// A refusal of reopening a closed period said it stays closed; undo
@@ -1920,7 +1940,7 @@ fn an_invoices_customer_is_a_line_each() {
     let dir = books("to-lines", &[]);
     ok(&dir, &["invoice", "--to", "Nordlicht AG", "--to", "Seestrasse 12", "--item", "1|100|a", "--date", "2026-03-01"]);
     assert!(read(&dir, "invoices/2026/2026-0001.json").contains("Nordlicht AG\\nSeestrasse 12"));
-    let log = read(&dir, ".abo/log.jsonl");
+    let log = log_jsonl(&dir);
     assert!(log.contains("\"--to=Nordlicht AG\",\"--to=Seestrasse 12\""), "{log}");
 }
 
@@ -2215,10 +2235,10 @@ fn an_invoice_names_its_income_account() {
     let j = read(&dir, "journal/2026.journal");
     let at = |q: &str| j.lines().any(|l| l.trim_start().starts_with("Income:Exports") && l.trim_end().ends_with(q));
     assert!(at(" -2000.00 EUR") && at(" 2000.00 EUR"), "{j}");
-    assert!(read(&dir, ".abo/log.jsonl").contains("--income=Income:Exports"));
+    assert!(log_jsonl(&dir).contains("--income=Income:Exports"));
     // Unsaid, the configured one, written out.
     ok(&dir, &["invoice", "--to", "C", "--item", "1|100|x", "--date", "2026-03-03"]);
-    assert!(read(&dir, ".abo/log.jsonl").contains("--income=Income:Sales"));
+    assert!(log_jsonl(&dir).contains("--income=Income:Sales"));
 }
 
 // ---- the decisions on the fourth CLI run, 2026-10-07 ----
@@ -2389,7 +2409,7 @@ fn splitting_an_account_in_use_says_how() {
 fn a_wallet_is_a_wallet() {
     let dir = books("wallet", &[]);
     ok(&dir, &["payment-options", "add", "btc", "--kind", "crypto", "--network", "Bitcoin", "--wallet", "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"]);
-    assert!(read(&dir, ".abo/log.jsonl").contains("--wallet=bc1q"));
+    assert!(log_jsonl(&dir).contains("--wallet=bc1q"));
 }
 
 // ---- found by the seventh CLI run, 2026-10-07 ----
@@ -2473,7 +2493,7 @@ fn a_bill_says_its_number_and_due_date_if_it_has_them() {
     let v = json(&dir, &["bills"]);
     let row = v["bills"].as_array().unwrap().iter().find(|b| b["entry"] == id.parse::<u64>().unwrap()).unwrap().clone();
     assert_eq!((row["number"].as_str(), row["due"].as_str(), row["overdue"].as_bool()), (Some("INV-4471"), Some("2027-05-31"), Some(true)), "{row}");
-    assert!(read(&dir, ".abo/log.jsonl").contains("--number=INV-4471"));
+    assert!(log_jsonl(&dir).contains("--number=INV-4471"));
     refused(&dir, &["bill", "--date", "2027-05-01", "--desc", "Early", "--due", "2027-04-01", "Expenses:General=1.00", "Liabilities:Payable=-1.00"], "before its own date");
     refused(&dir, &["bill", "--date", "2027-05-01", "--desc", "Comma", "--number", "A,B", "Expenses:General=1.00", "Liabilities:Payable=-1.00"], "I-B3");
     // The same number and debt, months apart: the same bill.
@@ -2760,4 +2780,11 @@ fn an_invoice_in_arrears_is_under_the_terms_of_its_period() {
     refused(&dir, &invoice("2027-06-02", "2027-06-01..2027-06-30"), "whose last day is 2027-05-31");
     let said = ok(&dir, &["agreement", "show", "retainer"]);
     assert!(said.contains("2027-06-02  invoice 2027-0003  to nordlicht  version 2") && said.contains("2027-05-04  invoice 2027-0002  to nordlicht  version 1"), "{said}");
+}
+
+/// The log, a JSON line a change, as `abo log --json` gives it.
+fn log_jsonl(dir: &Path) -> String {
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_abo")).args(["--json", "log", "--since", "1900-01-01"]).current_dir(dir).output().unwrap();
+    let v: Vec<serde_json::Value> = serde_json::from_slice(&o.stdout).unwrap_or_default();
+    v.iter().map(|l| format!("{l}\n")).collect()
 }
