@@ -1236,3 +1236,48 @@ fn log_jsonl(dir: &Path) -> String {
     let v: Vec<serde_json::Value> = serde_json::from_slice(&o.stdout).unwrap_or_default();
     v.iter().map(|l| format!("{l}\n")).collect()
 }
+
+/// Download the books: a git bundle that `git clone` opens, with its log;
+/// for the gateway's admin, or where there is no the gateway; not while a change abo did
+/// not make is there.
+#[test]
+fn the_books_download_whole() {
+    let base = std::env::temp_dir().join(format!("abo-export-{}", std::process::id()));
+    let (books, s) = company_books(&base);
+    let post = [("token", "e1"), ("date", "2026-03-01"), ("description", "Opening"), ("postings", "Assets:Bank=5 EUR\nEquity:Opening=-5 EUR")];
+    assert_eq!(http(&s, "POST", "/post", &post).0, 303);
+    let fetch = |headers: &str| -> (u16, Vec<u8>) {
+        let mut c = TcpStream::connect(("127.0.0.1", s.port)).unwrap();
+        write!(c, "GET /export HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n{headers}\r\n").unwrap();
+        let mut out = Vec::new();
+        c.read_to_end(&mut out).unwrap();
+        let at = out.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        (String::from_utf8_lossy(&out[9..12]).parse().unwrap(), out[at + 4..].to_vec())
+    };
+    for role in ["view", "write"] {
+        let h = format!("X-Gateway-User: bob\r\nX-Gateway-Role: {role}\r\n");
+        assert_eq!(fetch(&h).0, 403, "{role}");
+        assert!(!http_as(&s, &h, "GET", "/company", &[]).2.contains("Download the books"), "{role}");
+    }
+    let admin = "X-Gateway-User: zoe\r\nX-Gateway-Role: admin\r\n";
+    assert!(http_as(&s, admin, "GET", "/company", &[]).2.contains("Download the books"));
+    assert_eq!(fetch(admin).0, 200);
+    let (status, bundle) = fetch("");
+    assert!(status == 200 && bundle.starts_with(b"# v"), "{status}");
+
+    let file = base.join("books.bundle");
+    std::fs::write(&file, &bundle).unwrap();
+    let copy = base.join("copy");
+    assert!(Command::new("git").args(["clone", "-q"]).arg(&file).arg(&copy).status().unwrap().success());
+    assert_eq!(log_jsonl(&copy), log_jsonl(&books));
+    assert!(log_jsonl(&copy).contains("Opening"));
+
+    // A change abo did not make holds it up, as it holds every change.
+    let toml = books.join("abo.toml");
+    std::fs::write(&toml, std::fs::read_to_string(&toml).unwrap() + "\n# by hand\n").unwrap();
+    let (status, page) = fetch("");
+    let page = String::from_utf8_lossy(&page);
+    assert!(status != 200 && page.contains("abo.toml") && !page.contains("# v"), "{status} {page}");
+    drop(s);
+    let _ = std::fs::remove_dir_all(&base);
+}

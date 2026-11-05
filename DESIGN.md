@@ -659,6 +659,12 @@ books not yet opened are not offered to open. The company's details show,
 disabled. Test: `tests/web.rs` `a_viewer_is_offered_no_change`, which
 crawls every page as a viewer.
 
+One GET abo does check: **Download the books** (`/export`), for the gateway's
+admin role alone, or anyone where no the gateway is in front. It is everything,
+salaries included, and the gateway lets every role GET. Asked for by another
+role it says "Admin only", and the company page leaves its button out.
+Test: `tests/web.rs` `the_books_download_whole`.
+
 The CSRF check above stays abo's: it guards a person's own browser against
 other pages, with or without a gateway in front.
 
@@ -758,7 +764,8 @@ Requested 2026-11-04. The books are a git repository, so each of the three is a
 git operation; what is missing is a way to do it from the browser, where
 whoever keeps the books has no shell.
 
-- **Export.** Download the whole repository as one file: `git bundle create -
+- **Export.** Built: **Download the books** on the company page, admin only
+  (§8). Download the whole repository as one file: `git bundle create -
   --all`, which is the books with their history. A tarball of the working tree
   would drop the history, and the history is the audit trail (§1). The log
   is in the commits (§7), so it goes too. What does not: `.abo/`, typst's
@@ -783,9 +790,6 @@ Open questions, to settle before this becomes a milestone:
 - **Where the credential comes from under a gateway.** The sandbox (§8) has a
   network of its own, so a push needs the gateway to let it out, and the key is
   either the gateway's to hold or the project admin's to upload.
-- **Who may export.** An export is everything, salaries included (Payroll,
-  below). It is a GET, so the gateway's refusal of a viewer's POST does not cover
-  it. Admin only, probably.
 - **Whether import is worth building.** On the CLI it is `git clone`
   followed by `abo serve`. In the browser it is the way to move books
   between the gateway projects, and that need arises only when someone moves

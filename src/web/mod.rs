@@ -112,6 +112,7 @@ fn company_app(root: PathBuf) -> Router {
         .route("/company/close", post(close))
         .route("/company/terms", post(terms))
         .route("/company/tax-return", get(tax_return).post(tax_return_submit))
+        .route("/export", get(export))
         .route("/bills/{*rest}", get(bill_doc))
         .route("/partners", get(partners_list))
         .route("/partners/new", get(partner_new).post(partner_add))
@@ -516,6 +517,8 @@ tokio::task_local! {
     static LOOKS: bool;
     /// Whether the person asking may only look: the gateway's view role.
     static VIEW: bool;
+    /// Whether the person asking may download the books: the gateway's admin.
+    static ADMIN: bool;
 }
 
 /// Whether the person asking may change the books: not when the gateway gives
@@ -524,6 +527,13 @@ tokio::task_local! {
 /// so they never fill in a form only to have it refused. Without a gateway, yes.
 fn may_change() -> bool {
     !VIEW.try_with(|v| *v).unwrap_or(false)
+}
+
+/// Whether the person asking may download the books whole: the gateway's admin
+/// role, or anyone where there is no the gateway. An export is everything,
+/// salaries included, and a GET, which the gateway lets every role make.
+fn may_export() -> bool {
+    ADMIN.try_with(|a| *a).unwrap_or(false)
 }
 
 /// Whether `X-Gateway-Role` gives only the view role. write and admin change
@@ -600,7 +610,8 @@ async fn scope(req: axum::extract::Request, next: axum::middleware::Next) -> Res
     let looks = req.method() == axum::http::Method::GET;
     let who = author(req.headers());
     let view = view_only(req.headers());
-    let run = PATH.scope(path, BACK.scope(back, QUERY.scope(query, LOOKS.scope(looks, VIEW.scope(view, next.run(req))))));
+    let admin = req.headers().get("x-gateway-role").is_none_or(|r| r.as_bytes() == b"admin");
+    let run = PATH.scope(path, BACK.scope(back, QUERY.scope(query, LOOKS.scope(looks, VIEW.scope(view, ADMIN.scope(admin, next.run(req)))))));
     match who {
         Ok(Some(a)) => crate::repo::AUTHOR.scope(a, run).await,
         Ok(None) => run.await,

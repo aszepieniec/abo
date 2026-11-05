@@ -7,6 +7,33 @@ pub(super) async fn company_view(Books(s): Books) -> Response {
     or_error(&s, "The company", || Ok(company_page(&s, &f, &Problems::new(), None)))
 }
 
+/// The books with their history, as one file: a git bundle, which `git
+/// clone` opens, its log in its commits (DESIGN §11). Not while a change
+/// abo did not make is there, as no change is made then.
+pub(super) async fn export(Books(s): Books) -> Response {
+    if !may_export() {
+        let body = html! {
+            h1 { "Admin only" }
+            p { "Only an admin of the project may download the books: they hold everything, salaries included." }
+            div.actions { span.nav { a.btn href=(back_to("/company")) { (icon("left")) " Back" } } }
+        };
+        return (StatusCode::FORBIDDEN, page(&s, "Admin only", body)).into_response();
+    }
+    let bundle = (|| -> Result<Vec<u8>> {
+        s.changeable()?;
+        let o = std::process::Command::new("git").args(["bundle", "create", "-", "--all"]).current_dir(&s.root).output()?;
+        anyhow::ensure!(o.status.success(), "git bundle: {}", String::from_utf8_lossy(&o.stderr).trim());
+        Ok(o.stdout)
+    })();
+    match bundle {
+        Ok(b) => {
+            let name = format!("{}-{}.bundle", crate::repo::slug(&s.books.config.company.name), store::today().map(|d| d.to_string()).unwrap_or_default());
+            ([("content-type", "application/octet-stream".to_string()), ("content-disposition", format!("attachment; filename=\"{name}\""))], b).into_response()
+        }
+        Err(e) => or_error(&s, "Download the books", || Err(e)),
+    }
+}
+
 pub(super) async fn company_submit(Books(mut s): Books, Form(f): Form<Fields>) -> Response {
     let mut problems = Problems::new();
     let root = s.root.clone();
@@ -146,6 +173,13 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
                 @if may_change() { div.actions { a.btn href="/company/payment" { (icon("plus")) " Add a payment option" } } }
             }
         }
+        @if may_export() { div.box {
+            div.box-header { (icon("download")) "The books, whole" }
+            div.box-body {
+                p.muted.small { "One file holding the books and their whole history: every entry, document and change, and who made it. " code { "git clone" } " opens it." }
+                div.actions { a.btn href="/export" download { (icon("download")) " Download the books" } }
+            }
+        } }
     }
 }
 

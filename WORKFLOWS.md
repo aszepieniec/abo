@@ -202,6 +202,17 @@ force; `--no-template` for none), `terminate <id> [--on]`, `subsume <id> --by <o
 **Done when** `contracts/<id>.toml` holds its versions as added, and an
 agreement ended takes no new version.
 
+### A7. Download the books — Supported (browser)
+**Download the books** on the company page gives one file, the books and
+their whole history (`git bundle create - --all`): every entry, document
+and change, and who made it, each commit with its command. `git clone
+<file>` opens it, and there `abo log` and undo work as they did. Behind
+The gateway, for its admin role alone; without a gateway, for anyone. On the CLI it
+is `git bundle` itself. Refused while a change abo did not make is there
+(F8).
+**Done when** the file clones into the same books with the same log, and
+no role but admin gets it.
+
 ---
 
 ## B. Everyday booking
@@ -563,7 +574,7 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 - **Bank import** (§11) — statement lines matched against booked items.
 - **Payroll** (§11) — gross to net, payslips.
-- **Export, import, git mirror** (§11) — the books with their history as a download, opened again from one, and pushed to a remote after every commit.
+- **Import, git mirror** (§11) — books opened again from a download, and pushed to a remote after every commit. Export is A7.
 - **Year-end closing entries** (§12) — until then unclosed profit is a computed equity line.
 
 ---
