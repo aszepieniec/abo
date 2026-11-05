@@ -109,11 +109,25 @@ fn links_box(s: &Store) -> Markup {
                     }
                 }
             }
-            form method="post" action="/company/links" {
-                label.field { "Label" span.hint { "What fetches through it, to tell it from others." } input type="text" name="label" placeholder="nightly backup" required; }
-                label.field { "Last day" span.hint { "It answers through this day. Blank: until it is revoked." }
-                    input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="until" value=(offered); }
-                div.actions { button type="submit" { (icon("plus")) " Make a download link" } }
+            // The fields only once asked for: a checkbox and :has, no
+            // script, as an agreement's invoice template.
+            div.template {
+                label.btn.small.template-toggle {
+                    input type="checkbox" class="template-on";
+                    span.off { (icon("plus")) " Add a download link" }
+                    span.on { "Cancel" }
+                }
+                div.box.template-fields {
+                    div.box-header { (icon("download")) "New download link" }
+                    div.box-body {
+                        form method="post" action="/company/links" {
+                            label.field { "Label" span.hint { "What fetches through it, to tell it from others." } input type="text" name="label" placeholder="nightly backup" required; }
+                            label.field { "Last day" span.hint { "It answers through this day. Blank: until it is revoked." }
+                                input type="text" inputmode="numeric" pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}" placeholder="yyyy-mm-dd" title="yyyy-mm-dd" name="until" value=(offered); }
+                            div.actions { button.btn-primary type="submit" { (icon("check")) " Make the link" } }
+                        }
+                    }
+                }
             }
         }
     }
