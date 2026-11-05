@@ -92,7 +92,10 @@ question that counts down five seconds and takes silence as no. `abo demo`
 serves throwaway toy books. A missing `git` or `hledger` stops startup with a message naming
 what it is for; a missing `typst` is a warning. The server reads `abo.toml` and
 the journal afresh on every request, so an edit to either — a closed period, a
-new rate, a declared account — applies without a restart.
+new rate, a declared account — applies without a restart. Served for others
+behind a gateway, the gateway's config for abo must hold what DESIGN §8, "Behind
+The gateway: what abo's gateway config must say", lists: every top-level route in
+`reserved`, and `/export/{token}` in `token_paths`.
 **Done when** the front page shows the company, its balances and recent
 entries; on an empty directory, the form that opens the books (A1), and once
 it has, the company at the same address.
@@ -600,7 +603,7 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 - **Bank import** (§11) — statement lines matched against booked items.
 - **Payroll** (§11) — gross to net, payslips.
-- **Git mirror** (§11) — pushed to a remote after every commit. Export and import are A7 and A8.
+- **Git mirror** (§11) — pushed to a remote after every commit, with a key the project admin uploads on Backups; waits on a gateway letting the sandbox reach the remote. Export and import are A7 and A8.
 - **Year-end closing entries** (§12) — until then unclosed profit is a computed equity line.
 
 ---

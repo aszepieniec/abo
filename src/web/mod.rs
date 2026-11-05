@@ -961,3 +961,19 @@ mod tests {
         assert_eq!(super::account_href("Assets:Bank x&y"), "/account?name=Assets:Bank%20x%26y");
     }
 }
+
+/// DESIGN §8's `reserved` for the gateway names every top-level route abo
+/// serves, and nothing else: a route added here and not there breaks
+/// behind a gateway.
+#[test]
+fn reserved_routes_are_documented() {
+    let routes: std::collections::BTreeSet<String> = [include_str!("mod.rs"), include_str!("opening.rs")]
+        .iter()
+        .flat_map(|src| src.split(".route(\"/").skip(1).map(|r| r.split(['"', '/', '{']).next().unwrap_or_default().to_string()))
+        .filter(|r| !r.is_empty())
+        .collect();
+    let design = include_str!("../../DESIGN.md");
+    let line = design.lines().find(|l| l.starts_with("reserved = [")).expect("DESIGN.md holds the reserved line");
+    let documented: std::collections::BTreeSet<String> = line.split('"').skip(1).step_by(2).map(String::from).collect();
+    assert_eq!(documented, routes, "DESIGN.md §8's reserved against the router");
+}

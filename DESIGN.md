@@ -724,6 +724,32 @@ other pages, with or without a gateway in front.
 
 ---
 
+### Behind a gateway: what abo's gateway config must say
+
+The gateway serves abo from a config of its own, kept with the gateway's deployment,
+not in this repository. These lines are abo's requirements of it; without
+them the pages behind a prefix, the download links and Backups break.
+
+```toml
+# Every top-level route abo serves (the gateway contract item 4), so that the gateway
+# adds the project's prefix to abo's root-relative links and sends these
+# paths to abo. A route added to abo's router is added here.
+reserved = ["account", "agreement", "agreements", "apple-touch-icon.png", "backups", "bill", "bills", "company", "contracts", "declarations", "entry", "export", "icon-192.png", "icon-512.png", "import", "invoice", "invoices", "log", "manifest.webmanifest", "new", "partner", "partners", "pay", "post", "reconcile", "report", "undo", "write-off"]
+
+# Download links (the gateway contract item 12): reached with no session, the
+# token being the credential, which abo checks.
+token_paths = ["/export/{token}"]
+```
+
+`tests` hold the list to abo's router: `reserved_routes_are_documented`
+fails when a route is added to abo and not here.
+
+What the gateway does with them is the gateway's, and abo needs none of it: a token
+link's request comes with `X-Gateway-Role: anonymous` and nothing else of
+The gateway's; a wrong token is abo's 404, and the gateway may turn a 404 for a
+project that does not exist into its login redirect, so that a stranger
+cannot tell which projects exist.
+
 ## 9. Third-party obligations
 
 - **hledger** — GPL-3.0-or-later, invoked as a separate process with command-line
@@ -845,11 +871,13 @@ whoever keeps the books has no shell.
   key or a token lives outside the repository, in `.abo/` or the
   environment, so that cloning the books never hands it out.
 
-Open questions, to settle before this becomes a milestone:
+Settled: **the credential is a key the project admin uploads**, on
+Backups, kept in `.abo/` beside the download links and never in the
+books. The gateway holds nothing of it.
 
-- **Where the credential comes from under a gateway.** The sandbox (§8) has a
-  network of its own, so a push needs the gateway to let it out, and the key is
-  either the gateway's to hold or the project admin's to upload.
+Open, before this becomes a milestone: the sandbox (§8) has a network of
+its own, so a push needs the gateway to let it out to the remote, which the gateway's
+config would name.
 
 ### Payroll, with configurable deductions
 
