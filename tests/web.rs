@@ -1381,7 +1381,11 @@ fn a_download_link_is_its_own_key() {
     let admin = "X-Gateway-User: zoe\r\nX-Gateway-Name: Zoe\r\nX-Gateway-Role: admin\r\n";
     let (status, _, page) = http_as(&s, admin, "POST", "/company/links", &[("label", "nightly"), ("until", "")]);
     assert!(status == 200 && page.to_ascii_lowercase().contains("cache-control: no-store") && page.contains("shown this once"), "{page}");
-    let path = page.split("href=\"/export/").nth(1).and_then(|r| r.split('"').next()).map(|t| format!("/export/{t}")).unwrap();
+    // Shown at the address the gateway gives it, with the curl that fetches it.
+    let behind = format!("{admin}X-Forwarded-Proto: https\r\nX-Forwarded-Prefix: /alice/acme\r\n");
+    let (_, _, there) = http_as(&s, &behind, "POST", "/company/links", &[("label", "elsewhere"), ("until", "")]);
+    assert!(there.contains("value=\"https://127.0.0.1:") && there.contains("/alice/acme/export/") && there.contains("curl -fOJ 'https://"), "{there}");
+    let path = page.split("/export/").nth(1).and_then(|r| r.get(..64)).map(|t| format!("/export/{t}")).unwrap();
     assert!(!std::fs::read_to_string(books.join(".abo/export-links.json")).unwrap().contains(&path[8..]), "the key is not kept");
 
     // It answers a script with no sign-in, and a viewer, alike.

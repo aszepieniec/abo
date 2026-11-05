@@ -119,6 +119,30 @@ fn links_box(s: &Store) -> Markup {
     }
 }
 
+/// The address a browser outside reaches `path` at: behind a gateway, its scheme,
+/// host and the project's prefix, as it says them (`X-Forwarded-Proto`,
+/// `Host`, `X-Forwarded-Prefix`); without a gateway, this server's. None where
+/// those say anything an address could not hold.
+fn public(h: &HeaderMap, path: &str) -> Option<String> {
+    let get = |k: &str| h.get(k).and_then(|v| v.to_str().ok());
+    let proto = get("x-forwarded-proto").unwrap_or("http");
+    let host = get("host")?;
+    let prefix = get("x-forwarded-prefix").unwrap_or("").trim_end_matches('/');
+    let safe = |s: &str, more: &str| s.bytes().all(|b| b.is_ascii_alphanumeric() || more.as_bytes().contains(&b));
+    let ok = matches!(proto, "http" | "https") && !host.is_empty() && safe(host, ".-:[]") && (prefix.is_empty() || (prefix.starts_with('/') && safe(prefix, "/-._~")));
+    ok.then(|| format!("{proto}://{host}{prefix}{path}"))
+}
+
+#[test]
+fn a_link_is_shown_where_a_browser_outside_reaches_it() {
+    let h = |pairs: &[(&'static str, &str)]| pairs.iter().map(|(k, v)| (axum::http::HeaderName::from_static(k), v.parse().unwrap())).collect::<HeaderMap>();
+    assert_eq!(public(&h(&[("host", "127.0.0.1:8801")]), "/export/ab").as_deref(), Some("http://127.0.0.1:8801/export/ab"));
+    let the gateway = h(&[("host", "books.example.org"), ("x-forwarded-proto", "https"), ("x-forwarded-prefix", "/alice/acme/")]);
+    assert_eq!(public(&the gateway, "/export/ab").as_deref(), Some("https://books.example.org/alice/acme/export/ab"));
+    assert_eq!(public(&h(&[("host", "a.example'><b")]), "/x"), None);
+    assert_eq!(public(&h(&[("host", "a.example"), ("x-forwarded-proto", "javascript")]), "/x"), None);
+}
+
 /// Who makes a download link: as the gateway names them, else git's name.
 fn maker() -> String {
     crate::repo::AUTHOR.try_with(|(n, _)| n.clone()).unwrap_or_else(|_| crate::repo::git_identity().0)
@@ -127,7 +151,7 @@ fn maker() -> String {
 /// Make a download link, admin only: the page that shows its address, this
 /// once. ponytail: no one-time token, since the address is not to be kept
 /// for a resend; sent twice, it makes two links, both listed to revoke.
-pub(super) async fn link_make(Books(s): Books, Form(f): Form<Fields>) -> Response {
+pub(super) async fn link_make(Books(s): Books, headers: HeaderMap, Form(f): Form<Fields>) -> Response {
     if !may_export() {
         return export(Books(s)).await;
     }
@@ -136,13 +160,22 @@ pub(super) async fn link_make(Books(s): Books, Form(f): Form<Fields>) -> Respons
         let until = f.get("until").map(|u| u.trim()).filter(|u| !u.is_empty()).map(|u| input::day(Some(u))).transpose()?;
         let (l, token) = crate::links::make(&s.root, f.get("label").map_or("", String::as_str), &maker(), until, today)?;
         info!(link = %l.id, label = %l.label, "download link made");
+        let address = public(&headers, &format!("/export/{token}"));
         Ok(html! {
             h1 { "Download link made" }
             div.flash.flash-ok role="status" { (icon("success")) div {
                 strong { (l.label) }
-                p { "Copy " a href={"/export/" (token)} download { "this link" } "'s address now: it is shown this once, and abo keeps no copy it could show again. "
+                p { "Copy its address now: it is shown this once, and abo keeps no copy it could show again. "
                     (match l.until { Some(u) => format!("It answers through {u}."), None => "It has no last day: it answers until it is revoked.".into() }) }
             } }
+            @match &address {
+                Some(a) => {
+                    label.field { "Its address" input type="text" readonly value=(a); }
+                    p.muted.small { "A script fetches the books with" }
+                    pre { "curl -fOJ '" (a) "'" }
+                }
+                None => p { "Its address is " a href={"/export/" (token)} download { "this link" } "'s: copy it from the link." },
+            }
             p.muted.small { "Whoever has the address has the books, salaries included. Keep it as a password is kept, out of anything shared, and revoke it on the company page once it is not needed." }
             div.actions { span.nav { a.btn href="/company" { (icon("left")) " The company" } } }
         })

@@ -688,8 +688,17 @@ one.
   label and id. The page showing the address is `no-store`. The gateway's logs,
   and every proxy's, are theirs: a key in a URL is written down wherever
   it passes, which is why links offer a last day 90 days on.
-- Behind a gateway it needs the gateway to forward `/export/*` without a session. A
-  the gateway that does not keeps them working only without a gateway.
+- Behind a gateway, the gateway forwards them without a session (its README,
+  contract item 12), as abo's gateway config declares: `token_paths =
+  ["/export/{token}"]`, with `export` in `reserved`. Only a GET or HEAD
+  whose path is exactly `/export/<64 lowercase hex>` qualifies. The gateway
+  strips every client `X-Gateway-*` header, cookie and `X-Forwarded-*`,
+  sends `X-Gateway-Role: anonymous`, and allows 10 a minute per address.
+  Anything else goes through the gateway's login as before.
+- The page that makes one shows the address a browser outside reaches,
+  `https://<domain>/<owner>/<project>/export/<token>`, built from a gateway's
+  `X-Forwarded-Proto`, `Host` and `X-Forwarded-Prefix` (without a gateway,
+  this server's), and the `curl` that fetches it.
 
 Every answer of the books whole is `Cache-Control: no-store`, so no proxy
 or browser cache keeps a copy. A cross-site page can make a signed-in
