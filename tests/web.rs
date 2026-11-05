@@ -1266,7 +1266,8 @@ fn the_books_download_whole() {
     let post = [("token", "e1"), ("date", "2026-03-01"), ("description", "Opening"), ("postings", "Assets:Bank=5 EUR\nEquity:Opening=-5 EUR")];
     assert_eq!(http(&s, "POST", "/post", &post).0, 303);
     let fetch = |headers: &str| export(&s, headers);
-    for role in ["view", "write"] {
+    assert_eq!(fetch("X-Gateway-User: bob\r\n").0, 403, "a user the gateway names with no role");
+    for role in ["view", "write", "Admin"] {
         let h = format!("X-Gateway-User: bob\r\nX-Gateway-Role: {role}\r\n");
         assert_eq!(fetch(&h).0, 403, "{role}");
         assert!(!http_as(&s, &h, "GET", "/company", &[]).2.contains("Download the books"), "{role}");

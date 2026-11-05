@@ -661,7 +661,11 @@ crawls every page as a viewer.
 
 One GET abo does check: **Download the books** (`/export`), for the gateway's
 admin role alone, or anyone where no the gateway is in front; **Bring the books
-up to date** (`/company/import`) is admin's alone too. It is everything,
+up to date** (`/company/import`) is admin's alone too. Admin means `X-Gateway-Role: admin`. A
+request with no the gateway header at all counts too, because then there is no
+The gateway in front: one person at their own computer. A user the gateway names with
+no role does not count. The gateway makes no check of its own on a GET, so a
+The gateway sending the user without the role fails closed, not open. It is everything,
 salaries included, and the gateway lets every role GET. Asked for by another
 role it says "Admin only", and the company page leaves its button out.
 Test: `tests/web.rs` `the_books_download_whole`.

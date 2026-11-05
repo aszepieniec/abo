@@ -633,7 +633,14 @@ async fn scope(req: axum::extract::Request, next: axum::middleware::Next) -> Res
     let looks = req.method() == axum::http::Method::GET;
     let who = author(req.headers());
     let view = view_only(req.headers());
-    let admin = req.headers().get("x-gateway-role").is_none_or(|r| r.as_bytes() == b"admin");
+    // No the gateway header at all: no the gateway, one person at their own computer.
+    // A user the gateway names with no role is not taken for admin: export is
+    // the one check the gateway does not make itself.
+    let h = req.headers();
+    let admin = match h.get("x-gateway-role") {
+        Some(r) => r.as_bytes() == b"admin",
+        None => !h.keys().any(|k| k.as_str().starts_with("x-gateway-")),
+    };
     let run = PATH.scope(path, BACK.scope(back, QUERY.scope(query, LOOKS.scope(looks, VIEW.scope(view, ADMIN.scope(admin, next.run(req)))))));
     match who {
         Ok(Some(a)) => crate::repo::AUTHOR.scope(a, run).await,
