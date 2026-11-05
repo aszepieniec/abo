@@ -375,11 +375,12 @@ form.inline { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wr
 .period .pair select { width: auto; flex: 1 1 0; min-width: 5.5rem; }
 /* A download link's address, just made, with its Copy button. */
 div.copy { display: flex; align-items: stretch; gap: 8px; }
-/* No stripes: a link's address row reads as its own, a rule between links instead. */
-tbody tr.link, tbody tr.link-address { background: none; }
-tbody tr.link + tr.link, tbody tr.link-address + tr.link { border-top: 1px solid var(--line, var(--btn-border)); }
-tr.link td { padding-top: 6px; padding-bottom: 6px; vertical-align: middle; }
-tr.link td.actions-cell { text-align: right; }
-tr.link:has(+ tr.link-address) td { padding-bottom: 2px; }
-tr.link-address td { padding-top: 0; padding-bottom: 8px; }
+/* Download links: a tbody a link, its columns then its address across them;
+   no stripes, a rule between links, both rows lit under the pointer. */
+table.list.links tbody tr { background: none; }
+table.list.links tbody + tbody { border-top: 1px solid var(--card-border); }
+table.list.links tbody:hover { background: var(--hover); }
+table.list.links td { vertical-align: middle; padding-top: 6px; padding-bottom: 6px; white-space: nowrap; }
+table.list.links tr.address td { padding-top: 0; padding-bottom: 10px; }
+table.list.links td.actions-cell { text-align: right; width: 1%; }
 div.copy input { flex: 1; min-width: 0; margin: 0; height: 32px; padding: 0 10px; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }

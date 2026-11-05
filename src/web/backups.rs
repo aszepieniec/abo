@@ -4,7 +4,7 @@
 
 use super::*;
 
-pub(super) async fn backups_view(Books(s): Books, Query(q): Query<Fields>) -> Response {
+pub(super) async fn backups_view(Books(s): Books, Query(q): Query<Fields>, headers: HeaderMap) -> Response {
     if !may_export() {
         return export(Books(s)).await;
     }
@@ -15,30 +15,22 @@ pub(super) async fn backups_view(Books(s): Books, Query(q): Query<Fields>) -> Re
         n => n.parse::<usize>().ok().map(|n| ("success", format!("Brought up to date: {n} change{} taken in from the file.", if n == 1 { "" } else { "s" }))),
     });
     let done = done.or(q.contains_key("revoked").then(|| ("success", "Download link revoked: it answers no more.".to_string())));
-    // A link just made: its address, this once.
-    let made = q.get("made").map(|id| (id.clone(), take_shown(id)));
-    let done = done.or(made.as_ref().map(|(_, a)| match a {
-        Some(_) => ("success", "Download link made: copy its address below now, as it is shown this once.".to_string()),
-        None => ("info", "A link's address is shown once, when it is made. To have one again, make another link and revoke the old one.".to_string()),
-    }));
-    let shown = made.and_then(|(id, a)| Some((id, a?)));
+    let done = done.or(q.contains_key("made").then(|| ("success", "Download link made: its address is below, to copy.".to_string())));
     let mut r = or_error(&s, "Backups", || {
         Ok(html! {
             @if let Some((kind, text)) = &done {
                 div class={"flash flash-" (if *kind == "success" { "ok" } else { "info" })} role="status" { (icon(kind)) div { strong { (text) } } }
             }
-            (backups_page(&s, None, shown.as_ref()))
+            (backups_page(&s, None, &headers))
         })
     });
-    if shown.is_some() {
-        // The page holds a key: kept by no cache, nor the browser's history.
-        r.headers_mut().insert("cache-control", axum::http::HeaderValue::from_static("no-store"));
-    }
+    // The page holds keys: kept by no cache, nor the browser's history.
+    r.headers_mut().insert("cache-control", axum::http::HeaderValue::from_static("no-store"));
     r
 }
 
 /// The page: the books whole, then the download links.
-fn backups_page(s: &Store, refused: Option<&anyhow::Error>, shown: Option<&(String, String)>) -> Markup {
+fn backups_page(s: &Store, refused: Option<&anyhow::Error>, headers: &HeaderMap) -> Markup {
     html! {
         h1 { "Backups" }
         @if let Some(e) = refused { (super::refused(e)) }
@@ -57,23 +49,8 @@ fn backups_page(s: &Store, refused: Option<&anyhow::Error>, shown: Option<&(Stri
                 }
             }
         }
-        (links_box(s, shown))
+        (links_box(s, headers))
     }
-}
-
-/// The addresses of links just made, by their ids, until the Backups page
-/// shows each, once. ponytail: in memory, for ten minutes: a restart
-/// between the two forgets it, and the link is made again.
-static SHOWN: std::sync::Mutex<std::collections::BTreeMap<String, (String, Instant)>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
-
-fn keep_shown(id: &str, address: String) {
-    SHOWN.lock().unwrap().insert(id.to_string(), (address, Instant::now()));
-}
-
-fn take_shown(id: &str) -> Option<String> {
-    let mut m = SHOWN.lock().unwrap();
-    m.retain(|_, (_, at)| at.elapsed().as_secs() < 600);
-    m.remove(id).map(|(a, _)| a)
 }
 
 /// The books with their history, as one file: a git bundle, which `git
@@ -122,10 +99,11 @@ fn bundle(s: &Store) -> Response {
     }
 }
 
-/// The download links, for scripts: each with when it was made and by
-/// whom, its last day, when it was last used, and Revoke; and the form that
-/// makes one, offering a last day 90 days on, which may be left blank.
-fn links_box(s: &Store, shown: Option<&(String, String)>) -> Markup {
+/// The download links, for scripts: each with who made it and when, its
+/// last day, when it was last used, Revoke, and its address to copy; and
+/// the form that makes one, offering a last day 90 days on, which may be
+/// left blank.
+fn links_box(s: &Store, headers: &HeaderMap) -> Markup {
     let today = store::today().unwrap_or_default();
     let links = crate::links::list(&s.root);
     let offered = today.checked_add(jiff::Span::new().days(90)).map(|d| d.to_string()).unwrap_or_default();
@@ -138,24 +116,24 @@ fn links_box(s: &Store, shown: Option<&(String, String)>) -> Markup {
                     code { "curl -fOJ <address>" } " and no sign-in. " code { "-f" } " fails rather than save a page that says why not."
                 }
                 @if !links.is_empty() {
-                    table.list {
-                        tbody {
-                            @for l in &links {
-                                @let shown = shown.filter(|(id, _)| *id == l.id);
-                                // One line a link: what it is, when it answers, Revoke.
-                                tr.link {
-                                    td {
-                                        strong { (l.label) }
-                                        span.muted.small { " · made " @if !l.by.is_empty() { "by " (l.by) " " } "on " (l.made.get(..10).unwrap_or_default()) }
-                                    }
-                                    td.small {
+                    // A tbody a link: its row of columns, then its address across
+                    // them, lit together under the pointer.
+                    table.list.links {
+                        thead { tr { th { "Label" } th.wide { "Creator" } th.wide { "Made" } th { "Last day" } th.wide { "Last used" } th {} } }
+                        @for l in &links {
+                            tbody {
+                                tr {
+                                    td { strong { (l.label) } }
+                                    td.wide { @if l.by.is_empty() { span.muted { "unknown" } } @else { (l.by) } }
+                                    td.wide.date { (l.made.get(..10).unwrap_or_default()) }
+                                    td.date {
                                         @match l.until {
-                                            Some(u) if l.expired(today) => { "Ended " (u) }
-                                            Some(u) => { "Through " (u) }
-                                            None => "No last day",
+                                            Some(u) if l.expired(today) => { span.muted { "ended " (u) } }
+                                            Some(u) => { (u) }
+                                            None => span.muted { "none" },
                                         }
-                                        span.muted { " · " @match &l.used { Some(u) => { "last used " (u.get(..16).unwrap_or_default().replace('T', " ")) }, None => "not used yet" } }
                                     }
+                                    td.wide.date { @match &l.used { Some(u) => { (u.get(..16).unwrap_or_default().replace('T', " ")) }, None => span.muted { "never" } } }
                                     td.actions-cell {
                                         form method="post" action="/backups/links/revoke" {
                                             (token())
@@ -164,14 +142,18 @@ fn links_box(s: &Store, shown: Option<&(String, String)>) -> Markup {
                                         }
                                     }
                                 }
-                                // Just made: its address, to copy now, across the row.
-                                // The clipboard is the browser's alone, hence the script.
-                                @if let Some((_, address)) = shown {
-                                    tr.link-address {
-                                        td colspan="3" {
+                                // Its address, to copy. The clipboard is the browser's
+                                // alone, hence the script. A link made when only its
+                                // hash was kept has none to show.
+                                tr.address {
+                                    td colspan="6" {
+                                        @if l.token.is_empty() {
+                                            span.muted.small { "Its address was not kept: make another link to have one to copy, and revoke this one." }
+                                        } @else {
+                                            @let path = format!("/export/{}", l.token);
                                             div.copy {
-                                                input type="text" readonly value=(address) aria-label="The link's address";
-                                                button.small type="button" onclick="navigator.clipboard.writeText(this.previousElementSibling.value).then(() => { this.lastChild.textContent = ' Copied'; })" { (icon("copy")) " Copy" }
+                                                input type="text" readonly value=(public(headers, &path).unwrap_or(path)) aria-label={ "The address of " (l.label) };
+                                                button.small type="button" title="Copy the address" onclick="navigator.clipboard.writeText(this.previousElementSibling.value).then(() => { this.lastChild.textContent = ' Copied'; })" { (icon("copy")) " Copy" }
                                             }
                                         }
                                     }
@@ -229,14 +211,16 @@ fn a_link_is_shown_where_a_browser_outside_reaches_it() {
     assert_eq!(public(&h(&[("host", "a.example"), ("x-forwarded-proto", "javascript")]), "/x"), None);
 }
 
-/// Who makes a download link: as the gateway names them, else git's name.
-fn maker() -> String {
-    crate::repo::AUTHOR.try_with(|(n, _)| n.clone()).unwrap_or_else(|_| crate::repo::git_identity().0)
+/// Who makes a download link: whom a commit made now would name, the gateway's
+/// user first, else git's, the books' own setting before the global one.
+/// Blank if no one.
+fn maker(root: &std::path::Path) -> String {
+    crate::repo::Stamp::now(root).map(|st| st.name).unwrap_or_default()
 }
 
-/// Make a download link, admin only: the page that shows its address, this
-/// once. ponytail: no one-time token, since the address is not to be kept
-/// for a resend; sent twice, it makes two links, both listed to revoke.
+/// Make a download link, admin only; then Backups, which lists it with its
+/// address. ponytail: no one-time token; sent twice, it makes two links,
+/// both listed to revoke.
 pub(super) async fn link_make(Books(s): Books, headers: HeaderMap, Form(f): Form<Fields>) -> Response {
     if !may_export() {
         return export(Books(s)).await;
@@ -244,16 +228,14 @@ pub(super) async fn link_make(Books(s): Books, headers: HeaderMap, Form(f): Form
     let made = (|| -> Result<String> {
         let today = store::today()?;
         let until = f.get("until").map(|u| u.trim()).filter(|u| !u.is_empty()).map(|u| input::day(Some(u))).transpose()?;
-        let (l, token) = crate::links::make(&s.root, f.get("label").map_or("", String::as_str), &maker(), until, today)?;
+        let l = crate::links::make(&s.root, f.get("label").map_or("", String::as_str), &maker(&s.root), until, today)?;
         info!(link = %l.id, label = %l.label, "download link made");
-        let path = format!("/export/{token}");
-        keep_shown(&l.id, public(&headers, &path).unwrap_or(path));
         Ok(l.id)
     })();
     match made {
-        // Back to the company, the link's id in the address and never its key.
+        // The link's id in the address, never its key.
         Ok(id) => Redirect::to(&format!("/backups?made={id}#links")).into_response(),
-        Err(e) => again(&s, "Backups", || Ok(backups_page(&s, Some(&e), None))),
+        Err(e) => again(&s, "Backups", || Ok(backups_page(&s, Some(&e), &headers))),
     }
 }
 

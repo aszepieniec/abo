@@ -681,10 +681,13 @@ Backups, with a label, and with a last day, through which it answers,
 or none. The page lists each link with who made it, when, and when it was
 last used. That is the only sign of who uses it, since the key names no
 one.
-- The token is 256 bits from `/dev/urandom`, shown once when it is made.
-  abo keeps only its SHA-256, in `.abo/export-links.json`, outside git: not
-  exported, not replayed, not carried by an import. The file gives no
-  working address.
+- The token is 256 bits from `/dev/urandom`, kept with its SHA-256 in
+  `.abo/export-links.json`, outside git: not exported, not replayed, not
+  carried by an import. It is kept so that Backups shows every link's
+  address to an admin, whenever they look, as a private calendar address
+  is shown. So whoever reads that file on the server, or is an admin,
+  can read working addresses; anyone who can do either can read the
+  books already. Links made when only the hash was kept show none.
 - A wrong, revoked or expired token is answered as any page not there, a
   404, so tokens that once were cannot be told from those that never were.
   The route asks no the gateway role: the key is the credential.
@@ -699,11 +702,12 @@ one.
   strips every client `X-Gateway-*` header, cookie and `X-Forwarded-*`,
   sends `X-Gateway-Role: anonymous`, and allows 10 a minute per address.
   Anything else goes through the gateway's login as before.
-- Made, it is back to Backups, the link's id in the URL and never
-  its key. The page shows the address in the link's row, once, with a Copy
-  button, and is `no-store`. Until then the server holds the address in
-  memory, for ten minutes at most. Shown again, the page says to make
-  another. The address shown is the one a browser outside reaches,
+- Backups lists the links in a table, one `tbody` each, lit under the
+  pointer: label, who made it (the name a commit made then would carry),
+  when, its last day, when it was last used, Revoke, and under them its
+  address with a Copy button. Made, it is back to Backups, the link's id
+  in the URL and never its key. The page is `no-store`. The address shown
+  is the one a browser outside reaches,
   `https://<domain>/<owner>/<project>/export/<token>`, built from a gateway's
   `X-Forwarded-Proto`, `Host` and `X-Forwarded-Prefix` (without a gateway,
   this server's).

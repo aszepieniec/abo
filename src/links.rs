@@ -1,8 +1,9 @@
 //! Download links: a URL that is its own credential, for a script to fetch
 //! the books whole (`/export/<token>`), where the gateway has no credential to give
 //! one (DESIGN §1, §8). Kept in `.abo/export-links.json`, outside git: not
-//! exported, not replayed, not carried by an import. Only the token's
-//! SHA-256 is kept, so the file gives no working URL.
+//! exported, not replayed, not carried by an import. The token is kept, so
+//! Backups can show every link's address to an admin; whoever reads the
+//! file reads working addresses, as whoever reads the books reads them.
 
 use crate::model::Date;
 use crate::store;
@@ -26,6 +27,10 @@ pub struct Link {
     /// When it was last fetched through, ISO 8601.
     pub used: Option<String>,
     sha256: String,
+    /// The key itself, for the address Backups shows. Blank for a link
+    /// made when only its hash was kept.
+    #[serde(default)]
+    pub token: String,
 }
 
 impl Link {
@@ -50,8 +55,8 @@ fn now() -> String {
     jiff::Zoned::now().strftime("%Y-%m-%dT%H:%M:%S%:z").to_string()
 }
 
-/// A new link: it, and its token, which is shown this once and kept nowhere.
-pub fn make(root: &Path, label: &str, by: &str, until: Option<Date>, today: Date) -> Result<(Link, String)> {
+/// A new link.
+pub fn make(root: &Path, label: &str, by: &str, until: Option<Date>, today: Date) -> Result<Link> {
     let label = label.trim();
     if label.is_empty() || label.chars().any(char::is_control) {
         bail!("a label is needed, on one line, to tell the link from others: what fetches through it, such as \"nightly backup\"");
@@ -63,11 +68,11 @@ pub fn make(root: &Path, label: &str, by: &str, until: Option<Date>, today: Date
     std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut bytes)?;
     let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
     let sha256 = store::sha256(token.as_bytes());
-    let link = Link { id: sha256[..12].to_string(), label: label.into(), by: by.into(), made: now(), until, used: None, sha256 };
+    let link = Link { id: sha256[..12].to_string(), label: label.into(), by: by.into(), made: now(), until, used: None, sha256, token };
     let mut links = list(root);
     links.push(link.clone());
     save(root, &links)?;
-    Ok((link, token))
+    Ok(link)
 }
 
 /// Take the link `id` away: from now on it answers as a wrong one does.
@@ -103,15 +108,16 @@ fn a_link_answers_until_revoked_or_past_its_day() {
     let _ = std::fs::remove_dir_all(&dir);
     let day = |d: &str| crate::model::ymd(d).unwrap();
     let today = day("2026-11-05");
-    let (a, token) = make(&dir, "nightly", "Ann", Some(day("2026-11-30")), today).unwrap();
-    assert!(!std::fs::read_to_string(dir.join(FILE)).unwrap().contains(&token), "the token is not kept");
+    let a = make(&dir, "nightly", "Ann", Some(day("2026-11-30")), today).unwrap();
+    let token = a.token.clone();
+    assert_eq!(list(&dir)[0].token, token, "kept, to show");
     assert_eq!(check(&dir, &token, today).map(|l| l.id), Some(a.id.clone()));
     assert!(list(&dir)[0].used.is_some());
     assert!(check(&dir, &token.to_uppercase(), day("2026-11-30")).is_some());
     assert!(check(&dir, &token, day("2026-12-01")).is_none(), "past its last day");
     assert!(check(&dir, &"0".repeat(64), today).is_none());
     assert!(check(&dir, "../../x", today).is_none());
-    let (_, forever) = make(&dir, "backup", "Ann", None, today).unwrap();
+    let forever = make(&dir, "backup", "Ann", None, today).unwrap().token;
     revoke(&dir, &a.id).unwrap();
     assert!(check(&dir, &token, today).is_none(), "revoked");
     assert!(check(&dir, &forever, day("2099-01-01")).is_some());

@@ -1383,24 +1383,24 @@ fn a_download_link_is_its_own_key() {
     let writer = "X-Gateway-User: bob\r\nX-Gateway-Role: write\r\n";
     assert_eq!(http_as(&s, writer, "POST", "/backups/links", &[("label", "nightly"), ("until", "")]).0, 403);
     let admin = "X-Gateway-User: zoe\r\nX-Gateway-Name: Zoe\r\nX-Gateway-Role: admin\r\n";
-    // Made, back to the company, the link's id in the address and not its key;
-    // the page shows its address there, once, to copy.
+    // Made, back to Backups, the link's id in the address and not its key;
+    // the page lists it, its address to copy, and is kept by no cache.
     let (status, to, _) = http_as(&s, admin, "POST", "/backups/links", &[("label", "nightly"), ("until", "")]);
     assert!(status == 303 && to.starts_with("/backups?made=") && to.ends_with("#links") && !to.contains("/export/"), "{to}");
     let (_, _, page) = http_as(&s, admin, "GET", to.trim_end_matches("#links"), &[]);
-    assert!(page.to_ascii_lowercase().contains("cache-control: no-store") && page.contains("shown this once") && page.contains("navigator.clipboard"), "{page}");
-    let again = http_as(&s, admin, "GET", to.trim_end_matches("#links"), &[]).2;
-    assert!(!again.contains("/export/") && again.contains("shown once, when it is made"), "shown once only: {again}");
+    assert!(page.to_ascii_lowercase().contains("cache-control: no-store") && page.contains("Download link made") && page.contains("navigator.clipboard"), "{page}");
+    let path = page.split("/export/").nth(1).and_then(|r| r.get(..64)).map(|t| format!("/export/{t}")).unwrap();
+    assert!(http_as(&s, admin, "GET", "/backups", &[]).2.contains(&path), "shown whenever the page is");
     // Shown at the address the gateway gives it.
     let behind = format!("{admin}X-Forwarded-Proto: https\r\nX-Forwarded-Prefix: /alice/acme\r\n");
     let (_, there, _) = http_as(&s, &behind, "POST", "/backups/links", &[("label", "elsewhere"), ("until", "")]);
     let there = http_as(&s, &behind, "GET", there.trim_end_matches("#links"), &[]).2;
     assert!(there.contains("value=\"https://127.0.0.1:") && there.contains("/alice/acme/export/"), "{there}");
-    // Refused, the company page says why.
+    // Refused, the page says why.
     let (status, _, refused) = http_as(&s, admin, "POST", "/backups/links", &[("label", " "), ("until", "")]);
     assert!(status == 422 && refused.contains("A label is needed"), "{status} {refused}");
-    let path = page.split("/export/").nth(1).and_then(|r| r.get(..64)).map(|t| format!("/export/{t}")).unwrap();
-    assert!(!std::fs::read_to_string(books.join(".abo/export-links.json")).unwrap().contains(&path[8..]), "the key is not kept");
+    // Kept outside git: not in the books' files, nor their history.
+    assert!(!Command::new("git").args(["log", "-p", "--all"]).current_dir(&books).output().unwrap().stdout.windows(64).any(|w| w == &path.as_bytes()[8..]));
 
     // It answers a script with no sign-in, and a viewer, alike.
     for h in ["", "X-Gateway-User: amy\r\nX-Gateway-Role: view\r\n"] {
@@ -1408,7 +1408,11 @@ fn a_download_link_is_its_own_key() {
         assert!(status == 200 && bundle.starts_with(b"# v"), "{status}");
     }
     let company = http_as(&s, admin, "GET", "/backups", &[]).2;
-    assert!(company.contains("nightly") && company.contains("made by Zoe") && company.contains("last used") && company.contains("No last day"), "{company}");
+    for column in ["Label", "Creator", "Made", "Last day", "Last used"] {
+        assert!(company.contains(&format!("<th>{column}</th>")) || company.contains(&format!("<th class=\"wide\">{column}</th>")), "{column}");
+    }
+    let row = company.split("<strong>nightly</strong>").nth(1).and_then(|r| r.split("</tr>").next()).unwrap();
+    assert!(row.contains("Zoe") && !row.contains("never") && row.contains(">none<"), "made by Zoe, used, no last day: {row}");
     assert_eq!(get(&format!("{}0", &path[..path.len() - 1]), "").0, 404, "a wrong key");
 
     let id = company.split("name=\"id\" value=\"").nth(1).and_then(|r| r.split('"').next()).unwrap().to_string();
