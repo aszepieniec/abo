@@ -11,14 +11,41 @@ pub(super) async fn company_view(Books(s): Books, Query(q): Query<Fields>) -> Re
         n => n.parse::<usize>().ok().map(|n| ("success", format!("Brought up to date: {n} change{} taken in from the file.", if n == 1 { "" } else { "s" }))),
     });
     let imported = imported.or(q.contains_key("revoked").then(|| ("success", "Download link revoked: it answers no more.".to_string())));
-    or_error(&s, "The company", || {
+    // A link just made: its address, this once.
+    let made = q.get("made").filter(|_| may_export()).map(|id| (id.clone(), take_shown(id)));
+    let notice = imported.or(made.as_ref().map(|(_, a)| match a {
+        Some(_) => ("success", "Download link made: copy its address below now, as it is shown this once.".to_string()),
+        None => ("info", "A link's address is shown once, when it is made. To have one again, make another link and revoke the old one.".to_string()),
+    }));
+    let shown = made.and_then(|(id, a)| Some((id, a?)));
+    let mut r = or_error(&s, "The company", || {
         Ok(html! {
-            @if let Some((kind, text)) = &imported {
+            @if let Some((kind, text)) = &notice {
                 div class={"flash flash-" (if *kind == "success" { "ok" } else { "info" })} role="status" { (icon(kind)) div { strong { (text) } } }
             }
-            (company_page(&s, &f, &Problems::new(), None))
+            (company_page(&s, &f, &Problems::new(), None, shown.as_ref()))
         })
-    })
+    });
+    if shown.is_some() {
+        // The page holds a key: kept by no cache, nor the browser's history.
+        r.headers_mut().insert("cache-control", axum::http::HeaderValue::from_static("no-store"));
+    }
+    r
+}
+
+/// The addresses of links just made, by their ids, until the company page
+/// shows each, once. ponytail: in memory, for ten minutes: a restart
+/// between the two forgets it, and the link is made again.
+static SHOWN: std::sync::Mutex<std::collections::BTreeMap<String, (String, Instant)>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn keep_shown(id: &str, address: String) {
+    SHOWN.lock().unwrap().insert(id.to_string(), (address, Instant::now()));
+}
+
+fn take_shown(id: &str) -> Option<String> {
+    let mut m = SHOWN.lock().unwrap();
+    m.retain(|_, (_, at)| at.elapsed().as_secs() < 600);
+    m.remove(id).map(|(a, _)| a)
 }
 
 /// The books with their history, as one file: a git bundle, which `git
@@ -70,7 +97,7 @@ fn bundle(s: &Store) -> Response {
 /// The download links, for scripts: each with when it was made and by
 /// whom, its last day, when it was last used, and Revoke; and the form that
 /// makes one, offering a last day 90 days on, which may be left blank.
-fn links_box(s: &Store) -> Markup {
+fn links_box(s: &Store, shown: Option<&(String, String)>) -> Markup {
     let today = store::today().unwrap_or_default();
     let links = crate::links::list(&s.root);
     let offered = today.checked_add(jiff::Span::new().days(90)).map(|d| d.to_string()).unwrap_or_default();
@@ -88,6 +115,14 @@ fn links_box(s: &Store) -> Markup {
                                 td {
                                     strong { (l.label) }
                                     div.muted.small { "Made by " (l.by) " on " (l.made.get(..10).unwrap_or_default()) }
+                                    // Just made: its address, to copy now. The one script on
+                                    // the pages: the clipboard is the browser's alone.
+                                    @if let Some((_, address)) = shown.filter(|(id, _)| *id == l.id) {
+                                        div.copy {
+                                            input type="text" readonly value=(address) aria-label="The link's address";
+                                            button type="button" onclick="navigator.clipboard.writeText(this.previousElementSibling.value).then(() => { this.lastChild.textContent = ' Copied'; })" { (icon("copy")) " Copy" }
+                                        }
+                                    }
                                 }
                                 td.small {
                                     @match l.until {
@@ -169,34 +204,20 @@ pub(super) async fn link_make(Books(s): Books, headers: HeaderMap, Form(f): Form
     if !may_export() {
         return export(Books(s)).await;
     }
-    let mut r = or_error(&s, "Download link", || {
+    let made = (|| -> Result<String> {
         let today = store::today()?;
         let until = f.get("until").map(|u| u.trim()).filter(|u| !u.is_empty()).map(|u| input::day(Some(u))).transpose()?;
         let (l, token) = crate::links::make(&s.root, f.get("label").map_or("", String::as_str), &maker(), until, today)?;
         info!(link = %l.id, label = %l.label, "download link made");
-        let address = public(&headers, &format!("/export/{token}"));
-        Ok(html! {
-            h1 { "Download link made" }
-            div.flash.flash-ok role="status" { (icon("success")) div {
-                strong { (l.label) }
-                p { "Copy its address now: it is shown this once, and abo keeps no copy it could show again. "
-                    (match l.until { Some(u) => format!("It answers through {u}."), None => "It has no last day: it answers until it is revoked.".into() }) }
-            } }
-            @match &address {
-                Some(a) => {
-                    label.field { "Its address" input type="text" readonly value=(a); }
-                    p.muted.small { "A script fetches the books with" }
-                    pre { "curl -fOJ '" (a) "'" }
-                }
-                None => p { "Its address is " a href={"/export/" (token)} download { "this link" } "'s: copy it from the link." },
-            }
-            p.muted.small { "Whoever has the address has the books, salaries included. Keep it as a password is kept, out of anything shared, and revoke it on the company page once it is not needed." }
-            div.actions { span.nav { a.btn href="/company" { (icon("left")) " The company" } } }
-        })
-    });
-    // The page holds the key: kept by no cache, nor the browser's history.
-    r.headers_mut().insert("cache-control", axum::http::HeaderValue::from_static("no-store"));
-    r
+        let path = format!("/export/{token}");
+        keep_shown(&l.id, public(&headers, &path).unwrap_or(path));
+        Ok(l.id)
+    })();
+    match made {
+        // Back to the company, the link's id in the address and never its key.
+        Ok(id) => Redirect::to(&format!("/company?made={id}#links")).into_response(),
+        Err(e) => again(&s, "The company", || Ok(company_page(&s, &company_fields(&s), &Problems::new(), Some(&e), None))),
+    }
 }
 
 /// Revoke a download link, admin only: it answers as a wrong one does.
@@ -266,13 +287,13 @@ pub(super) async fn company_submit(Books(mut s): Books, Form(f): Form<Fields>) -
         Ok(to) => Redirect::to(&to).into_response(),
         Err(e) => {
             let refused = problems.is_empty().then_some(&e);
-            again(&s, "The company", || Ok(company_page(&s, &f, &problems, refused)))
+            again(&s, "The company", || Ok(company_page(&s, &f, &problems, refused, None)))
         }
     }
 }
 
 /// The company: its details as a form, and what else the books say about it.
-pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: Option<&anyhow::Error>) -> Markup {
+pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: Option<&anyhow::Error>, shown: Option<&(String, String)>) -> Markup {
     let mut css = vec![];
     let fields = render(questions::COMPANY, "", f, problems, &[], &mut css);
     let cfg = &s.books.config;
@@ -381,13 +402,13 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
                 @if may_change() { div.actions { a.btn href="/company/payment" { (icon("plus")) " Add a payment option" } } }
             }
         }
-        @if may_export() { div.box {
+        @if may_export() { div.box #links {
             div.box-header { (icon("download")) "The books, whole" }
             div.box-body {
                 p.muted.small { "One file holding the books and their whole history: every entry, document and change, and who made it. " code { "git clone" } " opens it." }
                 div.actions { a.btn href="/export" download { (icon("download")) " Download the books" } }
             }
-            (links_box(s))
+            (links_box(s, shown))
             div.box-body {
                 p.muted.small { "A newer copy of these books, from such a file: taken in only if it holds every change made here and more since, so that nothing here is lost. If both have changes of their own, nothing is taken in, and the page says how to put them together on the command line." }
                 form method="post" action="/company/import" enctype="multipart/form-data" {
@@ -515,7 +536,7 @@ pub(super) async fn terms(Books(mut s): Books, Form(f): Form<Fields>) -> Respons
     });
     match r {
         Ok(to) => Redirect::to(&to).into_response(),
-        Err(e) => again(&s, "The company", || Ok(company_page(&s, &company_fields(&s), &Problems::new(), Some(&e)))),
+        Err(e) => again(&s, "The company", || Ok(company_page(&s, &company_fields(&s), &Problems::new(), Some(&e), None))),
     }
 }
 
@@ -527,7 +548,7 @@ pub(super) async fn close(Books(mut s): Books, Form(f): Form<Fields>) -> Respons
     });
     match r {
         Ok(to) => Redirect::to(&to).into_response(),
-        Err(e) => again(&s, "The company", || Ok(company_page(&s, &company_fields(&s), &Problems::new(), Some(&e)))),
+        Err(e) => again(&s, "The company", || Ok(company_page(&s, &company_fields(&s), &Problems::new(), Some(&e), None))),
     }
 }
 

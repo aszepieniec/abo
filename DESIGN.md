@@ -695,10 +695,14 @@ one.
   strips every client `X-Gateway-*` header, cookie and `X-Forwarded-*`,
   sends `X-Gateway-Role: anonymous`, and allows 10 a minute per address.
   Anything else goes through the gateway's login as before.
-- The page that makes one shows the address a browser outside reaches,
+- Made, it is back to the company page, the link's id in the URL and never
+  its key. The page shows the address in the link's row, once, with a Copy
+  button, and is `no-store`. Until then the server holds the address in
+  memory, for ten minutes at most. Shown again, the page says to make
+  another. The address shown is the one a browser outside reaches,
   `https://<domain>/<owner>/<project>/export/<token>`, built from a gateway's
   `X-Forwarded-Proto`, `Host` and `X-Forwarded-Prefix` (without a gateway,
-  this server's), and the `curl` that fetches it.
+  this server's).
 
 Every answer of the books whole is `Cache-Control: no-store`, so no proxy
 or browser cache keeps a copy. A cross-site page can make a signed-in
@@ -896,7 +900,7 @@ Each with the trigger for revisiting.
 |---|---|
 | Account / commodity editor UI | You are editing `accounts.journal` weekly. It is `$EDITOR` plus `hledger check accounts`. |
 | Database | Never, for the books. Users are the gateway's (§8). |
-| Client-side JavaScript | A workflow genuinely cannot be a form submission. |
+| Client-side JavaScript | A workflow genuinely cannot be a form submission. The one so far: a download link's Copy button, since the clipboard is the browser's alone; an inline handler, and the address beside it can be selected without it. |
 | Bootstrap, Tailwind, or any CSS framework | The hand-written stylesheet stops fitting on one screen, or a component needs behaviour rather than style. |
 | An icon font or an icon package | You need more than about twenty icons. |
 | JSON API | A native phone client is chosen (§7). |

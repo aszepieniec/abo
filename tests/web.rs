@@ -1379,12 +1379,22 @@ fn a_download_link_is_its_own_key() {
     let writer = "X-Gateway-User: bob\r\nX-Gateway-Role: write\r\n";
     assert_eq!(http_as(&s, writer, "POST", "/company/links", &[("label", "nightly"), ("until", "")]).0, 403);
     let admin = "X-Gateway-User: zoe\r\nX-Gateway-Name: Zoe\r\nX-Gateway-Role: admin\r\n";
-    let (status, _, page) = http_as(&s, admin, "POST", "/company/links", &[("label", "nightly"), ("until", "")]);
-    assert!(status == 200 && page.to_ascii_lowercase().contains("cache-control: no-store") && page.contains("shown this once"), "{page}");
-    // Shown at the address the gateway gives it, with the curl that fetches it.
+    // Made, back to the company, the link's id in the address and not its key;
+    // the page shows its address there, once, to copy.
+    let (status, to, _) = http_as(&s, admin, "POST", "/company/links", &[("label", "nightly"), ("until", "")]);
+    assert!(status == 303 && to.starts_with("/company?made=") && to.ends_with("#links") && !to.contains("/export/"), "{to}");
+    let (_, _, page) = http_as(&s, admin, "GET", to.trim_end_matches("#links"), &[]);
+    assert!(page.to_ascii_lowercase().contains("cache-control: no-store") && page.contains("shown this once") && page.contains("navigator.clipboard"), "{page}");
+    let again = http_as(&s, admin, "GET", to.trim_end_matches("#links"), &[]).2;
+    assert!(!again.contains("/export/") && again.contains("shown once, when it is made"), "shown once only: {again}");
+    // Shown at the address the gateway gives it.
     let behind = format!("{admin}X-Forwarded-Proto: https\r\nX-Forwarded-Prefix: /alice/acme\r\n");
-    let (_, _, there) = http_as(&s, &behind, "POST", "/company/links", &[("label", "elsewhere"), ("until", "")]);
-    assert!(there.contains("value=\"https://127.0.0.1:") && there.contains("/alice/acme/export/") && there.contains("curl -fOJ 'https://"), "{there}");
+    let (_, there, _) = http_as(&s, &behind, "POST", "/company/links", &[("label", "elsewhere"), ("until", "")]);
+    let there = http_as(&s, &behind, "GET", there.trim_end_matches("#links"), &[]).2;
+    assert!(there.contains("value=\"https://127.0.0.1:") && there.contains("/alice/acme/export/"), "{there}");
+    // Refused, the company page says why.
+    let (status, _, refused) = http_as(&s, admin, "POST", "/company/links", &[("label", " "), ("until", "")]);
+    assert!(status == 422 && refused.contains("A label is needed"), "{status} {refused}");
     let path = page.split("/export/").nth(1).and_then(|r| r.get(..64)).map(|t| format!("/export/{t}")).unwrap();
     assert!(!std::fs::read_to_string(books.join(".abo/export-links.json")).unwrap().contains(&path[8..]), "the key is not kept");
 
