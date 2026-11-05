@@ -374,5 +374,5 @@ form.inline { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wr
 .period .pair { display: flex; gap: 8px; }
 .period .pair select { width: auto; flex: 1 1 0; min-width: 5.5rem; }
 /* A download link's address, just made, with its Copy button. */
-div.copy { display: flex; gap: 8px; margin-top: 8px; }
-div.copy input { flex: 1; min-width: 0; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }
+div.copy { display: flex; align-items: stretch; gap: 8px; margin-top: 6px; }
+div.copy input { flex: 1; min-width: 0; margin: 0; height: 32px; padding: 0 10px; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }

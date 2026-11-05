@@ -144,13 +144,13 @@ fn links_box(s: &Store, shown: Option<&(String, String)>) -> Markup {
                                 tr {
                                     td {
                                         strong { (l.label) }
-                                        div.muted.small { "Made by " (l.by) " on " (l.made.get(..10).unwrap_or_default()) }
+                                        div.muted.small { "Made " @if !l.by.is_empty() { "by " (l.by) " " } "on " (l.made.get(..10).unwrap_or_default()) }
                                         // Just made: its address, to copy now. The one script on
                                         // the pages: the clipboard is the browser's alone.
                                         @if let Some((_, address)) = shown.filter(|(id, _)| *id == l.id) {
                                             div.copy {
                                                 input type="text" readonly value=(address) aria-label="The link's address";
-                                                button type="button" onclick="navigator.clipboard.writeText(this.previousElementSibling.value).then(() => { this.lastChild.textContent = ' Copied'; })" { (icon("copy")) " Copy" }
+                                                button.small type="button" onclick="navigator.clipboard.writeText(this.previousElementSibling.value).then(() => { this.lastChild.textContent = ' Copied'; })" { (icon("copy")) " Copy" }
                                             }
                                         }
                                     }
@@ -166,7 +166,7 @@ fn links_box(s: &Store, shown: Option<&(String, String)>) -> Markup {
                                         form method="post" action="/backups/links/revoke" {
                                             (token())
                                             input type="hidden" name="id" value=(l.id);
-                                            button.btn-danger type="submit" { (icon("trash")) " Revoke" }
+                                            button.btn-danger.small type="submit" { (icon("trash")) " Revoke" }
                                         }
                                     }
                                 }
