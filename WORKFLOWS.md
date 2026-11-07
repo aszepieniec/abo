@@ -603,7 +603,7 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 - **Bank import** (§11) — statement lines matched against booked items.
 - **Payroll** (§11) — gross to net, payslips.
-- **Git mirror** (§11) — pushed to a remote after every commit, with a key the project admin uploads on Backups; waits on the gateway letting the sandbox reach the remote. Export and import are A7 and A8.
+- **Git mirror** (§11) — a download link's address doubles as a read-only git remote, so another machine clones the books and keeps up with `git pull`. Export and import are A7 and A8.
 - **Year-end closing entries** (§12) — until then unclosed profit is a computed equity line.
 
 ---

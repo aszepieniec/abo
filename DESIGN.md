@@ -863,20 +863,34 @@ whoever keeps the books has no shell.
   serve a file outside the books), and refused, and removed or reset, if it
   fails. From a URL to clone: not built; add it when books move between
   machines that can reach each other.
-- **Mirror.** A git remote that abo pushes to after every commit it makes.
-  A failed push never fails the commit or undoes it. The books are right
-  locally, the next commit tries again, and the page says the mirror is
-  behind. The remote is a setting in `abo.toml`; a credential is not. An SSH
-  key or a token lives outside the repository, in `.abo/` or the
-  environment, so that cloning the books never hands it out.
+- **Mirror.** Not built. A download link's address is also a git remote,
+  so that the books are mirrored on another machine by git alone:
 
-Settled: **the credential is a key the project admin uploads**, on
-Backups, kept in `.abo/` beside the download links and never in the
-books. The gateway holds nothing of it.
+  ```sh
+  git clone https://<domain>/<owner>/<project>/export/<token> books
+  git -C books pull --ff-only
+  ```
 
-Open, before this becomes a milestone: the sandbox (§8) has a network of
-its own, so a push needs the gateway to let it out to the remote, which the gateway's
-config would name.
+  abo answers git's smart HTTP protocol at that address, read only: the
+  two requests a fetch makes, `GET <link>/info/refs?service=git-upload-pack`
+  and `POST <link>/git-upload-pack`, each by running `git upload-pack
+  --stateless-rpc` over the books; never `git-receive-pack`. The token is
+  checked as for the bundle, and it is the credential, so a revoked link
+  stops the pulls too. What a fetch gets is what the bundle holds: the
+  commits, with changes not committed (WORKFLOWS F8) holding it up as they
+  hold an export. A plain GET of the link still answers the bundle.
+
+  When and how often the other machine pulls is its own business, not
+  abo's. Pulling with `--ff-only` refuses books rewritten on the server
+  rather than copying them over the copy. Nothing leaves the sandbox, the
+  server keeps no credential beyond the token, and a server taken over can
+  serve bad commits but cannot change the copy.
+
+  The gateway needs two more token paths, and one of them is a POST, which
+  its contract (item 12) does not yet forward without a session:
+  `token_paths` gains `/export/{token}/info/refs` (GET) and
+  `/export/{token}/git-upload-pack` (POST). A fetch is two or three
+  requests, inside the 10 a minute.
 
 ### Payroll, with configurable deductions
 
