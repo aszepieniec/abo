@@ -95,7 +95,8 @@ the journal afresh on every request, so an edit to either — a closed period, a
 new rate, a declared account — applies without a restart. Served for others
 behind a gateway, the gateway's config for abo must hold what DESIGN §8, "Behind
 a gateway: what the gateway's config for abo must say", lists: every top-level route in
-`reserved`, and `/export/{token}` in `token_paths`.
+`reserved`, and the download link's paths in `token_paths` and
+`token_post_paths`.
 **Done when** the front page shows the company, its balances and recent
 entries; on an empty directory, the form that opens the books (A1), and once
 it has, the company at the same address.

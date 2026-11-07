@@ -696,11 +696,13 @@ one.
   it passes. A link may be given a last day; by default it has none and
   answers until revoked.
 - Behind a gateway, the gateway forwards them without a session (its contract,
-  item 12), as the gateway's config for abo declares in `token_paths`,
-  with `export` in `reserved`. Only these qualify: a GET or HEAD of
-  exactly `/export/<64 lowercase hex>` or `/export/<64 lowercase
-  hex>/info/refs`, and a POST of `/export/<64 lowercase
-  hex>/git-upload-pack`, which is git fetching (§11). The gateway
+  item 12), as the gateway's config for abo declares in `token_paths`
+  and `token_post_paths`, with `export` in `reserved`. Only these
+  qualify: a GET or HEAD of exactly `/export/<64 lowercase hex>`, or of
+  `/export/<64 lowercase hex>/info/refs?service=git-upload-pack` with
+  that query and no other, and a POST of `/export/<64 lowercase
+  hex>/git-upload-pack`, its body at most 1 MiB; the last two are git
+  fetching (§11). The gateway
   strips every client `X-Gateway-*` header, cookie and `X-Forwarded-*`,
   sends `X-Gateway-Role: anonymous`, and allows 10 a minute per address.
   Anything else goes through the gateway's login as before.
@@ -738,9 +740,11 @@ them the pages behind a prefix, the download links and Backups break.
 reserved = ["account", "agreement", "agreements", "apple-touch-icon.png", "backups", "bill", "bills", "company", "contracts", "declarations", "entry", "export", "icon-192.png", "icon-512.png", "import", "invoice", "invoices", "log", "manifest.webmanifest", "new", "partner", "partners", "pay", "post", "reconcile", "report", "undo", "write-off"]
 
 # Download links (the gateway's contract, item 12): reached with no session, the
-# token being the credential, which abo checks. The last two are git fetching
-# through the link (§11), the second a POST.
-token_paths = ["/export/{token}", "/export/{token}/info/refs", "/export/{token}/git-upload-pack"]
+# token being the credential, which abo checks. The second entry of token_paths
+# (a GET, its query exact) and the POST of token_post_paths are git fetching
+# through the link (§11).
+token_paths      = ["/export/{token}", "/export/{token}/info/refs?service=git-upload-pack"]
+token_post_paths = ["/export/{token}/git-upload-pack"]
 ```
 
 `tests` hold the list to abo's router: `reserved_routes_are_documented`
