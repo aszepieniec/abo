@@ -1279,7 +1279,7 @@ fn the_books_download_whole() {
     assert!(company.contains("href=\"/backups\"") && !company.contains("Download the books"), "Backups is the sidebar's, not the company's");
     assert!(http_as(&s, admin, "GET", "/backups", &[]).2.contains("Download the books"));
     assert_eq!(fetch(admin).0, 200);
-    assert!(http(&s, "GET", "/backups", &[]).2.contains("curl -fOJ"));
+    assert!(http(&s, "GET", "/backups", &[]).2.contains("curl -fOJ &lt;link&gt;"));
     let (status, bundle) = fetch("");
     assert!(status == 200 && bundle.starts_with(b"# v"), "{status}");
 
@@ -1418,6 +1418,26 @@ fn a_download_link_is_its_own_key() {
         let (status, bundle) = get(&path, h);
         assert!(status == 200 && bundle.starts_with(b"# v"), "{status}");
     }
+    // It is a git remote too, read only: cloned, then pulled, never pushed to.
+    let url = format!("http://127.0.0.1:{}{path}", s.port);
+    let clone = base.join("clone");
+    let git = |dir: &Path, args: &[&str]| Command::new("git").args(args).current_dir(dir).env("GIT_TERMINAL_PROMPT", "0").output().unwrap();
+    let head = |dir: &Path| git(dir, &["rev-parse", "HEAD"]).stdout;
+    let o = git(&base, &["clone", "-q", &url, "clone"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(head(&clone), head(&books));
+    let entry = [("token", "g1"), ("date", "2026-03-01"), ("description", "Rent"), ("postings", "Expenses:Rent=100.00\nAssets:Bank=-100.00"), ("declare", "Expenses:Rent")];
+    // Declaring the account is a change of its own, the form back to finish.
+    assert_eq!(http_as(&s, admin, "POST", "/post", &entry).0, 200);
+    assert_ne!(head(&clone), head(&books));
+    let o = git(&clone, &["pull", "-q", "--ff-only"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(head(&clone), head(&books), "the change made since came with the pull");
+    let o = git(&clone, &["-c", "user.name=X", "-c", "user.email=x@example.invalid", "commit", "-q", "--allow-empty", "-m", "pushed"]);
+    assert!(o.status.success());
+    assert!(!git(&clone, &["push", "-q", "origin", "HEAD:master"]).status.success(), "a push is refused");
+    assert_ne!(head(&clone), head(&books));
+
     let company = http_as(&s, admin, "GET", "/backups", &[]).2;
     for column in ["Label", "Creator", "Made", "Last day", "Last used"] {
         assert!(company.contains(&format!("<th>{column}</th>")) || company.contains(&format!("<th class=\"wide\">{column}</th>")), "{column}");
@@ -1431,6 +1451,7 @@ fn a_download_link_is_its_own_key() {
     let (status, to, _) = http_as(&s, admin, "POST", "/backups/links/revoke", &[("token", "r1"), ("id", &id)]);
     assert_eq!((status, to.as_str()), (303, "/backups?revoked=1"));
     assert_eq!(get(&path, "").0, 404, "revoked");
+    assert!(!git(&clone, &["fetch", "-q"]).status.success(), "revoked, it fetches nothing");
     drop(s);
     let _ = std::fs::remove_dir_all(&base);
 }

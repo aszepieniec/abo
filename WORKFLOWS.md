@@ -214,7 +214,8 @@ the company and the moment, to the second, in the server's local time
 a gateway, for its admin role alone; without a gateway, for anyone. On the CLI it
 is `git bundle` itself. Refused while a change abo did not make is there
 (F8). For a script, an admin makes a **download link** on the same page:
-an address that is its own key (`curl -fOJ <address>`, no sign-in), with
+an address that is its own key (`curl -fOJ <address>`, or `git clone
+<address>` and then `git pull`, never a push; no sign-in), with
 a label and a last day, or none; listed with who made it and when it was
 last used, and revoked there (DESIGN §8).
 **Done when** the file clones into the same books with the same log, and
@@ -603,7 +604,6 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 
 - **Bank import** (§11) — statement lines matched against booked items.
 - **Payroll** (§11) — gross to net, payslips.
-- **Git mirror** (§11) — a download link's address doubles as a read-only git remote, so another machine clones the books and keeps up with `git pull`. Export and import are A7 and A8.
 - **Year-end closing entries** (§12) — until then unclosed profit is a computed equity line.
 
 ---

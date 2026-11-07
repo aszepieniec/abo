@@ -116,6 +116,8 @@ fn company_app(root: PathBuf) -> Router {
         .route("/company/tax-return", get(tax_return).post(tax_return_submit))
         .route("/export", get(export))
         .route("/export/{token}", get(export_link))
+        .route("/export/{token}/info/refs", get(git_refs))
+        .route("/export/{token}/git-upload-pack", post(git_pack))
         .route("/backups/links", post(link_make))
         .route("/backups/links/revoke", post(link_revoke))
         // ponytail: a copy of the books whole, PDFs and all, in one request;
@@ -707,7 +709,12 @@ async fn log(req: axum::extract::Request, next: axum::middleware::Next) -> Respo
 
 /// Every request that can write must come from our own pages; see `same_origin`.
 async fn csrf(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
-    if !req.method().is_safe() {
+    // A fetch through a download link is git's POST, from no page: its key
+    // is in the address, not a cookie a page could make a browser send,
+    // and it only reads.
+    let path = req.uri().path();
+    let fetch = path.starts_with("/export/") && path.ends_with("/git-upload-pack");
+    if !req.method().is_safe() && !fetch {
         if let Err(e) = same_origin(req.headers()) {
             warn!(%e, path = %req.uri().path(), "rejected cross-origin request");
             return (StatusCode::FORBIDDEN, "cross-origin request").into_response();

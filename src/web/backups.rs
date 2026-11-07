@@ -92,6 +92,89 @@ pub(super) async fn export_link(Books(s): Books, Path(token): Path<String>) -> R
     bundle(&s)
 }
 
+/// A download link as a git remote, read only (DESIGN §11): `git clone
+/// <link>` asks for its refs here...
+pub(super) async fn git_refs(Books(s): Books, Path(token): Path<String>, uri: axum::http::Uri, headers: HeaderMap) -> Response {
+    git(&s, &token, "GET", "/info/refs", uri.query().unwrap_or_default(), &headers, &[])
+}
+
+/// ...and for the commits here, which is the fetch.
+pub(super) async fn git_pack(Books(s): Books, Path(token): Path<String>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
+    git(&s, &token, "POST", "/git-upload-pack", "", &headers, &body)
+}
+
+/// git's smart HTTP, answered by `git http-backend` over the books: it
+/// inflates a gzipped request and speaks every protocol version, which a
+/// hand-rolled `upload-pack` would have to. Only these two paths reach it,
+/// and receive-pack is off, so nothing is pushed. A wrong link is not
+/// found, and a change abo did not make holds it up, as for the bundle.
+/// ponytail: the answer is held whole in memory, as the bundle is; stream
+/// it if the books outgrow that.
+fn git(s: &Store, token: &str, method: &str, info: &str, query: &str, headers: &HeaderMap, body: &[u8]) -> Response {
+    let Some(l) = store::today().ok().and_then(|today| crate::links::check(&s.root, token, today)) else {
+        return or_error(s, "Not found", || Err(input::not_found("there is no such page".into())));
+    };
+    if let Err(e) = s.changeable() {
+        return or_error(s, "Download the books", || Err(e));
+    }
+    if method == "POST" {
+        info!(link = %l.id, label = %l.label, "books fetched through a link");
+    }
+    let header = |k: &str| headers.get(k).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+    let run = || -> Result<std::process::Output> {
+        use std::io::Write as _;
+        let mut child = std::process::Command::new("git")
+            .args(["-c", "http.receivepack=false", "http-backend"])
+            .current_dir(&s.root)
+            .env("GIT_PROJECT_ROOT", &s.root)
+            .env("GIT_HTTP_EXPORT_ALL", "1")
+            .env("REQUEST_METHOD", method)
+            .env("PATH_INFO", info)
+            .env("QUERY_STRING", query)
+            .env("CONTENT_TYPE", header("content-type"))
+            .env("CONTENT_LENGTH", body.len().to_string())
+            .env("HTTP_CONTENT_ENCODING", header("content-encoding"))
+            .env("GIT_PROTOCOL", header("git-protocol"))
+            .env_remove("REMOTE_USER")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        // Written from a thread, so that a pack filling stdout cannot wait
+        // on a request not yet read.
+        let mut stdin = child.stdin.take().context("git http-backend's input")?;
+        let request = body.to_vec();
+        let writer = std::thread::spawn(move || stdin.write_all(&request));
+        let o = child.wait_with_output()?;
+        let _ = writer.join();
+        Ok(o)
+    };
+    let o = match run() {
+        Ok(o) => o,
+        Err(e) => return or_error(s, "Download the books", || Err(e)),
+    };
+    // A CGI answer: its headers, a blank line, the body.
+    let Some(at) = o.stdout.windows(4).position(|w| w == b"\r\n\r\n") else {
+        warn!(stderr = %String::from_utf8_lossy(&o.stderr).trim(), "git http-backend gave no answer");
+        return (StatusCode::INTERNAL_SERVER_ERROR, "git gave no answer").into_response();
+    };
+    let mut res = Response::new(axum::body::Body::from(o.stdout[at + 4..].to_vec()));
+    for line in String::from_utf8_lossy(&o.stdout[..at]).lines() {
+        let Some((k, v)) = line.split_once(':') else { continue };
+        let v = v.trim();
+        if k.eq_ignore_ascii_case("status") {
+            if let Some(code) = v.get(..3).and_then(|c| c.parse().ok()).and_then(|c| StatusCode::from_u16(c).ok()) {
+                *res.status_mut() = code;
+            }
+        } else if let (Ok(k), Ok(v)) = (axum::http::HeaderName::try_from(k), axum::http::HeaderValue::try_from(v)) {
+            res.headers_mut().insert(k, v);
+        }
+    }
+    // It is everything: kept by no cache on the way.
+    res.headers_mut().insert("cache-control", axum::http::HeaderValue::from_static("no-store"));
+    res
+}
+
 /// The books with their history, as the file Download the books gives.
 fn bundle(s: &Store) -> Response {
     let bundle = (|| -> Result<Vec<u8>> {
@@ -123,11 +206,7 @@ fn links_box(s: &Store, headers: &HeaderMap) -> Markup {
         div.box #links {
             div.box-header { (icon("download")) "Download links" }
             div.box-body {
-                p.muted.small {
-                    "Addresses that are their own key, for scripts: one fetches the books' file with "
-                    code { "curl -fOJ <address>" } " and no sign-in. " code { "-f" } " fails rather than save a page that says why not. "
-                    "Whoever has an address has the books, salaries included: keep it as a password is kept, and revoke it once it is not needed."
-                }
+                p.muted.small { "Command line: " code { "curl -fOJ <link>" } ", or " code { "git clone <link>" } " followed by " code { "git pull" } "." }
                 @if !links.is_empty() {
                     // A tbody a link: its row of columns, then its address across
                     // them with Copy and Revoke, lit together under the pointer.

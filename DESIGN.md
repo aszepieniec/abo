@@ -696,9 +696,11 @@ one.
   it passes. A link may be given a last day; by default it has none and
   answers until revoked.
 - Behind a gateway, the gateway forwards them without a session (its contract,
-  item 12), as the gateway's config for abo declares: `token_paths =
-  ["/export/{token}"]`, with `export` in `reserved`. Only a GET or HEAD
-  whose path is exactly `/export/<64 lowercase hex>` qualifies. The gateway
+  item 12), as the gateway's config for abo declares in `token_paths`,
+  with `export` in `reserved`. Only these qualify: a GET or HEAD of
+  exactly `/export/<64 lowercase hex>` or `/export/<64 lowercase
+  hex>/info/refs`, and a POST of `/export/<64 lowercase
+  hex>/git-upload-pack`, which is git fetching (§11). The gateway
   strips every client `X-Gateway-*` header, cookie and `X-Forwarded-*`,
   sends `X-Gateway-Role: anonymous`, and allows 10 a minute per address.
   Anything else goes through the gateway's login as before.
@@ -736,8 +738,9 @@ them the pages behind a prefix, the download links and Backups break.
 reserved = ["account", "agreement", "agreements", "apple-touch-icon.png", "backups", "bill", "bills", "company", "contracts", "declarations", "entry", "export", "icon-192.png", "icon-512.png", "import", "invoice", "invoices", "log", "manifest.webmanifest", "new", "partner", "partners", "pay", "post", "reconcile", "report", "undo", "write-off"]
 
 # Download links (the gateway's contract, item 12): reached with no session, the
-# token being the credential, which abo checks.
-token_paths = ["/export/{token}"]
+# token being the credential, which abo checks. The last two are git fetching
+# through the link (§11), the second a POST.
+token_paths = ["/export/{token}", "/export/{token}/info/refs", "/export/{token}/git-upload-pack"]
 ```
 
 `tests` hold the list to abo's router: `reserved_routes_are_documented`
@@ -863,7 +866,7 @@ whoever keeps the books has no shell.
   serve a file outside the books), and refused, and removed or reset, if it
   fails. From a URL to clone: not built; add it when books move between
   machines that can reach each other.
-- **Mirror.** Not built. A download link's address is also a git remote,
+- **Mirror.** Built. A download link's address is also a git remote,
   so that the books are mirrored on another machine by git alone:
 
   ```sh
@@ -873,8 +876,11 @@ whoever keeps the books has no shell.
 
   abo answers git's smart HTTP protocol at that address, read only: the
   two requests a fetch makes, `GET <link>/info/refs?service=git-upload-pack`
-  and `POST <link>/git-upload-pack`, each by running `git upload-pack
-  --stateless-rpc` over the books; never `git-receive-pack`. The token is
+  and `POST <link>/git-upload-pack`, each answered by `git http-backend`
+  over the books, which inflates a gzipped request and speaks every
+  protocol version; receive-pack is off and has no route, so nothing is
+  pushed. The origin check (§8) passes the POST: its key is in the
+  address, not a cookie a page could make a browser send. The token is
   checked as for the bundle, and it is the credential, so a revoked link
   stops the pulls too. What a fetch gets is what the bundle holds: the
   commits, with changes not committed (WORKFLOWS F8) holding it up as they
@@ -886,11 +892,10 @@ whoever keeps the books has no shell.
   server keeps no credential beyond the token, and a server taken over can
   serve bad commits but cannot change the copy.
 
-  The gateway needs two more token paths, and one of them is a POST, which
-  its contract (item 12) does not yet forward without a session:
-  `token_paths` gains `/export/{token}/info/refs` (GET) and
-  `/export/{token}/git-upload-pack` (POST). A fetch is two or three
-  requests, inside the 10 a minute.
+  The gateway forwards two more token paths (§8), one of them a POST,
+  which its contract (item 12) has to allow without a session. A fetch is
+  two or three requests, inside the 10 a minute. Test: `tests/web.rs`
+  `a_download_link_is_its_own_key` clones, pulls, and is refused a push.
 
 ### Payroll, with configurable deductions
 
