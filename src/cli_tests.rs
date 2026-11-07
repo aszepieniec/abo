@@ -855,6 +855,29 @@ fn the_log_makes_each_change_again(#[strategy(plan())] plan: Vec<Step>) {
     prop_assert_eq!(without_pdfs(ours), without_pdfs(theirs));
 }
 
+/// A newline in a command's word is written `\n`, the command one line of
+/// its commit. Commits made before held the newline itself, the command
+/// over two lines: the log reads those back whole, and undo takes them back.
+#[test]
+fn a_command_over_two_lines_is_read_whole() {
+    let (_parent, books) = opened();
+    // A field of one line, given only a newline, which is trimmed to
+    // nothing: a field of several lines is a flag a line already, and a
+    // hidden character inside a field is refused (I-C1).
+    let country = "\n";
+    assert!(abo(&books, start(), &args(&["company", "--country=Exampleland"])).ok);
+    let o = abo(&books, start(), &args(&["company", &format!("--country={country}")]));
+    assert!(o.ok, "{}", o.stderr);
+    let body = crate::repo::git_in(&books, &["log", "-1", "--format=%B"]).unwrap();
+    assert!(body.contains("abo company $'--country=\\n'"), "{body}");
+    let old = "Change the company's details\n\nabo company '--country=\n'\n";
+    crate::repo::git_in(&books, &["commit", "-q", "--amend", "-m", old]).unwrap();
+    let last = store::lines(&books).pop().unwrap();
+    assert_eq!(last["argv"], serde_json::json!(["company", format!("--country={country}")]));
+    assert_eq!(last["what"], "Change the company's details");
+    assert_eq!(store::Store::open(&books).unwrap().undo_refused().unwrap(), None);
+}
+
 /// The balance sheet comes out nil, whatever the books hold: exchanges at a
 /// cost, VAT, payments in another commodity.
 #[proptest(cases(12))]

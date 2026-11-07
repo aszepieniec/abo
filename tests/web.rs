@@ -1444,7 +1444,9 @@ fn a_download_link_is_its_own_key() {
     }
     let row = company.split("<strong>nightly</strong>").nth(1).and_then(|r| r.split("</tr>").next()).unwrap();
     assert!(row.contains("Zoe") && !row.contains("never") && row.contains(">none<"), "made by Zoe, used, no last day: {row}");
-    assert_eq!(get(&format!("{}0", &path[..path.len() - 1]), "").0, 404, "a wrong key");
+    // Its last digit changed: a 0, unless it is one already (one in 16).
+    let wrong = if path.ends_with('0') { "1" } else { "0" };
+    assert_eq!(get(&format!("{}{wrong}", &path[..path.len() - 1]), "").0, 404, "a wrong key");
 
     let id = company.split("name=\"id\" value=\"").nth(1).and_then(|r| r.split('"').next()).unwrap().to_string();
     assert_eq!(http_as(&s, writer, "POST", "/backups/links/revoke", &[("token", "r0"), ("id", &id)]).0, 403);

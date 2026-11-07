@@ -392,11 +392,27 @@ fn flag(argv: &mut Vec<String>, name: &str, value: &str) {
 }
 
 /// `abo` and `words` as a shell takes them back: a word with anything but
-/// letters, digits and `-_.,:/=@%+` in it single-quoted.
+/// letters, digits and `-_.,:/=@%+` in it single-quoted, and one with a
+/// control character in it, a newline say, written `$'...'` with escapes, so
+/// that a command is one line of its commit, as the log reads it back.
 pub fn shell(words: &[&str]) -> String {
     let quote = |w: &&str| {
         if !w.is_empty() && w.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.,:/=@%+".contains(&b)) {
             w.to_string()
+        } else if w.chars().any(char::is_control) {
+            let escaped: String = w
+                .chars()
+                .map(|c| match c {
+                    '\\' => "\\\\".to_string(),
+                    '\'' => "\\'".to_string(),
+                    '\n' => "\\n".to_string(),
+                    '\t' => "\\t".to_string(),
+                    '\r' => "\\r".to_string(),
+                    c if c.is_control() => format!("\\u{:04x}", c as u32),
+                    c => c.to_string(),
+                })
+                .collect();
+            format!("$'{escaped}'")
         } else {
             format!("'{}'", w.replace('\'', "'\\''"))
         }
@@ -408,9 +424,26 @@ pub fn shell(words: &[&str]) -> String {
 /// line that is not one.
 pub fn unshell(line: &str) -> Option<Vec<String>> {
     let (mut words, mut w, mut quoted, mut any) = (vec![], String::new(), false, false);
-    let mut chars = line.chars();
+    let mut chars = line.chars().peekable();
     while let Some(c) = chars.next() {
         match (c, quoted) {
+            ('$', false) if chars.peek() == Some(&'\'') => {
+                chars.next();
+                any = true;
+                loop {
+                    match chars.next()? {
+                        '\'' => break,
+                        '\\' => w.push(match chars.next()? {
+                            'n' => '\n',
+                            't' => '\t',
+                            'r' => '\r',
+                            'u' => char::from_u32(u32::from_str_radix(&(0..4).map(|_| chars.next()).collect::<Option<String>>()?, 16).ok()?)?,
+                            c => c,
+                        }),
+                        c => w.push(c),
+                    }
+                }
+            }
             ('\'', _) => (quoted, any) = (!quoted, true),
             ('\\', false) => w.push(chars.next()?),
             (' ', false) => {
@@ -437,6 +470,11 @@ fn a_command_is_shown_as_a_shell_takes_it() {
     assert_eq!(shell(&words), "abo pay 9 '--cost=11 USD' '--to=a'\\''b' ''");
     assert_eq!(unshell(&shell(&words)).unwrap(), words);
     assert_eq!(unshell("Book entry 3"), None);
+    // A newline and its kin: one line, as a shell takes it back.
+    let words = ["company", "--country=\n", "--address=a\\b'c\r\td\u{7f}\u{85}"];
+    let line = shell(&words);
+    assert_eq!(line, "abo company $'--country=\\n' $'--address=a\\\\b\\'c\\r\\td\\u007f\\u0085'");
+    assert_eq!(unshell(&line).unwrap(), words);
 }
 
 /// A change as done, from `what`, which names it as a commit does: its

@@ -571,12 +571,23 @@ pub fn lines(root: &Path) -> Vec<serde_json::Value> {
         let [commit, who, email, at, body] = c.trim_start().splitn(5, '\x1f').collect::<Vec<_>>()[..] else { continue };
         let Some((subject, changes)) = body.split_once("\n\n") else { continue };
         let mut said = None;
+        // A command whose quote is still open at the end of its line goes on
+        // in the next: commits made before `shell` wrote a newline as `\n`
+        // held the newline itself. Read back as git kept it, which took
+        // spaces off each line's end and made two blank lines one.
+        let mut open: Option<String> = None;
         for l in changes.lines() {
+            let l = match open.take() {
+                Some(start) => format!("{start}\n{l}"),
+                None => l.to_string(),
+            };
             if let Some(w) = l.strip_prefix("# ") {
-                said = Some(w);
-            } else if let Some(argv) = crate::command::unshell(l) {
-                let what = said.take().unwrap_or(subject);
+                said = Some(w.to_string());
+            } else if let Some(argv) = crate::command::unshell(&l) {
+                let what = said.take().unwrap_or_else(|| subject.to_string());
                 all.push(serde_json::json!({ "at": at, "who": who, "email": email, "argv": argv, "what": what, "commit": commit }));
+            } else if l.starts_with("abo ") {
+                open = Some(l);
             }
         }
     }
