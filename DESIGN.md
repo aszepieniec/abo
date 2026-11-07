@@ -12,7 +12,7 @@ not re-litigated. Where something was deliberately left out, the trigger for
 adding it is stated.
 
 Status: M0-M4 built — `abo init`, `post`, `file`, `bill`, `invoice`,
-`reconcile`, `clear`, `revert`, `undo`, `company`, `payment-options`, `pl`, `bs`,
+`reconcile`, `record`, `unrecord`, `revert`, `undo`, `company`, `payment-options`, `pl`, `bs`,
 `vat`, `balance`, `register`, `log`, `serve`, `demo`. M5: `abo serve` serves
 one company; users come from the gateway, in front of it.
 M6 built: each company installs as an app; not yet tried on a real phone
@@ -265,44 +265,43 @@ the rate is a reporting choice rather than a fact about the transaction.
 ### Reconciliation
 
 Agreeing the books with what a bank, a cash box or a wallet actually holds is
-manual, and it needs no state of its own: hledger already says a posting is
-unmarked, pending or cleared, so marking one cleared means writing a `*` in
-front of its account in the journal, which is a commit like any other. It is
-the posting that is marked, not the transaction: a transfer from the bank to
-the cash box is seen by two statements, often on different days, and ticking
-it off against one must leave it outstanding against the other. A `*` on the
-transaction line, as older books may have, still counts for all its postings.
+manual. What is agreed is recorded as a statement (MODEL.md §2.6): an entry
+that moves nothing and names the statement's balance and the postings it
+clears. It is the posting that is cleared, not the transaction: a transfer from
+the bank to the cash box is seen by two statements, often on different days,
+and ticking it off against one must leave it outstanding against the other.
 
 ```
 abo reconcile --account Assets:Bank --date 2026-04-30 --balance 24390.00
-abo clear 2026.journal:11:2026-02-28 ...
-abo reconcile ... --record
+abo record --account Assets:Bank --date 2026-04-30 --balance 24390.00 412.2 431.1 ...
+abo unrecord --account Assets:Bank
 ```
 
-`reconcile` prints three numbers and a list: what the books say has cleared by
-that date, what the statement says, the difference, and every booked item not
-yet ticked off. Ticking items until the difference is zero *is* the
-reconciliation. The browser shows the same thing with checkboxes.
+`reconcile` changes nothing. It prints what is in the books on that date, what
+the recorded statements clear, what the statement says, the difference between
+those two, and every posting not yet cleared. Ticking postings until the
+difference is zero *is* the reconciliation; `record` writes what was ticked,
+or `--all` of it. The browser shows the same thing with checkboxes, and its
+two buttons are `record` and `unrecord`.
 
-Two details that are easy to get wrong:
+Three details that are easy to get wrong:
 
-- **A key is `file:line:date:account`.** Line numbers come from hledger's own
-  `tsourcepos`, and entries are written in date order, so a booking made
-  between listing and marking shifts the lines below it. Carrying the date
-  means a stale key is refused instead of silently marking the wrong
-  transaction. Keys also arrive from a browser form, so the file part is
-  checked to be a plain `*.journal` name inside `journal/`. The account comes
-  last because it has colons of its own, and names which of the transaction's
-  postings to mark.
-- **`--record` asserts only when nothing is outstanding.** hledger's balance
-  assertions are computed over every posting regardless of status, so there is
-  no way to assert a cleared-only balance. With nothing outstanding the two
-  numbers are the same and the assertion is exactly true, so it is written and
-  hledger re-checks it on every read from then on — an edit that changes
-  history before that date stops the books loading. With something still
-  outstanding the statement figure is *not* the account balance, so the entry
-  is recorded with its tags and no assertion rather than asserting something
-  untrue.
+- **Clearing is written in the statement, not on the entry.** hledger's own
+  mark, a `*` on the posting, is not used: writing it would change an old
+  entry's text each time a later statement cleared one of its postings, and an
+  entry's text is fixed when it is added (MODEL.md §7.3). A posting is named
+  `ENTRY.N`, its entry's id and its place in it, so a name stays right however
+  the journal's lines move.
+- **The balance assertion is written only for a whole statement.** hledger's
+  balance assertions are computed over every posting regardless of status, so
+  there is no way to assert a cleared-only balance. When the statement and the
+  earlier ones clear every posting up to its date, the two numbers are the
+  same and the assertion is exactly true, so it is written and hledger
+  re-checks it on every read. Otherwise the statement figure is *not* the
+  account balance, and only abo checks it (I-S3).
+- **A statement fixes the past.** Once one is recorded, nothing is booked to
+  its account in its commodity on or before its date (N7), and only the latest
+  can be taken out, since later ones count what it cleared.
 
 Entries are inserted in date order rather than appended, which is what makes a
 late-arriving bill ordinary rather than a failure of `hledger check
@@ -792,7 +791,7 @@ Not legal advice, but none of this is controversial.
   no counter file. The PDF is `git add`ed before the entry is committed, so both
   land in one commit or neither does.
 - **M4** — reconciliation and statements. **Done.** `abo reconcile` / `abo
-  clear` and a page of checkboxes; `abo pl`, `abo bs`, `abo vat` on screen,
+  record` / `abo unrecord` and a page of checkboxes; `abo pl`, `abo bs`, `abo vat` on screen,
   as `--json`, and as PDFs through a second typst template. Bank import moved
   to §11 — the point of reconciliation is to notice what is wrong, and typing
   a closing balance is enough to do that.
