@@ -59,6 +59,13 @@ fn build() -> Result<PathBuf, String> {
     Ok(abo)
 }
 
+include!("../tests/common/web_exe.rs");
+
+/// abo-web, beside the abo these tests run.
+pub(crate) fn web_exe() -> PathBuf {
+    web_exe_in(exe().parent().unwrap())
+}
+
 fn walk(dir: &Path) -> Vec<PathBuf> {
     std::fs::read_dir(dir).into_iter().flatten().flatten().flat_map(|e| if e.path().is_dir() { walk(&e.path()) } else { vec![e.path()] }).collect()
 }

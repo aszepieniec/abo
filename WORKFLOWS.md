@@ -52,7 +52,7 @@ With any flag, `abo init` asks nothing: `--address` (a line each),
 and `--payment '{ kind = "bank", iban = "..." }'` per payment option. What is
 not given is what the question offers; what is given is checked as a typed
 answer is, and a wrong one is refused.
-In the browser, `abo serve` on an empty directory offers the same questions as
+In the browser, `abo-web serve` on an empty directory offers the same questions as
 one form, at `/` and `/new`, and opens the books in that directory itself: both are drawn from one description of them
 (`src/questions.rs`), so they come in the same order, with the same checks and
 the same defaults for a blank answer, and the same answers open the same books. The fields of a payment option's kind and of the
@@ -84,11 +84,11 @@ or of more than 8 places, a removal of one in use, and a price on or before
 the closing date. There is no edit and no rename.
 
 ### A3. Start the web interface — Supported
-`abo serve [--dir x]` serves one company: the one whose books `x` (default:
+`abo-web serve [--dir x]` serves one company: the one whose books `x` (default:
 the working directory) is inside; or, when `x` is empty, the form that opens
 the books in it (A1), and from then on that company. A directory that holds
 no books and is not empty is refused. A missing `x` is created after a y/n
-question that counts down five seconds and takes silence as no. `abo demo`
+question that counts down five seconds and takes silence as no. `abo-web demo`
 serves throwaway toy books. A missing `git` or `hledger` stops startup with a message naming
 what it is for; a missing `typst` is a warning. The server reads `abo.toml` and
 the journal afresh on every request, so an edit to either — a closed period, a
@@ -578,7 +578,7 @@ Behind TLS under a real host name it installs too; over plain HTTP there,
 Chrome refuses it (`not-from-secure-origin`).
 **Open:** not yet added to a real phone's home screen, on Android or on an
 iPhone. A phone offers to install only over HTTPS, so try it behind the TLS
-that `abo serve` expects in front of it. On the iPhone, see whether an
+that `abo-web serve` expects in front of it. On the iPhone, see whether an
 invoice's PDF or a bill's document, opened from the app, leaves a way back:
 they open in the same window, and an app on the home screen has no back
 button there.

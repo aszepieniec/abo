@@ -859,18 +859,6 @@ pub(crate) enum Cmd {
     Check,
     /// Rewrite the books as abo writes them, where they are not.
     Tidy,
-    /// Serve one company's web interface on localhost: the books here, or, in an
-    /// empty directory, the form that opens them in it. The gateway, in front, adds
-    /// TLS and people.
-    Serve {
-        #[arg(long, default_value_t = 8801)]
-        port: u16,
-    },
-    /// Serve the web interface against a throwaway repository of toy data.
-    Demo {
-        #[arg(long, default_value_t = 8801)]
-        port: u16,
-    },
     /// hledger register, of these books: `abo register Expenses:Hosting --period 2026`.
     /// `abo entries` finds an entry's id.
     #[command(alias = "reg", after_help = PASSED_HELP)]

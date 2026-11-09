@@ -1589,7 +1589,7 @@ step, abo and the model agree on whether it is taken; the files on disk are
 what `render` writes for the model's state; and a refusal names the model's
 rules and changes nothing. The other CLI properties are those §3 names under
 G-F5 and G-O5 to G-O7. The web pages are tested so too (`src/web_tests.rs`):
-the same plans posted as their forms to a running `abo serve`, under G-W1 to
+the same plans posted as their forms to a running `abo-web serve`, under G-W1 to
 G-W4.
 
 What the properties found, each now a rule above:

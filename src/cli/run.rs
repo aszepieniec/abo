@@ -5,18 +5,17 @@ use super::args::*;
 use super::prompt::*;
 use crate::model::{self, Op};
 use crate::store::{self, Store};
-use crate::{demo, input, logging, preflight, questions, repo, report, statement, views, web};
+use crate::{input, preflight, questions, repo, report, statement, views};
 use anyhow::{bail, Context as _, Result};
 use rust_decimal::Decimal;
 use std::path::PathBuf;
 
-pub(crate) async fn run(cli: Cli) -> Result<()> {
+pub(crate) fn run(cli: Cli) -> Result<()> {
     NI.store(cli.ni, std::sync::atomic::Ordering::Relaxed);
     let missing = preflight()?;
-    // The long-running commands report it through the log, beside the line
-    // saying where the server is, because that is where someone starting a
-    // server reads. Everything else says it on stderr before it does anything.
-    // The only optional program is typst, so the others say nothing about it.
+    // A missing optional program is said on stderr before the command does
+    // anything, by the commands that need it (abo-web's server says it in its
+    // log). The only optional program is typst, so the others say nothing.
     let makes_pdf = matches!(
         &cli.cmd,
         Cmd::Invoice { .. } | Cmd::Credit { .. } | Cmd::Pl { pdf: Some(_), .. } | Cmd::Bs { pdf: Some(_), .. }
@@ -29,21 +28,13 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             );
         }
     }
-    // The directory serve opens new books in may not be there yet, so serve may make it. Every other
-    // command needs books that are already there.
-    if let Some(d) = cli.dir.as_ref().filter(|d| !d.exists() && matches!(cli.cmd, Cmd::Serve { .. })) {
-        if !confirm(&format!("{} does not exist. Create it?", d.display()), 5)? {
-            bail!("{} does not exist", d.display());
-        }
-        std::fs::create_dir_all(d)?;
-    }
     let here = cli.dir.clone().unwrap_or(std::env::current_dir()?);
-    // One command at a time in a company's books, whoever runs it; the
+    // One command at a time in a company's books, whoever runs it; abo-web's
     // server takes the lock per change instead, and init has no books yet.
     // ponytail: held for the whole command, questions asked on the terminal
     // included; take it after the questions if that ever holds up the server.
     let _lock = match &cli.cmd {
-        Cmd::Serve { .. } | Cmd::Demo { .. } | Cmd::Init { .. } => None,
+        Cmd::Init { .. } => None,
         _ => repo::books_root(&here).ok().flatten().map(|root| repo::lock(&root, true)).transpose()?,
     };
 
@@ -671,30 +662,6 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Balance { args } => passthrough(&here, "balance", &args, cli.json),
         Cmd::Register { args } => passthrough(&here, "register", &args, cli.json),
-        Cmd::Serve { port } => {
-            if !here.is_dir() {
-                bail!("{} is not a directory", here.display());
-            }
-            logging(&missing);
-            // One company: its books, or an empty directory to open them in.
-            match repo::books_root(&here)? {
-                Some(root) => web::serve(root, port).await,
-                None if std::fs::read_dir(&here)?.next().is_none() => web::serve(here.canonicalize()?, port).await,
-                None => bail!("{} holds no books and is not empty: serve a company's books, or an empty directory to open them in", here.display()),
-            }
-        }
-        Cmd::Demo { port } => {
-            logging(&missing);
-            // Built afresh, so never where something is already: a directory
-            // given must be new or empty, and each demo has its own.
-            let dir = match cli.dir {
-                Some(d) if d.read_dir().is_ok_and(|mut r| r.next().is_some()) => bail!("{} is not empty; a demo is built in a new directory", d.display()),
-                Some(d) => d,
-                None => std::env::temp_dir().join(format!("abo-demo-{}", std::process::id())),
-            };
-            tracing::info!(dir = %dir.display(), "building toy books");
-            web::serve(demo::demo(&dir)?, port).await
-        }
     }
 }
 

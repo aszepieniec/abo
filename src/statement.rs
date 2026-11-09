@@ -178,12 +178,12 @@ fn days(period: &str) -> Result<(Option<String>, Option<String>)> {
 
 /// A period as given, `ytd` among them: refused in words of its own when
 /// hledger cannot read it.
-pub(crate) fn period_ok(period: &str) -> Result<()> {
+pub fn period_ok(period: &str) -> Result<()> {
     checked_period(&hledger_period(period)?)
 }
 
 /// A period as given, `ytd` among them: its first and last day.
-pub(crate) fn period_days(period: &str) -> Result<(Option<String>, Option<String>)> {
+pub fn period_days(period: &str) -> Result<(Option<String>, Option<String>)> {
     days(&hledger_period(period)?)
 }
 

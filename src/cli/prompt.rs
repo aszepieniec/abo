@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 /// `--ni`: nothing is asked. The commands take the way that asks nothing;
 /// a question reached all the same is an error, never a wait on stdin.
-pub(crate) static NI: AtomicBool = AtomicBool::new(false);
+pub static NI: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn ni() -> bool {
     NI.load(Ordering::Relaxed)
@@ -211,7 +211,7 @@ pub(crate) fn pick(question: &str, options: &[&'static str], default: &str) -> R
 }
 
 /// Asks y/n on stderr, counting down; silence, or no terminal to ask on, is no.
-pub(crate) fn confirm(question: &str, secs: u8) -> Result<bool> {
+pub fn confirm(question: &str, secs: u8) -> Result<bool> {
     use std::io::IsTerminal as _;
     if ni() || !std::io::stdin().is_terminal() {
         return Ok(false);

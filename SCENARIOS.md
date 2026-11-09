@@ -252,7 +252,7 @@ Given to each person, with their scenarios.
 > `git` and the usual Unix tools on the PATH, and a data directory at
 > `$BOOKS`. That and your home directory are all you may read or change. Do
 > not look for abo's source or documentation elsewhere on the machine, and do
-> not use `abo serve` or `abo demo`: this run is about the command line.
+> not use `abo-web serve` or `abo-web demo`: this run is about the command line.
 >
 > Learn abo as a new user would: from `abo --help`, `abo <command> --help`,
 > and what it says back. You may read and edit the files in `$BOOKS`, but
@@ -327,7 +327,7 @@ they then find out what the pages say, and whether they can put it right.
 ## Setting up a web run
 
 For each person: a fresh copy of the books (the demo's, or an empty data
-directory for person 1), and `abo serve --dir <it> --port <their own>`,
+directory for person 1), and `abo-web serve --dir <it> --port <their own>`,
 its output logged outside their reach. A headless Chrome of their own,
 started with `--remote-debugging-port`, and the `web` tool on their PATH:
 a short Python script that connects to that Chrome by Playwright over the
@@ -344,7 +344,7 @@ CLI's alone.
 
 For each person: a fresh directory under the scratchpad as `$HOME`, holding
 `bill-scan.pdf` (person 2) or `contract.pdf` (person 5); `$BOOKS` inside it, empty (person 1) or holding
-the demo books (`abo demo --dir $BOOKS/example-ltd`, stopped once it serves);
+the demo books (`abo-web demo --dir $BOOKS/example-ltd`, stopped once it serves);
 git's `user.name` and `user.email` set in that `$HOME`. `abo` on the PATH is a
 wrapper that runs the release build of the commit under test and appends the
 command, its exit status and everything it wrote to a log outside `$HOME`,

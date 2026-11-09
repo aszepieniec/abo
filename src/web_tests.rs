@@ -3,7 +3,7 @@
 //! books once; a post from another site changes nothing; the data
 //! directory's form opens books as `abo init` does.
 
-use crate::cli_tests::{after, exe, head, offered, opened, plan, posting, replayed, without_pdfs, Dir};
+use crate::cli_tests::{after, web_exe, head, offered, opened, plan, posting, replayed, without_pdfs, Dir};
 use crate::model::tests::{self as mt, Step};
 use crate::model::{self, Books, Date, Op};
 use crate::store;
@@ -17,7 +17,7 @@ fn cases(n: u32) -> ProptestConfig {
     ProptestConfig::with_cases(std::env::var("ABO_CLI_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(n))
 }
 
-/// `abo serve` on `dir`, on a port of its own, on `today`; stopped with the
+/// `abo-web serve` on `dir`, on a port of its own, on `today`; stopped with the
 /// value.
 struct Server {
     child: std::process::Child,
@@ -35,7 +35,7 @@ impl Drop for Server {
 fn serve(dir: &Path, today: Date) -> Server {
     let out = Dir::new();
     let log = out.0.join("serve.log");
-    let mut child = std::process::Command::new(exe())
+    let mut child = std::process::Command::new(web_exe())
         .args(["serve", "--port", "0"])
         .current_dir(dir)
         .env("ABO_TODAY", today.to_string())
@@ -57,7 +57,7 @@ fn serve(dir: &Path, today: Date) -> Server {
     }
     let _ = child.kill();
     let _ = child.wait();
-    panic!("abo serve did not start: {}", std::fs::read_to_string(&log).unwrap_or_default());
+    panic!("abo-web serve did not start: {}", std::fs::read_to_string(&log).unwrap_or_default());
 }
 
 struct Answer {

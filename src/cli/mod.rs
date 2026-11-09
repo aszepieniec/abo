@@ -10,3 +10,4 @@ pub(crate) use args::{command, Cli};
 #[cfg(test)]
 pub(crate) use args::PASSED_HELP;
 pub(crate) use run::{hints, run};
+pub use prompt::{confirm, NI};

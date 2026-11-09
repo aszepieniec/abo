@@ -13,7 +13,7 @@ adding it is stated.
 
 Status: M0-M4 built — `abo init`, `post`, `file`, `bill`, `invoice`,
 `reconcile`, `record`, `unrecord`, `revert`, `undo`, `company`, `payment-options`, `pl`, `bs`,
-`vat`, `balance`, `register`, `log`, `serve`, `demo`. M5: `abo serve` serves
+`vat`, `balance`, `register`, `log`; `abo-web serve` and `demo`. M5: `abo-web serve` serves
 one company; users come from the gateway, in front of it.
 M6 built: each company installs as an app; not yet tried on a real phone
 (WORKFLOWS.md G1). Partners and agreements (MODEL.md §2.9): `partner`,
@@ -41,8 +41,8 @@ M6 built: each company installs as an app; not yet tried on a real phone
 
 ### Crates
 
-`clap serde toml serde_json axum tokio maud rust_decimal jiff sha2 anyhow
-unicode-general-category`
+`clap serde toml serde_json tokio rust_decimal jiff sha2 anyhow
+unicode-general-category`; and `axum maud` in abo-web.
 
 The last answers what kind of character a character is, from the Unicode
 tables: text holding one that prints as nothing or turns the text around it
@@ -115,7 +115,8 @@ numbered chart of accounts, `Assets:1020:Bank` also sorts correctly.
 ## 3. Source layout
 
 ```
-src/main.rs       main: the programs abo runs, logging, then the CLI
+src/main.rs       abo: the command line, as the library runs it
+src/lib.rs        the library under both binaries: the programs abo runs, the CLI
 src/cli/          the command line: clap's args, each command run, the terminal's questions
 src/model/        the books as MODEL.md defines them: state, check, operations, text,
                   what a person may type (answer.rs), refusals said of the operation
@@ -129,12 +130,21 @@ src/statement.rs  P&L and balance sheet, from hledger
 src/invoice.rs    issuing an invoice or credit note, and its PDF's data
 src/pdf.rs        typst: a template and its data made a PDF
 src/report.rs     hledger passthrough (-O json / -O csv)
-src/demo.rs       the demo's toy books
-src/web/          axum + maud: a module per page's area, the forms, the opening
-                  form, and style.css
+abo-web/src/main.rs   abo-web: serve and demo, and the server's log
+abo-web/src/demo.rs   the demo's toy books
+abo-web/src/web/      axum + maud: a module per page's area, the forms, the opening
+                      form, Chat and Scan (ai.rs), and style.css
 ```
 
-No `lib.rs`/`bin/` split, no workspace, no crate-per-module.
+A workspace of three crates, each a binary: `abo`, the command line, also
+the library the other two build on; `abo-web`, the web interface; the model's
+program (§5). abo-web needs abo's library and nothing else; the model's program needs
+neither, and runs `abo` as a person does. No crate-per-module.
+
+The web tests stay in abo's crate (`src/web_tests.rs`, `tests/web.rs`): they
+hold the pages to the model and to the command line with abo's test helpers,
+and run the `abo-web` binary, built for them beside `abo`
+(`tests/common/mod.rs`).
 
 The tests are run with `cargo test --no-fail-fast`: without the flag cargo
 stops at the first test binary that fails and never runs `tests/`. Two in
@@ -157,8 +167,9 @@ These are free now and expensive to retrofit. Do not violate them.
    receive is the struct the CLI already prints, so it is exercised from day one.
    A JSON API later is a second axum router over unchanged functions.
 
-The web server calls these functions **in-process**. It does not shell out to the
-CLI and it does not talk to itself over HTTP.
+The web server calls these functions **in-process**, through abo's library. It
+does not shell out to the CLI and it does not talk to itself over HTTP. Chat and
+Scan are the exception: they are the program's, which abo-web runs (§5).
 
 Questions asked in both places are written once. `src/questions.rs` describes
 opening the books (and a payment option's questions) as data: text, lines, a
@@ -203,17 +214,73 @@ line removes it. Once it is booked, that undo is refused: the booking names it.
 
 ## 5. Where a model fits
 
-Not in `abo`. Reading a scanned bill and suggesting the entry is the kind of
-help a model gives, and it belongs in a larger application around `abo`: one
-that shows a person the `abo file` and `abo bill` it suggests, takes their
-corrections, and runs the commands they settle on. `abo` then sees only those
-commands, validates them as it would a typed one (§6), and logs them. Nothing
-in the books depends on what a model said.
+Not in `abo`: in the model's program, a second crate in this repository and a binary of
+its own, which runs `abo` as a person at a terminal would.
 
-An earlier version called the Messages API from `abo bill` itself, with the
-conversation kept in `.abo/`. It was taken out so that the backbone is
-model-free; the design of that call is in git history if the larger
-application wants it.
+- `scan <file>` sends a bill's document (PDF, JPEG, PNG or WebP) to
+  the model, which transcribes it and proposes the `abo file` and `abo bill`
+  that book it.
+- `chat` is a conversation about the books.
+
+A photo over the API's 5 MB is sent smaller, as a JPEG no side of which is
+longer than the 2576 pixels the current models read (`shrink`, with its
+test); what `abo file` files is the photo as taken.
+
+Both are one conversation, the same loop. The model has two tools. `document`
+reads a document filed in the books, by its path: one under `bills/` or
+`contracts/` and nowhere else, links followed before the check. `abo` takes a
+command's arguments. A command that only reads the books
+(`reads` in the model's program, with its test) runs at once and its output
+goes back to the model. Any other command is printed, and the person runs it
+with `y` or answers in words, which go back to the model in its place. Each
+command runs with `--ni`, so `abo` sees a typed command: it validates it (§6)
+and logs it, and nothing in the books depends on what a model said.
+
+The key is `ANTHROPIC_API_KEY`; the model is `claude-opus-5-5`, with server-side
+fallback on a refusal. `ANTHROPIC_BASE_URL` and a model set in the environment point it
+elsewhere, such as a local Ollama (`http://127.0.0.1:11434`, which speaks the
+same API) for `chat`; a small local model reads documents badly, so `scan`
+wants Claude. Requests are plain HTTPS (`ureq`): there is no official
+Rust SDK. At a terminal the conversation is not kept: it ends with the process.
+
+### In the browser
+
+abo-web's **Chat** and **Scan** tabs are there when the model's program is installed, beside
+abo-web or on the `PATH`, and the person may change the books: every message
+may lead to a change. Without it they are not shown, and their pages are not
+found (`tests/web.rs`). abo-web links
+nothing of the program's: it runs the executable, a step at a time.
+
+- `scan <file> --to <conversation>` begins one with a document;
+  `say <conversation> <text>` adds a message, or, to a command
+  waiting, says it instead of running it; `run <conversation>` runs
+  the command waiting. Each carries the conversation on until it waits on
+  the bookkeeper again: the model has had its say, or a command that
+  changes the books waits for a yes.
+- `show <conversation>` gives it as JSON, what each said and each
+  command with what came of it, which the page draws. The API's own format
+  stays the program's.
+- `list <directory>` gives the conversations kept there, newest
+  first, each with its title: what it is about and what came of it, in a
+  few words, made anew by a small model after each step and kept in the
+  conversation. The model is the model set for titles, else the one set for the rest,
+  else `claude-haiku-5-5`. A local model that thinks at length before it
+  answers (qwen3.5 on Ollama, say) never gets to the title, so give it
+  one that does not; without a title, a conversation is listed by its
+  first words.
+- A conversation is kept in the books' `.abo/ai/`, outside git, as
+  `<id>.json`, and a scanned document beside it, from which `abo file`
+  files it.
+- A command runs under the name of the person the gateway names, as a
+  change made on any page: abo-web passes it as `GIT_AUTHOR_NAME` and
+  `GIT_AUTHOR_EMAIL`.
+- One step at a time per conversation: a second Run, or a message sent
+  while the model's program is still working, is refused, so a command never runs twice.
+- A step waits for the model, which can take minutes. The page is a plain
+  form, as every other is, so it waits too.
+
+An earlier version called the Messages API from `abo bill` itself (commit
+fb6ac2c). It was taken out so that `abo` is model-free, and `abo` stays so.
 
 ---
 
@@ -422,8 +489,8 @@ pub enum Vat {
 }
 ```
 
-Exactly two places read the method: the AI system prompt and the validator.
-Nothing else needs to know.
+Exactly one place reads the method: the validator. The model reads it
+with `abo config`, as a person would.
 
 ```
 ponytail: one VAT method for all time. A report over a past period under a
@@ -451,9 +518,9 @@ all three before dispatching anything. `git` and `hledger` are required and a
 missing one is a startup error naming what it is for and where to get it;
 `typst` is optional, needed only for PDFs, and a missing one is a warning
 rather than a refusal — on stderr for the short commands, and through the log
-beside the "listening on" line for `serve` and `demo`, since that is where
+beside the "listening on" line for `abo-web serve` and `demo`, since that is where
 someone starting a server actually reads. Better than a puzzling failure three steps into a
-workflow, and for `abo serve` it means the server declines to boot broken
+workflow, and for `abo-web serve` it means the server declines to boot broken
 instead of raising an error on the first request that needs a PDF.
 
 ### Web
@@ -498,11 +565,11 @@ maud escapes interpolated text, including inside <style>, so a `>` child
 combinator in the stylesheet silently becomes &gt; and the rule is dead. The
 stylesheet is wrapped in PreEscaped for that reason. This cost an afternoon
 once; it will not be spotted by reading the CSS.
-``` `abo serve --port 8801` binds
+``` `abo-web serve --port 8801` binds
 127.0.0.1 and
 runs until SIGINT or SIGTERM, finishing in-flight requests. TLS and any public
 name belong to nginx in front of it; the Origin check works either way because
-nginx forwards the public Host. `abo demo` is the same server over toy data.
+nginx forwards the public Host. `abo-web demo` is the same server over toy data.
 
 Each request opens the books afresh — `abo.toml` and all — so an edit made
 while the server runs, closing a period or changing a rate, applies to the
@@ -726,7 +793,7 @@ them the pages behind a prefix, the download links and Backups break.
 # Every top-level route abo serves (the gateway's contract, item 4), so that the gateway
 # adds the project's prefix to abo's root-relative links and sends these
 # paths to abo. A route added to abo's router is added here.
-reserved = ["account", "agreement", "agreements", "apple-touch-icon.png", "backups", "bill", "bills", "company", "contracts", "declarations", "entry", "export", "icon-192.png", "icon-512.png", "import", "invoice", "invoices", "log", "manifest.webmanifest", "new", "partner", "partners", "pay", "post", "reconcile", "report", "undo", "write-off"]
+reserved = ["account", "agreement", "agreements", "apple-touch-icon.png", "backups", "bill", "bills", "chat", "company", "contracts", "declarations", "entry", "export", "icon-192.png", "icon-512.png", "import", "invoice", "invoices", "log", "manifest.webmanifest", "new", "partner", "partners", "pay", "post", "reconcile", "report", "scan", "undo", "write-off"]
 
 # Download links (the gateway's contract, item 12): reached with no session, the
 # token being the credential, which abo checks. The second entry of token_paths
@@ -775,8 +842,9 @@ Not legal advice, but none of this is controversial.
   `method = "flat"` is rejected. ~300 lines. **Done.**
 - **M1** — `abo bill <file>`: AI proposal, terminal approve/refine. **Done**,
   and since taken out of `abo` (§5): `abo file` and `abo bill` are model-free.
-- **M2** — `abo serve`: balance, register, a booking form, and the bill upload
-  and proposal card. **Done.** `abo demo` serves the same pages against a
+  The model's program, `scan` and `chat`, is its successor, beside `abo` (§5).
+- **M2** — `abo-web serve`: balance, register, a booking form, and the bill upload
+  and proposal card. **Done.** `abo-web demo` serves the same pages against a
   throwaway repository of toy data in the temp directory, rebuilt on every
   start, through the ordinary validated `post`.
 - **M3** — invoices: typst template, numbering from the journal. **Done.**
@@ -791,7 +859,7 @@ Not legal advice, but none of this is controversial.
   as `--json`, and as PDFs through a second typst template. Bank import is
   not built (§12) — the point of reconciliation is to notice what is wrong, and typing
   a closing balance is enough to do that.
-- **M5** — companies and users. `abo serve` serves one company: its books,
+- **M5** — companies and users. `abo-web serve` serves one company: its books,
   or an empty directory, where it serves the form that opens them in it
   and then the company. A server for several companies under `/c/<dir>/`
   was built and taken out: behind a gateway a project is the unit of sharing,
@@ -804,6 +872,10 @@ Not legal advice, but none of this is controversial.
   (`tests/installable.mjs`). **Open:** adding it to a real phone's home
   screen, and on an iPhone whether a PDF opened in the app leaves a way back
   (WORKFLOWS.md G1).
+
+- **M7** — the model beside abo. **Done.** `scan` and `chat` at a
+  terminal (§5); the web interface moved out of abo into `abo-web`, its own
+  binary (§3), which shows Chat and Scan where the model's program is installed.
 
 Reconciliation was not in the original list of workflows and is the one that
 recurs most: bills arrive a few at a time, the statement arrives all at once and
@@ -894,7 +966,7 @@ Each with the trigger for revisiting.
 | QR or structured payment codes on invoices | A customer asks for one. It is a template change plus a QR crate, not an abo change. |
 | Statutory rates in code | Never. They are `[invoice] vat_rate` and `--vat-rate`. |
 | Auth in the application | Never: the gateway's (§8). |
-| Templating engine, ORM, workspace split | Not foreseen. |
+| Templating engine, ORM | Not foreseen. The workspace's three crates are §3's. |
 | A third typst template before it is needed | A document abo makes that is neither an invoice nor a statement. |
 | Payroll: gross to net, deductions, payslips | Not on the roadmap. A salary is a posting template on the employee's agreement: gross, what is withheld, net, the same entry each month. Agreements hold invoice templates today, not posting templates; until they do, it is booked by hand from the payslip. |
 | Bank import | Not on the roadmap. Banks' exports vary too much to fix a format for them now. Reconciliation is a closing balance typed in and postings ticked (§6). |

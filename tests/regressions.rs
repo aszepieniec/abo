@@ -4,6 +4,8 @@
 //! (src/model/tests.rs, MODEL.md §3) is not tested again here: what is here
 //! is the commands around the model, and the faults no property reaches.
 
+mod common;
+
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -60,6 +62,11 @@ fn made(base: &Path, name: &str) -> PathBuf {
 fn abo(dir: &Path, args: &[&str]) -> Output {
     sweep();
     Command::new(env!("CARGO_BIN_EXE_abo")).args(args).current_dir(dir).env("ABO_TODAY", TODAY).stdin(Stdio::null()).output().unwrap()
+}
+
+/// abo-web, as `abo` runs abo.
+fn web(dir: &Path, args: &[&str]) -> Output {
+    Command::new(common::web_exe()).args(args).current_dir(dir).env("ABO_TODAY", TODAY).stdin(Stdio::null()).output().unwrap()
 }
 
 fn ok(dir: &Path, args: &[&str]) -> String {
@@ -202,7 +209,7 @@ fn start(mut cmd: Command) -> Server {
 }
 
 fn serve(dir: &Path) -> Server {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_abo"));
+    let mut cmd = Command::new(common::web_exe());
     cmd.arg("serve").current_dir(dir);
     start(cmd)
 }
@@ -901,7 +908,7 @@ fn the_demo_books_take_commits_from_a_terminal() {
     let home = base.join("home");
     std::fs::create_dir_all(&home).unwrap();
     // No git identity anywhere but what the demo sets itself.
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_abo"));
+    let mut cmd = Command::new(common::web_exe());
     cmd.args(["demo", "--dir"]).arg(base.join("abo-demo")).env("TMPDIR", &base).env("HOME", &home).env("XDG_CONFIG_HOME", &home);
     let _s = start(cmd);
     let o = Command::new(env!("CARGO_BIN_EXE_abo")).args(["post", "--desc", "T", "Expenses:General=1.00", "Assets:Bank=-1.00"])
@@ -913,7 +920,8 @@ fn the_demo_books_take_commits_from_a_terminal() {
 #[test]
 fn serve_takes_no_plain_file() {
     let dir = books("serve-file", &[]);
-    refused(dir.parent().unwrap(), &["serve", "--dir", "test-ltd/abo.toml"], "is not a directory");
+    let o = web(dir.parent().unwrap(), &["serve", "--dir", "test-ltd/abo.toml"]);
+    assert!(!o.status.success() && err(&o).contains("is not a directory"), "{}", err(&o));
 }
 
 // ---- found by brainstorming from the patterns of the faults above ----
@@ -1231,7 +1239,7 @@ fn ni_asks_nothing() {
     let o = abo(&books, &["payment-options", "edit", "nope"]);
     assert!(o.status.code() == Some(1) && err(&o).contains("there is no payment option nope"), "{}", err(&o));
     // serve: a directory not there is not made.
-    let o = run(&base, &["--dir", "missing", "serve", "--port", "0"]);
+    let o = web(&base, &["--ni", "--dir", "missing", "serve", "--port", "0"]);
     assert!(!o.status.success() && !base.join("missing").exists(), "{}", err(&o));
     std::fs::remove_dir_all(&base).unwrap();
 }
@@ -1244,7 +1252,8 @@ fn serve_refuses_a_directory_with_no_books_that_is_not_empty() {
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
     std::fs::write(base.join("notes.txt"), "x").unwrap();
-    refused(&base, &["serve", "--port", "0"], "holds no books and is not empty");
+    let o = web(&base, &["serve", "--port", "0"]);
+    assert!(!o.status.success() && err(&o).contains("holds no books and is not empty"), "{}", err(&o));
     std::fs::remove_dir_all(&base).unwrap();
 }
 
@@ -1580,7 +1589,7 @@ fn the_log_travels_with_the_books() {
 #[test]
 fn a_demo_is_never_built_over_something() {
     let dir = books("demo-over", &[]);
-    let o = abo(&dir, &["demo", "--dir", dir.to_str().unwrap(), "--port", "0"]);
+    let o = web(&dir, &["demo", "--dir", dir.to_str().unwrap(), "--port", "0"]);
     assert!(!o.status.success() && err(&o).contains("is not empty"), "{}", err(&o));
     assert!(dir.join("abo.toml").exists());
 }
