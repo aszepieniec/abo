@@ -269,6 +269,9 @@ pub(super) async fn register(Books(s): Books, Query(q): Query<Fields>) -> Respon
         let mut rows = Vec::new();
         let mut months: std::collections::BTreeMap<String, statement::Bag> = std::collections::BTreeMap::new();
         let mut ps: Vec<_> = b.all_postings().into_iter().filter(|(_, _, p)| p.account == name).collect();
+        if ps.is_empty() && !b.accounts.contains(&name) {
+            return Err(input::not_found(format!("there is no account {name}")));
+        }
         ps.sort_by_key(|(r, d, _)| (*d, r.entry, r.n));
         for (r, d, p) in ps {
             // At cost, as the books and the reports show it.

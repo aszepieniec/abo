@@ -57,7 +57,9 @@ pub fn compile(
 /// Compile a template to PDF. The one place abo runs typst.
 pub fn typst(root: &Path, template: &Path, out: &Path) -> Result<()> {
     let mut typst = Command::new("typst");
-    typst.arg("compile").arg("--root").arg(root);
+    // A diagnostic on a line of its own, file:line:col: error: ..., not
+    // drawn in boxes: the CLI shows only ASCII.
+    typst.arg("compile").arg("--diagnostic-format").arg("short").arg("--root").arg(root);
     // Dated by the operation's stamp, as its commit is.
     if let Ok(s) = crate::repo::Stamp::now(root) {
         typst.arg("--creation-timestamp").arg(s.time.to_string());

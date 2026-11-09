@@ -233,6 +233,19 @@ pub fn option_problem(id: &str, o: &PayOption) -> Option<(&'static str, String)>
     }
 }
 
+/// I-C2 across options: another option that pays to the same IBAN as `id`,
+/// or to the same wallet on the same network; and the field it is in.
+pub fn option_twin<'a>(payment: &'a BTreeMap<String, PayOption>, id: &str) -> Option<(&'a str, &'static str)> {
+    let o = payment.get(id)?;
+    let to = |o: &PayOption| match o.kind {
+        PayKind::Bank if !o.iban.is_empty() => Some(("iban", o.iban.clone())),
+        PayKind::Crypto if !o.address.is_empty() => Some(("address", format!("{}\n{}", o.network, o.address))),
+        _ => None,
+    };
+    let mine = to(o)?;
+    payment.iter().filter(|(k, _)| k.as_str() != id).find(|(_, x)| to(x).as_ref() == Some(&mine)).map(|(k, _)| (k.as_str(), mine.0))
+}
+
 pub fn check(m: &Books) -> Vec<Violation> {
     // Four digits of year, as the files write it and hledger reads it.
     if let Some(d) = dates(m).into_iter().find(|d| !(1..=9999).contains(&d.year())) {
@@ -582,6 +595,8 @@ pub fn check(m: &Books) -> Vec<Violation> {
     for (id, o) in &c.payment {
         if let Some((field, why)) = option_problem(id, o) {
             no!(@of Subject::Option(id.clone(), field), "I-C2", "payment option {id}: {why}");
+        } else if let Some((other, field)) = option_twin(&c.payment, id) {
+            no!(@of Subject::Option(id.clone(), field), "I-C2", "payment option {id} pays to where {other} does");
         }
     }
     let mut kinds = vec![(&c.invoice.receivable, "Assets"), (&c.invoice.income, "Income")];

@@ -5,7 +5,7 @@
 //! the books before it, and leaves out those that only follow from another
 //! it keeps. Each it keeps has its code: only the words change.
 
-use super::check::{commodity_ok, description_ok, hash_ok, lines_ok, option_problem, other_space, slug_ok, text_ok, Subject, Violation, BOUND};
+use super::check::{commodity_ok, description_ok, hash_ok, lines_ok, option_problem, option_twin, other_space, slug_ok, text_ok, Subject, Violation, BOUND};
 use super::ops::Op;
 use super::*;
 use super::answer::{self, hidden};
@@ -693,7 +693,11 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
             .payment
             .iter()
             .filter(|(id, o)| m.config.payment.get(*id) != Some(*o))
-            .filter_map(|(id, o)| option_problem(id, o).map(|(field, why)| (id, o, field, why)))
+            .filter_map(|(id, o)| match (option_problem(id, o), option_twin(&n.config.payment, id)) {
+                (Some((field, why)), _) => Some((id, o, field, why)),
+                (None, Some((t, f))) => Some((id, o, "twin", format!("{} is {}'s already: an option says once where money goes", if f == "iban" { "the IBAN" } else { "the wallet" }, shown(t)))),
+                (None, None) => None,
+            })
             .map(|(id, o, field, why)| {
                 let id = shown(id);
                 // By the field it is wrong in, never by the words that say so.

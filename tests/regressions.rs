@@ -606,7 +606,7 @@ fn init_refuses_a_flag_no_question_asks_for() {
 #[test]
 fn a_renamed_company_holds_its_bank_account_in_its_new_name() {
     let dir = books("holder", &["--payment", "{ kind = \"bank\", iban = \"CH9300762011623852957\" }",
-                                "--payment", "{ kind = \"bank\", id = \"other\", holder = \"Ann Smith\", iban = \"CH9300762011623852957\" }"]);
+                                "--payment", "{ kind = \"bank\", id = \"other\", holder = \"Ann Smith\", iban = \"DE89370400440532013000\" }"]);
     ok(&dir, &["company", "--name", "New Name Ltd"]);
     let toml = read(&dir, "abo.toml");
     assert!(toml.contains("holder = \"New Name Ltd\"") && toml.contains("holder = \"Ann Smith\""), "{toml}");
@@ -2807,4 +2807,76 @@ fn log_jsonl(dir: &Path) -> String {
     let o = std::process::Command::new(env!("CARGO_BIN_EXE_abo")).args(["--json", "log", "--since", "1900-01-01"]).current_dir(dir).output().unwrap();
     let v: Vec<serde_json::Value> = serde_json::from_slice(&o.stdout).unwrap_or_default();
     v.iter().map(|l| format!("{l}\n")).collect()
+}
+
+// ---- the known faults of the first runs, fixed ----
+
+/// Two payment options do not pay to one IBAN, nor to one wallet.
+#[test]
+fn an_iban_is_one_options() {
+    let dir = books("iban-twice", &[]);
+    ok(&dir, &["payment-options", "add", "one", "--ni", "--label", "A", "--holder", "X", "--iban", "CH9300762011623852957"]);
+    refused(&dir, &["payment-options", "add", "two", "--ni", "--label", "B", "--holder", "X", "--iban", "CH93 0076 2011 6238 5295 7", "--account", "Assets:Bank:Two"], "the IBAN is one's already");
+    let wallet = |id: &'static str, account: &'static str| vec!["payment-options", "add", id, "--ni", "--kind", "crypto", "--label", "W", "--network", "Bitcoin", "--wallet", "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", "--account", account];
+    ok(&dir, &wallet("w1", "Assets:Crypto:One"));
+    refused(&dir, &wallet("w2", "Assets:Crypto:Two"), "the wallet is w1's already");
+    clean(&dir);
+}
+
+/// Without VAT registration an invoice in BTC says of VAT what one in EUR
+/// does: nothing.
+#[test]
+fn an_invoice_in_btc_says_of_vat_what_one_in_eur_does() {
+    let dir = books("btc-no-vat", &["--vat", "none"]);
+    ok(&dir, &["commodity", "add", "BTC", "8"]);
+    ok(&dir, &["price", "add", "2026-03-01", "BTC", "60000", "EUR"]);
+    let vat = |currency: &str, item: &str| {
+        ok(&dir, &["invoice", "--to", "C", "--item", item, "--currency", currency, "--date", "2026-03-01"]);
+        let d: serde_json::Value = serde_json::from_str(&read(&dir, ".abo/invoice.json")).unwrap();
+        (d["vat_rate"].clone(), d.get("vat_reason").cloned(), d.get("vat_home").cloned())
+    };
+    assert_eq!(vat("BTC", "1|0.001|x"), vat("EUR", "1|10|x"));
+}
+
+/// A month or a day that is not there is no period: hledger reads 2026-13
+/// as a period with no dates, and a report of it would show nothing.
+#[test]
+fn a_month_not_there_is_no_period() {
+    let dir = books("period-13", &[]);
+    for p in ["2026-13", "2026-02-30"] {
+        refused(&dir, &["pl", "--period", p], "is not a period");
+    }
+    ok(&dir, &["pl", "--period", "2026-12"]);
+}
+
+/// typst's errors reach the terminal one to a line, in ASCII, not drawn in
+/// boxes.
+#[test]
+fn a_typst_error_is_ascii() {
+    let dir = books("typst-ascii", &[]);
+    invoice(&dir, "2026-0001", "2026-03-01", "10.00");
+    let template = dir.join("templates/invoice.typ");
+    let mut t = std::fs::read_to_string(&template).unwrap();
+    t.push_str("#let x = (\n");
+    std::fs::write(&template, t).unwrap();
+    by_hand(&dir, "Break the template");
+    let o = abo(&dir, &["invoice", "--to", "C", "--item", "1|10|x", "--vat-rate", "0", "--vat-reason", "Export", "--date", "2026-03-02"]);
+    let e = err(&o);
+    assert!(!o.status.success() && e.contains("templates/invoice.typ:") && e.contains("unclosed delimiter") && e.is_ascii(), "{e}");
+}
+
+/// A page of something the books do not have answers 404, not 200.
+#[test]
+fn a_page_of_nothing_is_not_found() {
+    let dir = books("pages-404", &[]);
+    let s = serve(&dir);
+    for path in ["/account?name=Nope:X", "/reconcile?account=Nope:X", "/reconcile?account=Assets:Bank&commodity=XXX", "/invoice?agreement=nope", "/bill?file=nope"] {
+        assert_eq!(http(&s, "GET", path, &[]).0, 404, "{path}");
+    }
+    for path in ["/account?name=Assets:Bank", "/reconcile?account=Assets:Bank", "/invoice", "/bill"] {
+        assert_eq!(http(&s, "GET", path, &[]).0, 200, "{path}");
+    }
+    // A POST missing its fields gets the page that says so, not a bare 422.
+    let (status, _, page) = http(&s, "POST", "/company/close", &[("token", "nf2")]);
+    assert!(status == 422 && page.contains("<h1>"), "{page}");
 }

@@ -16,6 +16,9 @@ pub(super) async fn invoice_form(Books(s): Books, Query(q): Query<Fields>) -> Re
                 f.insert(k.into(), v.clone());
             }
         }
+        if let Some(a) = q.get("agreement").filter(|a| !a.trim().is_empty() && !s.books.agreements.contains_key(*a)) {
+            return Err(input::not_found(format!("there is no agreement {a}")));
+        }
         if let Some((a, ag)) = q.get("agreement").and_then(|a| Some((a, s.books.agreements.get(a)?))) {
             let day = match q.get("period_from").map(|d| d.trim()).filter(|d| !d.is_empty()) {
                 Some(d) => input::day(Some(d))?,

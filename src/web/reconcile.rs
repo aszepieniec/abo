@@ -13,7 +13,17 @@ pub(super) fn params(s: &Store, f: &Fields) -> (String, String, String) {
 }
 
 pub(super) async fn reconcile_view(Books(s): Books, Query(q): Query<Fields>) -> Response {
-    or_error(&s, "Reconcile", || reconcile_page(&s, &q, &[], None))
+    or_error(&s, "Reconcile", || {
+        // An account or a commodity asked for by name is one the books have.
+        let (account, commodity, _) = params(&s, &q);
+        if !s.books.accounts.contains(&account) {
+            return Err(input::not_found(format!("there is no account {account}")));
+        }
+        if !s.books.commodities.contains_key(&commodity) {
+            return Err(input::not_found(format!("there is no commodity {commodity}")));
+        }
+        reconcile_page(&s, &q, &[], None)
+    })
 }
 
 /// One form, two buttons: record the statement with what is ticked, or take

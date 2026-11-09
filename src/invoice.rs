@@ -257,3 +257,19 @@ pub fn issue(s: &mut Store, op: impl Fn(String) -> Op) -> Result<Issued> {
     let total = invoices(&s.books, today()?).into_iter().find(|i| i.entry == id).map(|r| r.total).unwrap_or_else(|| Amount::new(&s.books, Decimal::ZERO, &s.books.config.company.currency));
     Ok(Issued { entry: id, number, pdf, total, commit, warnings })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::price;
+    use rust_decimal::Decimal;
+
+    /// A unit price at the commodity's places, finer only where the price
+    /// itself is: not as typed.
+    #[test]
+    fn a_unit_price_is_stated_to_its_places() {
+        let p = |s: &str| price(s.parse::<Decimal>().unwrap(), 2, "EUR").replace('\u{202F}', " ");
+        assert_eq!(p("10"), "10.00");
+        assert_eq!(p("10.10000"), "10.10");
+        assert_eq!(p("10.123"), "10.123");
+    }
+}

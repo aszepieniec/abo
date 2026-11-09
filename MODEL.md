@@ -939,7 +939,8 @@ not reused: those missing below were rules about a value now derived.
   character; no VAT box's query begins with `-`, as an hledger option does.
 - **I-C2** Payment option ids are well formed; each option has what its kind
   needs (DESIGN, A4), and nothing another kind has — a cash option no IBAN — and an IBAN or BIC that is valid, in its canonical form,
-  if given.
+  if given. No two options pay to the same IBAN, or to the same wallet on the
+  same network.
 - **I-C3** Every account the configuration names is of its kind: money arrives
   in an asset, the receivable is an asset, income is income, input VAT is an
   asset, output and flat-rate VAT are liabilities. A flat rate is above

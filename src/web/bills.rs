@@ -149,7 +149,18 @@ pub(super) async fn unfile(Books(mut s): Books, Form(f): Form<Fields>) -> Respon
 
 /// `?file=<path>`: a document filed already, to book.
 pub(super) async fn bill_form(Books(s): Books, Query(q): Query<Fields>) -> Response {
-    or_error(&s, "Book a bill", || Ok(bill_page(&s, &q, None)))
+    let mut r = or_error(&s, "Book a bill", || Ok(bill_page(&s, &q, None)));
+    // The page says "No such document": not found.
+    if q.get("file").is_some_and(|f| !f.is_empty() && !waiting(&s).contains(f)) {
+        *r.status_mut() = StatusCode::NOT_FOUND;
+    }
+    r
+}
+
+/// The documents filed and waiting to be booked: their paths.
+fn waiting(s: &Store) -> Vec<String> {
+    let standing = s.books.standing();
+    s.books.documents.iter().filter(|(_, d)| d.version().is_none() && d.bill().is_none_or(|of| !standing[of])).map(|(h, d)| d.path(h)).collect()
 }
 
 /// A bill: its document, what it says, and the entry. Sent with a document,
@@ -157,8 +168,7 @@ pub(super) async fn bill_form(Books(s): Books, Query(q): Query<Fields>) -> Respo
 pub(super) fn bill_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>) -> Markup {
     let get = |k: &str| f.get(k).cloned().unwrap_or_default();
     let filed = get("file");
-    let standing = s.books.standing();
-    let waiting: Vec<String> = s.books.documents.iter().filter(|(_, d)| d.version().is_none() && d.bill().is_none_or(|of| !standing[of])).map(|(h, d)| d.path(h)).collect();
+    let waiting = waiting(s);
     html! {
         h1 { "Book a bill" }
         @if let Some(e) = error { (refused(e)) }

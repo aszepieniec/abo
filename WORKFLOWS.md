@@ -1112,13 +1112,15 @@ category, and hledger reads no config and takes only listed options.
 | (thought of, then tested) | Fixed: a link or key made before another entry of the same day was booked above it reached that other entry — keys now carry a fingerprint of their entry; a commit swept up whatever else was staged; an invoice could be dated ahead, holding every later one back; an invoice below the last numbered could be undone, leaving a gap; zero-width and right-to-left characters were taken in text; one company's form token was taken as sent in another's; `abo settle --by` took a reversed payment, or one dated before the invoice; a document could be filed for a booking in a closed period, rewriting its tags; an asset declared in lower case was not offered to pay from; a description could make the Log take a commit for undone; a key could reach a twin entry that differed only in its tags; one inconsistency made by hand refused every later undo; an `abo` at a terminal and the server could write the books at once, colliding on git's index — the books are now held for one change at a time; a clearing could be undone under a statement recorded since; `abo.toml` edited by hand was not checked (a payment id twice, a receivable that is no asset, an account not declared); abo wrote into a year file holding someone else's uncommitted change; a log taken under laxer rules could not be replayed — each line now names its rules, and a replay takes it under them, and abo says so whenever it checks by older ones; a page read while a terminal's abo was mid-change could show what was never booked — it now waits for the change; line and paragraph separators and a few other invisible characters were still taken; a stale link's page did not say what to do |
 | (in passing) | Fixed: an invoice line without a description; a nought total refused in the wrong words; a credit note of an invoice paid on the spot shown positive, its VAT as `-0`; `abo post` and recorded statements echoing amounts as typed; `reconcile --help` saying `--record` always asserts |
 
-Known, not fixed: error pages answer 200, and a direct POST missing a field
-gets a bare 422; at 0% a BTC invoice prints a VAT line where EUR does not;
-unit prices print as typed, finer than the commodity if typed so; the same
-IBAN may be added twice; the Log offers Undo on a line that the bill check
-would then refuse; hledger reads `2026-13` as 2026, and abo with it; a
-typst error reaches the terminal with its box-drawing characters; a
-reversal, and the opening balance, can be reverted.
-
-Not yet done: users and logins (the rest of M5), and a web app manifest
-(M6, G1).
+Known then, not fixed, and each since put right, with a test in
+`tests/regressions.rs` unless said: a page of something the books do not have
+(an account, an agreement, a document asked for by name) answered 200, now
+404, and a direct POST missing a field gets the page, 422; at 0% a BTC invoice
+says of VAT what a EUR one does; a unit price is stated to its commodity's
+places, finer only where it is (`src/invoice.rs`); two payment options do not
+pay to one IBAN, or one wallet (I-C2); a month or a day not there, `2026-13`
+or `2026-02-30`, is no period; the Log offers Undo only where undo would
+take it, the two asking one function; a typst error reaches the terminal one
+to a line, in ASCII. Not a fault: a reversal can be reverted, which puts back
+what it reversed (MODEL.md §2.4), and so can an opening balance, an entry
+like any other.

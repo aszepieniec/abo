@@ -186,7 +186,20 @@ pub(crate) fn checked_period(period: &str) -> Result<()> {
     // Read against no books, so that books hledger cannot read are not
     // blamed on the period.
     let read = || std::process::Command::new("hledger").args(["--no-conf", "-f", "-", "balance", "-p", period]).stdin(std::process::Stdio::null()).output().is_ok_and(|o| o.status.success());
-    if !period.is_empty() && !read() {
+    // A month or a day that is not there, 2026-13 or 2026-02-30, hledger
+    // takes for some other period, or for none, without a word.
+    let real = |w: &str| {
+        let n: Vec<&str> = w.split(['-', '/', '.']).collect();
+        let num = |i: usize| n[i].parse::<i8>().unwrap_or(0);
+        match n.len() {
+            2 => (1..=12).contains(&num(1)),
+            3 => n[0].parse().is_ok_and(|y| jiff::civil::Date::new(y, num(1), num(2)).is_ok()),
+            _ => true,
+        }
+    };
+    let dated = |w: &&str| w.len() > 5 && w[..4].bytes().all(|b| b.is_ascii_digit()) && w[4..].starts_with(['-', '/', '.']) && w.bytes().all(|b| b.is_ascii_digit() || b"-/.".contains(&b));
+    let unreal = period.split_whitespace().flat_map(|w| w.split("..")).filter(dated).any(|w| !real(w));
+    if !period.is_empty() && (unreal || !read()) {
         bail!("{period:?} is not a period; give one such as 2026, 2026q1, 2026-08, last month or ytd");
     }
     Ok(())
