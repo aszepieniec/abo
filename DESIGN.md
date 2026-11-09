@@ -257,8 +257,9 @@ nothing of the program's: it runs the executable, a step at a time.
   the command waiting. Each carries the conversation on until it waits on
   the bookkeeper again: the model has had its say, or a command that
   changes the books waits for a yes.
-- `show <conversation>` gives it as JSON, what each said and each
-  command with what came of it, which the page draws. The API's own format
+- `show <conversation>` gives it as JSON: its title, and what each
+  said and each command with what came of it, which the page draws under
+  the title. The API's own format
   stays the program's.
 - `list <directory>` gives the conversations kept there, newest
   first, each with its title: what it is about and what came of it, in a
