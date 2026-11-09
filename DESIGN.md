@@ -261,6 +261,15 @@ nothing of the program's: it runs the executable, a step at a time.
   said and each command with what came of it, which the page draws under
   the title. The API's own format
   stays the program's.
+- The model's answers are rendered as markdown (`pulldown-cmark`): tables,
+  lists, emphasis. What the model writes is not trusted, since a scanned
+  document can tell it what to write. So HTML in an answer is shown as
+  text. An image is dropped and its description kept, since its address
+  could carry the books to another site as the page loads. A link is one
+  only within abo's pages (`/bills/...`); any other, `//host`, `/\host`
+  and `javascript:` among them, is its text alone (`markdown` in
+  `abo-web/src/web/ai.rs`, with its test). On the page the model is told
+  that markdown is rendered; at a terminal it is asked for plain ASCII.
 - `list <directory>` gives the conversations kept there, newest
   first, each with its title: what it is about and what came of it, in a
   few words, made anew by a small model after each step and kept in the
