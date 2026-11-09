@@ -39,6 +39,19 @@ pub fn run(s: &Store, cmd: &str, args: &[String], json: bool) -> Result<String> 
             args[i] = format!("--period={ytd}");
         }
     }
+    // A period or a date, refused as pl and vat refuse it: hledger takes a
+    // month that is not there, 2026-13, for some other period.
+    for (i, x) in args.iter().enumerate() {
+        let after = |f: &[&str]| i > 0 && f.contains(&args[i - 1].as_str());
+        let value = if after(&["-p", "--period", "-b", "--begin", "-e", "--end"]) {
+            Some(x.as_str())
+        } else {
+            ["--period=", "--begin=", "--end=", "-p", "-b", "-e", "date:"].iter().find_map(|f| x.strip_prefix(f)).filter(|v| !v.is_empty())
+        };
+        if let Some(v) = value {
+            crate::statement::checked_period(v)?;
+        }
+    }
     let args = &args[..];
     a.extend(args.iter().map(String::as_str));
     // At cost, as the balance sheet: what is owed or held in another

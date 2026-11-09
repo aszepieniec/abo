@@ -168,6 +168,16 @@ fn days(period: &str) -> Result<(Option<String>, Option<String>)> {
     let day = |d: &Value| d["contents"].as_str().and_then(|s| s.parse::<jiff::civil::Date>().ok());
     let from = dates.first().and_then(|d| day(&d[0]));
     let to = dates.last().and_then(|d| day(&d[1])).and_then(|d| d.yesterday().ok());
+    // An end the period leaves open, `from 2026-03-01`, hledger closes at
+    // the books' last day, here the first: none. A period holding the first
+    // day there is, or the last, leaves that end open.
+    let bounds = "0001-01-01 first\n  a  1\n  b\n9999-12-31 last\n  a  1\n  b\n";
+    let mut hledger = std::process::Command::new("hledger").args(["--no-conf", "-f", "-", "print", "-p", period])
+        .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().context("running hledger")?;
+    std::io::Write::write_all(&mut hledger.stdin.take().context("hledger's input")?, bounds.as_bytes())?;
+    let held = String::from_utf8_lossy(&hledger.wait_with_output()?.stdout).into_owned();
+    let from = from.filter(|_| !held.contains(" first"));
+    let to = to.filter(|_| !held.contains(" last"));
     Ok((from.map(|d| d.to_string()), to.map(|d| d.to_string())))
 }
 

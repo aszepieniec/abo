@@ -1119,7 +1119,9 @@ Known then, not fixed, and each since put right, with a test in
 says of VAT what a EUR one does; a unit price is stated to its commodity's
 places, finer only where it is (`src/invoice.rs`); two payment options do not
 pay to one IBAN, or one wallet (I-C2); a month or a day not there, `2026-13`
-or `2026-02-30`, is no period; the Log offers Undo only where undo would
+or `2026-02-30`, is no period, in `abo balance` and `register` too; a period
+open at an end, `from 2026-03-01`, says no day there, where it said its
+first, and the account page took it for that day alone; the Log offers Undo only where undo would
 take it, the two asking one function; a typst error reaches the terminal one
 to a line, in ASCII. Not a fault: a reversal can be reverted, which puts back
 what it reversed (MODEL.md §2.4), and so can an opening balance, an entry

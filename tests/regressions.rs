@@ -2847,6 +2847,26 @@ fn a_month_not_there_is_no_period() {
         refused(&dir, &["pl", "--period", p], "is not a period");
     }
     ok(&dir, &["pl", "--period", "2026-12"]);
+    // Nor in balance and register, which pass the rest to hledger.
+    for args in [&["balance", "-p", "2026-13"][..], &["register", "--period=2026-02-30"], &["balance", "-b", "2026-13-01"], &["balance", "date:2026-13"]] {
+        refused(&dir, args, "is not a period");
+    }
+    ok(&dir, &["balance", "-p", "2026-12"]);
+}
+
+/// A period open at an end says no day there: hledger closes it at the last
+/// day of the books it reads.
+#[test]
+fn an_open_period_says_no_end() {
+    let dir = books("period-open", &[]);
+    ok(&dir, &["post", "--date", "2026-03-05", "--desc", "Lunch", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
+    let pl = ok(&dir, &["pl", "--period", "from 2026-03-01"]);
+    assert!(pl.contains("Profit and loss, from 2026-03-01\n"), "{pl}");
+    assert!(ok(&dir, &["pl", "--period", "2026-03"]).contains("(2026-03-01 to 2026-03-31)"));
+    // The register of an account takes it as open, too.
+    let s = serve(&dir);
+    let (_, _, page) = http(&s, "GET", "/account?name=Assets:Bank&period=from+2026-03-01", &[]);
+    assert!(page.contains("Lunch"), "{page}");
 }
 
 /// typst's errors reach the terminal one to a line, in ASCII, not drawn in
