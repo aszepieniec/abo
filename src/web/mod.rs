@@ -477,6 +477,7 @@ fn page_with(s: &Store, title: &str, body: Markup, with_banner: bool) -> Html<St
                         (body)
                     }
                     script { (PreEscaped(EDITS)) }
+                    script { (PreEscaped(DROP)) }
                 }
             }
         }
@@ -510,6 +511,35 @@ document.querySelector(".flash-error") || document.querySelectorAll("form.edits"
   look();
 });
 "#;
+
+/// A file dropped on a form goes into its file input, as if chosen; on a
+/// page with one file input, dropped anywhere. Where it has nowhere to go,
+/// it is not opened in place of the page, losing what was typed.
+const DROP: &str = r#"{
+const inputs = document.querySelectorAll('input[type="file"]');
+const into = (t) => (t.closest && t.closest("form")?.querySelector('input[type="file"]')) || (inputs.length === 1 ? inputs[0] : null);
+let over = null;
+const mark = (f) => { over?.classList.remove("dropping"); over = f; f?.classList.add("dropping"); };
+inputs.length && addEventListener("dragover", (e) => {
+  if (![...e.dataTransfer.types].includes("Files")) return;
+  e.preventDefault();
+  const i = into(e.target);
+  e.dataTransfer.dropEffect = i ? "copy" : "none";
+  mark(i?.form ?? null);
+});
+inputs.length && addEventListener("dragleave", (e) => e.relatedTarget || mark(null));
+inputs.length && addEventListener("drop", (e) => {
+  if (![...e.dataTransfer.types].includes("Files")) return;
+  e.preventDefault();
+  mark(null);
+  const i = into(e.target);
+  if (!i || !e.dataTransfer.files.length) return;
+  const d = new DataTransfer();
+  for (const f of i.multiple ? e.dataTransfer.files : [e.dataTransfer.files[0]]) d.items.add(f);
+  i.files = d.files;
+  i.dispatchEvent(new Event("change", { bubbles: true }));
+});
+}"#;
 
 async fn shutdown() {
     let ctrl_c = async {

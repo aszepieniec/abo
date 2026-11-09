@@ -885,7 +885,7 @@ Each with the trigger for revisiting.
 |---|---|
 | Account / commodity editor UI | You are editing `accounts.journal` weekly. It is `$EDITOR` plus `hledger check accounts`. |
 | Database | Never, for the books. Users are the gateway's (§8). |
-| Client-side JavaScript beyond small touches | A workflow genuinely cannot be a form submission. Two small touches so far, each with the page working without it: a form's Save button lit once a field differs (`EDITS`), and a download link's Copy button, since the clipboard is the browser's alone. |
+| Client-side JavaScript beyond small touches | A workflow genuinely cannot be a form submission. Three small touches so far, each with the page working without it: a form's Save button lit once a field differs (`EDITS`); a file dropped on a form taken as chosen (`DROP`), since a file input alone takes a drop only on itself; and a download link's Copy button, since the clipboard is the browser's alone. |
 | Bootstrap, Tailwind, or any CSS framework | The hand-written stylesheet stops fitting on one screen, or a component needs behaviour rather than style. |
 | An icon font or an icon package | You need more than about twenty icons. |
 | JSON API | A native phone client is chosen (§7). |

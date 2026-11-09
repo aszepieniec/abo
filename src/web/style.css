@@ -207,6 +207,7 @@ input[type=text], input[type=date], input[type=file], input[type=number], textar
   font: inherit; font-weight: 400; color: var(--fg); background: var(--card);
   border: 1px solid var(--btn-border); border-radius: 8px;
 }
+form.dropping { outline: 2px dashed var(--accent); outline-offset: 6px; border-radius: 8px; }
 /* a number inside a sentence, as the payment terms */
 label:not(.field) > input[type=number] { display: inline-block; width: auto; margin: 0 4px; padding: 4px 8px; }
 textarea { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }
