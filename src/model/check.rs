@@ -584,13 +584,8 @@ pub fn check(m: &Books) -> Vec<Violation> {
     // 3.8 Configuration.
     let c = &m.config;
     let co = &c.company;
-    if co.name.trim().is_empty() || ![&co.name, &co.tax_id, &co.country].iter().all(|t| text_ok(t)) || !lines_ok(&co.address)
-        || !c.report.vat.iter().all(|(k, b)| text_ok(k) && text_ok(&b.label) && text_ok(&b.query))
-    {
+    if co.name.trim().is_empty() || ![&co.name, &co.tax_id, &co.country].iter().all(|t| text_ok(t)) || !lines_ok(&co.address) {
         no!("I-C1", "the company has a name, and no text in the configuration holds a hidden character");
-    }
-    if let Some((k, _)) = c.report.vat.iter().find(|(_, b)| b.query.starts_with('-')) {
-        no!("I-C1", "report.vat.{k}'s query begins with '-', as an hledger option does");
     }
     for (id, o) in &c.payment {
         if let Some((field, why)) = option_problem(id, o) {

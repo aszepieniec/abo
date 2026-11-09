@@ -35,13 +35,12 @@
     #v(0.15cm)
   ]
   #table(
-    columns: (auto, 1fr, auto),
+    columns: (1fr, auto),
     stroke: none,
     column-gutter: 1.2em,
     inset: (x: 0pt, y: 3.5pt),
     align: (left, left, right),
     ..s.lines.map(l => (
-      if l.code == none { [] } else { [#l.code] },
       [#l.label],
       money(l.amounts),
     )).flatten(),

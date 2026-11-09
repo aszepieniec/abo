@@ -89,11 +89,7 @@ pub(super) fn company_page(s: &Store, f: &Fields, problems: &Problems, refused: 
                 }
             }
             div.box-body { p.muted.small {
-                "Accounts, currencies and prices: " a href="/declarations" { "Accounts" } ". "
-                // A company not VAT registered files no VAT return.
-                @if !matches!(cfg.vat, model::Vat::None) {
-                    "The tax return's boxes: " a href="/company/tax-return" { "the tax return" } "."
-                }
+                "Accounts, currencies and prices: " a href="/declarations" { "Accounts" } "."
             } }
         }
         @if may_change() { form method="post" action="/company/close" {
@@ -284,106 +280,4 @@ pub(super) async fn close(Books(mut s): Books, Form(f): Form<Fields>) -> Respons
 pub(super) fn company_fields(s: &Store) -> Fields {
     let c = &s.books.config.company;
     Fields::from([("name".into(), c.name.clone()), ("address".into(), c.address.clone()), ("country".into(), c.country.clone()), ("tax_id".into(), c.tax_id.clone())])
-}
-
-/// The tax return's boxes: each with its code on the form, its label, the
-/// hledger query its figure is the balance of over the period, and whether
-/// it is turned over; added, changed and taken out as `abo config` does,
-/// as `report.vat.<code>`.
-pub(super) async fn tax_return(Books(s): Books, Query(q): Query<Fields>) -> Response {
-    or_error(&s, "The tax return", || {
-        let mut f = Fields::new();
-        if let Some(code) = q.get("code") {
-            let b = s.books.config.report.vat.get(code).ok_or_else(|| input::not_found(format!("there is no box {code}")))?;
-            f.insert("code".into(), code.clone());
-            f.insert("label".into(), b.label.clone());
-            f.insert("query".into(), b.query.clone());
-            if b.invert {
-                f.insert("invert".into(), "on".into());
-            }
-            f.insert("was".into(), code.clone());
-        }
-        Ok(tax_return_page(&s, &f, None))
-    })
-}
-
-pub(super) fn tax_return_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>) -> Markup {
-    let get = |k: &str| f.get(k).cloned().unwrap_or_default();
-    let was = get("was");
-    let boxes = &s.books.config.report.vat;
-    html! {
-        h1 { "The tax return" }
-        @if let Some(e) = error { (refused(e)) }
-        div.box {
-            div.box-header { (icon("doc")) "Its boxes" span.spacer { a.small href="/report/vat" { "The tax return" } } }
-            @if boxes.is_empty() {
-                div.box-body { p.muted { "None yet." @if may_change() { " Add one for each box of your form that abo should fill in." } } }
-            } @else {
-                table.list {
-                    thead { tr { th { "Box" } th { "Label" } th { "Figure, from" } th {} } }
-                    tbody {
-                        @for (code, b) in boxes {
-                            tr {
-                                td { code { (code) } }
-                                td { (b.label) }
-                                td { code { (b.query) } @if b.invert { span.muted.small { " turned over" } } }
-                                td { @if may_change() { div.row-actions {
-                                    a.btn.small href={"/company/tax-return?code=" (enc(code))} { (icon("pencil")) " Change" }
-                                    form method="post" action="/company/tax-return" {
-                                        (token())
-                                        input type="hidden" name="action" value="remove";
-                                        input type="hidden" name="code" value=(code);
-                                        button.small.btn-danger type="submit" { (icon("trash")) " Remove" }
-                                    }
-                                } } }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        @if may_change() { form.edits[!was.is_empty()] method="post" action="/company/tax-return" {
-            (token())
-            input type="hidden" name="was" value=(was);
-            div.box {
-                div.box-header { (icon("plus")) @if was.is_empty() { "Add a box" } @else { "Change box " (was) } }
-                div.box-body {
-                    label.field { "Box" span.hint { "Its number or code on the form, such as 1 or 81." }
-                        input type="text" name="code" required value=(get("code")) readonly[!was.is_empty()]; }
-                    label.field { "Label" span.hint { "What the form calls it, such as Turnover." } input type="text" name="label" required value=(get("label")); }
-                    label.field { "Figure, from" span.hint { "The accounts whose balance over the period is its figure, as an hledger query: " code { "acct:^Income" } " for all income, " code { "acct:^Liabilities:VAT:Output" } " for the VAT charged." }
-                        input type="text" name="query" required value=(get("query")); }
-                    label.choice { input type="checkbox" name="invert" checked[get("invert") == "on"]; " Turned over: for a box of what is owed or earned, whose accounts hold credits" }
-                    div.actions {
-                        button.btn-primary type="submit" { (icon("check")) " Save" }
-                        span.nav { a.btn href="/company" { (icon("left")) " Back" } }
-                    }
-                }
-            }
-        } }
-    }
-}
-
-pub(super) async fn tax_return_submit(Books(mut s): Books, Form(f): Form<Fields>) -> Response {
-    let get = |k: &str| f.get(k).map_or("", |v| v.trim()).to_string();
-    let root = s.root.clone();
-    let r = once(Some(&root), &get("token"), || {
-        let code = get("code");
-        if code.is_empty() {
-            bail!("a box needs its code on the form");
-        }
-        let key = format!("report.vat.{code}");
-        let op = if get("action") == "remove" {
-            Op::ConfigUnset { key }
-        } else {
-            let text = |v: &str| toml::Value::String(v.to_string()).to_string();
-            let value = format!("{{ label = {}, query = {}, invert = {} }}", text(&get("label")), text(&get("query")), get("invert") == "on");
-            Op::ConfigSet { key, value }
-        };
-        change(&mut s, &op, &[], "/company/tax-return")
-    });
-    match r {
-        Ok(to) => Redirect::to(&to).into_response(),
-        Err(e) => again(&s, "The tax return", || Ok(tax_return_page(&s, &f, Some(&e)))),
-    }
 }

@@ -1,7 +1,5 @@
-//! P&L, balance sheet and tax return. hledger computes every figure; this
-//! file only groups, labels and subtracts, and the typst template only lays
-//! out. Which accounts belong on which line of a tax return is configuration,
-//! because it differs everywhere — see §6.
+//! P&L and balance sheet. hledger computes every figure; this file only
+//! groups, labels and subtracts, and the typst template only lays out.
 
 use crate::store::Store;
 pub use crate::views::Amount;
@@ -14,8 +12,6 @@ use std::path::Path;
 
 #[derive(Serialize, Clone)]
 pub struct Line {
-    /// A box number on a tax return. Absent elsewhere.
-    pub code: Option<String>,
     pub label: String,
     pub amounts: Vec<Amount>,
 }
@@ -45,8 +41,7 @@ pub struct Statement {
     pub date: Option<String>,
     pub company: String,
     pub sections: Vec<Section>,
-    /// The number the whole thing exists to produce, where there is one: a
-    /// tax return's figures are its boxes.
+    /// The number the whole thing exists to produce, where there is one.
     pub bottom: Option<Line>,
 }
 
@@ -134,7 +129,7 @@ fn section(s: &Store, title: &str, account: &str, extra: &[&str], invert: bool) 
         let mut shown = Bag::new();
         add(&mut shown, &bag, sign);
         add(&mut total, &bag, sign);
-        lines.push(Line { code: None, label: name, amounts: amounts(&s.books, &shown) });
+        lines.push(Line { label: name, amounts: amounts(&s.books, &shown) });
     }
     let t = amounts(&s.books, &total);
     Ok((Section { title: title.into(), lines, total: t, net: vec![] }, total))
@@ -239,9 +234,9 @@ pub fn profit_and_loss(s: &Store, period: &str) -> Result<Statement> {
             true => {
                 let mut loss = Bag::new();
                 add(&mut loss, &profit, Decimal::NEGATIVE_ONE);
-                Line { code: None, label: "Loss for the period".into(), amounts: amounts(&s.books, &loss) }
+                Line { label: "Loss for the period".into(), amounts: amounts(&s.books, &loss) }
             }
-            false => Line { code: None, label: "Profit for the period".into(), amounts: amounts(&s.books, &profit) },
+            false => Line { label: "Profit for the period".into(), amounts: amounts(&s.books, &profit) },
         }),
     })
 }
@@ -275,12 +270,11 @@ pub fn balance_sheet(s: &Store, date: &str) -> Result<Statement> {
             add(&mut retained, &bag, Decimal::NEGATIVE_ONE);
             let mut part = Bag::new();
             add(&mut part, &bag, Decimal::NEGATIVE_ONE);
-            net.push(Line { code: None, label: name, amounts: amounts(&s.books, &part) });
+            net.push(Line { label: name, amounts: amounts(&s.books, &part) });
         }
     }
     if retained.values().any(|v| !v.is_zero()) {
         equity.lines.push(Line {
-            code: None,
             label: NET_INCOME.into(),
             amounts: amounts(&s.books, &retained),
         });
@@ -303,68 +297,9 @@ pub fn balance_sheet(s: &Store, date: &str) -> Result<Statement> {
         company: s.books.config.company.name.clone(),
         sections: vec![assets, liabilities, equity],
         bottom: Some(Line {
-            code: None,
             label: "Difference (should be nil)".into(),
             amounts: amounts(&s.books, &difference),
         }),
-    })
-}
-
-/// The tax return: a line for each box of `report.vat`, in the order of their
-/// codes, its figure the balance of its hledger query over the period, in the
-/// company's currency, turned over for a box on the credit side.
-pub fn vat_return(s: &Store, period: &str) -> Result<Statement> {
-    let spec = &s.books.config.report.vat;
-    if spec.is_empty() {
-        bail!(
-            "no tax return is configured: a box for each on the form is set as report.vat.<code>, \
-             with a label and an hledger query, its figure the query's balance over the period \
-             (abo config set report.vat.<code> '{{ label = \"...\", query = \"...\" }}')"
-        );
-    }
-    let hp = hledger_period(period)?;
-    checked_period(&hp)?;
-    let (from, to) = days(&hp)?;
-    let currency = s.books.config.company.currency.clone();
-    let places = s.books.places(&currency);
-    // A return is filed in one currency. Anything else is valued in it at the
-    // price on the day of each posting, from the books' own prices.
-    let value = format!("--value=then,{currency}");
-    let mut extra = period_flags(&hp);
-    extra.push(&value);
-    let mut lines = Vec::new();
-    for (code, b) in spec {
-        let mut v = Decimal::ZERO;
-        for (account, bag) in balances(s, &b.query, &extra)? {
-            for (c, x) in &bag {
-                if c == &currency {
-                    v += x;
-                } else if !x.is_zero() {
-                    // No price to value it with. Dropping it would file a
-                    // plausible wrong number.
-                    bail!(
-                        "box {code} includes {x} {c} in {account}, and the books have no {c} price \
-                         in {currency} to value it with: declare one, dated on or before each posting \
-                         (under Accounts in the browser, or abo price add <date> {c} <price> {currency})"
-                    );
-                }
-            }
-        }
-        let v = if b.invert { -v } else { v };
-        // every box to the currency's places, and never "-0"
-        let mut v = crate::model::round(if v.is_zero() { Decimal::ZERO } else { v }, places);
-        v.rescale(places);
-        lines.push(Line { code: Some(code.clone()), label: b.label.clone(), amounts: vec![Amount::new(&s.books, v, &currency)] });
-    }
-    Ok(Statement {
-        title: "Tax return".into(),
-        period: period.to_string(),
-        from,
-        to,
-        date: None,
-        company: s.books.config.company.name.clone(),
-        sections: vec![Section { title: String::new(), lines, total: vec![], net: vec![] }],
-        bottom: None,
     })
 }
 

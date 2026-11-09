@@ -41,19 +41,6 @@ pub fn demo(dir: &Path) -> Result<PathBuf> {
         iban = "CH93 0076 2011 6238 5295 7"
         bic = "POFICHBEXXX"
         account = "Assets:Bank"
-        # An illustrative return: which accounts feed which box is set by
-        # the tax authority wherever the company is.
-        [report.vat.1]
-        label = "Turnover"
-        query = "acct:^Income(:|$)"
-        invert = true
-        [report.vat.2]
-        label = "Tax charged on turnover"
-        query = "acct:^Liabilities:VAT:Output(:|$)"
-        invert = true
-        [report.vat.3]
-        label = "Input tax paid"
-        query = "acct:^Assets:VAT:Input(:|$)"
         "#,
     )?;
     let author = Some(("abo demo".to_string(), "demo@example.invalid".to_string()));

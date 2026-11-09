@@ -324,7 +324,7 @@ What a customer will never pay, or a supplier forgave. Browser: **Write off**
 on the Pay page, to an account chosen for it. CLI: `abo write-off <id>
 --to <account>`. An invoice is written off to an expense account; a bill to
 an income account, or against the expense account it was booked to, which
-takes the cost back (one a tax return's turnover box does not count). A
+takes the cost back. A
 write-off moves no money, so another account is refused (MODEL.md N4).
 **Done when** nothing is open, what was open is in that account, and the
 debt shows as written off, not settled.
@@ -342,7 +342,7 @@ reference and a note. CLI: `abo invoice`, with `--customer-tax-id`,
 `--vat-reason`, `--income` and `--pay-to <id>`, repeatable. The income
 account is `invoice.income` unless said: an export or a reverse-charge sale
 may go to an account of its own, `Income:Exports` say, declared first, so
-that a box of the tax return reads them apart (`acct:^Income:Exports`); a
+that a query reads them apart (`acct:^Income:Exports`); a
 credit note takes back what its invoice booked, there. One that is no
 income account is refused. With no option chosen it prints them all. With
 none it says only when to pay; with one or more, "to the following" or "to
@@ -455,8 +455,7 @@ Any asset account and any commodity.
 **Reports**, Profit and loss, a period (`2026`, `2026q1`, `last month`, or
 `ytd`, 1 January through today). CLI: `abo pl --period …` (or `-p`), with
 `--json` or `--pdf`. The heading names the period's first and last day, as
-hledger reads it: `Profit and loss, last quarter (2026-07-01 to 2026-09-30)`;
-so does the tax return's.
+hledger reads it: `Profit and loss, last quarter (2026-07-01 to 2026-09-30)`.
 **Done when** income and expenses are listed with totals and the profit for
 the period, matching `hledger balance` over the same period. Downloading a PDF
 changes nothing in the books.
@@ -467,20 +466,7 @@ currency — what is held or owed in another at what it was booked at —
 unclosed profit shows as an equity line, and the bottom line (assets less
 liabilities and equity) is nil.
 
-### E3. Tax return for a period — Supported once configured
-Needs a box for each on the form: `abo config set report.vat.<code> '{ label
-= "...", query = "...", invert = true }'`, its figure the balance of the
-hledger query over the period, turned over for a box on the credit side.
-In the browser: **The tax return** on the company page adds, changes and
-removes the boxes, each logged as the `abo config` command that makes it.
-Without them the tax return's page links there.
-**Done when** each configured box shows its figure for the period, in the
-company currency. Amounts in another commodity are valued at the price on the
-day of the posting, from the declared prices; with no price the return is
-refused, naming the box and the price to add, rather than leaving the amount
-out.
-
-### E4. Ask hledger anything — Supported (CLI)
+### E3. Ask hledger anything — Supported (CLI)
 `abo balance …` and `abo register …` pass their arguments to hledger: a query, and the
 options that choose what is reported and how — periods, depth, value,
 the output format. (A statement clears postings in abo's own tags, not
@@ -607,6 +593,7 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 - **Payroll** (§12) — not on the roadmap: a salary is a posting template on
   the employee's agreement.
 - **Year-end closing entries** (§12) — until then unclosed profit is a computed equity line.
+- **Tax return** (§12) — not on the roadmap: each country's form is its own.
 
 ---
 

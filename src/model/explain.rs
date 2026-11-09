@@ -679,13 +679,6 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
             if !lines_ok(&co.address) {
                 v.push("company.address holds a hidden character".into());
             }
-            for (k, b) in &n.config.report.vat {
-                if !text_ok(k) || !text_ok(&b.label) || !text_ok(&b.query) {
-                    v.push(format!("a box of report.vat, {}, holds a hidden character", shown(k)));
-                } else if b.query.starts_with('-') {
-                    v.push(format!("report.vat.{k}.query begins with '-', which hledger reads as an option"));
-                }
-            }
             v
         }
         "I-C2" => n

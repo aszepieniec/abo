@@ -326,7 +326,6 @@ enum Cmd {
     Reg,
     Pl,
     Bs,
-    Vat,
 }
 
 /// Whatever abo is given, it answers: done, refused in words, or a usage
@@ -894,7 +893,6 @@ fn the_balance_sheet_comes_out_nil(#[strategy(plan())] plan: Vec<Step>) {
 enum Report {
     Pl,
     Bs,
-    Vat,
     Bal,
     Reg,
 }
@@ -919,7 +917,6 @@ fn a_report_changes_nothing_in_the_books(#[strategy(plan())] plan: Vec<Step>, re
     let argv = match report {
         Report::Pl => args(&["pl", "--period", "2026", "--pdf", &path]),
         Report::Bs => args(&["bs", "--pdf", &path]),
-        Report::Vat => args(&["vat", "--period", "2026", "--pdf", &path]),
         Report::Bal => args(&["bal", &format!("--output-file={path}")]),
         Report::Reg => args(&["reg", "-o", &path]),
     };
@@ -936,7 +933,7 @@ fn amounts_in_json_are_quantity_and_commodity(#[strategy(plan())] plan: Vec<Step
     let (_parent, books, today) = after(&plan);
     let m = store::Store::open(&books).unwrap().books;
     let mut commands: Vec<Vec<String>> = [
-        &["invoices"][..], &["invoices", "--open"], &["price"], &["pl"], &["bs"], &["vat"], &["payment-options"],
+        &["invoices"][..], &["invoices", "--open"], &["price"], &["pl"], &["bs"], &["payment-options"],
         &["config"], &["account"], &["commodity"], &["log"], &["check"],
     ]
     .iter()
@@ -979,7 +976,7 @@ fn amounts_in_json_are_quantity_and_commodity(#[strategy(plan())] plan: Vec<Step
                 prop_assert!(!run_together(s), "{:?}: {} holds {:?}, money run together", a, key, s);
                 // In what shows money, a bare number is a quantity, its
                 // commodity beside it; a posting's `ref`, ENTRY.N, looks like one.
-                let money = ["invoices", "price", "pl", "bs", "vat", "reconcile"].contains(&a[0].as_str());
+                let money = ["invoices", "price", "pl", "bs", "reconcile"].contains(&a[0].as_str());
                 // Names are text, whatever they say: a company called 6.
                 let text = ["ref", "quantity", "company", "customer", "description", "label", "title"];
                 prop_assert!(!money || s.parse::<Decimal>().is_err() || text.contains(&key.as_str()), "{:?}: {} holds {:?}, a number with no commodity", a, key, s);

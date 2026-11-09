@@ -612,17 +612,6 @@ fn first_web_run() {
     let (status, _, page) = http(&s, "GET", "/report/balance?period=nonsense", &[]);
     assert_eq!(status, 422, "{page}");
 
-    // The tax return's boxes, added and removed from the browser.
-    let boxv = [("token", "t1"), ("code", "200"), ("label", "Turnover"), ("query", "acct:Income"), ("invert", "on")];
-    let (status, _, page) = http(&s, "POST", "/company/tax-return", &boxv);
-    assert_eq!(status, 303, "{page}");
-    let c: toml::Value = toml::from_str(&std::fs::read_to_string(books.join("abo.toml")).unwrap()).unwrap();
-    assert_eq!(c["report"]["vat"]["200"]["label"].as_str(), Some("Turnover"));
-    assert_eq!(c["report"]["vat"]["200"]["invert"].as_bool(), Some(true));
-    let (status, _, _) = http(&s, "POST", "/company/tax-return", &[("token", "t2"), ("code", "200"), ("action", "remove")]);
-    assert_eq!(status, 303);
-    assert!(!std::fs::read_to_string(books.join("abo.toml")).unwrap().contains("Turnover"));
-
     // A period closed from the company page.
     let (status, _, page) = http(&s, "POST", "/company/close", &[("token", "c1"), ("through", "2026-03-31")]);
     assert_eq!(status, 303, "{page}");
@@ -853,9 +842,9 @@ fn third_web_run() {
     let page = http(&s, "GET", &to, &[]).2;
     assert!(page.contains("Count of Assets:Cash"), "{page}");
 
-    // Payment terms labelled; no tax return for a company without VAT.
+    // Payment terms labelled.
     let page = http(&s, "GET", "/company", &[]).2;
-    assert!(page.contains("Days a customer has to pay") && !page.contains("/company/tax-return"), "{page}");
+    assert!(page.contains("Days a customer has to pay"), "{page}");
 
     // The Log's diff a fold further.
     let page = http(&s, "GET", "/log", &[]).2;
@@ -1022,7 +1011,6 @@ fn a_viewer_is_offered_no_change() {
 
     // Something of everything that has a button.
     abo(&["init", "Test Ltd", "--currency", "EUR", "--vat", "effective", "--sales-rate", "8.1", "--git-name", "Ann", "--git-email", "ann@example.invalid", "--payment", "{ kind = \"bank\", iban = \"CH93 0076 2011 6238 5295 7\" }"]);
-    abo(&["config", "set", "report.vat.1", "{ label = \"Turnover\", query = \"acct:^Income\" }"]);
     abo(&["invoice", "--to", "Nordlicht AG", "--item", "1|100|Advice", "--date", "2026-03-01"]);
     abo(&["bill", "--date", "2026-03-02", "--desc", "Hosting", "Expenses:General=110.00", "Liabilities:Payable=-110.00"]);
     let scan = base.join("scan.pdf");

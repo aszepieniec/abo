@@ -19,7 +19,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
     // The only optional program is typst, so the others say nothing about it.
     let makes_pdf = matches!(
         &cli.cmd,
-        Cmd::Invoice { .. } | Cmd::Credit { .. } | Cmd::Pl { pdf: Some(_), .. } | Cmd::Bs { pdf: Some(_), .. } | Cmd::Vat { pdf: Some(_), .. }
+        Cmd::Invoice { .. } | Cmd::Credit { .. } | Cmd::Pl { pdf: Some(_), .. } | Cmd::Bs { pdf: Some(_), .. }
     );
     if makes_pdf {
         for d in &missing {
@@ -103,13 +103,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
             let b = questions::books(&answers);
             let commit = store::init(&dir, b.config.clone(), b.author.clone(), crate::command::init(&b))?;
             let r = serde_json::json!({ "root": dir.display().to_string(), "commit": commit });
-            // Registered for VAT, the tax return has no boxes yet: they are
-            // the form's, which differs by country, so they are set by hand.
-            let vat = match b.config.vat {
-                model::Vat::None => "",
-                _ => "\nThe tax return has no boxes yet: set one for each box of your form with\n  abo config set report.vat.<code> '{ label = \"...\", query = \"...\" }'\n(the query is hledger's, such as acct:^Income; invert = true turns a credit over).",
-            };
-            emit(cli.json, &r, || format!("Books opened in {} ({commit}).\nNext: `abo account add` and `abo post`.{vat}", dir.display()))
+            emit(cli.json, &r, || format!("Books opened in {} ({commit}).\nNext: `abo account add` and `abo post`.", dir.display()))
         }
         Cmd::Post { date, description, partner, agreement, postings } => {
             let mut s = Store::open(&here)?;
@@ -418,16 +412,6 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         Cmd::Bs { date, pdf } => {
             let s = Store::open(&here)?;
             statement(&s, statement::balance_sheet(&s, &input::day(date.as_deref())?.to_string())?, pdf, cli.json)?;
-            still(&s);
-            Ok(())
-        }
-        Cmd::Vat { period, pdf } => {
-            // A tax return is for a period; one for all time is never filed.
-            if period.trim().is_empty() {
-                bail!("a tax return is for a period: give one, such as --period 2026q3, -p 'last quarter' or -p ytd");
-            }
-            let s = Store::open(&here)?;
-            statement(&s, statement::vat_return(&s, &period)?, pdf, cli.json)?;
             still(&s);
             Ok(())
         }
@@ -744,8 +728,7 @@ pub(crate) fn statement(
                 out += &format!("\n{}\n", section.title);
             }
             for l in &section.lines {
-                let code = l.code.as_deref().unwrap_or("");
-                out += &format!("  {code:<5}{:<44} {:>16}\n", l.label, money(&l.amounts));
+                out += &format!("  {:<49} {:>16}\n", l.label, money(&l.amounts));
             }
             if !section.total.is_empty() {
                 out += &format!("  {:<49} {:>16}\n", "", money(&section.total));

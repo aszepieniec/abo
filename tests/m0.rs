@@ -389,7 +389,7 @@ fn reconciliation() {
     std::fs::remove_dir_all(&base).unwrap();
 }
 
-/// P&L, balance sheet and the tax return, including the fact that a sheet
+/// P&L and balance sheet, including the fact that a sheet
 /// drawn from a journal balances only once unclosed profit is counted as
 /// equity.
 #[test]
@@ -427,22 +427,10 @@ fn statements() {
     assert_eq!(bs["bottom"]["amounts"][0]["quantity"], "0.00");
     assert_eq!(bs["bottom"]["amounts"][0]["commodity"], "EUR");
 
-    // no configured return is an error that says what to write, not a wrong answer
-    let o = abo(&dir, &["vat", "--period", "2026"], "");
-    assert!(!o.status.success() && err(&o).contains("report.vat"), "{}", err(&o));
-
-    // a box is a code, its label and an hledger query
-    add(&["config", "set", "report.vat.1", "{ label = \"Turnover\", query = \"acct:^income(:|$)\" }"]);
-    add(&["config", "set", "report.vat.3", "{ label = \"Input tax\", query = \"acct:^Assets:VAT:Input(:|$)\" }"]);
-    let vat = json(&dir, &["vat", "--period", "2026"]);
-    let line = |i: usize| vat["sections"][0]["lines"][i]["amounts"][0]["quantity"].clone();
-    assert_eq!(line(0), "-1000.00");
-    assert_eq!(line(1), "20.00");
-
     if Command::new("typst").arg("--version").output().is_ok() {
         let pdf = dir.parent().unwrap().join("out.pdf");
         let before = commits(&dir);
-        let o = abo(&dir, &["vat", "--period", "2026", "--pdf", pdf.to_str().unwrap()], "");
+        let o = abo(&dir, &["pl", "--period", "2026", "--pdf", pdf.to_str().unwrap()], "");
         assert!(o.status.success(), "pdf failed: {}", err(&o));
         assert_eq!(&std::fs::read(&pdf).unwrap()[..5], b"%PDF-");
         // a PDF is read-only as far as the books go: abo's template, from .abo/

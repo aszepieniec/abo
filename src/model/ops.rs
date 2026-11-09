@@ -455,7 +455,7 @@ pub enum Shape {
 
 pub fn shape(key: &str) -> Shape {
     match key.split('.').collect::<Vec<_>>()[..] {
-        ["company"] | ["vat"] | ["invoice"] | ["payment"] | ["payment", _] | ["report"] | ["report", "vat"] | ["report", "vat", _] => Shape::Table,
+        ["company"] | ["vat"] | ["invoice"] | ["payment"] | ["payment", _] => Shape::Table,
         ["invoice", "terms_days"] => Shape::WholeNumber,
         _ => Shape::Text,
     }
@@ -491,7 +491,7 @@ fn keys(root: &toml::Value, path: &[&str]) -> Option<Vec<(&'static str, Holds, b
     use Holds::*;
     let method = root.get("vat").and_then(|v| v.get("method")).and_then(toml::Value::as_str).unwrap_or("");
     Some(match path {
-        [] => vec![("company", Keys, true), ("vat", Keys, true), ("invoice", Keys, true), ("payment", Any, false), ("report", Keys, false)],
+        [] => vec![("company", Keys, true), ("vat", Keys, true), ("invoice", Keys, true), ("payment", Any, false)],
         ["company"] => vec![("name", Text, true), ("currency", Text, true), ("address", Text, false), ("tax_id", Text, false), ("country", Text, false), ("closed_through", Date, false)],
         ["vat"] => {
             let mut k = vec![("method", OneOf(&["none", "flat", "effective"]), true)];
@@ -503,14 +503,12 @@ fn keys(root: &toml::Value, path: &[&str]) -> Option<Vec<(&'static str, Holds, b
             k
         }
         ["invoice"] => vec![("receivable", Text, true), ("income", Text, true), ("terms_days", WholeNumber, true), ("vat_rate", Number, true)],
-        ["payment"] | ["report", "vat"] => return None,
+        ["payment"] => return None,
         ["payment", _] => {
             let mut k = vec![("kind", OneOf(&["bank", "cash", "crypto"]), true), ("account", Text, true)];
             k.extend(["label", "holder", "iban", "bic", "network", "address", "bank", "details"].map(|f| (f, Text, false)));
             k
         }
-        ["report"] => vec![("vat", Any, false)],
-        ["report", "vat", _] => vec![("label", Text, true), ("query", Text, true), ("invert", Flag, false)],
         _ => vec![],
     })
 }

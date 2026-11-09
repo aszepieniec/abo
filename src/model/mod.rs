@@ -307,8 +307,6 @@ pub struct Config {
     pub invoice: InvoiceCfg,
     #[serde(default)]
     pub payment: BTreeMap<String, PayOption>,
-    #[serde(default)]
-    pub report: Report,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -375,25 +373,6 @@ pub struct PayOption {
     pub details: String,
     /// Where money paid this way arrives.
     pub account: Account,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Report {
-    /// The tax return's boxes, by their code on the form.
-    #[serde(default)]
-    pub vat: BTreeMap<String, VatBox>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct VatBox {
-    pub label: String,
-    /// An hledger query: the box's figure is its balance over the period.
-    pub query: String,
-    /// Turned over, for a box on the credit side, such as VAT owed.
-    #[serde(default)]
-    pub invert: bool,
 }
 
 /// What an edit gives an option: each field given, or not.

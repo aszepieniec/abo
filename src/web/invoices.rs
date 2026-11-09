@@ -355,7 +355,7 @@ pub(super) fn invoice_page(s: &Store, f: &Fields, error: Option<&anyhow::Error>)
                     label.field { "VAT rate" span.hint { "Percent. Blank for the default: no VAT when both the customer's tax number and the company's name a country, and the countries differ, as with EU VAT numbers; the configured rate otherwise, whatever the currency. 0 for an export or an exempt supply, with why below. The invoice's page says which rate it took, and why." } input type="text" name="vat_rate" value=(get("vat_rate")); }
                     label.field { "Currency" span.hint { "Blank for " (s.books.config.company.currency) "." } input type="text" name="currency" value=(get("currency")); }
                     label.field { "Their tax number" span.hint { "Printed under their address; cross-border invoices to businesses usually need it." } input type="text" name="customer_tax_id" value=(get("customer_tax_id")); }
-                    label.field { "Income account" span.hint { "Blank for " (s.books.config.invoice.income) ". Exports and reverse-charge sales may go to their own, which a box of the tax return reads apart." } input type="text" name="income" value=(get("income")); }
+                    label.field { "Income account" span.hint { "Blank for " (s.books.config.invoice.income) ". Exports and reverse-charge sales may go to their own, to be read apart." } input type="text" name="income" value=(get("income")); }
                     label.field { "Why no VAT" span.hint { "Needed at 0%: an export, an exempt supply, reverse charge. Printed on the invoice." } input type="text" name="vat_reason" value=(get("vat_reason")); }
                     @if !s.books.config.payment.is_empty() {
                         fieldset.field {

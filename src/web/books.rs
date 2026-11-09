@@ -193,7 +193,6 @@ pub(super) fn change_said(s: &Store, line: &serde_json::Value) -> Option<String>
         ["price", "remove", ..] => format!("{} taken out", sentence_start(&after("Take out the "))),
         ["config", "set", "--", "company.closed_through", d] => format!("The books are closed through {d}"),
         ["config", "unset", "--", "company.closed_through"] => "The books are open again".into(),
-        ["config", _, "--", k, ..] if k.starts_with("report.vat.") => format!("Box {} of the tax return changed", &k["report.vat.".len()..]),
         ["config", _, "--", "invoice.terms_days", d] => format!("Payment terms set to {d} days"),
         ["config", ..] => "Setting changed".into(),
         // What was taken back, as the log said it then; not a commit's code.

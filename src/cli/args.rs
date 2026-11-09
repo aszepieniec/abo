@@ -614,8 +614,8 @@ pub(crate) enum Cmd {
         customer_tax_id: String,
         /// The income account it books to, an Income account declared first
         /// (abo account add), such as Income:Exports for exports or
-        /// reverse-charge sales, so that a box of the tax return can read them
-        /// apart. Defaults to invoice.income.
+        /// reverse-charge sales, to read them apart. Defaults to
+        /// invoice.income.
         #[arg(long)]
         income: Option<String>,
         /// Write the PDF this invoice would have to this file, outside the
@@ -642,16 +642,6 @@ pub(crate) enum Cmd {
         /// Defaults to today.
         #[arg(long)]
         date: Option<String>,
-        /// Also write a PDF here.
-        #[arg(long)]
-        pdf: Option<PathBuf>,
-    },
-    /// Tax return for a period, from the report.vat boxes of abo.toml.
-    Vat {
-        /// An hledger period expression, e.g. 2026q3, "last quarter", or
-        /// ytd, the year to date. Needed: a return is for a period.
-        #[arg(short, long, default_value = "")]
-        period: String,
         /// Also write a PDF here.
         #[arg(long)]
         pdf: Option<PathBuf>,
@@ -841,7 +831,7 @@ pub(crate) enum Cmd {
     },
     /// The configuration, read and changed by keys named as in abo.toml:
     /// company.closed_through closes a period, invoice.terms_days sets the
-    /// payment terms, report.vat.<code> a box of the tax return. One key is
+    /// payment terms. One key is
     /// read with `abo config get company.name`.
     Config {
         #[command(subcommand)]

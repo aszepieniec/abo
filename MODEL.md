@@ -147,10 +147,8 @@ Postings go to leaves alone (I-A2). So the balance of an account is the sum of
 the postings to the leaves under it, and a parent's balance is the sum of its
 children's — which is how hledger's reports roll accounts up.
 
-Prices are read by two things: the tax return, which values each posting in
-another commodity at the price on its day (`--value=then`), and an invoice in
-another commodity, which states its VAT in the company's currency at the
-latest price on or before its date, and keeps that price. A price says what a
+Prices are read by an invoice in another commodity, which states its VAT in
+the company's currency at the latest price on or before its date, and keeps that price. A price says what a
 commodity was worth; what one was exchanged for in an entry is a posting's
 cost (§2.3).
 
@@ -529,8 +527,8 @@ of today's Bills page cannot occur.
 
 `Config` is `abo.toml`: the company's name, address, tax number and currency,
 and the date the books are closed through; the VAT method and its accounts;
-the receivable, income, terms and VAT rate invoices are issued with; the
-payment options, by id; and the tax return's boxes, by code. Its invariants
+the receivable, income, terms and VAT rate invoices are issued with; and the
+payment options, by id. Its invariants
 are in §4.8. It is part of the state, so changing it is an operation like any
 other (§5.2).
 
@@ -662,7 +660,7 @@ documents are, each naming its version (§2.5).
 A **guarantee** is a property of the books that something reading them relies
 on. The readers are hledger; the files on disk and whoever reads or edits
 them; the record of what each debt owes; an invoice and the customer who
-received it; the bank statement; the tax return and the periods filed with it; a bill's
+received it; the bank statement; the reports and the periods closed; a bill's
 document; a partner, an employee, and their agreements; and whoever runs a command. The list below is closed: it is what
 the books promise, and nothing else is promised.
 
@@ -735,7 +733,7 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | G-S2 | A statement once recorded is not undermined: nothing is added before it that it would have shown, so a whole one stays whole | N7 | `statements_stay_whole` |
 | G-S3 | What a statement shows is not reversed: an entry whose posting it clears is not reverted, so the books hold no movement the bank never made | N9 | `cleared_entries_are_not_reverted` |
 
-### The tax return, and periods filed
+### The reports, and periods closed
 
 | | Guarantee | Rules | Properties |
 |---|---|---|---|
@@ -1144,11 +1142,10 @@ abo config unset <key>
 ```
 
 `company.closed_through` closes a period (N6); `vat.input`,
-`invoice.terms_days` and the like set what they name; each payment option and
-each box of the tax return is keys of its own, `payment.<id>.iban`,
-`report.vat.<code>.label` and `.query`. Each key has a shape, from
+`invoice.terms_days` and the like set what they name; each payment option is
+keys of its own, `payment.<id>.iban`. Each key has a shape, from
 `abo.toml`'s schema, and its value is read as that shape and nothing else: a
-key that names a table — `vat`, `payment.<id>`, `report.vat.<code>` — takes
+key that names a table — `vat`, `payment.<id>` — takes
 its keys together, `{ … }`, for what cannot change one key at a time, such as
 the VAT method and its accounts; `invoice.terms_days` takes a whole number;
 every other key takes text, an address beginning with `{` as well:

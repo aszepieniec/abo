@@ -581,7 +581,6 @@ pub fn books(a: &Answers) -> NewBooks {
             },
             vat,
             payment,
-            report: Default::default(),
         },
         author: (!git_name.is_empty() || !git_email.is_empty()).then_some((git_name, git_email)),
     }

@@ -1,8 +1,8 @@
-//! The reports: profit and loss, balance sheet, tax return.
+//! The reports: profit and loss, balance sheet.
 
 use super::*;
 
-/// One page for all three statements, and the same page as a PDF with ?pdf=1.
+/// One page for both statements, and the same page as a PDF with ?pdf=1.
 pub(super) async fn report(Books(s): Books, Path(kind): Path<String>, Query(q): Query<Fields>) -> Response {
     let date = match q.get("date") {
         Some(d) if !d.trim().is_empty() => d.trim().to_string(),
@@ -35,23 +35,20 @@ pub(super) async fn report(Books(s): Books, Path(kind): Path<String>, Query(q): 
         _ if period.trim().is_empty() => None,
         _ => statement::period_ok(&period).err().map(|e| sentence(&format!("{e:#}"))),
     };
-    // A tax return without boxes: where they are set, not a command.
-    let no_boxes = kind == "vat" && s.books.config.report.vat.is_empty();
     let built = match kind.as_str() {
-        _ if bad_period.is_some() || no_boxes => Ok(statement::Statement::default()),
+        _ if bad_period.is_some() => Ok(statement::Statement::default()),
         "pl" => statement::profit_and_loss(&s, &period),
         "bs" => statement::balance_sheet(&s, &date),
-        "vat" => statement::vat_return(&s, &period),
         _ => return (StatusCode::NOT_FOUND, "no such statement").into_response(),
     };
     let st = match built {
         Ok(st) => statement::Statement { period: label.clone(), ..st },
         Err(e) => return or_error(&s, "Reports", || Err(e)),
     };
-    if q.contains_key("pdf") && bad_period.is_none() && !no_boxes {
+    if q.contains_key("pdf") && bad_period.is_none() {
         return match statement::pdf_bytes(&s, &st) {
             Ok(bytes) => {
-                let what = match kind.as_str() { "pl" => "profit-and-loss", "bs" => "balance-sheet", _ => "tax-return" };
+                let what = if kind == "pl" { "profit-and-loss" } else { "balance-sheet" };
                 let when = if kind == "bs" { date.clone() } else if label.trim().is_empty() { "all-time".into() } else { crate::repo::slug(&label) };
                 pdf_response(bytes, &format!("{what}-{when}.pdf"))
             }
@@ -59,14 +56,13 @@ pub(super) async fn report(Books(s): Books, Path(kind): Path<String>, Query(q): 
         };
     }
     let here = |k: &str| if k == kind { "current" } else { "" };
-    let title = match kind.as_str() { "pl" => "Profit and loss", "bs" => "Balance sheet", _ => "Tax return" };
+    let title = if kind == "pl" { "Profit and loss" } else { "Balance sheet" };
     let mut r = or_error(&s, if st.title.is_empty() { title } else { &st.title }, || {
         Ok(html! {
             h1 { @if st.title.is_empty() { (title) } @else { (st.title) } }
             nav.tabs {
                 a href="/report/pl" class=(here("pl")) { (icon("chart")) " Profit and loss" }
                 a href="/report/bs" class=(here("bs")) { (icon("coins")) " Balance sheet" }
-                a href="/report/vat" class=(here("vat")) { (icon("doc")) " Tax return" }
             }
             form method="get" {
                 div.box {
@@ -93,13 +89,7 @@ pub(super) async fn report(Books(s): Books, Path(kind): Path<String>, Query(q): 
                     }
                 }
             }
-            @if no_boxes {
-                div.flash.flash-info { (icon("info")) div {
-                    strong { "No boxes yet" }
-                    "The tax return shows a figure for each box of your form; none is set up yet. "
-                    @if may_change() { a href="/company/tax-return" { "Set up its boxes" } "." }
-                } }
-            } @else if bad_period.is_none() {
+            @if bad_period.is_none() {
             div.box {
                 div.box-header { (icon("doc")) (statement::when(&st)) }
                 @for (i, section) in st.sections.iter().enumerate() {
@@ -116,7 +106,7 @@ pub(super) async fn report(Books(s): Books, Path(kind): Path<String>, Query(q): 
                             }
                             @for (_, _, l) in rows.iter().filter(|r| r.0 == 0) {
                                 tr {
-                                    td { @if let Some(c) = &l.code { span.muted { (c) " " } } (l.label) }
+                                    td { (l.label) }
                                     td { (money(&l.amounts)) }
                                 }
                             }
@@ -184,7 +174,7 @@ fn tree(b: &model::Books, section: &statement::Section) -> Vec<(usize, bool, sta
         let under = format!("{at}:");
         for (p, bag) in sums.range(under.clone()..).take_while(|(p, _)| p.starts_with(&under)).filter(|(p, _)| !p[under.len()..].contains(':')) {
             let branch = sums.range(format!("{p}:")..).next().is_some_and(|(q, _)| q.starts_with(&format!("{p}:")));
-            out.push((depth, branch, statement::Line { code: None, label: p.clone(), amounts: statement::amounts(b, bag) }));
+            out.push((depth, branch, statement::Line { label: p.clone(), amounts: statement::amounts(b, bag) }));
             walk(b, sums, p, depth + 1, out);
         }
     }
@@ -207,7 +197,7 @@ fn tree(b: &model::Books, section: &statement::Section) -> Vec<(usize, bool, sta
         out.push((1, true, other.remove(i).clone()));
         // Income before expenses, as on a profit and loss.
         for class in ["Income", "Expenses"].iter().filter_map(|c| parts.keys().find(|k| k.eq_ignore_ascii_case(&format!("{NET}:{c}"))).cloned()) {
-            out.push((2, true, statement::Line { code: None, label: class.clone(), amounts: statement::amounts(b, &parts[&class]) }));
+            out.push((2, true, statement::Line { label: class.clone(), amounts: statement::amounts(b, &parts[&class]) }));
             walk(b, &parts, &class, 3, &mut out);
         }
     }

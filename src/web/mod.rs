@@ -113,7 +113,6 @@ fn company_app(root: PathBuf) -> Router {
         .route("/company/payment/remove", post(option_remove))
         .route("/company/close", post(close))
         .route("/company/terms", post(terms))
-        .route("/company/tax-return", get(tax_return).post(tax_return_submit))
         .route("/export", get(export))
         .route("/export/{token}", get(export_link))
         .route("/export/{token}/info/refs", get(git_refs))

@@ -125,7 +125,7 @@ src/input.rs      what a person types, read: dates, amounts, postings, entries b
 src/views.rs      what the books show, as data: invoice rows, reconciling, money
 src/questions.rs  init's and a payment option's questions, for the terminal and the form
 src/repo.rs       finding the books, git, the lock, slugs
-src/statement.rs  P&L, balance sheet, tax return, from hledger
+src/statement.rs  P&L and balance sheet, from hledger
 src/invoice.rs    issuing an invoice or credit note, and its PDF's data
 src/pdf.rs        typst: a template and its data made a PDF
 src/report.rs     hledger passthrough (-O json / -O csv)
@@ -309,7 +309,7 @@ ordereddates`. That applies to every write, not just this one.
 
 ### Reports
 
-`abo pl`, `abo bs`, `abo vat`, each with `--json` and `--pdf <file>`, and each a
+`abo pl` and `abo bs`, each with `--json` and `--pdf <file>`, and each a
 page under `/report/`. Everything is computed by `hledger balance` over a query,
 read back through the one JSON shape `statement.rs` parses — mantissa
 and scale, never the `floatingPoint` field beside them. A P&L is `balance
@@ -360,24 +360,13 @@ Everything else is configuration, which means changing it is not a rebuild:
   not in the code. `--vat-rate` overrides it per invoice, which is how an export,
   a reduced rate or an exempt supply is issued.
 - **`[company] country`** — printed on invoices.
-- **`[report.vat.<code>]`** — the tax return, one table per box on the form,
-  in the order of their codes. Each has a `label` and a `query` (any hledger
-  query; its balance over the period is the figure), with `invert` for a box
-  on the credit side. A box that is a percentage of another, or a sum of
-  others (a net figure), is not built: when a form needs one, it is a small
-  evaluator in `statement.rs`, and still not a rate in the code.
 
-`abo vat` with nothing configured is an error that says what to write, rather
-than a plausible wrong answer. The same rule covers other commodities: a return
-is in the company currency, so each box is `hledger balance --value=then,<cur>`,
-valuing anything else at the price on the day of the posting from the books'
-own `P` directives, and a box that still holds another commodity — no price to
-value it with — is refused, naming the directive to add.
+abo makes no tax return (§12).
 
 Under `flat`, an invoice still charges the ordinary rate to the customer; the
 flat percentage is what gets remitted, computed on gross turnover when the return
-is filed, not per invoice. So `flat` books the whole invoice to income and posts
-no output tax.
+is filed, not per invoice, and not by abo. So `flat` books the whole invoice to
+income and posts no output tax.
 
 If somewhere needs a fourth shape, add a variant — but check first whether it is
 really a shape and not just a rate under a different name.
@@ -433,8 +422,8 @@ pub enum Vat {
 }
 ```
 
-Exactly three places read the method: the AI system prompt, the validator, and
-(later) the statement generator. Nothing else needs to know.
+Exactly two places read the method: the AI system prompt and the validator.
+Nothing else needs to know.
 
 ```
 ponytail: one VAT method for all time. A report over a past period under a
@@ -798,7 +787,7 @@ Not legal advice, but none of this is controversial.
   no counter file. The PDF is `git add`ed before the entry is committed, so both
   land in one commit or neither does.
 - **M4** — reconciliation and statements. **Done.** `abo reconcile` / `abo
-  record` / `abo unrecord` and a page of checkboxes; `abo pl`, `abo bs`, `abo vat` on screen,
+  record` / `abo unrecord` and a page of checkboxes; `abo pl`, `abo bs` on screen,
   as `--json`, and as PDFs through a second typst template. Bank import is
   not built (§12) — the point of reconciliation is to notice what is wrong, and typing
   a closing balance is enough to do that.
@@ -909,6 +898,7 @@ Each with the trigger for revisiting.
 | A third typst template before it is needed | A document abo makes that is neither an invoice nor a statement. |
 | Payroll: gross to net, deductions, payslips | Not on the roadmap. A salary is a posting template on the employee's agreement: gross, what is withheld, net, the same entry each month. Agreements hold invoice templates today, not posting templates; until they do, it is booked by hand from the payslip. |
 | Bank import | Not on the roadmap. Banks' exports vary too much to fix a format for them now. Reconciliation is a closing balance typed in and postings ticked (§6). |
+| Tax return | Not on the roadmap. Each country has its own form, and a box is often not a balance but a rate of one, a sum, or an adjustment no account holds. Boxes configured as queries covered only the balances. The bookkeeper fills in the form from `abo pl` and `abo balance`. |
 | Committing rendered statements | A filing needs archiving. Today they are handed to you. |
 | Closing entries at year end | A balance sheet needs to show a closed prior year. Today unclosed profit is a computed equity line. |
 

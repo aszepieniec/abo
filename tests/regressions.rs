@@ -1491,12 +1491,6 @@ fn vat_charged_comes_to_more_than_nought() {
 }
 
 #[test]
-fn a_vat_box_query_is_no_hledger_option() {
-    let dir = books("vat-query", &[]);
-    refused(&dir, &["config", "set", "report.vat.1", "{ label = \"Bad\", query = \"-o/tmp/x\", invert = true }"], "I-C1");
-}
-
-#[test]
 fn a_report_is_written_outside_the_books() {
     let dir = books("pdf-outside", &[]);
     let path = bill(&dir, "Acme", "2026-03-01", "10.00");
@@ -2288,18 +2282,6 @@ fn an_invoice_preview_changes_nothing() {
     assert_eq!(json(&dir, &["invoice", "--to", "C", "--item", "1|100|x", "--date", "2026-03-01"])["number"], "2026-0001");
 }
 
-/// A VAT-registered company was opened with no tax return, and not told.
-#[test]
-fn init_says_the_tax_return_has_no_boxes() {
-    let base = std::env::temp_dir().join(format!("abo-reg-init-vat-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
-    std::fs::create_dir_all(&base).unwrap();
-    let said = ok(&made(&base, "vat-co"), &["init", "Vat Co", "--currency", "EUR", "--vat", "effective", "--sales-rate", "10", "--git-name", "t", "--git-email", "t@t"]);
-    assert!(said.contains("abo config set report.vat.<code>"), "{said}");
-    let said = ok(&made(&base, "no-vat"), &["init", "No Vat", "--currency", "EUR", "--vat", "none", "--git-name", "t", "--git-email", "t@t"]);
-    assert!(!said.contains("report.vat"), "{said}");
-}
-
 /// record said nothing of how the statement stood against the books.
 #[test]
 fn record_says_how_the_books_stand() {
@@ -2492,11 +2474,8 @@ fn balance_and_register_are_named_in_full() {
             assert!(ok(&dir, &[cmd, p].concat()).contains("5.00 EUR"), "{cmd:?} {p:?}");
         }
     }
-    for cmd in ["pl", "vat"] {
-        let _ = abo(&dir, &[cmd, "--period", "ytd"]);
-        let o = abo(&dir, &[cmd, "-p", "ytd"]);
-        assert!(!err(&o).contains("unexpected argument"), "{cmd}: {}", err(&o));
-    }
+    let o = abo(&dir, &["pl", "-p", "ytd"]);
+    assert!(!err(&o).contains("unexpected argument"), "{}", err(&o));
 }
 
 /// A bill may say the supplier's number for it and when it is due, either,
@@ -2524,13 +2503,6 @@ fn a_bill_says_its_number_and_due_date_if_it_has_them() {
 }
 
 // ---- found by the eighth CLI run, 2026-10-07 ----
-
-/// `abo vat` with no period gave a return for all time, which is never filed.
-#[test]
-fn a_tax_return_needs_its_period() {
-    let dir = books("vat-period", &[]);
-    refused(&dir, &["vat"], "a tax return is for a period");
-}
 
 /// The warning that the rate took no account of where the customer is
 /// showed with a rate given; and a bill's number was cut off with its
