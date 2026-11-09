@@ -799,8 +799,8 @@ Not legal advice, but none of this is controversial.
   land in one commit or neither does.
 - **M4** — reconciliation and statements. **Done.** `abo reconcile` / `abo
   record` / `abo unrecord` and a page of checkboxes; `abo pl`, `abo bs`, `abo vat` on screen,
-  as `--json`, and as PDFs through a second typst template. Bank import moved
-  to §11 — the point of reconciliation is to notice what is wrong, and typing
+  as `--json`, and as PDFs through a second typst template. Bank import is
+  not built (§12) — the point of reconciliation is to notice what is wrong, and typing
   a closing balance is enough to do that.
 - **M5** — companies and users. `abo serve` serves one company: its books,
   or an empty directory, where it serves the form that opens them in it
@@ -826,23 +826,8 @@ has to tie out.
 
 Wanted, but not specified closely enough to be a milestone yet. New entries go
 here first; they graduate to §10 once the shape is clear. Statements and their
-PDFs started here and are now §6 and M4.
-
-### Bank import
-
-Reading a bank's CSV export straight into the journal, `hledger import` with a
-rules file, matching statement lines against booked payables automatically.
-
-Deliberately **not** next. Manual reconciliation covers the thing that actually
-matters — noticing that the books and the bank disagree — and it does so with
-one number typed in, no per-bank CSV dialect, no rules file to maintain, and no
-new way for the books to acquire entries nobody looked at. Import is worth
-building when the volume makes ticking boxes tedious, and by then the
-reconciliation view already says exactly what it has to produce.
-
-The AI is worth more here than in bill entry when it does arrive, because
-matching a statement line to a booked payable has genuine ambiguity in it,
-where reading a total off an invoice does not.
+PDFs started here and are now §6 and M4. Payroll and bank import were here,
+and are not on the roadmap (§12).
 
 ### Export, import and a git mirror
 
@@ -901,55 +886,6 @@ whoever keeps the books has no shell.
   two or three requests, inside the 10 a minute. Test: `tests/web.rs`
   `a_download_link_is_its_own_key` clones, pulls, and is refused a push.
 
-### Payroll, with configurable deductions
-
-Run a payroll: gross to net for each employee, the journal entry that books it,
-and a payslip PDF. Deductions are configuration — social insurance, pension,
-unemployment, withheld income tax and anything else are set by statute and by
-scheme, differ everywhere, and change yearly, so by §6 not one of them is
-compiled in.
-
-The shape follows M3 again: abo computes from a configured table of deductions,
-writes `.abo/payslip.json`, and `templates/payslip.typ` lays it out.
-
-Three things to get right, because they are where payroll goes wrong:
-
-- **An employer contribution is not a deduction.** A deduction reduces net pay;
-  an employer contribution does not touch it and is an additional expense with
-  its own liability. A deduction table therefore needs a share field, not just a
-  rate, and the entry has four kinds of posting: gross salary expense, employer
-  contribution expense, net payable to the employee, and one liability per
-  scheme for what is owed to it.
-- **Bases and ceilings.** Rates apply to a base that is often not gross —
-  capped at a ceiling, floored at a threshold, or reckoned on a different
-  definition of pay. So a deduction is `{ name, base, rate, floor, ceiling,
-  share, account }`, and the arithmetic is ordered because one deduction's base
-  can be another's result.
-- **Year to date.** Ceilings are annual, so a run needs what has been paid and
-  withheld so far this year. That is already in the journal: `hledger` over
-  prior runs for this employee supplies it, the same way invoice numbering reads
-  `max(invoice:)` instead of keeping a counter. No payroll state file.
-
-Until then, payroll is booked, not computed (MODEL.md §10): an employee is a
-partner, their contract an agreement under `contracts/` with its signed
-copy, and each month's salary an entry booked by hand from the payslip —
-gross, withholding, net.
-
-Open questions, to settle before this becomes a milestone:
-
-- **Who may read the repository.** Employees and their salaries live in
-  `partners.toml` and `contracts/`, versioned with everything else — and so
-  does every name and salary, in the repository, for whoever can read it.
-  That is a §8 question, and it is the first thing in the design with a
-  reason to be readable by some people and not others.
-- **Progressive withholding.** A flat rate per deduction covers contributions
-  but not banded income tax. Either a bracket table in the same config, or
-  withholding stays entered per employee, as booking it does today.
-- **Whether payslips are committed.** Same question as a rendered report, with
-  more force: a payslip is a document the employee is owed, so probably yes,
-  under `payslips/<year>/`, and then §8 grows a reason to care who can read the
-  repository.
-
 ---
 
 ## 12. Explicitly not built
@@ -970,7 +906,9 @@ Each with the trigger for revisiting.
 | Statutory rates in code | Never. They are `[invoice] vat_rate` and `--vat-rate`. |
 | Auth in the application | Never: the gateway's (§8). |
 | Templating engine, ORM, workspace split | Not foreseen. |
-| A third typst template before it is needed | `templates/payslip.typ` arrives with payroll in §11, not before. |
+| A third typst template before it is needed | A document abo makes that is neither an invoice nor a statement. |
+| Payroll: gross to net, deductions, payslips | Not on the roadmap. A salary is a posting template on the employee's agreement: gross, what is withheld, net, the same entry each month. Agreements hold invoice templates today, not posting templates; until they do, it is booked by hand from the payslip. |
+| Bank import | Not on the roadmap. Banks' exports vary too much to fix a format for them now. Reconciliation is a closing balance typed in and postings ticked (§6). |
 | Committing rendered statements | A filing needs archiving. Today they are handed to you. |
 | Closing entries at year end | A balance sheet needs to show a closed prior year. Today unclosed profit is a computed equity line. |
 

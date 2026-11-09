@@ -11,7 +11,7 @@ Status is one of:
 - **Supported** — works in the interfaces listed.
 - **Partial** — works, with the gap stated.
 - **Missing** — wanted, not built; the decision still open is stated.
-- **Deferred** — in DESIGN.md §11 or §10, with its trigger; listed so the list is complete.
+- **Deferred** — in DESIGN.md §11 or §12, with its trigger or why not; listed so the list is complete.
 
 Verification is by a fresh agent that has read this file and not the source,
 working a copy of the demo books through the browser and the CLI, and checking
@@ -603,8 +603,9 @@ button there.
 
 Listed so the list is complete; each has its trigger in DESIGN.md.
 
-- **Bank import** (§11) — statement lines matched against booked items.
-- **Payroll** (§11) — gross to net, payslips.
+- **Bank import** (§12) — not on the roadmap: banks' exports vary too much.
+- **Payroll** (§12) — not on the roadmap: a salary is a posting template on
+  the employee's agreement.
 - **Year-end closing entries** (§12) — until then unclosed profit is a computed equity line.
 
 ---

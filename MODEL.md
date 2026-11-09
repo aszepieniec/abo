@@ -1556,8 +1556,10 @@ With the model, one set of invariants holds, and the 76 rule-version switches ar
 - **Reports** are functions of the state, not part of it.
 - **Users** are the gateway's (DESIGN §8): the author of a commit is the person
   the gateway names, and no state.
-- **Payroll** is booked, not computed: what is withheld and owed on a salary
-  is said by whoever runs it, in the entry booked from the payslip.
+- **Payroll** is booked, not computed: a salary is a posting template on the
+  employee's agreement, and what is withheld and owed on it is said there, by
+  whoever runs payroll. Agreements hold invoice templates alone today, so the
+  entry is booked by hand from the payslip.
 
 ---
 
