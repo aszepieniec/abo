@@ -297,9 +297,12 @@ nothing of the program's: it runs the executable, a step at a time.
   page whose words change has its tab's description changed with them.
 - What was sent is kept as it is, greyed, and Send becomes Abort: the page
   sends a key of its making with the message, and `/chat/stop` with that
-  key ends the step, the model's program with it. The conversation is as the model's program last
-  saved it, whole, the message in it (`tests/web.rs`
-  `a_step_is_stopped_by_its_key`). Run is never stopped: abo may be writing
+  key ends the step, the model's program with it. The conversation is put back as it was
+  before the step, and what was sent is back in the field, to change and
+  send again; a conversation stopped at its first message is none
+  (`tests/web.rs` `a_step_is_stopped_by_its_key`). Nothing in such a step
+  changed the books: a command the model proposed waits, and a read
+  changes nothing. Run is never stopped: abo may be writing
   the books, and stopped there, the command could show as not run and run
   twice. At a terminal the model is asked for plain ASCII.
 - `list <directory>` gives the conversations kept there, newest
