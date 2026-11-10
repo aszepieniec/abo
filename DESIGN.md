@@ -285,7 +285,16 @@ nothing of the program's: it runs the executable, a step at a time.
   the books declare it or an account under it, and leaves any other as
   written. A model forgets: a declared account named bare is linked too,
   and an account link is set as code, in the fixed-width font, whoever
-  made it. At a terminal the model is asked for plain ASCII.
+  made it. A command the model shows, inline or as a block beginning
+  `abo`, is set apart as one, with a button that copies it.
+- Where the bookkeeper is is what they ask about. At a terminal, how to do
+  something is answered with a command; on the page, with a link to the
+  page that does it and what to look for there, unless they ask about the
+  command line. abo-web gives the model's program the tabs this person sees, in
+  the environment: each with what is there, its tooltip too (`NAV` in
+  `abo-web/src/web/mod.rs`). What is there quotes the page's own words, and
+  `tests/web.rs` `tabs_quote_their_pages` finds each quote on its page, so a
+  page whose words change has its tab's description changed with them. At a terminal the model is asked for plain ASCII.
 - `list <directory>` gives the conversations kept there, newest
   first, each with its title: what it is about and what came of it, in a
   few words, made anew by a small model after each step and kept in the
