@@ -294,7 +294,14 @@ nothing of the program's: it runs the executable, a step at a time.
   the environment: each with what is there, its tooltip too (`NAV` in
   `abo-web/src/web/mod.rs`). What is there quotes the page's own words, and
   `tests/web.rs` `tabs_quote_their_pages` finds each quote on its page, so a
-  page whose words change has its tab's description changed with them. At a terminal the model is asked for plain ASCII.
+  page whose words change has its tab's description changed with them.
+- What was sent is kept as it is, greyed, and Send becomes Abort: the page
+  sends a key of its making with the message, and `/chat/stop` with that
+  key ends the step, the model's program with it. The conversation is as the model's program last
+  saved it, whole, the message in it (`tests/web.rs`
+  `a_step_is_stopped_by_its_key`). Run is never stopped: abo may be writing
+  the books, and stopped there, the command could show as not run and run
+  twice. At a terminal the model is asked for plain ASCII.
 - `list <directory>` gives the conversations kept there, newest
   first, each with its title: what it is about and what came of it, in a
   few words, made anew by a small model after each step and kept in the
