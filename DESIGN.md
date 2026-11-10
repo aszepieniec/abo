@@ -317,7 +317,10 @@ nothing of the program's: it runs the executable, a step at a time.
   answers (qwen3.5 on Ollama, say) never gets to the title, so give it
   one that does not; without a title, a conversation is listed by its
   first words. The AI tab lists the latest 10, and All
-  conversations the rest, 20 to a page.
+  conversations the rest, 20 to a page, or as many as
+  are chosen there. The gateway's admin (no gateway: the one at the
+  computer) may delete a conversation, from the list or its page, with
+  what was scanned for it: asked again, for nothing outside git comes back.
 - A conversation is kept in the books' `.abo/ai/`, outside git, as
   `<id>.json`, and a scanned document beside it, from which `abo file`
   files it.
