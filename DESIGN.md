@@ -226,9 +226,13 @@ A photo over the API's 5 MB is sent smaller, as a JPEG no side of which is
 longer than the 2576 pixels the current models read (`shrink`, with its
 test); what `abo file` files is the photo as taken.
 
-Both are one conversation, the same loop. The model has two tools. `document`
+Both are one conversation, the same loop. The model has four tools. `document`
 reads a document filed in the books, by its path: one under `bills/` or
-`contracts/` and nowhere else, links followed before the check. `abo` takes a
+`contracts/` and nowhere else, links followed before the check. `conversations`
+lists the conversations kept, this one among them, and `conversation` reads
+one by its id: what each said, and each command with what came of it, not
+its output (`recall`, with its test). Both read at once; on the page the
+model names a conversation as a link to it, by its title. `abo` takes a
 command's arguments. A command that only reads the books
 (`reads` in the model's program, with its test) runs at once and its output
 goes back to the model. Any other command is printed, and the person runs it
