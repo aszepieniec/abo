@@ -133,7 +133,7 @@ src/report.rs     hledger passthrough (-O json / -O csv)
 abo-web/src/main.rs   abo-web: serve and demo, and the server's log
 abo-web/src/demo.rs   the demo's toy books
 abo-web/src/web/      axum + maud: a module per page's area, the forms, the opening
-                      form, Chat and Scan (ai.rs), and style.css
+                      form, the AI tab (ai.rs), and style.css
 ```
 
 A workspace of three crates, each a binary: `abo`, the command line, also
@@ -168,8 +168,8 @@ These are free now and expensive to retrofit. Do not violate them.
    A JSON API later is a second axum router over unchanged functions.
 
 The web server calls these functions **in-process**, through abo's library. It
-does not shell out to the CLI and it does not talk to itself over HTTP. Chat and
-Scan are the exception: they are the program's, which abo-web runs (§5).
+does not shell out to the CLI and it does not talk to itself over HTTP. The AI
+tab is the exception: they are the program's, which abo-web runs (§5).
 
 Questions asked in both places are written once. `src/questions.rs` describes
 opening the books (and a payment option's questions) as data: text, lines, a
@@ -236,6 +236,14 @@ with `y` or answers in words, which go back to the model in its place. Each
 command runs with `--ni`, so `abo` sees a typed command: it validates it (§6)
 and logs it, and nothing in the books depends on what a model said.
 
+A command abo does not take, a subcommand or flag it has not, goes back to
+the model and not to the person: before it runs or is shown, `abo
+--parse-only` reads it as clap would and does nothing, and a usage error (2)
+is the tool's result, for the model to correct (`slipped` in
+the model's program). Such slips are not on the page. After five in one
+step the next goes on as it is, so a model that cannot find the command
+fails where the person sees it.
+
 The key is `ANTHROPIC_API_KEY`; the model is `claude-opus-5-5`, with server-side
 fallback on a refusal. `ANTHROPIC_BASE_URL` and a model set in the environment point it
 elsewhere, such as a local Ollama (`http://127.0.0.1:11434`, which speaks the
@@ -245,9 +253,10 @@ Rust SDK. At a terminal the conversation is not kept: it ends with the process.
 
 ### In the browser
 
-abo-web's **Chat** and **Scan** tabs are there when the model's program is installed, beside
-abo-web or on the `PATH`, and the person may change the books: every message
-may lead to a change. Without it they are not shown, and their pages are not
+abo-web's **AI** tab is there when the model's program is installed, beside abo-web or on
+the `PATH`, and the person may change the books: every message may lead to a
+change. Its page begins a conversation, or, by its Scan button, one with a
+bill's document. Without the model's program the tab is not shown, and its pages are not
 found (`tests/web.rs`). abo-web links
 nothing of the program's: it runs the executable, a step at a time.
 
@@ -256,7 +265,9 @@ nothing of the program's: it runs the executable, a step at a time.
   waiting, says it instead of running it; `run <conversation>` runs
   the command waiting. Each carries the conversation on until it waits on
   the bookkeeper again: the model has had its say, or a command that
-  changes the books waits for a yes.
+  changes the books waits for a yes: its Run button is on it. A read runs at
+  once, also sent as one string or begun with `abo`, as a model the schema
+  does not hold may send it (`arguments` in the model's program).
 - `show <conversation>` gives it as JSON: its title, and what each
   said and each command with what came of it, which the page draws under
   the title. The API's own format
@@ -803,7 +814,7 @@ them the pages behind a prefix, the download links and Backups break.
 # Every top-level route abo serves (the gateway's contract, item 4), so that the gateway
 # adds the project's prefix to abo's root-relative links and sends these
 # paths to abo. A route added to abo's router is added here.
-reserved = ["account", "agreement", "agreements", "apple-touch-icon.png", "backups", "bill", "bills", "chat", "company", "contracts", "declarations", "entry", "export", "icon-192.png", "icon-512.png", "import", "invoice", "invoices", "log", "manifest.webmanifest", "new", "partner", "partners", "pay", "post", "reconcile", "report", "scan", "undo", "write-off"]
+reserved = ["account", "agreement", "agreements", "apple-touch-icon.png", "backups", "bill", "bills", "chat", "company", "contracts", "declarations", "entry", "export", "icon-192.png", "icon-512.png", "import", "invoice", "invoices", "log", "manifest.webmanifest", "new", "partner", "partners", "pay", "post", "reconcile", "report", "undo", "write-off"]
 
 # Download links (the gateway's contract, item 12): reached with no session, the
 # token being the credential, which abo checks. The second entry of token_paths
@@ -885,7 +896,7 @@ Not legal advice, but none of this is controversial.
 
 - **M7** — the model beside abo. **Done.** `scan` and `chat` at a
   terminal (§5); the web interface moved out of abo into `abo-web`, its own
-  binary (§3), which shows Chat and Scan where the model's program is installed.
+  binary (§3), which shows the AI tab where the model's program is installed.
 
 Reconciliation was not in the original list of workflows and is the one that
 recurs most: bills arrive a few at a time, the statement arrives all at once and

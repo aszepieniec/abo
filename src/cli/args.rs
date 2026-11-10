@@ -27,6 +27,11 @@ pub(crate) struct Cli {
     /// takes it.
     #[arg(long, global = true)]
     pub(crate) ni: bool,
+    /// Whether the command is one abo takes, its flags and all: read, and
+    /// nothing done. For the model's program, so that a model's slip never reaches the
+    /// bookkeeper (DESIGN §5).
+    #[arg(long, global = true, hide = true)]
+    pub(crate) parse_only: bool,
     #[command(subcommand)]
     pub(crate) cmd: Cmd,
 }

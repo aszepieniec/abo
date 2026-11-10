@@ -88,6 +88,9 @@ pub fn cli_main() -> std::process::ExitCode {
         }
         Err(e) => e.exit(),
     };
+    if cli.parse_only {
+        return std::process::ExitCode::SUCCESS;
+    }
     let json = cli.json;
     match cli::run(cli) {
         Ok(()) => std::process::ExitCode::SUCCESS,

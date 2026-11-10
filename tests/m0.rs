@@ -57,6 +57,15 @@ fn m0() {
     assert!(o.status.success(), "init failed: {}", err(&o));
     assert_eq!(commits(&dir), 1);
 
+    // --parse-only, the program's: a command abo takes changes nothing; one it
+    // does not is 2, and says why.
+    let o = abo(&dir, &["--parse-only", "account", "add", "Expenses:Fees"], "");
+    assert!(o.status.success(), "{}", err(&o));
+    let o = abo(&dir, &["--parse-only", "pl --period 2024"], "");
+    assert_eq!(o.status.code(), Some(2));
+    assert!(err(&o).contains("unrecognized subcommand"), "{}", err(&o));
+    assert_eq!(commits(&dir), 1);
+
     // As git init, in the directory there: one not empty, one not there,
     // and one inside a company's books are each refused before any question
     // is asked.
