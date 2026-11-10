@@ -316,7 +316,8 @@ nothing of the program's: it runs the executable, a step at a time.
   else `claude-haiku-5-5`. A local model that thinks at length before it
   answers (qwen3.5 on Ollama, say) never gets to the title, so give it
   one that does not; without a title, a conversation is listed by its
-  first words.
+  first words. The AI tab lists the latest 10, and All
+  conversations the rest, 20 to a page.
 - A conversation is kept in the books' `.abo/ai/`, outside git, as
   `<id>.json`, and a scanned document beside it, from which `abo file`
   files it.
