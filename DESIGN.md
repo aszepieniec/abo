@@ -215,46 +215,17 @@ line removes it. Once it is booked, that undo is refused: the booking names it.
 
 ## 5. Where a model fits
 
-Not in `abo`: in the model's program, a repository and a binary of
-its own, which runs `abo` as a person at a terminal would.
+Not in `abo`: in the model's program, a binary and a repository of its own, which runs
+`abo` as a person at a terminal would; its design is in its repository.
+`scan <file>` proposes the `abo file` and `abo bill` that book a
+bill's document; `chat` is a conversation about the books. abo gives
+it two things:
 
-- `scan <file>` sends a bill's document (PDF, JPEG, PNG or WebP) to
-  the model, which transcribes it and proposes the `abo file` and `abo bill`
-  that book it.
-- `chat` is a conversation about the books.
-
-A photo over the API's 5 MB is sent smaller, as a JPEG no side of which is
-longer than the 2576 pixels the current models read (`shrink`, with its
-test); what `abo file` files is the photo as taken.
-
-Both are one conversation, the same loop. The model has four tools. `document`
-reads a document filed in the books, by its path: one under `bills/` or
-`contracts/` and nowhere else, links followed before the check. `conversations`
-lists the conversations kept, this one among them, and `conversation` reads
-one by its id: what each said, and each command with what came of it, not
-its output (`recall`, with its test). Both read at once; on the page the
-model names a conversation as a link to it, by its title. `abo` takes a
-command's arguments. A command that only reads the books
-(`reads` in the model's program, with its test) runs at once and its output
-goes back to the model. Any other command is printed, and the person runs it
-with `y` or answers in words, which go back to the model in its place. Each
-command runs with `--ni`, so `abo` sees a typed command: it validates it (§6)
-and logs it, and nothing in the books depends on what a model said.
-
-A command abo does not take, a subcommand or flag it has not, goes back to
-the model and not to the person: before it runs or is shown, `abo
---parse-only` reads it as clap would and does nothing, and a usage error (2)
-is the tool's result, for the model to correct (`slipped` in
-the model's program). Such slips are not on the page. After five in one
-step the next goes on as it is, so a model that cannot find the command
-fails where the person sees it.
-
-The key is `ANTHROPIC_API_KEY`; the model is `claude-opus-5-5`, with server-side
-fallback on a refusal. `ANTHROPIC_BASE_URL` and a model set in the environment point it
-elsewhere, such as a local Ollama (`http://127.0.0.1:11434`, which speaks the
-same API) for `chat`; a small local model reads documents badly, so `scan`
-wants Claude. Requests are plain HTTPS (`ureq`): there is no official
-Rust SDK. At a terminal the conversation is not kept: it ends with the process.
+- Each command runs with `--ni`, so `abo` sees a typed command: it validates
+  it (§6) and logs it, and nothing in the books depends on what a model said.
+- `abo --parse-only` reads a command as clap would and does nothing. A usage
+  error (2) means abo does not take it, a subcommand or flag it has not, and
+  the model's program gives that back to the model to correct, not to the person.
 
 ### In the browser
 
@@ -270,9 +241,7 @@ nothing of the program's: it runs the executable, a step at a time.
   waiting, says it instead of running it; `run <conversation>` runs
   the command waiting. Each carries the conversation on until it waits on
   the bookkeeper again: the model has had its say, or a command that
-  changes the books waits for a yes: its Run button is on it. A read runs at
-  once, also sent as one string or begun with `abo`, as a model the schema
-  does not hold may send it (`arguments` in the model's program).
+  changes the books waits for a yes: its Run button is on it.
 - `show <conversation>` gives it as JSON: its title, and what each
   said and each command with what came of it, which the page draws under
   the title. The API's own format
@@ -309,15 +278,10 @@ nothing of the program's: it runs the executable, a step at a time.
   changed the books: a command the model proposed waits, and a read
   changes nothing. Run is never stopped: abo may be writing
   the books, and stopped there, the command could show as not run and run
-  twice. At a terminal the model is asked for plain ASCII.
+  twice.
 - `list <directory>` gives the conversations kept there, newest
-  first, each with its title: what it is about and what came of it, in a
-  few words, made anew by a small model after each step and kept in the
-  conversation. The model is the model set for titles, else the one set for the rest,
-  else `claude-haiku-5-5`. A local model that thinks at length before it
-  answers (qwen3.5 on Ollama, say) never gets to the title, so give it
-  one that does not; without a title, a conversation is listed by its
-  first words. The AI tab lists the latest 10, and All
+  first, each with its title, which the model's program keeps in the conversation;
+  without one, a conversation is listed by its first words. The AI tab lists the latest 10, and All
   conversations the rest, 20 to a page, or as many as
   are chosen there. The gateway's admin (no gateway: the one at the
   computer) may delete a conversation, from the list or its page, with
@@ -543,8 +507,8 @@ pub enum Vat {
 }
 ```
 
-Exactly one place reads the method: the validator. The model reads it
-with `abo config`, as a person would.
+Exactly one place reads the method: the validator. A model reads it with
+`abo config`, as a person would.
 
 ```
 ponytail: one VAT method for all time. A report over a past period under a
