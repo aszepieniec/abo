@@ -57,8 +57,8 @@ fn m0() {
     assert!(o.status.success(), "init failed: {}", err(&o));
     assert_eq!(commits(&dir), 1);
 
-    // --parse-only, the program's: a command abo takes changes nothing; one it
-    // does not is 2, and says why.
+    // --parse-only, for a program that runs abo's commands for a model: a
+    // command abo takes changes nothing; one it does not is 2, and says why.
     let o = abo(&dir, &["--parse-only", "account", "add", "Expenses:Fees"], "");
     assert!(o.status.success(), "{}", err(&o));
     let o = abo(&dir, &["--parse-only", "pl --period 2024"], "");

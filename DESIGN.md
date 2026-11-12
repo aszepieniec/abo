@@ -134,10 +134,9 @@ src/model/tests.rs, src/cli_tests.rs   the properties, and with `testkit` the
                   plans and replays abo-web's tests are built from
 ```
 
-One crate, `abo`: the command line, and the library under it. Two
-repositories of their own sit beside it. `abo-web`, the web interface, needs
-abo's library and nothing else. the model's program (§5), needs neither, and
-runs `abo` as a person does. No crate-per-module.
+One crate, `abo`: the command line, and the library under it. `abo-web`,
+the web interface, is a repository of its own beside it, and needs abo's
+library and nothing else. No crate-per-module.
 
 The web tests are abo-web's. They hold the pages to the model and to the
 command line with abo's test helpers, which abo's `testkit` feature makes
@@ -167,7 +166,7 @@ These are free now and expensive to retrofit. Do not violate them.
 
 The web server calls these functions **in-process**, through abo's library. It
 does not shell out to the CLI and it does not talk to itself over HTTP. The AI
-tab is the exception: they are the program's, which abo-web runs (§5).
+tab is the exception: it runs the model's program (§5).
 
 Questions asked in both places are written once. `src/questions.rs` describes
 opening the books (and a payment option's questions) as data: text, lines, a
@@ -212,87 +211,17 @@ line removes it. Once it is booked, that undo is refused: the booking names it.
 
 ## 5. Where a model fits
 
-Not in `abo`: in the model's program, a binary and a repository of its own, which runs
-`abo` as a person at a terminal would; its design is in its repository.
-`scan <file>` proposes the `abo file` and `abo bill` that book a
-bill's document; `chat` is a conversation about the books. abo gives
-it two things:
+Not in `abo`: in a program of its own, which runs `abo` as a person at a
+terminal would. abo gives it two things:
 
 - Each command runs with `--ni`, so `abo` sees a typed command: it validates
   it (§6) and logs it, and nothing in the books depends on what a model said.
 - `abo --parse-only` reads a command as clap would and does nothing. A usage
   error (2) means abo does not take it, a subcommand or flag it has not, and
-  the model's program gives that back to the model to correct, not to the person.
+  the program gives that back to the model to correct, not to the person.
 
-### In the browser
-
-abo-web's **AI** tab is there when the model's program is installed, beside abo-web or on
-the `PATH`, and the person may change the books: every message may lead to a
-change. Its page begins a conversation, or, by its Scan button, one with a
-bill's document. Without the model's program the tab is not shown, and its pages are not
-found (abo-web's `tests/web.rs`). abo-web links
-nothing of the program's: it runs the executable, a step at a time.
-
-- `scan <file> --to <conversation>` begins one with a document;
-  `say <conversation> <text>` adds a message, or, to a command
-  waiting, says it instead of running it; `run <conversation>` runs
-  the command waiting. Each carries the conversation on until it waits on
-  the bookkeeper again: the model has had its say, or a command that
-  changes the books waits for a yes: its Run button is on it.
-- `show <conversation>` gives it as JSON: its title, and what each
-  said and each command with what came of it, which the page draws under
-  the title. The API's own format
-  stays the program's.
-- The model's answers are rendered as markdown (`pulldown-cmark`): tables,
-  lists, emphasis. What the model writes is not trusted, since a scanned
-  document can tell it what to write. So HTML in an answer is shown as
-  text. An image is dropped and its description kept, since its address
-  could carry the books to another site as the page loads. A link is one
-  only within abo's pages (`/bills/...`); any other, `//host`, `/\host`
-  and `javascript:` among them, is its text alone (`markdown` in
-  abo-web's `src/web/ai.rs`, with its test). On the page the model is told
-  that markdown is rendered, and to write each account it names by its full
-  name in backticks; the page links such a name to the account's page when
-  the books declare it or an account under it, and leaves any other as
-  written. A model forgets: a declared account named bare is linked too,
-  and an account link is set as code, in the fixed-width font, whoever
-  made it. A command the model shows, inline or as a block beginning
-  `abo`, is set apart as one, with a button that copies it.
-- Where the bookkeeper is is what they ask about. At a terminal, how to do
-  something is answered with a command; on the page, with a link to the
-  page that does it and what to look for there, unless they ask about the
-  command line. abo-web gives the model's program the tabs this person sees, in
-  the environment: each with what is there, its tooltip too (`NAV` in
-  abo-web's `src/web/mod.rs`). What is there quotes the page's own words, and
-  abo-web's `tests/web.rs` `tabs_quote_their_pages` finds each quote on its page, so a
-  page whose words change has its tab's description changed with them.
-- What was sent is kept as it is, greyed, and Send becomes Abort: the page
-  sends a key of its making with the message, and `/chat/stop` with that
-  key ends the step, the model's program with it. The conversation is put back as it was
-  before the step, and what was sent is back in the field, to change and
-  send again; a conversation stopped at its first message is none
-  (abo-web's `tests/web.rs` `a_step_is_stopped_by_its_key`). Nothing in such a step
-  changed the books: a command the model proposed waits, and a read
-  changes nothing. Run is never stopped: abo may be writing
-  the books, and stopped there, the command could show as not run and run
-  twice.
-- `list <directory>` gives the conversations kept there, newest
-  first, each with its title, which the model's program keeps in the conversation;
-  without one, a conversation is listed by its first words. The AI tab lists the latest 10, and All
-  conversations the rest, 20 to a page, or as many as
-  are chosen there. The gateway's admin (no gateway: the one at the
-  computer) may delete a conversation, from the list or its page, with
-  what was scanned for it: asked again, for nothing outside git comes back.
-- A conversation is kept in the books' `.abo/ai/`, outside git, as
-  `<id>.json`, and a scanned document beside it, from which `abo file`
-  files it.
-- A command runs under the name of the person the gateway names, as a
-  change made on any page: abo-web passes it as `GIT_AUTHOR_NAME` and
-  `GIT_AUTHOR_EMAIL`.
-- One step at a time per conversation: a second Run, or a message sent
-  while the model's program is still working, is refused, so a command never runs twice.
-- A step waits for the model, which can take minutes. The page is a plain
-  form, as every other is, so it waits too.
+abo-web's AI tab runs that program where it is installed; without it, the
+tab is not shown.
 
 An earlier version called the Messages API from `abo bill` itself (commit
 fb6ac2c). It was taken out so that `abo` is model-free, and `abo` stays so.
@@ -857,7 +786,7 @@ Not legal advice, but none of this is controversial.
   `method = "flat"` is rejected. ~300 lines. **Done.**
 - **M1** — `abo bill <file>`: AI proposal, terminal approve/refine. **Done**,
   and since taken out of `abo` (§5): `abo file` and `abo bill` are model-free.
-  The model's program, `scan` and `chat`, is its successor, beside `abo` (§5).
+  A program beside `abo` is its successor (§5).
 - **M2** — `abo-web serve`: balance, register, a booking form, and the bill upload
   and proposal card. **Done.** `abo-web demo` serves the same pages against a
   throwaway repository of toy data in the temp directory, rebuilt on every
@@ -888,9 +817,10 @@ Not legal advice, but none of this is controversial.
   screen, and on an iPhone whether a PDF opened in the app leaves a way back
   (WORKFLOWS.md G1).
 
-- **M7** — the model beside abo. **Done.** `scan` and `chat` at a
-  terminal (§5); the web interface moved out of abo into `abo-web`, its own
-  binary (§3), which shows the AI tab where the model's program is installed.
+- **M7** — the model beside abo. **Done.** A model at a terminal, in a
+  program of its own (§5); the web interface moved out of abo into
+  `abo-web`, its own binary (§3), which shows the AI tab where that program
+  is installed.
 
 Reconciliation was not in the original list of workflows and is the one that
 recurs most: bills arrive a few at a time, the statement arrives all at once and
