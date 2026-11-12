@@ -670,7 +670,9 @@ Three rules tie it to the rest of this document:
   which. A rule no guarantee needs is removed.
 - Every guarantee has the properties of §11 that test it, and the table names
   them; `every_guarantee_is_tested` checks that each property named exists
-  and that every property is named. A property no guarantee needs is removed.
+  and that every property is named. A property named `abo-web::name` is
+  abo-web's, in its `tests/props.rs`, and abo-web's `every_web_guarantee_is_tested`
+  checks it. A property no guarantee needs is removed.
 - A new property is written when a new reader is added, with its guarantee —
   not otherwise.
 
@@ -769,8 +771,8 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | G-O4 | A configuration key reads back as set; a key that names nothing is refused | I-C1, I-C2, I-C3, §5.2 | `a_key_set_reads_back`, `unknown_keys_are_refused` |
 | G-O5 | Every command does what its operation does in the model: taken exactly when the model takes it; then the files say the model's state, with every document and PDF beside them; refused, with the rules the model names, in JSON and in words, and nothing written; undo as §5.3. What the commands show is the model's | §5 | `the_cli_is_the_model`, `refusals_in_words_name_their_rules`, `what_abo_shows_is_the_models`, `lists_show_what_the_books_hold`, `reports_read_the_books_as_the_model_does`, `a_key_set_reads_back_through_the_cli`, `company_changes_only_what_it_is_told`, `payment_options_follow_add_edit_remove`, `pay_takes_what_is_open_from_money`, `record_all_clears_everything`, `a_document_filed_for_a_bill_names_it` |
 | G-O6 | Changes sent at once are each made, one after another | §5 | `changes_at_once_are_each_made` |
-| G-O7 | `abo init`, and the form that asks its questions in the browser, open books that read with no problem, configured as told; or refuse and leave nothing behind | §2.8 | `init_opens_valid_books_or_nothing`, `a_new_company_opens_like_init` |
-| G-O8 | Every commit abo makes holds the command of each of its operations (§5.4), whoever made it, a terminal or a form: every part of the operation written out, a document named where it is filed. The commands of all of them, run in order in an empty directory, `abo init` first, on any later day, each document read from the commit that filed it, make the same books, invoice PDFs aside: one made again is made at another moment, by whatever typst and fonts are there. Commits abo did not make, and books from before commits held their commands, are outside it. One function writes an operation as its command, another as its commit's subject. A command is one line of its commit, a newline in a word written `\n`; one over two lines, as commits made before that hold, is read back whole | §5 | `the_log_makes_each_change_again`, `the_web_is_the_model`, `a_command_over_two_lines_is_read_whole` |
+| G-O7 | `abo init`, and the form that asks its questions in the browser, open books that read with no problem, configured as told; or refuse and leave nothing behind | §2.8 | `init_opens_valid_books_or_nothing`, `abo-web::a_new_company_opens_like_init` |
+| G-O8 | Every commit abo makes holds the command of each of its operations (§5.4), whoever made it, a terminal or a form: every part of the operation written out, a document named where it is filed. The commands of all of them, run in order in an empty directory, `abo init` first, on any later day, each document read from the commit that filed it, make the same books, invoice PDFs aside: one made again is made at another moment, by whatever typst and fonts are there. Commits abo did not make, and books from before commits held their commands, are outside it. One function writes an operation as its command, another as its commit's subject. A command is one line of its commit, a newline in a word written `\n`; one over two lines, as commits made before that hold, is read back whole | §5 | `the_log_makes_each_change_again`, `abo-web::the_web_is_the_model`, `a_command_over_two_lines_is_read_whole` |
 | G-O9 | A report changes nothing in the books, wherever it is told to write: a PDF, or hledger's output file, goes outside them or is refused | §5 | `a_report_changes_nothing_in_the_books` |
 | G-O11 | Every amount in a command's JSON is `{quantity, commodity}`: the number to its commodity's places, the commodity apart, and nothing of how to write it, which is the reader's to choose; what cannot be read as typed ends abo with 2, as a usage error | §5 | `amounts_in_json_are_quantity_and_commodity`, `an_unreadable_date_exits_2` |
 | G-O12 | An id once given names that entry, or a gap, ever after: no operation and no undo gives it again; an invoice or credit note issued is not undone | §2.3, §5.3 | `ids_are_never_given_twice`, `issued_invoices_are_not_undone` |
@@ -783,10 +785,10 @@ operations, each logged as the command that makes the same change.
 
 | | Guarantee | Rules | Properties |
 |---|---|---|---|
-| G-W1 | A form does what its operation does in the model: taken exactly when the model takes it, and then the files say the model's state; refused, the page names the model's rules, and nothing changes | §5 | `the_web_is_the_model` |
-| G-W2 | Every page answers, whatever the books hold: none fails | §5 | `every_page_answers` |
-| G-W3 | A form sent twice is done once | §5 | `a_form_sent_twice_changes_once` |
-| G-W4 | A post from another site changes nothing | §5 | `cross_site_posts_are_refused` |
+| G-W1 | A form does what its operation does in the model: taken exactly when the model takes it, and then the files say the model's state; refused, the page names the model's rules, and nothing changes | §5 | `abo-web::the_web_is_the_model` |
+| G-W2 | Every page answers, whatever the books hold: none fails | §5 | `abo-web::every_page_answers` |
+| G-W3 | A form sent twice is done once | §5 | `abo-web::a_form_sent_twice_changes_once` |
+| G-W4 | A post from another site changes nothing | §5 | `abo-web::cross_site_posts_are_refused` |
 
 ### Messages, and checks of this document
 
@@ -1588,7 +1590,7 @@ The commands are tested the same way, through the binary
 step, abo and the model agree on whether it is taken; the files on disk are
 what `render` writes for the model's state; and a refusal names the model's
 rules and changes nothing. The other CLI properties are those §3 names under
-G-F5 and G-O5 to G-O7. The web pages are tested so too (`src/web_tests.rs`):
+G-F5 and G-O5 to G-O7. The web pages are tested so too (abo-web's `tests/props.rs`):
 the same plans posted as their forms to a running `abo-web serve`, under G-W1 to
 G-W4.
 

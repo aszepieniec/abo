@@ -25,6 +25,24 @@ unicode-general-category = "1.1.0"
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", default-features = false, features = ["term"] }
 
+# The model's plans and the command line's replays (src/model/tests.rs,
+# src/cli_tests.rs), for another crate's tests: abo-web's, as a dev-dependency.
+[features]
+testkit = ["dep:proptest", "dep:test-strategy", "dep:proptest-arbitrary-interop", "dep:arbitrary", "rust_decimal/rust-fuzz", "jiff/arbitrary"]
+
+[dependencies.proptest]
+version = "1"
+optional = true
+[dependencies.test-strategy]
+version = "0.4"
+optional = true
+[dependencies.proptest-arbitrary-interop]
+version = "0.1"
+optional = true
+[dependencies.arbitrary]
+version = "1"
+optional = true
+
 # The model's property tests (src/model/props.rs). The features add
 # `arbitrary` impls for the wildest values a test draws.
 [dev-dependencies]

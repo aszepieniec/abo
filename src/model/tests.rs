@@ -4,6 +4,8 @@
 //! and simplifying steps, and what is left still means something. Values are
 //! mostly what a person would enter, and now and then anything `arbitrary`
 //! makes of a decimal, a date or a string.
+// Only the tests use some of this; another crate's, by testkit, use the rest.
+#![cfg_attr(not(test), allow(dead_code, unused_imports))]
 
 use super::check::BOUND;
 use super::*;
@@ -15,16 +17,16 @@ use proptest_arbitrary_interop::arb;
 use std::process::Command;
 use test_strategy::{proptest, Arbitrary};
 
-pub(crate) fn day(s: &str) -> Date {
+pub fn day(s: &str) -> Date {
     s.parse().unwrap()
 }
 
-pub(crate) const BANK: &str = "Assets:Bank";
-pub(crate) const RECEIVABLE: &str = "Assets:Receivable";
-pub(crate) const INPUT: &str = "Assets:VAT:Input";
-pub(crate) const OUTPUT: &str = "Liabilities:VAT:Output";
-pub(crate) const PAYABLE: &str = "Liabilities:Payable";
-pub(crate) const PLAIN: [&str; 5] = ["Assets:Bank", "Expenses:Hosting", "Expenses:Other", "Equity:Opening", "Income:Sales"];
+pub const BANK: &str = "Assets:Bank";
+pub const RECEIVABLE: &str = "Assets:Receivable";
+pub const INPUT: &str = "Assets:VAT:Input";
+pub const OUTPUT: &str = "Liabilities:VAT:Output";
+pub const PAYABLE: &str = "Liabilities:Payable";
+pub const PLAIN: [&str; 5] = ["Assets:Bank", "Expenses:Hosting", "Expenses:Other", "Equity:Opening", "Income:Sales"];
 
 fn fresh() -> Books {
     let config: Config = toml::from_str(&format!(
@@ -58,32 +60,32 @@ fn fresh() -> Books {
     m
 }
 
-pub(crate) fn eur(q: Decimal) -> Amount {
+pub fn eur(q: Decimal) -> Amount {
     Amount { quantity: q, commodity: "EUR".into() }
 }
 
-pub(crate) fn pick<T: Clone>(i: &Index, v: &[T]) -> Option<T> {
+pub fn pick<T: Clone>(i: &Index, v: &[T]) -> Option<T> {
     (!v.is_empty()).then(|| v[i.index(v.len())].clone())
 }
 
 /// 0.01 to 999.99, or any decimal at all.
-pub(crate) fn money() -> impl Strategy<Value = Decimal> {
+pub fn money() -> impl Strategy<Value = Decimal> {
     prop_oneof![19 => (1i64..100_000).prop_map(|c| Decimal::new(c, 2)), 1 => arb::<Decimal>()]
 }
 
 /// A few words, or any string at all.
-pub(crate) fn text() -> impl Strategy<Value = String> {
+pub fn text() -> impl Strategy<Value = String> {
     prop_oneof![9 => "[A-Z][a-z]{0,10}( [a-z]{1,8}){0,3}", 1 => arb::<String>()]
 }
 
 /// Now and then two share the first eight digits, which a path holds.
-pub(crate) fn hash() -> impl Strategy<Value = String> {
+pub fn hash() -> impl Strategy<Value = String> {
     prop_oneof![3 => "[0-9a-f]{64}", 1 => "0000000[01][0-9a-f]{56}"]
 }
 
 /// When a step is dated: a few days back, longer back, or any date at all.
 #[derive(Arbitrary, Debug, Clone)]
-pub(crate) enum When {
+pub enum When {
     #[weight(17)]
     Ago(#[strategy(0i64..4)] i64),
     #[weight(2)]
@@ -101,7 +103,7 @@ impl When {
 }
 
 #[derive(Arbitrary, Debug, Clone)]
-pub(crate) enum Part {
+pub enum Part {
     #[weight(6)]
     Open,
     #[weight(3)]
@@ -111,7 +113,7 @@ pub(crate) enum Part {
 }
 
 #[derive(Arbitrary, Debug, Clone)]
-pub(crate) enum Rate {
+pub enum Rate {
     #[weight(2)]
     Configured,
     Reduced,
@@ -120,7 +122,7 @@ pub(crate) enum Rate {
 }
 
 #[derive(Arbitrary, Debug, Clone)]
-pub(crate) struct LineDraw {
+pub struct LineDraw {
     #[strategy(text())]
     description: String,
     #[strategy(prop_oneof![9 => (1i64..6).prop_map(Decimal::from), 1 => arb::<Decimal>()])]
@@ -130,7 +132,7 @@ pub(crate) struct LineDraw {
 }
 
 #[derive(Arbitrary, Debug, Clone)]
-pub(crate) enum Key {
+pub enum Key {
     #[weight(3)]
     ClosedThrough(When),
     VatRate,
@@ -143,7 +145,7 @@ pub(crate) enum Key {
 }
 
 #[derive(Arbitrary, Debug, Clone)]
-pub(crate) enum Draw {
+pub enum Draw {
     #[weight(5)]
     Post { from: Index, to: Index, #[strategy(money())] q: Decimal, #[strategy(text())] description: String, when: When },
     #[weight(2)]
@@ -304,7 +306,7 @@ pub(crate) enum Draw {
 }
 
 #[derive(Arbitrary, Debug, Clone)]
-pub(crate) struct VersionDraw {
+pub struct VersionDraw {
     /// Days from today it takes effect: before, or after.
     #[strategy(-120i64..60)]
     from: i64,
@@ -316,7 +318,7 @@ pub(crate) struct VersionDraw {
 }
 
 #[derive(Arbitrary, Debug, Clone)]
-pub(crate) struct TemplateDraw {
+pub struct TemplateDraw {
     #[strategy(prop_oneof![4 => Just("1|110|Hosting".to_string()), 1 => arb::<String>()])]
     items: String,
     /// Now and then a field the invoice form has not.
@@ -335,14 +337,14 @@ impl VersionDraw {
 }
 
 #[derive(Arbitrary, Debug, Clone)]
-pub(crate) struct Step {
+pub struct Step {
     /// Days since the step before.
     #[strategy(0i64..4)]
-    pub(crate) advance: i64,
-    pub(crate) draw: Draw,
+    pub advance: i64,
+    pub draw: Draw,
 }
 
-pub(crate) fn plan() -> impl Strategy<Value = Vec<Step>> {
+pub fn plan() -> impl Strategy<Value = Vec<Step>> {
     vec(any::<Step>(), 1..60)
 }
 
@@ -352,7 +354,7 @@ fn pay_kind(k: u8) -> PayKind {
     [PayKind::Bank, PayKind::Cash, PayKind::Crypto][k as usize % 3]
 }
 
-pub(crate) fn op(d: &Draw, m: &Books, today: Date) -> Option<Op> {
+pub fn op(d: &Draw, m: &Books, today: Date) -> Option<Op> {
     let standing = m.standing();
     let ids: Vec<EntryId> = (1..=m.entries.len() + 1).collect();
     let debts: Vec<EntryId> = (1..=m.entries.len()).filter(|&e| m.debt(e).is_some()).collect();
@@ -665,7 +667,7 @@ fn open_debts_are_the_balances(#[strategy(plan())] plan: Vec<Step>) {
 }
 
 #[derive(Arbitrary, Debug, Clone)]
-pub(crate) enum Edit {
+pub enum Edit {
     Insert(Index, #[strategy(arb::<char>())] char),
     Space(Index),
     Delete(Index),
@@ -989,13 +991,15 @@ fn refusals_speak_of_the_books_before(#[strategy(plan())] plan: Vec<Step>) {
 /// test is named by one.
 #[test]
 fn every_guarantee_is_tested() {
-    let doc = include_str!("../../MODEL.md");
+    let doc = crate::docs::MODEL;
+    // abo-web's, `abo-web::name`, are checked in abo-web.
     let named: BTreeSet<&str> = doc
         .lines()
         .filter(|l| l.starts_with("| G-") || l.starts_with("| M-"))
         .flat_map(|l| l.rsplit('|').nth(1).unwrap().split('`').skip(1).step_by(2))
+        .filter(|n| !n.contains("::"))
         .collect();
-    let code = [include_str!("tests.rs"), include_str!("../cli_tests.rs"), include_str!("../web_tests.rs")].concat();
+    let code = [include_str!("tests.rs"), include_str!("../cli_tests.rs")].concat();
     let mut tests = BTreeSet::new();
     // Spelled apart, so as not to find themselves.
     let (proptest, test) = (["#[", "proptest"].concat(), ["#[", "test]"].concat());
@@ -1980,7 +1984,7 @@ fn problems_name_lines_that_are_there(#[strategy(plan())] plan: Vec<Step>, file:
 }
 
 /// The files of `m` with one edit made to one of them.
-pub(crate) fn edited(m: &Books, file: &Index, edit: &Edit) -> Files {
+pub fn edited(m: &Books, file: &Index, edit: &Edit) -> Files {
     let mut f = render(m);
     let name = pick(file, &f.keys().cloned().collect::<Vec<_>>()).unwrap();
     let mut chars: Vec<char> = f[&name].chars().collect();
@@ -2338,7 +2342,7 @@ fn cleared_entries_are_not_reverted(#[strategy(plan())] plan: Vec<Step>, entry: 
 
 /// Whether `text` holds a date jiff reads that is not written yyyy-mm-dd:
 /// one outside the years 1 to 9999, which an interface refuses unread.
-pub(crate) fn has_unwritable_date(text: &str) -> bool {
+pub fn has_unwritable_date(text: &str) -> bool {
     // A form's body encodes the sign of a year past 9999.
     let text = text.replace("%2B", "+");
     text.split(|c: char| c == '=' || c == '&' || c.is_whitespace() || c == '"')

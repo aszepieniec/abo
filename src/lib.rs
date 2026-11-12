@@ -14,10 +14,15 @@ pub mod repo;
 pub mod store;
 pub mod statement;
 pub mod views;
-#[cfg(test)]
-mod cli_tests;
-#[cfg(test)]
-mod web_tests;
+#[cfg(any(test, feature = "testkit"))]
+pub mod cli_tests;
+
+/// The documents, for the tests that hold code to them: abo-web's too.
+#[cfg(any(test, feature = "testkit"))]
+pub mod docs {
+    pub const MODEL: &str = include_str!("../MODEL.md");
+    pub const DESIGN: &str = include_str!("../DESIGN.md");
+}
 
 
 use anyhow::{bail, Result};

@@ -4,12 +4,9 @@
 //! (src/model/tests.rs, MODEL.md §3) is not tested again here: what is here
 //! is the commands around the model, and the faults no property reaches.
 
-mod common;
-
-use std::io::{Read as _, Write as _};
-use std::net::TcpStream;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 /// The day every command here takes for today, `ABO_TODAY`: late enough that
@@ -62,11 +59,6 @@ fn made(base: &Path, name: &str) -> PathBuf {
 fn abo(dir: &Path, args: &[&str]) -> Output {
     sweep();
     Command::new(env!("CARGO_BIN_EXE_abo")).args(args).current_dir(dir).env("ABO_TODAY", TODAY).stdin(Stdio::null()).output().unwrap()
-}
-
-/// abo-web, as `abo` runs abo.
-fn web(dir: &Path, args: &[&str]) -> Output {
-    Command::new(common::web_exe()).args(args).current_dir(dir).env("ABO_TODAY", TODAY).stdin(Stdio::null()).output().unwrap()
 }
 
 fn ok(dir: &Path, args: &[&str]) -> String {
@@ -171,92 +163,6 @@ fn by_hand(dir: &Path, msg: &str) {
     let o = Command::new("git").args(["commit", "-q", "-am", msg, "--author", "t <t@example.invalid>"]).current_dir(dir)
         .env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@example.invalid").output().unwrap();
     assert!(o.status.success(), "{}", err(&o));
-}
-
-// ---- the browser ----
-
-struct Server {
-    child: Child,
-    port: u16,
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-/// Start a server, `cmd` given all but its port: it binds port 0, the
-/// system's choice, and says which. No port is chosen here and taken there,
-/// where another test, or a connection of the system's own, could have it
-/// in between.
-fn start(mut cmd: Command) -> Server {
-    use std::io::BufRead as _;
-    let mut child = cmd.args(["--port", "0"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
-    let out = child.stdout.take().unwrap();
-    let (tx, rx) = std::sync::mpsc::channel();
-    // Read on to the end, so the server never waits on a full pipe.
-    std::thread::spawn(move || {
-        for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
-            if let Some(port) = line.split("http://127.0.0.1:").nth(1).and_then(|r| r.split(|c: char| !c.is_ascii_digit()).next()?.parse::<u16>().ok()) {
-                let _ = tx.send(port);
-            }
-        }
-    });
-    let port = rx.recv_timeout(Duration::from_secs(60)).expect("the server did not say where it listens");
-    Server { child, port }
-}
-
-fn serve(dir: &Path) -> Server {
-    let mut cmd = Command::new(common::web_exe());
-    cmd.arg("serve").current_dir(dir);
-    start(cmd)
-}
-
-/// (status, the Location header, the whole answer)
-fn http(s: &Server, method: &str, path: &str, form: &[(&str, &str)]) -> (u16, String, String) {
-    let body: String = form.iter().map(|(k, v)| format!("{}={}", enc(k), enc(v))).collect::<Vec<_>>().join("&");
-    send(s, method, path, "application/x-www-form-urlencoded", body.as_bytes())
-}
-
-/// A form sent as multipart, as one with a file input is.
-fn multipart(s: &Server, path: &str, form: &[(&str, &str)]) -> (u16, String, String) {
-    let mut body = String::new();
-    for (k, v) in form {
-        body += &format!("--b0undary\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n");
-    }
-    body += "--b0undary--\r\n";
-    send(s, "POST", path, "multipart/form-data; boundary=b0undary", body.as_bytes())
-}
-
-fn send(s: &Server, method: &str, path: &str, content_type: &str, body: &[u8]) -> (u16, String, String) {
-    let host = format!("127.0.0.1:{}", s.port);
-    let mut c = TcpStream::connect(&host).unwrap();
-    write!(
-        c,
-        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nConnection: close\r\n\
-         Content-Type: {content_type}\r\nContent-Length: {}\r\n\r\n",
-        body.len()
-    )
-    .unwrap();
-    c.write_all(body).unwrap();
-    let mut out = String::new();
-    c.read_to_string(&mut out).unwrap();
-    // Read as text: the spaces a page keeps from breaking are spaces.
-    let out = out.replace(['\u{a0}', '\u{202f}'], " ");
-    let status = out[9..12].parse().unwrap();
-    let location = out
-        .lines()
-        .find_map(|l| l.to_ascii_lowercase().starts_with("location:").then(|| l[9..].trim().to_string()))
-        .unwrap_or_default();
-    (status, location, out)
-}
-
-fn enc(s: &str) -> String {
-    s.bytes()
-        .map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
-        .collect()
 }
 
 fn invoice_refused(name: &str, extra: &[&str], says: &str) {
@@ -433,78 +339,6 @@ fn an_ambiguous_id_names_only_what_it_matches() {
 
 // ---- in the browser ----
 
-#[test]
-fn the_pay_page_takes_only_money_received() {
-    let dir = books("pay-page", &[]);
-    let id = invoice(&dir, "2026-0001", "2026-03-01", "110.00");
-    let s = serve(&dir);
-    let before = log_len(&dir);
-    for (amount, from, says) in [("-5", "Assets:Bank", "I-P1"), ("0", "Assets:Bank", "I-P1"), ("5", "Assets:Receivable", "N4"),
-                                ("5", "Income:Sales", "N4: Income:Sales is not an account money moves through"),
-                                ("5", "Liabilities:Payable", "N4: Liabilities:Payable is not an account money moves through")] {
-        let (status, _, page) = http(&s, "POST", "/pay", &[("debt", &id), ("date", "2026-03-05"), ("amount", amount), ("from", from)]);
-        assert!(status == 422 && page.contains(says), "{amount} into {from}: {page}");
-    }
-    assert_eq!(log_len(&dir), before);
-    assert!(!read(&dir, "journal/2026.journal").contains("pays:"));
-}
-
-#[test]
-fn saving_the_company_shows_its_notice_and_changes_nothing_unchanged() {
-    let dir = books("company-page", &["--address", "1 Street", "--country", "X", "--tax-id", "T-1"]);
-    let s = serve(&dir);
-    let form = |name| [("name", name), ("address", "1 Street"), ("country", "X"), ("tax_id", "T-1")];
-    let (status, to, _) = http(&s, "POST", "/company", &form("Renamed Ltd"));
-    assert!(status == 303 && to.contains("done="), "{to}");
-    let (_, _, page) = http(&s, "GET", &to, &[]);
-    assert!(page.contains("Company's details saved") && page.contains("action=\"/undo\""), "{page}");
-    // Sent as it stands: nothing to change, nothing logged, nothing said.
-    let before = log_len(&dir);
-    let (status, to, _) = http(&s, "POST", "/company", &form("Renamed Ltd"));
-    assert_eq!((status, to.as_str()), (303, "/company"));
-    assert_eq!(log_len(&dir), before);
-}
-
-#[test]
-fn saving_a_payment_option_shows_its_notice() {
-    let dir = books("option-page", &[]);
-    let s = serve(&dir);
-    let (status, to, page) = http(&s, "POST", "/company/payment", &[("kind", "cash"), ("details", "At the office"),
-        ("label", "Cash"), ("id", "cash"), ("account", "Assets:Cash")]);
-    assert_eq!(status, 303, "{page}");
-    let (_, _, page) = http(&s, "GET", &to, &[]);
-    assert!(page.contains("Payment option") && (page.contains(" added") || page.contains(" changed")), "{page}");
-}
-
-#[test]
-fn a_filed_document_is_booked_from_the_browser() {
-    let dir = books("book-filed", &[]);
-    let rel = file(&dir, "Acme", "2026-03-01");
-    let s = serve(&dir);
-    let (_, _, page) = http(&s, "GET", "/bill", &[]);
-    assert!(page.contains("Filed, not booked yet") && page.contains(&format!("/bill?file={}", enc(&rel))), "{page}");
-    let (status, _, page) = multipart(&s, "/bill", &[("file", &rel), ("description", "Acme | Paper"),
-        ("postings", "Expenses:General=20.00\nLiabilities:Payable=-20.00")]);
-    assert_eq!(status, 303, "{page}");
-    assert!(read(&dir, "journal/2026.journal").contains("Acme | Paper"));
-    assert!(read(&dir, "bills/index").contains(&format!("{rel} 1")), "{}", read(&dir, "bills/index"));
-    let (_, _, page) = http(&s, "GET", "/bill", &[]);
-    assert!(!page.contains("Filed, not booked yet"), "{page}");
-}
-
-#[test]
-fn an_invoices_page_shows_what_paid_it() {
-    let dir = books("paid-by", &[]);
-    let inv = invoice(&dir, "2026-0001", "2026-03-01", "110.00");
-    let paid = entry(&dir, &["pay", "2026-0001", "--date", "2026-03-05", "--amount", "50.00"]);
-    let s = serve(&dir);
-    let (_, _, page) = http(&s, "GET", &format!("/entry/{inv}"), &[]);
-    assert!(page.contains(&format!("href=\"/entry/{paid}\"")) && page.contains("60.00 EUR open"), "{page}");
-    // And the payment's `pays:` leads to the invoice.
-    let (_, _, page) = http(&s, "GET", &format!("/entry/{paid}"), &[]);
-    assert!(page.contains(&format!("href=\"/entry/{inv}\"")), "{page}");
-}
-
 // ---- found by the first verification run, first tested inside longer tests ----
 
 #[test]
@@ -657,41 +491,6 @@ fn a_document_filed_for_a_booking_is_not_booked_again() {
     clean(&dir);
 }
 
-#[test]
-fn a_bill_is_paid_from_money() {
-    let dir = books("bill-paid-from", &[]);
-    let (b, _) = bill_entry(&dir, "Acme", "2026-03-01", "40.00");
-    let s = serve(&dir);
-    let (_, _, page) = http(&s, "GET", &format!("/pay?debt={b}"), &[]);
-    // What it is paid from; written off, it may go anywhere.
-    let from = page.split("<select name=\"from\">").nth(1).and_then(|r| r.split("</select>").next()).unwrap_or_default();
-    assert!(from.contains("<option value=\"Assets:Bank\"") && !from.contains("Assets:Receivable") && !from.contains("Assets:VAT:Input"), "{page}");
-    let (_, _, page) = http(&s, "POST", "/pay", &[("token", "p1"), ("debt", &b), ("date", "2026-03-02"), ("amount", "40.00"), ("from", "Expenses:General")]);
-    assert!(page.contains("N4: Expenses:General is not an account money moves through"), "{page}");
-}
-
-#[test]
-fn bill_amounts_are_stated_to_their_places() {
-    let dir = books("bill-places", &[]);
-    let b = file(&dir, "Acme", "2026-03-01");
-    ok(&dir, &["bill", "--desc", "Acme", "--document", &b, "Expenses:General=110", "Liabilities:Payable=-110"]);
-    let s = serve(&dir);
-    let (_, _, page) = http(&s, "GET", "/bills", &[]);
-    assert!(page.contains("110.00 EUR") && !page.contains("110 EUR"), "{page}");
-}
-
-#[test]
-fn a_stray_file_under_bills_is_not_filed() {
-    let dir = books("stray", &[]);
-    std::fs::create_dir_all(dir.join("bills/2026")).unwrap();
-    std::fs::write(dir.join("bills/2026/stray.pdf"), b"%PDF-1.4\n%%EOF\n").unwrap();
-    let s = serve(&dir);
-    for path in ["/bill", "/bills"] {
-        let (_, _, page) = http(&s, "GET", path, &[]);
-        assert!(!page.contains("stray.pdf"), "{path}: {page}");
-    }
-}
-
 // ---- found by the verification run of 2026-10-01 ----
 
 #[test]
@@ -752,15 +551,6 @@ fn a_credit_note_is_not_dated_before_its_invoice() {
     let dir = books("credit-early", &[]);
     invoice(&dir, "2026-0001", "2026-03-01", "110.00");
     refused(&dir, &["credit", "2026-0001", "--date", "2025-06-01"], "I-E3");
-}
-
-#[test]
-fn the_log_names_a_document_that_looks_like_text_and_shows_none_of_it() {
-    let dir = books("log-binary", &[]);
-    let path = file(&dir, "Acme", "2026-03-01");
-    let s = serve(&dir);
-    let (_, _, page) = http(&s, "GET", "/log", &[]);
-    assert!(page.contains(&path) && !page.contains("% Acme 2026-03-01"), "{page}");
 }
 
 #[test]
@@ -891,65 +681,7 @@ fn vat_accounts_are_of_their_kind() {
 
 // ---- the fixes of 2026-10-01 that went without a test at first ----
 
-#[test]
-fn the_browser_takes_no_payment_before_the_invoice() {
-    let dir = books("pay-page-early", &[]);
-    let id = invoice(&dir, "2026-0001", "2026-03-10", "110.00");
-    let s = serve(&dir);
-    let (_, _, page) = http(&s, "POST", "/pay", &[("token", "early"), ("debt", &id), ("date", "2026-03-01"), ("amount", "110.00"), ("from", "Assets:Bank")]);
-    assert!(page.contains("I-E3"), "{page}");
-    assert!(!read(&dir, "journal/2026.journal").contains("pays:"));
-}
-
-#[test]
-fn the_demo_books_take_commits_from_a_terminal() {
-    let base = std::env::temp_dir().join(format!("abo-reg-demo-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
-    let home = base.join("home");
-    std::fs::create_dir_all(&home).unwrap();
-    // No git identity anywhere but what the demo sets itself.
-    let mut cmd = Command::new(common::web_exe());
-    cmd.args(["demo", "--dir"]).arg(base.join("abo-demo")).env("TMPDIR", &base).env("HOME", &home).env("XDG_CONFIG_HOME", &home);
-    let _s = start(cmd);
-    let o = Command::new(env!("CARGO_BIN_EXE_abo")).args(["post", "--desc", "T", "Expenses:General=1.00", "Assets:Bank=-1.00"])
-        .current_dir(base.join("abo-demo")).env("HOME", &home).env("XDG_CONFIG_HOME", &home).env("GIT_CONFIG_NOSYSTEM", "1")
-        .stdin(Stdio::null()).output().unwrap();
-    assert!(o.status.success(), "{}", err(&o));
-}
-
-#[test]
-fn serve_takes_no_plain_file() {
-    let dir = books("serve-file", &[]);
-    let o = web(dir.parent().unwrap(), &["serve", "--dir", "test-ltd/abo.toml"]);
-    assert!(!o.status.success() && err(&o).contains("is not a directory"), "{}", err(&o));
-}
-
 // ---- found by brainstorming from the patterns of the faults above ----
-
-#[test]
-fn bookings_sent_at_once_are_each_booked() {
-    let dir = books("at-once", &[]);
-    let s = std::sync::Arc::new(serve(&dir));
-    let threads: Vec<_> = (0..4).map(|t| {
-        let s = s.clone();
-        std::thread::spawn(move || {
-            for i in 0..5 {
-                let desc = format!("Entry {t}-{i}");
-                http(&s, "POST", "/post", &[("token", &desc), ("date", "2026-03-01"), ("description", &desc), ("postings", "Expenses:General=1.00\nAssets:Bank=-1.00")]);
-            }
-        })
-    }).collect();
-    for t in threads {
-        t.join().unwrap();
-    }
-    let journal = read(&dir, "journal/2026.journal");
-    for t in 0..4 {
-        for i in 0..5 {
-            assert!(journal.contains(&format!("Entry {t}-{i}")), "Entry {t}-{i} lost:\n{journal}");
-        }
-    }
-    clean(&dir);
-}
 
 #[test]
 fn a_commit_takes_only_what_its_operation_wrote() {
@@ -1051,60 +783,11 @@ fn a_customer_name_is_printed_as_typed_not_read_as_markup() {
 // ---- what the changes above could themselves get wrong ----
 
 #[test]
-fn a_bad_abo_toml_is_named_in_the_browser() {
-    let dir = books("config-browser", &[]);
-    let s = serve(&dir);
-    let toml = read(&dir, "abo.toml");
-    // Read, but against a rule: said on the page, with the rule.
-    std::fs::write(dir.join("abo.toml"), toml.replace("receivable = \"Assets:Receivable\"", "receivable = \"Income:Sales\"")).unwrap();
-    let (_, _, page) = http(&s, "GET", "/", &[]);
-    // Said in a bookkeeper's words; the rule kept for whoever runs abo.
-    assert!(page.contains("changed the books' files outside abo") && page.contains("For whoever runs abo") && page.contains("I-C3"), "{page}");
-    // Not read at all: what stops it is said.
-    let option = "\n[payment.x]\nkind = \"cash\"\nlabel = \"Cash\"\ndetails = \"Till\"\naccount = \"Assets:Cash\"\n";
-    std::fs::write(dir.join("abo.toml"), format!("{toml}{option}{option}")).unwrap();
-    let (_, _, page) = http(&s, "GET", "/", &[]);
-    assert!(page.contains("abo.toml") && page.contains("duplicate key"), "{page}");
-}
-
-#[test]
-fn a_page_waits_for_a_change_in_progress() {
-    let dir = books("read-waits", &[]);
-    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
-    let s = serve(&dir);
-    // As a terminal's abo holds the books mid-change, a journal half written.
-    let good = read(&dir, "journal/2026.journal");
-    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(".abo/lock")).unwrap();
-    lock.lock().unwrap();
-    std::fs::write(dir.join("journal/2026.journal"), "2026-03-01 Fees\n    Expenses:General  5.00 EUR\n    Assets:Bank  -3").unwrap();
-    let journal = dir.join("journal/2026.journal");
-    let done = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(500));
-        std::fs::write(&journal, good).unwrap();
-        drop(lock);
-    });
-    let (status, _, page) = http(&s, "GET", "/", &[]);
-    done.join().unwrap();
-    // The bank as booked, not as the half-written entry would have it.
-    assert!(status == 200 && page.contains("-5.00 EUR") && !page.contains(">-3<"), "{page}");
-}
-
-#[test]
 fn no_text_breaks_its_line_unseen() {
     let dir = books("separators", &[]);
     refused(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees\u{2028}more", "Expenses:General=5.00", "Assets:Bank=-5.00"], "I-E0");
     refused(&dir, &["company", "--name", "Acme\u{2029}Ltd"], "I-C1");
     refused(&dir, &["company", "--name", "Acme\u{061C}Ltd"], "I-C1");
-}
-
-#[test]
-fn a_bill_document_is_served_from_under_bills_alone() {
-    let dir = books("bill-paths", &[]);
-    let s = serve(&dir);
-    for path in ["/bills/..%2Fabo.toml", "/bills/%2e%2e/abo.toml", "/bills/2026/..%2F..%2Fabo.toml", "/bills//etc/passwd", "/bills/.git/config"] {
-        let (status, _, page) = http(&s, "GET", path, &[]);
-        assert!(status == 404 && !page.contains("[company]") && !page.contains("[core]"), "{path}: {page}");
-    }
 }
 
 // ---- found by the third verification run, 2026-10-01 ----
@@ -1123,23 +806,6 @@ fn a_date_is_read_as_a_date_before_anything_else() {
 }
 
 #[test]
-fn file_and_book_files_nothing_it_cannot_book() {
-    let dir = books("file-book-dirty", &[]);
-    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
-    std::fs::write(dir.join("journal/2026.journal"), read(&dir, "journal/2026.journal").replace("Fees", "Fees, typed over")).unwrap();
-    let s = serve(&dir);
-    let body = "--b0undary\r\nContent-Disposition: form-data; name=\"document\"; filename=\"b.pdf\"\r\nContent-Type: application/pdf\r\n\r\n%PDF-1.4\n% b\n%%EOF\n\r\n\
-                --b0undary\r\nContent-Disposition: form-data; name=\"date\"\r\n\r\n2026-03-05\r\n\
-                --b0undary\r\nContent-Disposition: form-data; name=\"issuer\"\r\n\r\nAcme\r\n\
-                --b0undary\r\nContent-Disposition: form-data; name=\"description\"\r\n\r\nAcme\r\n\
-                --b0undary\r\nContent-Disposition: form-data; name=\"postings\"\r\n\r\nExpenses:General=1.00\nLiabilities:Payable=-1.00\r\n\
-                --b0undary\r\nContent-Disposition: form-data; name=\"token\"\r\n\r\nfb1\r\n--b0undary--\r\n";
-    let (_, _, page) = send(&s, "POST", "/bill", "multipart/form-data; boundary=b0undary", body.as_bytes());
-    assert!(page.contains("a change abo did not make"), "{page}");
-    assert!(!dir.join("bills").exists(), "the document was filed");
-}
-
-#[test]
 fn trailing_noughts_are_written_to_the_places() {
     let dir = books("trailing-noughts", &[]);
     ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=100.000", "Assets:Bank=-100.000"]);
@@ -1150,122 +816,12 @@ fn trailing_noughts_are_written_to_the_places() {
 }
 
 #[test]
-fn a_correction_starts_from_where_the_invoice_asked_to_be_paid_and_its_lines() {
-    if Command::new("typst").arg("--version").output().is_err() {
-        return;
-    }
-    let dir = books("correct-filled", &["--vat", "none", "--payment", "{ kind = \"bank\", iban = \"CH9300762011623852957\" }",
-                                        "--payment", "{ kind = \"cash\", details = \"Till\" }"]);
-    ok(&dir, &["commodity", "add", "BTC", "8"]);
-    ok(&dir, &["price", "add", "2026-03-01", "BTC", "60000", "EUR"]);
-    ok(&dir, &["invoice", "--to", "C", "--item", "1|10|x", "--date", "2026-03-01", "--pay-to", "cash"]);
-    ok(&dir, &["invoice", "--to", "C", "--item", "1|0.0123|x", "--date", "2026-03-02", "--currency", "BTC"]);
-    let s = serve(&dir);
-    let (_, _, page) = http(&s, "GET", "/invoice?from=2026-0001", &[]);
-    assert!(page.contains("name=\"pay-cash\" checked") && !page.contains("name=\"pay-bank\" checked"), "{page}");
-    let (_, _, page) = http(&s, "GET", "/invoice?from=2026-0002", &[]);
-    assert!(page.contains("1|0.0123|x") && page.contains("name=\"currency\" value=\"BTC\""), "{page}");
-}
-
-#[test]
-fn an_invoice_due_date_shows_at_phone_width() {
-    if Command::new("typst").arg("--version").output().is_err() {
-        return;
-    }
-    let dir = books("due-narrow", &[]);
-    ok(&dir, &["invoice", "--to", "C", "--item", "1|10|x", "--date", "2026-03-01"]);
-    let s = serve(&dir);
-    let (_, _, page) = http(&s, "GET", "/invoices", &[]);
-    let narrow = page.split("class=\"narrow small muted\"").nth(1).unwrap_or_default();
-    assert!(narrow.split("</div>").next().unwrap_or_default().contains("due 2026-03-31"), "{page}");
-}
-
-#[test]
 fn an_answer_of_spaces_is_no_answer() {
     let dir = books("spaces", &[]);
     ok(&dir, &["account", "add", "Assets:Crypto"]);
     refused(&dir, &["payment-options", "add", "w", "--kind", "crypto", "--network", " ", "--address", "bc1q"], "A network is needed");
     refused(&dir, &["payment-options", "add", "v", "--kind", "crypto", "--network", "BTC", "--address", " "], "An address is needed");
     refused(&dir, &["payment-options", "add", "t", "--kind", "cash", "--detail", " "], "needs lines saying where and when");
-}
-
-/// `--ni`: every command that asks asks nothing. With stdin a pipe left
-/// open, one that read it would wait for ever; each ends within seconds,
-/// done as the flags left out offer, or refused saying what is missing.
-#[test]
-fn ni_asks_nothing() {
-    let base = std::env::temp_dir().join(format!("abo-reg-ni-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
-    let run = |dir: &Path, args: &[&str]| -> Output {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_abo")).arg("--ni").args(args).current_dir(dir).env("ABO_TODAY", TODAY)
-            .env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@example.invalid").env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@example.invalid")
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-        let _open = c.stdin.take();
-        let start = std::time::Instant::now();
-        while c.try_wait().unwrap().is_none() {
-            if start.elapsed() > std::time::Duration::from_secs(10) {
-                let _ = c.kill();
-                panic!("{args:?} waited for an answer");
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        c.wait_with_output().unwrap()
-    };
-    let books = made(&base, "acme");
-    // init: what has no offer is refused by name; with it, the rest offered.
-    let o = run(&books, &["init", "Acme"]);
-    assert!(!o.status.success() && err(&o).contains("A currency is needed"), "{}", err(&o));
-    let o = run(&books, &["init", "Acme", "--currency", "EUR"]);
-    assert!(o.status.success(), "{}", err(&o));
-    // payment-options: add needs its id; with it, the kind offered; edit changes nothing.
-    let o = run(&books, &["payment-options", "add"]);
-    assert!(!o.status.success() && err(&o).contains("needs an id"), "{}", err(&o));
-    let o = run(&books, &["payment-options", "add", "till", "--kind", "cash", "--detail", "At the till"]);
-    assert!(o.status.success(), "{}", err(&o));
-    let toml = read(&books, "abo.toml");
-    let o = run(&books, &["payment-options", "edit", "till"]);
-    assert!(o.status.success(), "{}", err(&o));
-    assert_eq!(read(&books, "abo.toml"), toml);
-    // partner: add needs a name; edit changes nothing.
-    let o = run(&books, &["partner", "add", "acme"]);
-    assert!(!o.status.success() && err(&o).contains("name is needed"), "{}", err(&o));
-    let o = run(&books, &["partner", "add", "acme", "--name", "Acme GmbH"]);
-    assert!(o.status.success(), "{}", err(&o));
-    let partners = read(&books, "partners.toml");
-    let o = run(&books, &["partner", "edit", "acme"]);
-    assert!(o.status.success(), "{}", err(&o));
-    assert_eq!(read(&books, "partners.toml"), partners);
-    // Without --ni, an option not there is refused before any question; it panicked.
-    let o = abo(&books, &["payment-options", "edit", "nope"]);
-    assert!(o.status.code() == Some(1) && err(&o).contains("there is no payment option nope"), "{}", err(&o));
-    // serve: a directory not there is not made.
-    let o = web(&base, &["--ni", "--dir", "missing", "serve", "--port", "0"]);
-    assert!(!o.status.success() && !base.join("missing").exists(), "{}", err(&o));
-    std::fs::remove_dir_all(&base).unwrap();
-}
-
-/// One company, or an empty directory to open it in: a directory holding
-/// anything else, a data directory of several say, is not served.
-#[test]
-fn serve_refuses_a_directory_with_no_books_that_is_not_empty() {
-    let base = std::env::temp_dir().join(format!("abo-reg-serve-full-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
-    std::fs::create_dir_all(&base).unwrap();
-    std::fs::write(base.join("notes.txt"), "x").unwrap();
-    let o = web(&base, &["serve", "--port", "0"]);
-    assert!(!o.status.success() && err(&o).contains("holds no books and is not empty"), "{}", err(&o));
-    std::fs::remove_dir_all(&base).unwrap();
-}
-
-#[test]
-fn a_bad_line_in_an_address_is_said_under_it_with_the_rest() {
-    let base = std::env::temp_dir().join(format!("abo-reg-new-ctrl-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
-    std::fs::create_dir_all(&base).unwrap();
-    let s = serve(&base);
-    let (_, _, page) = http(&s, "POST", "/new", &[("token", "n1"), ("p.n", "0"), ("name", "Acme"), ("address", "x\u{1}y"), ("currency", "xx")]);
-    assert!(page.contains("is not a currency code") && page.contains("control character"), "{page}");
-    assert!(std::fs::read_dir(&base).unwrap().next().is_none());
 }
 
 #[test]
@@ -1297,36 +853,9 @@ fn abo_toml_sends_no_money_to_an_account_that_is_no_asset() {
     refused(&dir, &["config", "set", "payment.bank.account", "Expenses:General"], "I-C3");
 }
 
-/// A payment is in the debt's commodity; paid in another, what was paid is
-/// its cost, which is in another commodity than the amount (I-E2).
-#[test]
-fn money_paid_in_another_commodity_is_its_cost() {
-    let dir = books("pay-commodity", &[]);
-    ok(&dir, &["commodity", "add", "USD", "2"]);
-    let id = invoice(&dir, "2026-0001", "2026-03-01", "110.00");
-    let s = serve(&dir);
-    let before = log_len(&dir);
-    let (_, _, page) = http(&s, "POST", "/pay", &[("token", "c1"), ("debt", &id), ("date", "2026-03-05"), ("amount", "110.00"), ("from", "Assets:Bank"), ("cost", "120.00 EUR")]);
-    assert!(page.contains("I-E2"), "{page}");
-    assert_eq!(log_len(&dir), before);
-    let (status, _, page) = http(&s, "POST", "/pay", &[("token", "c2"), ("debt", &id), ("date", "2026-03-05"), ("amount", "110.00"), ("from", "Assets:Bank"), ("cost", "120 USD")]);
-    assert_eq!(status, 303, "{page}");
-    assert!(read(&dir, "journal/2026.journal").contains("-110.00 EUR @@ 120.00 USD"), "{}", read(&dir, "journal/2026.journal"));
-}
-
 #[test]
 fn no_invoice_is_due_before_its_date() {
     invoice_refused("due-negative", &["--item", "1|10|x", "--due-days=-3"], "due");
-}
-
-#[test]
-fn a_company_form_without_a_field_keeps_what_it_holds() {
-    let dir = books("company-missing-field", &["--tax-id", "CHE-1"]);
-    let s = serve(&dir);
-    let (status, _, page) = http(&s, "POST", "/company", &[("token", "c1"), ("name", "Other Ltd"), ("address", ""), ("country", "")]);
-    assert_eq!(status, 303, "{page}");
-    let toml = read(&dir, "abo.toml");
-    assert!(toml.contains("name = \"Other Ltd\"") && toml.contains("tax_id = \"CHE-1\""), "{toml}");
 }
 
 #[test]
@@ -1399,24 +928,6 @@ fn flags_are_trimmed_as_typed_answers_are() {
     let dir = books("label-spaces", &[]);
     ok(&dir, &["payment-options", "add", "till", "--kind", "cash", "--detail", "Till", "--label", "  "]);
     assert!(!read(&dir, "abo.toml").contains("label = \"  \""), "{}", read(&dir, "abo.toml"));
-}
-
-#[test]
-fn an_option_saved_as_it_stands_in_the_browser_changes_nothing() {
-    let dir = books("web-edit-unchanged", &[]);
-    ok(&dir, &["payment-options", "add", "bank", "--iban", "CH9300762011623852957"]);
-    let (toml, before) = (read(&dir, "abo.toml"), log_len(&dir));
-    let s = serve(&dir);
-    // As the form shows it: the label and holder its questions offered.
-    let (_, _, page) = http(&s, "GET", "/company/payment?id=bank", &[]);
-    assert!(page.contains("name=\"label\" value=\"Bank transfer\""), "{page}");
-    let (status, to, page) = http(&s, "POST", "/company/payment", &[("token", "e1"), ("was", "bank"), ("kind", "bank"), ("id", "bank"), ("label", "Bank transfer"),
-        ("holder", "Test Ltd"), ("iban", "CH93 0076 2011 6238 5295 7"), ("bic", ""), ("bank", ""), ("details", ""), ("account", "Assets:Bank")]);
-    assert_eq!(status, 303, "{page}");
-    assert_eq!(read(&dir, "abo.toml"), toml);
-    assert_eq!(log_len(&dir), before);
-    // Nothing done, so no notice of a change.
-    assert!(!to.contains("done="), "{to}");
 }
 
 #[test]
@@ -1586,38 +1097,6 @@ fn the_log_travels_with_the_books() {
     }
 }
 
-#[test]
-fn a_demo_is_never_built_over_something() {
-    let dir = books("demo-over", &[]);
-    let o = web(&dir, &["demo", "--dir", dir.to_str().unwrap(), "--port", "0"]);
-    assert!(!o.status.success() && err(&o).contains("is not empty"), "{}", err(&o));
-    assert!(dir.join("abo.toml").exists());
-}
-
-#[test]
-fn an_undo_button_takes_back_its_own_change_alone() {
-    let dir = books("undo-stale", &[]);
-    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "First", "Expenses:General=1", "Assets:Bank=-1"]);
-    let shown = json(&dir, &["log"]).as_array().unwrap().last().unwrap()["commit"].as_str().unwrap().to_string();
-    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Second", "Expenses:General=2", "Assets:Bank=-2"]);
-    let s = serve(&dir);
-    let (_, _, page) = http(&s, "POST", "/undo", &[("token", "u"), ("commit", &shown)]);
-    assert!(page.contains("no longer the last change"), "{page}");
-    assert!(read(&dir, "journal/2026.journal").contains("Second"));
-}
-
-#[test]
-fn a_document_uploaded_later_is_named_for_its_issuer() {
-    let dir = books("upload-issuer", &[]);
-    let id = entry(&dir, &["bill", "--date", "2026-03-01", "--desc", "No document yet", "Expenses:General=5.00", "Liabilities:Payable=-5.00"]);
-    let s = serve(&dir);
-    let body = "--b\r\nContent-Disposition: form-data; name=\"token\"\r\n\r\nup\r\n--b\r\nContent-Disposition: form-data; name=\"issuer\"\r\n\r\nNodoc AG\r\n\
-         --b\r\nContent-Disposition: form-data; name=\"document\"; filename=\"x.pdf\"\r\nContent-Type: application/pdf\r\n\r\n%PDF-1.4\nlater\n%%EOF\r\n--b--\r\n".to_string();
-    let (status, _, page) = send(&s, "POST", &format!("/entry/{id}/file"), "multipart/form-data; boundary=b", body.as_bytes());
-    assert_eq!(status, 303, "{page}");
-    assert!(read(&dir, "bills/index").contains("nodoc-ag"), "{}", read(&dir, "bills/index"));
-}
-
 // ---- found by reading WORKFLOWS.md against the model, 2026-10-05 ----
 
 #[test]
@@ -1643,38 +1122,6 @@ fn invoices_print_the_options_in_the_order_of_their_ids() {
 }
 
 // ---- found by reading the code for leaks across its boundaries, 2026-10-05 ----
-
-#[test]
-fn an_option_problem_is_said_under_its_field() {
-    let dir = books("option-field", &[]);
-    let s = serve(&dir);
-    let (_, _, page) = http(&s, "POST", "/company/payment", &[("token", "of1"), ("kind", "bank"), ("id", "giro"), ("label", ""), ("holder", ""), ("iban", ""), ("bic", ""), ("bank", ""), ("details", ""), ("account", "Assets:Bank")]);
-    // Said at the IBAN's question, right after its input, not at the kind's.
-    assert!(page.contains("name=\"iban\" value=\"\"><span class=\"problem\">A bank option needs an IBAN"), "{page}");
-}
-
-#[test]
-fn a_page_for_what_is_not_there_is_not_found_and_a_change_naming_it_is_refused() {
-    let dir = books("not-found", &[]);
-    let s = serve(&dir);
-    assert_eq!(http(&s, "GET", "/entry/99", &[]).0, 404);
-    assert_eq!(http(&s, "GET", "/company/payment?id=nope", &[]).0, 404);
-    assert_eq!(http(&s, "POST", "/entry/99/revert", &[("token", "nf1")]).0, 422);
-}
-
-#[test]
-fn a_page_that_looks_writes_nothing_and_serves_only_what_the_books_name() {
-    let dir = books("looks", &[]);
-    let path = bill(&dir, "Acme", "2026-03-01", "10.00");
-    let s = serve(&dir);
-    let (status, _, log) = http(&s, "GET", "/log", &[]);
-    assert_eq!(status, 200);
-    assert!(!dir.join(".abo/binary").exists(), "the Log wrote a file");
-    // The index's change is shown as text; the document's bytes are not.
-    assert!(log.contains("bills/index") && !log.contains("Binary files") && !log.contains("% Acme 2026-03-01"), "{log}");
-    assert_eq!(http(&s, "GET", &format!("/{path}"), &[]).0, 200);
-    assert_eq!(http(&s, "GET", "/bills/index", &[]).0, 404);
-}
 
 #[test]
 fn a_write_off_is_an_expense_or_income_and_moves_no_money() {
@@ -1735,14 +1182,6 @@ fn a_document_is_named_by_the_start_of_its_hash() {
     let start = path.rsplit('-').next().unwrap().trim_end_matches(".pdf").to_string();
     assert_eq!(start.len(), 8, "{path}");
     ok(&dir, &["bill", "--desc", "Acme", "--document", &start, "Expenses:General=5.00", "Liabilities:Payable=-5.00"]);
-}
-
-#[test]
-fn an_entry_that_is_no_number_is_not_found() {
-    let dir = books("entry-abc", &[]);
-    let s = serve(&dir);
-    let (status, _, page) = http(&s, "GET", "/entry/abc", &[]);
-    assert!(status == 404 && page.contains("Not found") && !page.contains("u64"), "{page}");
 }
 
 // ---- found by the CLI run of 2026-10-07 ----
@@ -2328,28 +1767,6 @@ fn small_things_of_the_fourth_run() {
     assert!(o.status.success(), "{}{}", String::from_utf8_lossy(&o.stdout), err(&o));
 }
 
-/// The invoice form's Preview answers with the PDF, marked PREVIEW, and
-/// issues nothing.
-#[test]
-fn the_invoice_forms_preview_issues_nothing() {
-    if Command::new("typst").arg("--version").output().is_err() {
-        return;
-    }
-    let dir = books("web-preview", &[]);
-    let before = log_len(&dir);
-    let s = serve(&dir);
-    let host = format!("127.0.0.1:{}", s.port);
-    let body = "to=C&items=1%7C100%7Cx&date=2026-03-01&preview=1&token=t1";
-    let mut c = TcpStream::connect(&host).unwrap();
-    write!(c, "POST /invoice HTTP/1.1\r\nHost: {host}\r\nOrigin: http://{host}\r\nConnection: close\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
-    let mut out = vec![];
-    c.read_to_end(&mut out).unwrap();
-    let head = String::from_utf8_lossy(&out[..out.len().min(300)]).to_string();
-    assert!(head.starts_with("HTTP/1.1 200") && head.contains("application/pdf"), "{head}");
-    assert_eq!(log_len(&dir), before);
-    assert!(!dir.join("invoices").exists());
-}
-
 /// Fourth run: bills were listed by id, not by date, a long description
 /// pushed the amounts out of their column, and nothing said which bill had
 /// its document.
@@ -2604,41 +2021,7 @@ fn a_forgiven_bill_comes_off_its_own_expense() {
     ok(&dir, &["write-off", &id, "--date", "2026-03-05", "--to", "Expenses:General"]);
 }
 
-/// A revert refused for a statement advised dating it after the statement,
-/// which no date mends; the cash count page asked each movement ticked,
-/// though a count is of the whole box; and the log had no day to begin from.
-#[test]
-fn the_fifth_web_run_pages() {
-    let dir = books("fifth-web", &[]);
-    let fee = entry(&dir, &["post", "--date", "2026-03-01", "--desc", "Fee", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
-    ok(&dir, &["record", "--date", "2026-03-31", "--balance=-5.00", &format!("{fee}.1")]);
-    let o = abo(&dir, &["revert", "--date", "2026-03-01", &fee]);
-    assert!(!o.status.success() && err(&o).contains("N9") && !err(&o).contains("N7"), "{}", err(&o));
-    ok(&dir, &["post", "--date", "2026-04-01", "--desc", "Taxi", "Expenses:General=50.00", "Assets:Cash=-50.00"]);
-    let s = serve(&dir);
-    let (_, _, page) = http(&s, "GET", "/reconcile?account=Assets:Cash&commodity=EUR&date=2026-04-02&balance=-50.00", &[]);
-    assert!(page.contains(" checked") && page.contains("Per the count, less what is cleared"), "{page}");
-    let (_, _, page) = http(&s, "GET", "/reconcile?account=Assets:Bank&commodity=EUR&date=2026-04-02", &[]);
-    assert!(!page.contains(" checked"), "{page}");
-    let (_, _, page) = http(&s, "GET", "/log?since=2999-01-01", &[]);
-    assert!(page.contains("Nothing changed since 2999-01-01"), "{page}");
-    let (_, _, page) = http(&s, "GET", "/log?since=2000-01-01", &[]);
-    assert!(page.contains("Taxi"), "{page}");
-}
-
 // ---- found by the sixth web run, 2026-10-07 ----
-
-/// A bank statement's closing balance, once recorded, stayed in the form,
-/// and Show for the cash box offered it as what was counted.
-#[test]
-fn a_recorded_balance_is_not_carried_over() {
-    let dir = books("carried-over", &[]);
-    let fee = entry(&dir, &["post", "--date", "2026-03-01", "--desc", "Fee", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
-    ok(&dir, &["record", "--date", "2026-03-31", "--balance=-5.00", &format!("{fee}.1")]);
-    let s = serve(&dir);
-    let (_, _, page) = http(&s, "GET", "/reconcile?account=Assets:Bank&commodity=EUR&date=2026-03-31&balance=-5.00", &[]);
-    assert!(page.contains(r#"name="balance" value="""#) && page.contains("-5.00 EUR"), "{page}");
-}
 
 /// The fresh-agent run of section 6: an agreement terminated as of a day to
 /// come read as ended already, and its employee as former; and the CLI had
@@ -2835,21 +2218,6 @@ fn a_month_not_there_is_no_period() {
     ok(&dir, &["balance", "-p", "2026-12"]);
 }
 
-/// A period open at an end says no day there: hledger closes it at the last
-/// day of the books it reads.
-#[test]
-fn an_open_period_says_no_end() {
-    let dir = books("period-open", &[]);
-    ok(&dir, &["post", "--date", "2026-03-05", "--desc", "Lunch", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
-    let pl = ok(&dir, &["pl", "--period", "from 2026-03-01"]);
-    assert!(pl.contains("Profit and loss, from 2026-03-01\n"), "{pl}");
-    assert!(ok(&dir, &["pl", "--period", "2026-03"]).contains("(2026-03-01 to 2026-03-31)"));
-    // The register of an account takes it as open, too.
-    let s = serve(&dir);
-    let (_, _, page) = http(&s, "GET", "/account?name=Assets:Bank&period=from+2026-03-01", &[]);
-    assert!(page.contains("Lunch"), "{page}");
-}
-
 /// typst's errors reach the terminal one to a line, in ASCII, not drawn in
 /// boxes.
 #[test]
@@ -2864,20 +2232,4 @@ fn a_typst_error_is_ascii() {
     let o = abo(&dir, &["invoice", "--to", "C", "--item", "1|10|x", "--vat-rate", "0", "--vat-reason", "Export", "--date", "2026-03-02"]);
     let e = err(&o);
     assert!(!o.status.success() && e.contains("templates/invoice.typ:") && e.contains("unclosed delimiter") && e.is_ascii(), "{e}");
-}
-
-/// A page of something the books do not have answers 404, not 200.
-#[test]
-fn a_page_of_nothing_is_not_found() {
-    let dir = books("pages-404", &[]);
-    let s = serve(&dir);
-    for path in ["/account?name=Nope:X", "/reconcile?account=Nope:X", "/reconcile?account=Assets:Bank&commodity=XXX", "/invoice?agreement=nope", "/bill?file=nope"] {
-        assert_eq!(http(&s, "GET", path, &[]).0, 404, "{path}");
-    }
-    for path in ["/account?name=Assets:Bank", "/reconcile?account=Assets:Bank", "/invoice", "/bill"] {
-        assert_eq!(http(&s, "GET", path, &[]).0, 200, "{path}");
-    }
-    // A POST missing its fields gets the page that says so, not a bare 422.
-    let (status, _, page) = http(&s, "POST", "/company/close", &[("token", "nf2")]);
-    assert!(status == 422 && page.contains("<h1>"), "{page}");
 }

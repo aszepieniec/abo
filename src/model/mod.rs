@@ -15,8 +15,8 @@ mod check;
 mod explain;
 mod ops;
 mod text;
-#[cfg(test)]
-pub(crate) mod tests;
+#[cfg(any(test, feature = "testkit"))]
+pub mod tests;
 
 pub use answer::hidden;
 pub use check::{check, option_problem, Subject, Violation};

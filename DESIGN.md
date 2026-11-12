@@ -130,22 +130,19 @@ src/statement.rs  P&L and balance sheet, from hledger
 src/invoice.rs    issuing an invoice or credit note, and its PDF's data
 src/pdf.rs        typst: a template and its data made a PDF
 src/report.rs     hledger passthrough (-O json / -O csv)
-abo-web/src/main.rs   abo-web: serve and demo, and the server's log
-abo-web/src/demo.rs   the demo's toy books
-abo-web/src/web/      axum + maud: a module per page's area, the forms, the opening
-                      form, the AI tab (ai.rs), and style.css
+src/model/tests.rs, src/cli_tests.rs   the properties, and with `testkit` the
+                  plans and replays abo-web's tests are built from
 ```
 
-A workspace of two crates, each a binary: `abo`, the command line, also
-the library abo-web builds on; `abo-web`, the web interface, which needs
-abo's library and nothing else. the model's program (§5), is a repository of
-its own: it needs neither, and runs `abo` as a person does. No
-crate-per-module.
+One crate, `abo`: the command line, and the library under it. Two
+repositories of their own sit beside it. `abo-web`, the web interface, needs
+abo's library and nothing else. the model's program (§5), needs neither, and
+runs `abo` as a person does. No crate-per-module.
 
-The web tests stay in abo's crate (`src/web_tests.rs`, `tests/web.rs`): they
-hold the pages to the model and to the command line with abo's test helpers,
-and run the `abo-web` binary, built for them beside `abo`
-(`tests/common/mod.rs`).
+The web tests are abo-web's. They hold the pages to the model and to the
+command line with abo's test helpers, which abo's `testkit` feature makes
+public: `model::tests`, the plans, and `cli_tests`, which replays them
+through an `abo` built beside the test.
 
 The tests are run with `cargo test --no-fail-fast`: without the flag cargo
 stops at the first test binary that fails and never runs `tests/`. Two in
@@ -233,7 +230,7 @@ abo-web's **AI** tab is there when the model's program is installed, beside abo-
 the `PATH`, and the person may change the books: every message may lead to a
 change. Its page begins a conversation, or, by its Scan button, one with a
 bill's document. Without the model's program the tab is not shown, and its pages are not
-found (`tests/web.rs`). abo-web links
+found (abo-web's `tests/web.rs`). abo-web links
 nothing of the program's: it runs the executable, a step at a time.
 
 - `scan <file> --to <conversation>` begins one with a document;
@@ -253,7 +250,7 @@ nothing of the program's: it runs the executable, a step at a time.
   could carry the books to another site as the page loads. A link is one
   only within abo's pages (`/bills/...`); any other, `//host`, `/\host`
   and `javascript:` among them, is its text alone (`markdown` in
-  `abo-web/src/web/ai.rs`, with its test). On the page the model is told
+  abo-web's `src/web/ai.rs`, with its test). On the page the model is told
   that markdown is rendered, and to write each account it names by its full
   name in backticks; the page links such a name to the account's page when
   the books declare it or an account under it, and leaves any other as
@@ -266,15 +263,15 @@ nothing of the program's: it runs the executable, a step at a time.
   page that does it and what to look for there, unless they ask about the
   command line. abo-web gives the model's program the tabs this person sees, in
   the environment: each with what is there, its tooltip too (`NAV` in
-  `abo-web/src/web/mod.rs`). What is there quotes the page's own words, and
-  `tests/web.rs` `tabs_quote_their_pages` finds each quote on its page, so a
+  abo-web's `src/web/mod.rs`). What is there quotes the page's own words, and
+  abo-web's `tests/web.rs` `tabs_quote_their_pages` finds each quote on its page, so a
   page whose words change has its tab's description changed with them.
 - What was sent is kept as it is, greyed, and Send becomes Abort: the page
   sends a key of its making with the message, and `/chat/stop` with that
   key ends the step, the model's program with it. The conversation is put back as it was
   before the step, and what was sent is back in the field, to change and
   send again; a conversation stopped at its first message is none
-  (`tests/web.rs` `a_step_is_stopped_by_its_key`). Nothing in such a step
+  (abo-web's `tests/web.rs` `a_step_is_stopped_by_its_key`). Nothing in such a step
   changed the books: a command the model proposed waits, and a read
   changes nothing. Run is never stopped: abo may be writing
   the books, and stopped there, the command could show as not run and run
@@ -732,7 +729,7 @@ It only shows it: given `X-Gateway-Role: view` (or any role but write and
 admin), the pages leave out every form that posts and every link to a page
 that is only such a form; those pages, asked for, say "View only", and
 books not yet opened are not offered to open. The company's details show,
-disabled. Test: `tests/web.rs` `a_viewer_is_offered_no_change`, which
+disabled. Test: abo-web's `tests/web.rs` `a_viewer_is_offered_no_change`, which
 crawls every page as a viewer.
 
 One GET abo does check: **Download the books** (`/export`), for the gateway's
@@ -745,7 +742,7 @@ no role does not count. The gateway makes no check of its own on a GET, so a
 gateway sending the user without the role fails closed, not open. It is everything,
 salaries included, and the gateway lets every role GET. Asked for by another
 role it says "Admin only", and the sidebar leaves Backups out.
-Test: `tests/web.rs` `the_books_download_whole`.
+Test: abo-web's `tests/web.rs` `the_books_download_whole`.
 
 A script fetches the books through a **download link**,
 `/export/<token>`, with `curl -fOJ <address>` and no sign-in: the address

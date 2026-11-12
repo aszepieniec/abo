@@ -752,7 +752,7 @@ Reported and left as decided:
 ## Fourth web run of 2026-10-07: found and fixed
 
 Agents again worked in the browser alone. Fixed, each with a test
-(tests/web.rs `fourth_web_run`):
+(abo-web's tests/web.rs `fourth_web_run`):
 
 - A report refused because of a change made outside abo now gives, under
   **For whoever runs abo**, the same remedy as the notice: take it out
@@ -785,7 +785,7 @@ Agents again worked in the browser alone. Fixed, each with a test
 ## Third web run of 2026-10-07: found and fixed
 
 Agents again worked in the browser alone. Fixed, each with a test
-(tests/web.rs `third_web_run`, tests/regressions.rs):
+(abo-web's tests/web.rs `third_web_run`, tests/regressions.rs):
 
 - Gaps left by the second run. The invoice form can now declare a missing
   currency or account, or add a currency's missing price, and then come
@@ -818,7 +818,7 @@ Agents again worked in the browser alone. Fixed, each with a test
 ## Second web run of 2026-10-07: found and fixed
 
 Agents again worked in the browser alone. Fixed, each with a test
-(tests/web.rs `second_web_run`, tests/regressions.rs):
+(abo-web's tests/web.rs `second_web_run`, tests/regressions.rs):
 
 - A change made outside abo, or books that break a rule (F8), showed only on
   Books: every page of the company now says so at the top, says that its
@@ -844,7 +844,7 @@ Agents again worked in the browser alone. Fixed, each with a test
 ## First web run of 2026-10-07: found and fixed
 
 Agents worked through the workflows in the browser alone. Fixed, each with
-a test (tests/web.rs `first_web_run`, tests/regressions.rs):
+a test (abo-web's tests/web.rs `first_web_run`, tests/regressions.rs):
 
 - Missing against the terminal: closing a period (F6) and the tax return's
   boxes (E3) from the company page; filing a bill to book later (B2); an

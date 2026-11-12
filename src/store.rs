@@ -129,7 +129,7 @@ pub fn sha256(bytes: &[u8]) -> String {
 }
 
 /// The text files `render` writes, as they are under `root`.
-pub(crate) fn text_files(root: &Path) -> Result<Files> {
+pub fn text_files(root: &Path) -> Result<Files> {
     let mut f = Files::new();
     let mut add = |rel: String| -> Result<()> {
         let text = std::fs::read_to_string(root.join(&rel)).with_context(|| rel.clone())?;

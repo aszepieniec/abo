@@ -1,6 +1,8 @@
 //! The commands, as properties: the binary, run on plans of operations,
 //! does what the model does (MODEL.md §5) and nothing else; and whatever it
 //! is given, it answers in words.
+// Only the tests use some of this; another crate's, by testkit, use the rest.
+#![cfg_attr(not(test), allow(dead_code, unused_imports))]
 
 use crate::model::tests::{self as mt, Draw, Step};
 use crate::model::{self, Books, Date, Op};
@@ -21,14 +23,14 @@ fn cases(n: u32) -> ProptestConfig {
 }
 
 /// Any text an argument can be: anything but a NUL, which no argument holds.
-pub(crate) fn arg_text() -> impl Strategy<Value = String> {
+pub fn arg_text() -> impl Strategy<Value = String> {
     arb::<String>().prop_map(|s| s.replace('\0', ""))
 }
 
 /// The binary beside this test, built from the source as it is now:
 /// `cargo test --bin abo` builds the tests alone, so a binary older than
 /// `src/` is built again here, once, before any test runs it.
-pub(crate) fn exe() -> PathBuf {
+pub fn exe() -> PathBuf {
     static BUILT: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
     BUILT.get_or_init(build).clone().unwrap_or_else(|e| panic!("{e}"))
 }
@@ -59,22 +61,15 @@ fn build() -> Result<PathBuf, String> {
     Ok(abo)
 }
 
-include!("../tests/common/web_exe.rs");
-
-/// abo-web, beside the abo these tests run.
-pub(crate) fn web_exe() -> PathBuf {
-    web_exe_in(exe().parent().unwrap())
-}
-
 fn walk(dir: &Path) -> Vec<PathBuf> {
     std::fs::read_dir(dir).into_iter().flatten().flatten().flat_map(|e| if e.path().is_dir() { walk(&e.path()) } else { vec![e.path()] }).collect()
 }
 
 /// A directory of its own, gone with the value.
-pub(crate) struct Dir(pub(crate) PathBuf);
+pub struct Dir(pub PathBuf);
 
 impl Dir {
-    pub(crate) fn new() -> Dir {
+    pub fn new() -> Dir {
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let d = std::env::temp_dir().join(format!("abo-cli-{}-{n}", std::process::id()));
@@ -90,15 +85,15 @@ impl Drop for Dir {
     }
 }
 
-pub(crate) struct Out {
-    pub(crate) ok: bool,
-    pub(crate) code: Option<i32>,
-    pub(crate) json: Option<serde_json::Value>,
-    pub(crate) stderr: String,
+pub struct Out {
+    pub ok: bool,
+    pub code: Option<i32>,
+    pub json: Option<serde_json::Value>,
+    pub stderr: String,
 }
 
 /// `abo --json ARGS` in `dir`, on `today`.
-pub(crate) fn abo(dir: &Path, today: Date, args: &[String]) -> Out {
+pub fn abo(dir: &Path, today: Date, args: &[String]) -> Out {
     let o = Command::new(exe())
         .arg("--json")
         .args(args)
@@ -113,17 +108,17 @@ pub(crate) fn abo(dir: &Path, today: Date, args: &[String]) -> Out {
     Out { ok: o.status.success(), code: o.status.code(), json: serde_json::from_slice(&o.stdout).ok(), stderr: String::from_utf8_lossy(&o.stderr).into_owned() }
 }
 
-pub(crate) fn args(a: &[&str]) -> Vec<String> {
+pub fn args(a: &[&str]) -> Vec<String> {
     a.iter().map(|s| s.to_string()).collect()
 }
 
-pub(crate) fn start() -> Date {
+pub fn start() -> Date {
     "2025-12-01".parse().unwrap()
 }
 
 /// Books as `abo init` opens them, with what the model tests' plans name
 /// declared by commands: the parent directory, and the books' own.
-pub(crate) fn opened() -> (Dir, PathBuf) {
+pub fn opened() -> (Dir, PathBuf) {
     let parent = Dir::new();
     let init = args(&[
         "init", "Test", "LLC", "--currency", "EUR", "--vat", "effective", "--vat-input", mt::INPUT, "--vat-output", mt::OUTPUT,
@@ -151,7 +146,7 @@ fn amount(a: &model::Amount) -> String {
     format!("{} {}", a.quantity, a.commodity)
 }
 
-pub(crate) fn posting(p: &model::Posting) -> String {
+pub fn posting(p: &model::Posting) -> String {
     let mut s = format!("{}={}", p.account, amount(&p.amount));
     if let Some(c) = &p.cost {
         s += &format!(" @@ {} {}", c.quantity.abs(), c.commodity);
@@ -191,7 +186,7 @@ fn command(op: &Op, m: &Books, src: &Path) -> (Vec<String>, Option<Op>) {
 
 /// An option as its questions make it: a blank label is the kind's own,
 /// and a bank's blank holder the company.
-pub(crate) fn offered(m: &Books, mut o: model::PayOption) -> model::PayOption {
+pub fn offered(m: &Books, mut o: model::PayOption) -> model::PayOption {
     if o.label.trim().is_empty() {
         o.label = model::PayOption { kind: o.kind, network: o.network.clone(), ..Default::default() }.printed().label;
     }
@@ -201,7 +196,7 @@ pub(crate) fn offered(m: &Books, mut o: model::PayOption) -> model::PayOption {
     o
 }
 
-pub(crate) fn head(dir: &Path) -> String {
+pub fn head(dir: &Path) -> String {
     crate::repo::git_in(dir, &["rev-parse", "HEAD"]).unwrap()
 }
 
@@ -488,7 +483,7 @@ fn a_key_set_reads_back_through_the_cli(key: mt::Key) {
 
 
 /// Books after a plan run as commands, and the day it ended.
-pub(crate) fn after(plan: &[Step]) -> (Dir, PathBuf, Date) {
+pub fn after(plan: &[Step]) -> (Dir, PathBuf, Date) {
     run(plan, false)
 }
 
@@ -519,7 +514,7 @@ fn run(plan: &[Step], terse: bool) -> (Dir, PathBuf, Date) {
     (parent, books, today)
 }
 
-pub(crate) fn plan() -> impl Strategy<Value = Vec<Step>> {
+pub fn plan() -> impl Strategy<Value = Vec<Step>> {
     vec(any::<Step>(), 1..20)
 }
 
@@ -814,7 +809,7 @@ fn refusals_in_words_name_their_rules(#[strategy(plan())] plan: Vec<Step>, next:
 
 /// The invoices' and credit notes' PDFs set aside: a PDF made again carries
 /// the moment it was made.
-pub(crate) fn without_pdfs(mut m: Books) -> Books {
+pub fn without_pdfs(mut m: Books) -> Books {
     for e in &mut m.entries {
         if let model::Kind::Invoice { pdf, .. } | model::Kind::CreditNote { pdf, .. } = &mut e.kind {
             pdf.clear();
@@ -826,7 +821,7 @@ pub(crate) fn without_pdfs(mut m: Books) -> Books {
 /// G-O8: every command in the commits of `books`, `abo init` first, run in
 /// order in an empty directory on `day`, each document read where the books
 /// file it. The books it makes, or the command that did not run.
-pub(crate) fn replayed(books: &Path, day: Date) -> Result<(Dir, PathBuf), String> {
+pub fn replayed(books: &Path, day: Date) -> Result<(Dir, PathBuf), String> {
     let parent = Dir::new();
     let again = parent.0.join("again");
     std::fs::create_dir_all(&again).unwrap();
