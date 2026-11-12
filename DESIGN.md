@@ -136,10 +136,11 @@ abo-web/src/web/      axum + maud: a module per page's area, the forms, the open
                       form, the AI tab (ai.rs), and style.css
 ```
 
-A workspace of three crates, each a binary: `abo`, the command line, also
-the library the other two build on; `abo-web`, the web interface; the model's
-program (§5). abo-web needs abo's library and nothing else; the model's program needs
-neither, and runs `abo` as a person does. No crate-per-module.
+A workspace of two crates, each a binary: `abo`, the command line, also
+the library abo-web builds on; `abo-web`, the web interface, which needs
+abo's library and nothing else. the model's program (§5), is a repository of
+its own: it needs neither, and runs `abo` as a person does. No
+crate-per-module.
 
 The web tests stay in abo's crate (`src/web_tests.rs`, `tests/web.rs`): they
 hold the pages to the model and to the command line with abo's test helpers,
@@ -214,7 +215,7 @@ line removes it. Once it is booked, that undo is refused: the booking names it.
 
 ## 5. Where a model fits
 
-Not in `abo`: in the model's program, a second crate in this repository and a binary of
+Not in `abo`: in the model's program, a repository and a binary of
 its own, which runs `abo` as a person at a terminal would.
 
 - `scan <file>` sends a bill's document (PDF, JPEG, PNG or WebP) to
