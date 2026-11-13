@@ -37,8 +37,9 @@ pub fn exe() -> PathBuf {
 
 fn build() -> Result<PathBuf, String> {
     let me = std::env::current_exe().unwrap();
-    // target/<profile>/deps/<this test>
-    let profile = me.parent().unwrap().parent().unwrap();
+    // target/<profile>/deps/<this test>, or deeper in cargo's newer layout,
+    // target/<profile>/build/abo/<hash>/…: the binary is in target/<profile> in both.
+    let profile = me.ancestors().find(|p| p.file_name().is_some_and(|n| n == "release" || n == "debug")).unwrap();
     let abo = profile.join("abo");
     let at = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
