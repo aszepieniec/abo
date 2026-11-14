@@ -728,6 +728,46 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
             }
         }
     }
+    // A new account is written one way: no part begun by a small letter.
+    // Those declared before stay as they are, as the entries posting to them.
+    if let Op::AccountAdd(a) | Op::AccountMove { to: a, .. } = op {
+        if !super::check::account_canonical(a) {
+            no!("N13", "{a}: each part of an account's name begins with a capital letter or another character, never a small letter: {}", super::check::canonical_account(a));
+        }
+    }
+    // A money account moves only what it holds while it holds anything:
+    // emptied, it may take another commodity.
+    if added.is_some() {
+        for p in n.postings(n.entries.len()) {
+            if !m.moves_money(&p.account) {
+                continue;
+            }
+            let mut held: BTreeMap<Commodity, Decimal> = BTreeMap::new();
+            for q in (1..=m.entries.len()).flat_map(|id| m.postings(id)).filter(|q| q.account == p.account) {
+                *held.entry(q.amount.commodity).or_default() += q.amount.quantity;
+            }
+            held.retain(|_, q| !q.is_zero());
+            if !held.is_empty() && !held.contains_key(&p.amount.commodity) {
+                let mut q = p.amount.quantity.abs();
+                q.rescale(m.places(&p.amount.commodity));
+                let balance: Vec<String> = held.iter().map(|(c, b)| {
+                    let mut b = *b;
+                    b.rescale(m.places(c));
+                    format!("{b} {c}")
+                }).collect();
+                let c = &p.amount.commodity;
+                v.push(Violation {
+                    code: "N12",
+                    what: format!(
+                        "{} holds {}, and this moves {q} {c} through it; an account that holds money moves only what it holds: what is paid in {c} goes through an account for {c}, or through this one once it is empty",
+                        p.account, super::explain::and(&balance)
+                    ),
+                    of: Subject::Account(p.account.clone()),
+                });
+                break;
+            }
+        }
+    }
     // What a statement shows moved as booked: reversing it would book a
     // movement no bank made. The other side is corrected instead.
     if let Op::Revert { entry, .. } = op {

@@ -118,7 +118,9 @@ invariant.
 segment is a non-empty text that holds no `:`, which separates segments, and
 no two spaces in a row, which end the name — those from hledger's grammar —
 and whose every character hledger reads as written where it stands
-(§2.3, *Which characters*). `Commodity` is three or more capital letters, A to
+(§2.3, *Which characters*). A new account is declared with no segment begun
+by a lower-case letter (N13), so that `Assets:Bank` has no second spelling
+`Assets:bank`. `Commodity` is three or more capital letters, A to
 Z: EUR, CHF, BTC. `Places` is the digits after the point, 0 to 8:
 `commodity 1000.00 EUR` declares 2, BTC has 8. A price `P 2026-09-30 BTC
 60000.00 EUR` says that on that date one BTC was worth 60000.00 EUR; hledger
@@ -777,6 +779,9 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | G-O11 | Every amount in a command's JSON is `{quantity, commodity}`: the number to its commodity's places, the commodity apart, and nothing of how to write it, which is the reader's to choose; what cannot be read as typed ends abo with 2, as a usage error | §5 | `amounts_in_json_are_quantity_and_commodity`, `an_unreadable_date_exits_2` |
 | G-O12 | An id once given names that entry, or a gap, ever after: no operation and no undo gives it again; an invoice or credit note issued is not undone | §2.3, §5.3 | `ids_are_never_given_twice`, `issued_invoices_are_not_undone` |
 | G-O10 | A refusal says what is wrong with what the operation was given, of the books before it: it names no entry that is not there yet, an invoice or a credit note by its number and never by its id, and quotes nothing as Rust's debug format does | §5 | `refusals_speak_of_the_books_before` |
+| G-O13 | A bill's postings that credit one money account and no other credit but an expense or the one liability a bill is owed on, and debit neither, are read as a bill crediting that liability with all it owes and a payment of what the money account paid; the two, booked in turn, leave open what the liability was credited. Postings that move money in, debit a liability, or credit any other account are not read so. `abo bill`, and a form, given such postings book the two as one change, which one undo takes back. Postings that credit two money accounts so are refused (I-B2) in words that say a bill is paid from one, and to book a payment from each | §4.3, §5 | `a_bill_paid_when_it_came`, `abo_bill_books_a_bill_paid_when_it_came` |
+| G-O14 | An account refused as not declared (I-A1) is said with the declared one likely meant, the same but for case, by its last part, or two letters off; one with accounts under it is said as such, and is nothing to declare; one declared with a part begun by a small letter is refused (N13), written as it should be, and books holding one from before stay as they are | §4.1, §5 | `an_account_misnamed` |
+| G-O15 | A money account moves only what it holds: an entry posting another commodity to one whose balance is not nought is refused (N12), whatever operation adds it, a payment at a cost included; one empty, never used or emptied, takes any | §4.9, §5 | `a_money_account_holds_what_it_held` |
 
 ### Whoever uses the pages
 
@@ -1000,6 +1005,17 @@ neither for an entry made long ago.
   (§2.9).
 - **N11** An agreement not active stays as it is: no version is added to it,
   and its status does not change (§2.9).
+- **N12** No entry is added with a posting to a money account in a
+  commodity, while the account's balance, of every entry before it, is not
+  nought in another: an account that holds money moves only what it holds,
+  so that what is paid in another commodity, at a cost, goes through an
+  account for that commodity, and the bank's account in the company's
+  currency never holds a foreign amount no bank would show. Emptied, an
+  account may take another commodity.
+- **N13** No account is declared, by `account add` or as where `account move`
+  moves one, with a segment begun by a lower-case letter: one account has one
+  spelling, `Assets:Bank`, never also `Assets:bank`. One declared before
+  stays as it is, since the entries that post to it never change.
 
 The conditions hold of every operation but `undo`, which takes back the last
 one and makes no change of its own: a period closed by mistake is reopened by

@@ -32,7 +32,7 @@ fn amount(m: &Books, q: Decimal, c: &str) -> String {
 }
 
 /// `a`, `a and b`, `a, b and c`.
-fn and(v: &[String]) -> String {
+pub(crate) fn and(v: &[String]) -> String {
     joined(v, "and")
 }
 
@@ -194,6 +194,10 @@ pub fn explain(m: &Books, op: &Op, n: &Books, v: Vec<Violation>) -> Vec<Violatio
             "I-I2" => has("N2") || has("I-E3"),
             "I-P2" => matches!(op, Op::Invoice { .. }) && has("I-I1"),
             "I-P3" => has("N4") || has("I-B2"),
+            // A posting misnamed, or a sign or cost missing: once put right,
+            // the bill may well credit what it should (a bill paid when it
+            // came, say), so that is said first, and alone.
+            "I-B2" => has("I-A0") || has("I-A1") || has("I-A2") || (has("I-E1") && given_postings(op).is_some_and(|ps| slip(m, ps).is_some())),
             "I-P1" => (!pay && has("I-R3")) || (has("N4") && !paid_nothing),
             "I-R3" => pay && has("I-P1"),
             "I-E2" => (pay && has("I-P1")) || (matches!(op, Op::Invoice { .. }) && has("I-I1")),
@@ -219,6 +223,12 @@ pub fn explain(m: &Books, op: &Op, n: &Books, v: Vec<Violation>) -> Vec<Violatio
             ("I-E4", Op::Invoice { commodity, .. }) => vec![Subject::Commodity(commodity.clone()); said.len()],
             // A removal refused for what is in use is of nothing to declare.
             ("I-A1", Op::AccountRemove(_) | Op::CommodityRemove(_)) => vec![Subject::None; said.len()],
+            // An account with accounts under it is nothing to declare.
+            ("I-A1", _) if said.len() == these.len() => these.iter().map(|x| match &x.of {
+                // Nor is what cannot be declared, or not so written (N13).
+                Subject::Account(a) if under(m, a).is_some() || !super::check::account_ok(a) || !super::check::account_canonical(a) => Subject::None,
+                o => o.clone(),
+            }).collect(),
             // Of splitting an account, only where an account is declared.
             ("I-A2", op) if !matches!(op, Op::AccountAdd(_)) => vec![Subject::None; said.len()],
             ("I-I1", Op::Invoice { .. }) => said
@@ -245,6 +255,63 @@ pub fn explain(m: &Books, op: &Op, n: &Books, v: Vec<Violation>) -> Vec<Violatio
     } else {
         out
     }
+}
+
+/// A slip that leaves postings unbalanced, the one posting it is on.
+enum Slip<'a> {
+    /// A sign left off or turned: the posting that is half of all they sum to.
+    Sign(&'a Posting),
+    /// An amount in another commodity than the company's, without its cost.
+    Cost(&'a Posting),
+}
+
+/// The slip that likely unbalanced `ps`, if one does.
+fn slip<'a>(m: &Books, ps: &'a [Posting]) -> Option<Slip<'a>> {
+    let mut sums: BTreeMap<&str, Decimal> = BTreeMap::new();
+    for p in ps {
+        let a = p.cost.as_ref().unwrap_or(&p.amount);
+        let s = sums.entry(&a.commodity).or_default();
+        *s = s.checked_add(a.quantity).unwrap_or(*s);
+    }
+    sums.retain(|_, s| !s.is_zero());
+    let half = |p: &Posting| sums.len() == 1 && sums.get(p.amount.commodity.as_str()).is_some_and(|s| *s == p.amount.quantity * Decimal::TWO);
+    // The paying line, written last as a rule, before the expense.
+    ps.iter().rev().find(|p| p.cost.is_none() && half(p)).map(Slip::Sign)
+        .or_else(|| ps.iter().find(|p| p.cost.is_none() && p.amount.commodity != m.config.company.currency).map(Slip::Cost))
+}
+
+/// An account declared under `a`, which is not itself declared.
+fn under(m: &Books, a: &str) -> Option<String> {
+    m.accounts.iter().find(|b| b.len() > a.len() && b.starts_with(a) && b.as_bytes()[a.len()] == b':').cloned()
+}
+
+/// The declared account `a` was likely meant to be: the same but for case,
+/// the same last part (`Bank` for `Assets:Bank`), or two letters off.
+fn near(m: &Books, a: &str) -> Option<String> {
+    let lower = a.to_lowercase();
+    let last = |b: &str| b.rsplit(':').next().unwrap_or(b).to_lowercase();
+    let off = |b: &str| distance(&lower, &b.to_lowercase());
+    let postable: Vec<&String> = m.accounts.iter().filter(|b| m.postable(b)).collect();
+    postable.iter().find(|b| b.to_lowercase() == lower)
+        .or_else(|| postable.iter().find(|b| !a.contains(':') && last(b) == lower))
+        .or_else(|| postable.iter().filter(|b| off(b) <= 2).min_by_key(|b| off(b)))
+        .map(|b| b.to_string())
+}
+
+/// The edits, letter by letter, that make `a` into `b` (Levenshtein).
+fn distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, x) in a.chars().enumerate() {
+        let mut prev = row[0];
+        row[0] = i + 1;
+        for j in 0..b.len() {
+            let here = row[j + 1];
+            row[j + 1] = (here + 1).min(row[j] + 1).min(prev + usize::from(x != b[j]));
+            prev = here;
+        }
+    }
+    row[b.len()]
 }
 
 /// The violations of one code, said of the operation; none where there is
@@ -278,7 +345,12 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
             _ => these
                 .iter()
                 .filter_map(|x| match &x.of {
-                    Subject::Account(a) | Subject::Commodity(a) => Some(format!("{} is not declared", shown(a))),
+                    Subject::Account(a) => Some(match (under(m, a), near(m, a)) {
+                        (Some(c), _) => format!("{} has accounts under it, such as {c}: name one of those", shown(a)),
+                        (None, Some(b)) => format!("{} is not declared: {b} is", shown(a)),
+                        (None, None) => format!("{} is not declared", shown(a)),
+                    }),
+                    Subject::Commodity(a) => Some(format!("{} is not declared", shown(a))),
                     _ => None,
                 })
                 .collect(),
@@ -356,7 +428,14 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                     *s = s.checked_add(a.quantity).unwrap_or(*s);
                 }
                 let off: Vec<String> = sums.iter().filter(|(_, s)| !s.is_zero()).map(|(c, s)| amount(m, *s, c)).collect();
-                vec![format!("the postings sum to {}, not nought", and(&off))]
+                let mut said = format!("the postings sum to {}, not nought", and(&off));
+                let currency = &m.config.company.currency;
+                match slip(m, ps) {
+                    Some(Slip::Sign(p)) => said += &format!("; {} looks to have the wrong sign: {}={}", p.account, p.account, amount(m, -p.amount.quantity, &p.amount.commodity)),
+                    Some(Slip::Cost(p)) => said += &format!("; what is in another commodity is written with what it cost in {currency}, the whole amount after @@: {}={} @@ <its cost> {currency}", p.account, amount(m, p.amount.quantity, &p.amount.commodity)),
+                    None => {}
+                }
+                vec![said]
             }
             None => vec![],
         },
@@ -464,8 +543,16 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
             v
         }
         "I-B2" => {
-            let such = m.accounts.iter().find(|a| class(a) == "Liabilities" && a.contains("Payable")).cloned().unwrap_or("Liabilities:Payable".into());
-            vec![format!("a bill credits one liability account, such as {such}")]
+            let such = m.payable().unwrap_or("Liabilities:Payable".into());
+            match op {
+                // Paid from two money accounts, say: why it is not read as a
+                // bill and its payment (`Books::paid_at_once`), and what to do.
+                Op::Bill { postings, .. } => match m.paid_at_once(postings) {
+                    Err(why) => vec![format!("a bill is a debt: it credits what is owed, one liability account; {why}")],
+                    Ok(_) => vec![format!("a bill credits one liability account, such as {such}")],
+                },
+                _ => vec![format!("a bill credits one liability account, such as {such}")],
+            }
         }
         "I-I1" => match (op, new_kind) {
             (Op::Invoice { date, .. }, Some(Kind::Invoice { content: c, pdf })) => {
@@ -567,10 +654,12 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
             }
             // A new debt on an account plain entries already post to.
             for a in on_n.difference(&on_m) {
-                for id in 1..=m.entries.len() {
-                    if m.entries[id - 1].kind.reverses().is_none() && m.postings(id).iter().any(|p| p.account == *a) {
-                        v.push(format!("{} posts to {a}, so no debt can be on it", name(m, id)));
-                    }
+                let by: Vec<String> = (1..=m.entries.len()).filter(|&id| m.entries[id - 1].kind.reverses().is_none() && m.postings(id).iter().any(|p| p.account == *a)).map(|id| name(m, id)).collect();
+                match by.len() {
+                    0 => {}
+                    1 => v.push(format!("{} posts to {a}, so no debt can be on it", by[0])),
+                    n if n <= 3 => v.push(format!("{} post to {a}, so no debt can be on it", and(&by))),
+                    n => v.push(format!("{}, {} and {} more post to {a}, so no debt can be on it", by[0], by[1], n - 2)),
                 }
             }
             v

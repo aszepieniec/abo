@@ -138,10 +138,17 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
                 (None, Some(d)) => d.date,
                 (d, _) => input::day(d)?,
             };
-            let postings = postings.iter().map(|p| input::posting(&s.books, p)).collect::<Result<_>>()?;
+            let postings: Vec<model::Posting> = postings.iter().map(|p| input::posting(&s.books, p)).collect::<Result<_>>()?;
             let more = model::BillMore { number: number.unwrap_or_default(), due: due.map(|d| input::day(Some(&d))).transpose()?, partner };
-            let op = Op::Bill { date, description, postings, document, again, more };
-            changed(&mut s, &op, &[], cli.json)
+            // Paid when it came: the bill and its payment, as one change.
+            match s.books.paid_at_once(&postings) {
+                Ok(Some(p)) => {
+                    let bill = Op::Bill { date, description, postings: p.postings, document, again, more };
+                    let pay = Op::Pay { debt: s.books.entries.len() + 1, date, amount: p.amount, from: p.from, cost: p.cost };
+                    changed_all(&mut s, &[&bill, &pay], &[], cli.json)
+                }
+                _ => changed(&mut s, &Op::Bill { date, description, postings, document, again, more }, &[], cli.json),
+            }
         }
         Cmd::Invoice { mut to, mut partner, mut agreement, period, like, items, date, due_days, vat_rate, currency, reference, pay_to, note, mut customer_tax_id, income, preview, vat_reason } => {
             let mut s = Store::open(&here)?;
@@ -449,12 +456,23 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
             // the commit it took back, whose change it makes again.
             let lines = store::lines(&s.root);
             let what = |l: &serde_json::Value| l["what"].as_str().unwrap_or_default().to_string();
-            // Undo of an undo makes its change again; of that, takes it back.
-            let (mut last, mut back) = (lines.last().map(what).unwrap_or_default(), true);
-            while let Some(earlier) = last.strip_prefix("Undo ").and_then(|c| lines.iter().find(|l| l["commit"].as_str() == Some(c))).map(what) {
+            // A change is every line of its commit: a bill and its payment,
+            // say. Undo of an undo makes its change again; of that, takes it back.
+            let of = |c: Option<&str>| lines.iter().filter(|l| c.is_some() && l["commit"].as_str() == c).map(what).collect::<Vec<_>>();
+            let (mut last, mut back) = (lines.last().map(|l| of(l["commit"].as_str())).unwrap_or_default(), true);
+            // A line from before commits held their lines: it alone.
+            if last.is_empty() {
+                last = lines.last().map(what).into_iter().collect();
+            }
+            while let [one] = &last[..] {
+                let Some(c) = one.strip_prefix("Undo ") else { break };
+                let earlier = of(Some(c));
+                if earlier.is_empty() {
+                    break;
+                }
                 (last, back) = (earlier, !back);
             }
-            let said = format!("{}: {last}", if back { "Took back" } else { "Made again" });
+            let said = format!("{}: {}", if back { "Took back" } else { "Made again" }, last.join("; "));
             let commit = s.undo()?;
             emit(cli.json, &serde_json::json!({ "commit": commit, "what": said }), || format!("{said}. Committed {commit}."))
         }
@@ -717,11 +735,14 @@ pub(crate) fn changed_all(s: &mut Store, ops: &[&Op], also: &[(String, Vec<u8>)]
     if let [op] = ops {
         return changed(s, op, also, json);
     }
+    let before = s.books.entries.len();
     let commit = s.change_all(ops, also)?;
+    // The entries it made: the first as `entry`, as a change of one says it.
+    let entries: Vec<usize> = (before + 1..=s.books.entries.len()).collect();
     let lines = store::lines(&s.root);
     let mut what: Vec<String> = lines.iter().rev().take_while(|l| commit.is_some() && l["commit"].as_str() == commit.as_deref()).map(|l| l["what"].as_str().unwrap_or_default().to_string()).collect();
     what.reverse();
-    let r = serde_json::json!({ "commit": commit, "what": what });
+    let r = serde_json::json!({ "commit": commit, "entry": entries.first(), "entries": entries, "what": what });
     emit(json, &r, || match &commit {
         None => "Nothing to change: the books say that already.".to_string(),
         Some(c) => format!("{}.\nCommitted {c}.", what.iter().map(|w| past(w)).collect::<Vec<_>>().join(".\n")),
@@ -865,8 +886,15 @@ pub(crate) fn hints(r: &store::Refused) -> Vec<String> {
     let mut v: Vec<String> = vec![];
     for x in &r.0 {
         let h = match (x.code, &x.of) {
-            ("I-A1", Subject::Account(a)) => format!("abo account add {a}"),
+            // ponytail: the account likely meant, read back from the message's end.
             ("I-A1", Subject::Commodity(c)) => format!("abo commodity add {c} <places>"),
+            ("I-A1", of) => match (x.what.strip_suffix(" is").and_then(|w| w.rsplit_once(": ")), of) {
+                (Some((_, meant)), Subject::Account(a)) => format!("{meant} in place of {a}, if that is what was meant; else abo account add {a}"),
+                // Not a name an account can have: only the one meant.
+                (Some((typed, meant)), _) => format!("{meant} in place of {}", typed.strip_suffix(" is not declared").unwrap_or(typed)),
+                (None, Subject::Account(a)) => format!("abo account add {a}"),
+                (None, _) => continue,
+            },
             ("I-E4", Subject::Commodity(c)) => format!("abo price add <date> {c} <price> <company currency>"),
             ("I-I1", Subject::Field("reason")) => "--vat-reason '<why no VAT is charged>'".into(),
             ("I-I1", Subject::Field("default rate")) => "--vat-reason '<why no VAT is charged>'; or --vat-rate <percent>, to charge VAT after all".into(),
@@ -880,7 +908,7 @@ pub(crate) fn hints(r: &store::Refused) -> Vec<String> {
             // Under the same number it is that bill: no flag makes it another.
             ("N8", Subject::Field("number")) => continue,
             ("N8", _) => "--again, if it is another bill just like it".into(),
-            ("I-B2", _) => "a posting crediting what is owed, as Liabilities:Payable=-<the bill's total>".into(),
+            ("I-B2", _) => "a posting crediting what is owed, as Liabilities:Payable=-<the bill's total>; and what was paid of it, abo pay <the bill's id> --amount <what was paid> --from <the account it was paid from>, once for each account".into(),
             // To split an account in use: what names it moves under it first.
             ("I-A2", Subject::Account(a)) => format!(
                 "an account in use takes no accounts under it: declare the new one beside it, or move what names {a} under it first (abo payment-options edit <id> --account {a}:Current, if a payment option names it)"

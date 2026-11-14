@@ -100,6 +100,23 @@ pub fn segment_ok(s: &str) -> bool {
     !s.is_empty() && text_ok(s) && !s.contains(':') && !s.contains("  ") && hledger_reads("SEGMENT", s)
 }
 
+/// An account's name as a new one is declared (N13): no part begun by a
+/// lower-case letter, so that one account is written one way.
+pub fn account_canonical(a: &str) -> bool {
+    a.split(':').all(|s| !s.starts_with(char::is_lowercase))
+}
+
+/// `a` written so: each part begun by a capital.
+pub fn canonical_account(a: &str) -> String {
+    a.split(':')
+        .map(|s| {
+            let mut c = s.chars();
+            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
 pub fn account_ok(a: &str) -> bool {
     a.split(':').all(segment_ok) && CLASSES.contains(&class(a))
 }

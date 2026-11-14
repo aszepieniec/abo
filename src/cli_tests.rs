@@ -288,6 +288,11 @@ fn the_cli_is_the_model(#[strategy(vec(any::<Step>(), 1..30))] plan: Vec<Step>) 
                 prop_assert_eq!((head(&books), store::text_files(&books).unwrap()), before, "{:?} was refused and changed something", argv);
             }
             (false, None) => prop_assert_eq!((head(&books), store::text_files(&books).unwrap()), before),
+            // A date outside the years 1 to 9999 is refused as unreadable
+            // before the model is asked, whatever it would say.
+            (false, Some(Ok(_))) if model::tests::has_unwritable_date(&argv.join(" ")) && o.json.as_ref().is_some_and(|j| j["error"].as_str().is_some_and(|e| e.contains("yyyy-mm-dd"))) => {
+                prop_assert_eq!((head(&books), store::text_files(&books).unwrap()), before, "{:?} was refused and changed something", argv);
+            }
             (ok, expected) => prop_assert!(false, "{:?}: abo {} where the model {:?}; {}", argv, if ok { "took it" } else { "refused" }, expected.map(|r| r.map(|_| ()).map_err(|v| v.iter().map(|v| v.code).collect::<Vec<_>>())), o.stderr),
         }
     }
@@ -371,6 +376,26 @@ fn changes_at_once_are_each_made(#[strategy(2usize..6)] n: usize) {
     let s = store::Store::open(&books).unwrap();
     prop_assert_eq!(s.books.entries.len(), n);
     prop_assert!(s.problems.is_empty());
+}
+
+/// `abo bill` given a bill paid when it came books it and its payment as
+/// one change: the bill settled, one commit, one undo taking back both.
+#[test]
+fn abo_bill_books_a_bill_paid_when_it_came() {
+    let (_parent, books) = opened();
+    let before = store::lines(&books).len();
+    let o = abo(&books, start(), &args(&["bill", "--desc", "Pens", "Expenses:Hosting=12.00", "Assets:Bank=-12.00"]));
+    assert!(o.ok, "{}", o.stderr);
+    let j = o.json.unwrap();
+    assert_eq!((j["entry"].as_u64(), j["entries"].as_array().map(Vec::len)), (Some(1), Some(2)), "{j}");
+    let s = store::Store::open(&books).unwrap();
+    assert_eq!(s.books.status(1, &s.books.standing()), Some(model::Status::Settled));
+    let lines = store::lines(&books);
+    assert!(lines.len() == before + 2 && lines[before]["commit"] == lines[before + 1]["commit"], "{lines:?}");
+    assert!(abo(&books, start(), &args(&["undo"])).ok);
+    // Both ids taken back: gaps, which no entry fills.
+    let s = store::Store::open(&books).unwrap();
+    assert!(s.books.entry(1).is_none() && s.books.entry(2).is_none());
 }
 
 /// `abo invoices` and `abo reconcile` show what the model says: every

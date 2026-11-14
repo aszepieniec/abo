@@ -973,9 +973,11 @@ fn refusals_speak_of_the_books_before(#[strategy(plan())] plan: Vec<Step>) {
                     prop_assert!(numbered, "{} names {}{} by its id: {:?}", x, word, t, op);
                 }
             }
-            // What was given, as given and as printed, its hidden characters `?`.
-            // A dotted key is quoted a segment at a time too.
-            let given: Vec<String> = given.iter().flat_map(|t| t.split('.').chain([t.as_str()]).flat_map(|t| [t.to_string(), super::explain::shown(t)]).collect::<Vec<_>>()).filter(|t| !t.is_empty()).collect();
+            // What was given, as given and as printed, its hidden characters `?`;
+            // an account's name too as it should be written, each part begun
+            // by a capital (N13). A dotted key is quoted a segment at a time too.
+            let capital = |t: &str| t.split(':').map(|s| { let mut c = s.chars(); c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default() }).collect::<Vec<_>>().join(":");
+            let given: Vec<String> = given.iter().flat_map(|t| t.split('.').chain([t.as_str()]).flat_map(|t| [t.to_string(), super::explain::shown(t), capital(t)]).collect::<Vec<_>>()).filter(|t| !t.is_empty()).collect();
             let mut rest = w.clone();
             for t in &given {
                 rest = rest.replace(t.as_str(), "");
@@ -2029,7 +2031,8 @@ fn extremes_survive_hledger(#[strategy(0u32..9)] places: u32, negative: bool, #[
     }
     let mut exchange = Posting::new("Equity:Opening", top, "ZZZ");
     exchange.cost = Some(eur(Decimal::from(BOUND) - Decimal::new(1, 2)));
-    let back = Posting { account: "Assets:Bank".into(), amount: eur(-(Decimal::from(BOUND) - Decimal::new(1, 2))), cost: None };
+    // Not through the bank, which holds ZZZ now (N12).
+    let back = Posting { account: "Expenses:Other".into(), amount: eur(-(Decimal::from(BOUND) - Decimal::new(1, 2))), cost: None };
     m = apply(&m, &Op::Post { date: today, description: "Exchange".into(), postings: vec![exchange, back], link: Default::default() }, today).map_err(|v| TestCaseError::fail(format!("{v:?}")))?;
     let over = Op::Post { date: today, description: "Over".into(), postings: vec![Posting::new("Equity:Opening", top + unit, "ZZZ"), Posting::new("Assets:Bank", -(top + unit), "ZZZ")], link: Default::default() };
     prop_assert!(apply(&m, &over, today).is_err_and(|v| v.iter().any(|v| v.code == "I-K3")));
@@ -2052,7 +2055,8 @@ fn any_text_the_rules_allow_survives(
     // space but single U+0020s between other characters, and may hold `;`.
     #[strategy("[A-Za-z0-9\u{a1}-\u{ac}\u{ae}-\u{17f}\u{1f600}-\u{1f64f}]([ -:<-~\u{a0}-\u{ac}\u{ae}-\u{17f}\u{391}-\u{3a1}\u{3a3}-\u{3c9}\u{2000}-\u{200a}\u{2010}-\u{2027}\u{2030}-\u{205e}\u{3000}-\u{303f}\u{1f600}-\u{1f64f}]{0,22}[!-:<-~\u{a1}-\u{ac}\u{ae}-\u{17f}])?")]
     description: String,
-    #[strategy("[!-9;-~\u{a1}-\u{ac}\u{ae}-\u{17f}\u{2010}-\u{2027}\u{3001}-\u{303f}]( ?[!-9;-~\u{a1}-\u{ac}\u{ae}-\u{17f}\u{2010}-\u{2027}\u{3001}-\u{303f}]){0,15}")]
+    // Begun by no lower-case letter, as a new account is declared (N13).
+    #[strategy("[!-9;-`{-~\u{c0}-\u{d6}\u{2010}-\u{2027}\u{3001}-\u{303f}]( ?[!-9;-~\u{a1}-\u{ac}\u{ae}-\u{17f}\u{2010}-\u{2027}\u{3001}-\u{303f}]){0,15}")]
     segment: String,
     #[strategy("[ -~\u{a0}-\u{ac}\u{ae}-\u{17f}\u{2010}-\u{2027}\n]{1,40}")] lines: String,
 ) {
@@ -2539,4 +2543,87 @@ fn partners_owe_what_their_debts_have_open(#[strategy(plan())] plan: Vec<Step>) 
         by.retain(|_, q| !q.is_zero());
         prop_assert_eq!(m.owed(p), (to, by), "partner {}", p);
     }
+}
+
+/// A bill written as paid when it came is read as a bill and its payment,
+/// which settles it; what is not such a bill is not; one paid from two
+/// accounts is refused, saying so.
+#[test]
+fn a_bill_paid_when_it_came() {
+    let mut m = fresh();
+    m.accounts.insert("Assets:Cash".into());
+    let p = |a: &str, q: i64| Posting { account: a.into(), amount: eur(Decimal::new(q, 2)), cost: None };
+    let (date, today) = (day("2026-01-05"), day("2026-02-01"));
+    let r = m.paid_at_once(&[p("Expenses:Hosting", 4000), p(BANK, -4000)]).unwrap().unwrap();
+    assert_eq!((r.from.as_str(), r.amount, r.postings.last()), (BANK, Decimal::new(4000, 2), Some(&p(PAYABLE, -4000))));
+    // In part: the bill owes all, the payment takes off what was paid.
+    let r = m.paid_at_once(&[p("Expenses:Hosting", 3000), p(PAYABLE, -1000), p(BANK, -1500), p(BANK, -500)]).unwrap().unwrap();
+    assert_eq!((r.amount, r.postings.len(), r.postings.last()), (Decimal::new(2000, 2), 2, Some(&p(PAYABLE, -3000))));
+    let bill = Op::Bill { date, description: "Hosting".into(), postings: r.postings.clone(), document: None, again: false, more: BillMore::default() };
+    let n = apply(&m, &bill, today).unwrap();
+    let id = n.entries.len();
+    let n = apply(&n, &Op::Pay { debt: id, date, amount: r.amount, from: r.from, cost: r.cost }, today).unwrap();
+    assert_eq!(n.open(id, &n.standing()), Decimal::new(1000, 2));
+    // Not such a bill: cash drawn besides, VAT the bill charges itself.
+    assert_eq!(m.paid_at_once(&[p("Expenses:Hosting", 1000), p("Assets:Cash", 3000), p(BANK, -4000)]), Ok(None));
+    assert_eq!(m.paid_at_once(&[p("Expenses:Hosting", 1000), p(INPUT, 81), p(OUTPUT, -81), p(BANK, -1000)]), Ok(None));
+    // Such a bill, paid from two accounts: why not, and what to do.
+    let split = [p("Expenses:Hosting", 1000), p("Assets:Cash", -300), p(BANK, -700)];
+    assert!(m.paid_at_once(&split).is_err_and(|e| e.contains("Assets:Bank and Assets:Cash")));
+    let bill = Op::Bill { date, description: "Pens".into(), postings: split.to_vec(), document: None, again: false, more: BillMore::default() };
+    let v = apply(&m, &bill, today).unwrap_err();
+    assert!(v.iter().any(|v| v.code == "I-B2" && v.what.contains("Assets:Bank and Assets:Cash")), "{v:?}");
+}
+
+/// An account not declared is said with the one likely meant; one with
+/// accounts under it, as such, and nothing to declare.
+#[test]
+fn an_account_misnamed() {
+    let m = fresh();
+    let post = |a: &str| Op::Post { date: day("2026-01-05"), description: "x".into(), postings: vec![Posting { account: a.into(), amount: eur(Decimal::ONE), cost: None }, Posting { account: "Equity:Opening".into(), amount: eur(-Decimal::ONE), cost: None }], link: Link::default() };
+    for (typed, said) in [("Assets:bank", "Assets:Bank is"), ("Bank", "Assets:Bank is"), ("Assets:Bnak", "Assets:Bank is"), ("Assets:Wallet", "is not declared")] {
+        let v = apply(&m, &post(typed), day("2026-02-01")).unwrap_err();
+        assert!(v.iter().any(|v| v.code == "I-A1" && v.what.contains(said)), "{typed}: {v:?}");
+    }
+    let v = apply(&m, &post("Assets:VAT"), day("2026-02-01")).unwrap_err();
+    assert!(v.iter().any(|v| v.code == "I-A1" && v.what.contains("has accounts under it") && v.of == Subject::None), "{v:?}");
+    // A part begun by a small letter: refused, written as it should be.
+    for (typed, fixed) in [("Assets:bank", "Assets:Bank"), ("assets:Petty cash", "Assets:Petty cash"), ("Expenses:Travel:taxi", "Expenses:Travel:Taxi")] {
+        let v = apply(&m, &Op::AccountAdd(typed.into()), day("2026-02-01")).unwrap_err();
+        assert!(v.iter().any(|v| v.code == "N13" && v.what.ends_with(&format!("never a small letter: {fixed}"))), "{typed}: {v:?}");
+    }
+    assert!(apply(&m, &Op::AccountAdd("Expenses:2026 Travel".into()), day("2026-02-01")).is_ok());
+    // Declared before, it stays: the books hold no problem, and take entries.
+    let mut old = m.clone();
+    old.accounts.insert("Expenses:travel".into());
+    assert_eq!(check(&old), vec![]);
+    assert!(apply(&old, &post("Expenses:travel"), day("2026-02-01")).is_ok());
+}
+
+/// A money account moves only what it holds: a payment at a cost in another
+/// commodity is refused through the bank that holds EUR, and taken through
+/// an account that holds nothing, never used or emptied.
+#[test]
+fn a_money_account_holds_what_it_held() {
+    let mut m = fresh();
+    let today = day("2026-02-01");
+    let date = day("2026-01-05");
+    let p = |a: &str, q: i64, c: &str| Posting::new(a, Decimal::new(q, 2), c);
+    m = apply(&m, &Op::Post { date, description: "Capital".into(), postings: vec![p(BANK, 100000, "EUR"), p("Equity:Opening", -100000, "EUR")], link: Link::default() }, today).unwrap();
+    let bill = Op::Bill { date, description: "Hosting".into(), postings: vec![p("Expenses:Hosting", 1940, "EUR"), p(PAYABLE, -1940, "EUR")], document: None, again: false, more: BillMore::default() };
+    m = apply(&m, &bill, today).unwrap();
+    let id = m.entries.len();
+    let pay = |from: &str| Op::Pay { debt: id, date, amount: Decimal::new(1940, 2), from: from.into(), cost: Some(Amount { quantity: Decimal::new(2100, 2), commodity: "USD".into() }) };
+    let v = apply(&m, &pay(BANK), today).unwrap_err();
+    assert!(v.iter().any(|v| v.code == "N12" && v.what.starts_with("Assets:Bank holds 1000.00 EUR, and this moves 21.00 USD") && v.of == Subject::Account(BANK.into())), "{v:?}");
+    // In EUR it is taken; through an account for USD, holding nothing yet, too.
+    m.accounts.insert("Assets:Dollars".into());
+    let n = apply(&m, &pay("Assets:Dollars"), today).unwrap();
+    // Once it holds USD, EUR is refused through it.
+    let v = apply(&n, &Op::Post { date, description: "Mixed".into(), postings: vec![p("Assets:Dollars", 500, "EUR"), p("Equity:Opening", -500, "EUR")], link: Link::default() }, today).unwrap_err();
+    assert!(v.iter().any(|v| v.code == "N12"), "{v:?}");
+    assert!(apply(&m, &Op::Pay { debt: id, date, amount: Decimal::new(1940, 2), from: BANK.into(), cost: None }, today).is_ok());
+    // Emptied, the bank takes USD: the same payment at a cost goes through.
+    let emptied = apply(&m, &Op::Post { date, description: "Out".into(), postings: vec![p(BANK, -100000, "EUR"), p("Equity:Opening", 100000, "EUR")], link: Link::default() }, today).unwrap();
+    assert!(apply(&emptied, &pay(BANK), today).is_ok());
 }

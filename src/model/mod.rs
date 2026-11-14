@@ -535,6 +535,21 @@ pub struct Debt {
     pub sign: Decimal,
 }
 
+/// A bill paid when it came, written as one entry: what it is booked as,
+/// a bill and its payment (`Books::paid_at_once`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaidAtOnce {
+    /// The bill's postings: the money account's taken off, the liability
+    /// credited with all it owes.
+    pub postings: Vec<Posting>,
+    /// The money account it was paid from.
+    pub from: Account,
+    /// What the payment takes off the debt, in the debt's commodity.
+    pub amount: Decimal,
+    /// What was paid, when in another commodity than the debt's.
+    pub cost: Option<Amount>,
+}
+
 /// The country codes of ISO 3166, and the two the EU's VAT numbers use
 /// besides: EL for Greece, XI for Northern Ireland.
 const COUNTRIES: [&str; 251] = ["AD", "AE", "AF", "AG", "AI", "AL", "AM", "AO", "AQ", "AR", "AS", "AT", "AU", "AW", "AX", "AZ", "BA", "BB", "BD", "BE", "BF", "BG", "BH", "BI", "BJ", "BL", "BM", "BN", "BO", "BQ", "BR", "BS", "BT", "BV", "BW", "BY", "BZ", "CA", "CC", "CD", "CF", "CG", "CH", "CI", "CK", "CL", "CM", "CN", "CO", "CR", "CU", "CV", "CW", "CX", "CY", "CZ", "DE", "DJ", "DK", "DM", "DO", "DZ", "EC", "EE", "EG", "EH", "ER", "ES", "ET", "FI", "FJ", "FK", "FM", "FO", "FR", "GA", "GB", "GD", "GE", "GF", "GG", "GH", "GI", "GL", "GM", "GN", "GP", "GQ", "GR", "GS", "GT", "GU", "GW", "GY", "HK", "HM", "HN", "HR", "HT", "HU", "ID", "IE", "IL", "IM", "IN", "IO", "IQ", "IR", "IS", "IT", "JE", "JM", "JO", "JP", "KE", "KG", "KH", "KI", "KM", "KN", "KP", "KR", "KW", "KY", "KZ", "LA", "LB", "LC", "LI", "LK", "LR", "LS", "LT", "LU", "LV", "LY", "MA", "MC", "MD", "ME", "MF", "MG", "MH", "MK", "ML", "MM", "MN", "MO", "MP", "MQ", "MR", "MS", "MT", "MU", "MV", "MW", "MX", "MY", "MZ", "NA", "NC", "NE", "NF", "NG", "NI", "NL", "NO", "NP", "NR", "NU", "NZ", "OM", "PA", "PE", "PF", "PG", "PH", "PK", "PL", "PM", "PN", "PR", "PS", "PT", "PW", "PY", "QA", "RE", "RO", "RS", "RU", "RW", "SA", "SB", "SC", "SD", "SE", "SG", "SH", "SI", "SJ", "SK", "SL", "SM", "SN", "SO", "SR", "SS", "ST", "SV", "SX", "SY", "SZ", "TC", "TD", "TF", "TG", "TH", "TJ", "TK", "TL", "TM", "TN", "TO", "TR", "TT", "TV", "TW", "TZ", "UA", "UG", "UM", "US", "UY", "UZ", "VA", "VC", "VE", "VG", "VI", "VN", "VU", "WF", "WS", "YE", "YT", "ZA", "ZM", "ZW", "EL", "XI"];
@@ -1016,6 +1031,79 @@ impl Books {
             }),
             _ => None,
         }
+    }
+
+    /// Bill postings `ps` read as a bill paid when it came, in part or in
+    /// full: one money account credited, debited nowhere; every other credit
+    /// to an expense (a discount, say) or to one liability, debited nowhere.
+    /// They are a bill crediting that liability with what the money account
+    /// paid too, and a payment from the money account. The liability, when
+    /// none is credited, is `payable`. Not such postings: `Ok(None)`. Such
+    /// postings that cannot be read so, paid from two money accounts say:
+    /// why not, and how to book them instead.
+    pub fn paid_at_once(&self, ps: &[Posting]) -> Result<Option<PaidAtOnce>, String> {
+        let credit = |p: &Posting| p.amount.quantity < Decimal::ZERO;
+        // Of accounts declared only: one mistyped is left to I-A1.
+        let money = |p: &Posting| self.moves_money(&p.account) && self.postable(&p.account);
+        let liability = |p: &Posting| class(&p.account) == "Liabilities";
+        // A liability a bill is owed on: VAT a bill charges itself, say, is not.
+        let payable = self.payable();
+        let owed_on = |a: &str| payable.as_deref() == Some(a) || (1..=self.entries.len()).any(|id| matches!(self.entries[id - 1].kind, Kind::Bill(..)) && self.debt(id).is_some_and(|d| d.account == a));
+        // Money moved in (cash drawn, say), a liability debited (an old bill
+        // paid), or a credit to what is neither: not a bill paid when it came.
+        if ps.iter().any(|p| ((money(p) || liability(p)) && !credit(p)) || (credit(p) && !money(p) && !liability(p) && class(&p.account) != "Expenses")) {
+            return Ok(None);
+        }
+        let mut froms: Vec<&str> = ps.iter().filter(|p| money(p)).map(|p| p.account.as_str()).collect();
+        froms.sort();
+        froms.dedup();
+        let from = match froms[..] {
+            [] => return Ok(None),
+            [a] => a.to_string(),
+            _ => {
+                return Err(format!(
+                    "this bill is paid from {}, and a bill paid when it came is booked as the bill and one payment, from one account: book the bill crediting what is owed, such as Liabilities:Payable, with its total, then pay each part from its account",
+                    explain::and(&froms.iter().map(|a| a.to_string()).collect::<Vec<_>>())
+                ))
+            }
+        };
+        let mut owing: Vec<&str> = ps.iter().filter(|p| liability(p)).map(|p| p.account.as_str()).collect();
+        owing.sort();
+        owing.dedup();
+        let owes = match owing[..] {
+            [] => payable.clone().ok_or("a bill paid when it came is booked to a liability, what is owed, then paid from the money account: declare one, such as Liabilities:Payable")?,
+            [a] if owed_on(a) => a.to_string(),
+            _ => return Ok(None),
+        };
+        // What the money account paid, in what is owed: its amounts; or,
+        // paid in another commodity, the cost of its one posting.
+        let paid: Vec<&Posting> = ps.iter().filter(|p| money(p)).collect();
+        let (amount, cost) = match &paid[..] {
+            [p] => match &p.cost {
+                Some(c) => (c.clone(), Some(Amount { quantity: -p.amount.quantity, commodity: p.amount.commodity.clone() })),
+                None => (p.amount.clone(), None),
+            },
+            _ if paid.iter().all(|p| p.cost.is_none() && p.amount.commodity == paid[0].amount.commodity) => {
+                (Amount { quantity: paid.iter().map(|p| p.amount.quantity).sum(), commodity: paid[0].amount.commodity.clone() }, None)
+            }
+            _ => return Err(format!("{from} is credited in more than one commodity: book the bill crediting what is owed with its total, then pay each part from {from}")),
+        };
+        let owed: Vec<&Posting> = ps.iter().filter(|p| liability(p)).collect();
+        if owed.iter().any(|p| p.cost.is_some() || p.amount.commodity != amount.commodity) {
+            return Err(format!("this bill is owed on {owes} in another commodity than {from} paid: book the bill crediting {owes} with all it owes, then pay it from {from}"));
+        }
+        let total = Amount { quantity: amount.quantity + owed.iter().map(|p| p.amount.quantity).sum::<Decimal>(), commodity: amount.commodity.clone() };
+        let mut postings: Vec<Posting> = ps.iter().filter(|p| !money(p) && !liability(p)).cloned().collect();
+        postings.push(Posting { account: owes, amount: total, cost: None });
+        Ok(Some(PaidAtOnce { postings, from, amount: -amount.quantity, cost }))
+    }
+
+    /// The liability a bill is owed on when none is named: the one the bill
+    /// booked last is owed on, whatever its date; with no bill yet, the
+    /// first named a payable.
+    pub fn payable(&self) -> Option<Account> {
+        let last = (1..=self.entries.len()).rev().find_map(|id| matches!(self.entries[id - 1].kind, Kind::Bill(..)).then(|| self.debt(id)).flatten()).map(|d| d.account);
+        last.filter(|a| self.postable(a)).or_else(|| self.accounts.iter().find(|a| class(a) == "Liabilities" && a.to_lowercase().contains("payable") && self.postable(a)).cloned())
     }
 
     /// What payment `id` takes off its debt: its one posting to the debt's
