@@ -213,6 +213,8 @@ pub fn argv(op: &Op, m: &Books) -> Vec<String> {
             a.extend([s("--"), id.clone()]);
         }
         Op::AgreementRemove { id } => a = vec![s("agreement"), s("remove"), s("--"), id.clone()],
+        Op::Comment { of, text } => a = vec![s("comment"), s("--"), debt(m, *of), text.clone()],
+        Op::Uncomment { id } => a = vec![s("uncomment"), s("--"), id.to_string()],
     }
     a
 }
@@ -287,6 +289,11 @@ pub fn subject(op: &Op, m: &Books, n: &Books) -> String {
             _ => String::new(),
         }),
         Op::AgreementRemove { id } => format!("Remove the agreement {id}"),
+        Op::Comment { of, .. } => format!("Comment {} on {}", n.comments.keys().last().copied().unwrap_or_default(), name(m, *of)),
+        Op::Uncomment { id } => match m.comments.get(id) {
+            Some(c) => format!("Take out comment {id}, on {}", name(m, c.of)),
+            None => format!("Take out comment {id}"),
+        },
     }
 }
 

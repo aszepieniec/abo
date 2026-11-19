@@ -8,6 +8,40 @@ use anyhow::{bail, Context as _, Result};
 use sha2::{Digest as _, Sha256};
 use std::path::{Path, PathBuf};
 
+/// Who wrote something into the books, and when, as git says it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Written {
+    pub name: String,
+    pub email: String,
+    /// The gateway's name for them, where the commit says it (repo::USER).
+    pub user: Option<String>,
+    /// Seconds since 1970-01-01 UTC.
+    pub time: i64,
+}
+
+/// Git without the person's own settings, which may tell blame to pass
+/// over revisions or map authors to other names: what the commits record.
+fn bare() -> Vec<(&'static str, String)> {
+    vec![("GIT_CONFIG_GLOBAL", "/dev/null".into()), ("GIT_CONFIG_NOSYSTEM", "1".into())]
+}
+
+/// `git blame --porcelain`, line by line: the commit that wrote each, and
+/// the line's place in that commit; none where it is not committed (a hash
+/// of noughts, of any length).
+fn blamed(porcelain: &str) -> Vec<Option<(String, usize)>> {
+    let mut out = vec![];
+    let mut commit = None;
+    for l in porcelain.lines() {
+        if l.starts_with('\t') {
+            out.push(commit.clone());
+        } else if let Some((h, rest)) = l.split_once(' ').filter(|(h, _)| h.len() >= 40 && h.bytes().all(|b| b.is_ascii_hexdigit())) {
+            let at = rest.split(' ').next().and_then(|n| n.parse().ok()).unwrap_or(0);
+            commit = h.bytes().any(|b| b != b'0').then(|| (h.to_string(), at));
+        }
+    }
+    out
+}
+
 pub struct Store {
     pub root: PathBuf,
     pub books: Books,
@@ -468,6 +502,104 @@ impl Store {
         self.books.documents.iter().any(|(h, d)| d.path(h) == path).then(|| std::fs::read(self.root.join(path)).ok()).flatten()
     }
 
+    /// Who wrote each comment and when (MODEL.md §2.10): of the commits that
+    /// wrote its lines in the journal, the latest committed, its author and
+    /// their date, as the commit holds them: no mailmap, no revisions blame
+    /// is told to pass over. abo's own rewrites are passed over: a line
+    /// `tidy` wrote is its parent's; one `undo` wrote, which makes the files
+    /// what they were before the change it takes back, is as it was then. A
+    /// comment with a line not committed, a hand edit say, has none.
+    pub fn written(&self) -> Result<std::collections::BTreeMap<usize, Written>> {
+        // abo's own commits, by what their message says was run.
+        let ours = |cmd: &str| -> Result<std::collections::BTreeSet<String>> {
+            let out = repo::git_env(&self.root, &["log", "--format=%H%x00%B%x1e"], &bare())?;
+            Ok(out.split('\x1e').filter_map(|c| {
+                let (h, body) = c.trim_start().split_once('\0')?;
+                body.lines().any(|l| l == cmd).then(|| h.to_string())
+            }).collect())
+        };
+        let (undos, tidies) = (ours("abo undo")?, ours("abo tidy")?);
+        let mut blame = vec!["blame", "--porcelain"];
+        for t in &tidies {
+            blame.extend(["--ignore-rev", t.as_str()]);
+        }
+        // Each comment's commits; none, once a line of it is not committed.
+        let mut by: std::collections::BTreeMap<usize, Option<Vec<String>>> = std::collections::BTreeMap::new();
+        let Ok(dir) = std::fs::read_dir(self.root.join("journal")) else { return Ok(Default::default()) };
+        for f in dir.flatten() {
+            let name = f.file_name().to_string_lossy().to_string();
+            let Ok(text) = std::fs::read_to_string(f.path()) else { continue };
+            if !name.ends_with(".journal") || !text.contains("    ; comment: ") {
+                continue;
+            }
+            let path = format!("journal/{name}");
+            let mut args = blame.clone();
+            args.extend(["--", path.as_str()]);
+            let lines = blamed(&repo::git_env(&self.root, &args, &bare())?);
+            // A comment's lines: its tag, then each `    ;` line under it.
+            let mut current: Option<usize> = None;
+            for (i, line) in text.lines().enumerate() {
+                if let Some(id) = line.strip_prefix("    ; comment: ").and_then(|c| c.trim().parse().ok()) {
+                    current = Some(id);
+                } else if !(line == "    ;" || line.starts_with("    ;   ")) {
+                    current = None;
+                }
+                let Some(id) = current else { continue };
+                let commit = match lines.get(i).cloned().flatten() {
+                    Some((c, at)) => self.before_undo(&blame, &path, c, at, &undos)?,
+                    None => None,
+                };
+                let commits = by.entry(id).or_insert(Some(vec![]));
+                match (commit, commits.as_mut()) {
+                    (Some(c), Some(v)) => v.push(c),
+                    _ => *commits = None,
+                }
+            }
+        }
+        let mut all: Vec<&str> = by.values().flatten().flatten().map(String::as_str).collect();
+        all.sort();
+        all.dedup();
+        if all.is_empty() {
+            return Ok(Default::default());
+        }
+        // %an and %ae, not %aN: as the commit records them, whatever a mailmap says.
+        let mut args = vec!["show", "-s", "--no-patch", "--format=%H%x00%an%x00%ae%x00%at%x00%ct%x00%(trailers:key=Gateway-User,valueonly,separator=%x01)%x1e"];
+        args.extend(&all);
+        let shown = repo::git_env(&self.root, &args, &bare())?;
+        let commits: std::collections::BTreeMap<&str, (Written, i64)> = shown
+            .split('\x1e')
+            .filter_map(|l| {
+                let [h, n, e, at, ct, user] = l.trim_start().split('\0').collect::<Vec<_>>()[..] else { return None };
+                let user = user.split('\x01').map(str::trim).find(|u| !u.is_empty()).map(String::from);
+                Some((h, (Written { name: n.into(), email: e.into(), user, time: at.parse().ok()? }, ct.parse().ok()?)))
+            })
+            .collect();
+        // The latest by when it was committed: an author's date may be any.
+        Ok(by
+            .into_iter()
+            .filter_map(|(id, cs)| Some((id, cs?.iter().filter_map(|c| commits.get(c.as_str())).max_by_key(|(_, ct)| *ct)?.0.clone())))
+            .collect())
+    }
+
+    /// The commit that wrote line `at` of `path` as commit `c` has it, past
+    /// abo's undos: an undo makes the files what they were before the
+    /// change it takes back, its parent, so the line is as it was in that
+    /// change's parent, at the same place. None where that is not committed.
+    fn before_undo(&self, blame: &[&str], path: &str, mut c: String, mut at: usize, undos: &std::collections::BTreeSet<String>) -> Result<Option<String>> {
+        while undos.contains(&c) {
+            let before = format!("{c}~2");
+            let range = format!("{at},{at}");
+            let mut args = blame.to_vec();
+            args.extend(["-L", range.as_str(), before.as_str(), "--", path]);
+            let Ok(out) = repo::git_env(&self.root, &args, &bare()) else { return Ok(Some(c)) };
+            match blamed(&out).into_iter().next().flatten() {
+                Some((d, line)) => (c, at) = (d, line),
+                None => return Ok(Some(c)),
+            }
+        }
+        Ok(Some(c))
+    }
+
     /// What a commit did: its subject, the files it changed, and how each
     /// text changed; a document and a PDF named, their bytes not shown.
     pub fn diff(&self, commit: &str) -> Result<String> {
@@ -554,6 +686,11 @@ fn message(subject: &str, changes: &[(&[String], &str)]) -> String {
             m += &format!("# {}\n", one(what));
         }
         m += &format!("{}\n", crate::command::shell(&argv.iter().map(String::as_str).collect::<Vec<_>>()));
+    }
+    // Whom the gateway says made it, as git's trailers are written: last,
+    // after a blank line. The log reads no command in it.
+    if let Ok(user) = repo::USER.try_with(Clone::clone) {
+        m += &format!("\nGateway-User: {}\n", one(&user));
     }
     m
 }

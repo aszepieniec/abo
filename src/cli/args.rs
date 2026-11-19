@@ -518,6 +518,19 @@ pub(crate) enum Cmd {
     /// Take out a document filed by mistake, by its path or hash: one no
     /// bill names.
     Unfile { document: String },
+    /// Say something of a bill or an invoice: written under its entry, and
+    /// signed by the commit, with who you are, as git names you, and when.
+    Comment {
+        /// The bill's id, or the invoice's number, such as 2026-0017.
+        entry: String,
+        /// What to say; a newline in it starts a line.
+        text: String,
+    },
+    /// Take out a comment, by its id, as `abo comments` shows it.
+    Uncomment { id: String },
+    /// The comments on bills and invoices, with their ids, oldest first; on
+    /// one, given its id or number.
+    Comments { entry: Option<String> },
     /// hledger balance, of these books: `abo balance Expenses -M --period 2026`.
     #[command(alias = "bal", after_help = PASSED_HELP)]
     Balance {

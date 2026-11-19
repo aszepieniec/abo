@@ -250,6 +250,14 @@ fn entry(m: &Books, id: EntryId, e: &Entry, f: &mut Files) -> String {
     for (k, v) in tags {
         s += &if v.is_empty() { format!("    ; {k}:\n") } else { format!("    ; {k}: {v}\n") };
     }
+    // Its comments, by id: each a tag, then its lines, a colon in them
+    // written so that hledger reads no tag there (§7.2).
+    for (cid, c) in m.comments.iter().filter(|(_, c)| c.of == id) {
+        s += &format!("    ; comment: {cid}\n");
+        for l in c.text.split('\n') {
+            s += &if l.is_empty() { "    ;\n".to_string() } else { format!("    ;   {}\n", l.replace(':', &COLON.to_string())) };
+        }
+    }
     for p in m.postings(id) {
         // hledger takes a total cost's sign from the amount: written unsigned.
         let cost = p.cost.as_ref().map(|c| format!(" @@ {}", amount(m, &Amount { quantity: c.quantity.abs(), commodity: c.commodity.clone() }))).unwrap_or_default();
@@ -416,8 +424,21 @@ fn parse_block(
     let d = date(d)?;
     let mut tags: Vec<(&str, &str)> = vec![];
     let mut postings = vec![];
+    // Its comments: an id, and the lines under it.
+    let mut comments: Vec<(usize, Vec<String>)> = vec![];
     for (_, line) in &block[1..] {
-        if let Some(t) = line.strip_prefix("    ; ") {
+        let text = if *line == "    ;" { Some("") } else { line.strip_prefix("    ;   ") };
+        if let (Some(t), Some((_, lines)), true) = (text, comments.last_mut(), postings.is_empty()) {
+            lines.push(t.replace(COLON, ":"));
+        } else if let Some(c) = line.strip_prefix("    ; comment: ").filter(|_| postings.is_empty()) {
+            comments.push((c.trim().parse().map_err(|_| format!("{c:?} is not a comment's id"))?, vec![]));
+        } else if !postings.is_empty() && line.starts_with("    ;") {
+            return Err(format!("{line:?} follows the postings: an entry's tags and comments come before them"));
+        } else if !comments.is_empty() && line.starts_with("    ;") && !line.starts_with("    ; ") {
+            return Err(format!("{line:?} is not a line of a comment: abo writes each as `    ;   ` and the line, and a blank one as `    ;`"));
+        } else if !comments.is_empty() && line.starts_with("    ;") {
+            return Err(format!("{line:?} follows a comment: an entry's tags come before its comments"));
+        } else if let Some(t) = line.strip_prefix("    ; ") {
             let (k, v) = t.split_once(':').ok_or("not a tag")?;
             tags.push((k, v.trim_start()));
         } else if let Some(p) = line.strip_prefix("    ") {
@@ -487,6 +508,11 @@ fn parse_block(
     let n = id(tag("id").unwrap())?;
     if entries.insert(n, Entry { date: d, description: description.into(), kind }).is_some() {
         return Err(format!("two entries have id {n}"));
+    }
+    for (cid, lines) in comments {
+        if m.comments.insert(cid, Comment { of: n, text: lines.join("\n") }).is_some() {
+            return Err(format!("two comments have id {cid}"));
+        }
     }
     Ok(())
 }

@@ -60,6 +60,10 @@ pub enum Op {
     AgreementEnd { id: Id, status: AgreementStatus },
     /// One nothing names: added by mistake.
     AgreementRemove { id: Id },
+    /// On bill or invoice `of`.
+    Comment { of: EntryId, text: String },
+    /// Takes out comment `id`.
+    Uncomment { id: usize },
 }
 
 /// What an invoice may say besides, each with its default: the customer's
@@ -376,6 +380,14 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
             n.agreements.get_mut(&id).ok_or(format!("there is no agreement {}", shown(&id)))?.status = status;
         }
         Op::AgreementRemove { id } => drop(n.agreements.remove(&id).ok_or(format!("there is no agreement {}", shown(&id)))?),
+        Op::Comment { of, text } => {
+            // Each line without the spaces it ends with; none blank first or
+            // last; a tab four spaces, as pasted from a table.
+            let text = text.replace("\r\n", "\n").replace('\r', "\n").replace('\t', "    ").lines().map(str::trim_end).collect::<Vec<_>>().join("\n").trim_matches('\n').to_string();
+            let id = m.comments.keys().last().map_or(1, |k| k + 1);
+            n.comments.insert(id, Comment { of, text });
+        }
+        Op::Uncomment { id } => drop(n.comments.remove(&id).ok_or(format!("there is no comment {id}"))?),
     }
     Ok(n)
 }

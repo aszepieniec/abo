@@ -439,6 +439,27 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
             }
             None => vec![],
         },
+        "I-N1" => match op {
+            Op::Comment { of, text } => {
+                let mut v = vec![];
+                match m.entry(*of).map(|e| &e.kind) {
+                    Some(Kind::Bill(..) | Kind::Invoice { .. }) => {}
+                    Some(_) => v.push(format!("{} is neither a bill nor an invoice: a comment goes on one", name(m, *of))),
+                    None => v.push(format!("no entry has the id {of}")),
+                }
+                if text.trim().is_empty() {
+                    v.push("the comment says nothing".into());
+                } else if !super::check::lines_ok(text) {
+                    v.push("the comment holds a hidden character".into());
+                } else if text.contains(COLON) {
+                    v.push(format!("the comment holds a {COLON}, which the journal writes for a colon: type a colon"));
+                } else if text.chars().count() > COMMENT_MAX {
+                    v.push(format!("the comment is {} characters long, more than the {COMMENT_MAX} one may hold", text.chars().count()));
+                }
+                v
+            }
+            _ => vec![],
+        },
         "I-B3" => match op {
             Op::Bill { date, more, .. } => {
                 let mut v = vec![];

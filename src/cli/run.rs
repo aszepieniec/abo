@@ -124,6 +124,50 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
             let op = Op::File { sha256, date: doc.date, name: doc.name.clone(), ext: doc.ext.clone(), of: doc.of.clone() };
             changed(&mut s, &op, &[(path.clone(), bytes)], cli.json)
         }
+        Cmd::Comment { entry, text } => {
+            let mut s = Store::open(&here)?;
+            let of = input::debt(&s.books, &entry)?;
+            changed(&mut s, &Op::Comment { of, text }, &[], cli.json)
+        }
+        Cmd::Uncomment { id } => {
+            let mut s = Store::open(&here)?;
+            let id = id.trim().parse().map_err(|_| input::not_found(format!("there is no comment {id}: give its id, as abo comments shows it")))?;
+            changed(&mut s, &Op::Uncomment { id }, &[], cli.json)
+        }
+        Cmd::Comments { entry } => {
+            let s = Store::open(&here)?;
+            still(&s);
+            let of = entry.map(|e| input::debt(&s.books, &e)).transpose()?;
+            if let Some(o) = of {
+                match s.books.entry(o).map(|e| &e.kind) {
+                    Some(model::Kind::Bill(..) | model::Kind::Invoice { .. }) => {}
+                    Some(_) => anyhow::bail!("{} is neither a bill nor an invoice, which alone hold comments", model::name(&s.books, o)),
+                    None => return Err(input::not_found(format!("there is no entry {o}"))),
+                }
+            }
+            let written = s.written()?;
+            let all: Vec<_> = s.books.comments.iter().filter(|(_, c)| of.is_none_or(|o| c.of == o)).collect();
+            let at = |id: &usize| written.get(id).and_then(|w| jiff::Timestamp::from_second(w.time).ok());
+            let json: Vec<_> = all
+                .iter()
+                .map(|(id, c)| {
+                    let w = written.get(id);
+                    serde_json::json!({ "id": id, "of": c.of, "on": model::name(&s.books, c.of), "by": w.map(|w| &w.name), "email": w.map(|w| &w.email), "at": at(id).map(|t| t.to_string()), "text": c.text })
+                })
+                .collect();
+            emit(cli.json, &serde_json::json!({ "comments": json }), || {
+                if all.is_empty() {
+                    return "No comments.".to_string();
+                }
+                let block = |(id, c): &(&usize, &model::Comment)| {
+                    let when = at(id).map_or("not committed".into(), |t| t.to_zoned(jiff::tz::TimeZone::system()).strftime("%Y-%m-%d %H:%M").to_string());
+                    let by = written.get(id).map_or("", |w| w.name.as_str());
+                    let text: String = c.text.lines().map(|l| if l.is_empty() { "\n".to_string() } else { format!("\n    {l}") }).collect();
+                    format!("{id}  {when}  {by} on {}{text}", model::name(&s.books, c.of))
+                };
+                all.iter().map(block).collect::<Vec<_>>().join("\n\n")
+            })
+        }
         Cmd::Unfile { document } => {
             let mut s = Store::open(&here)?;
             let sha256 = input::filed(&s.books, &document)?;

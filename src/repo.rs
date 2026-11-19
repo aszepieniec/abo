@@ -55,6 +55,10 @@ tokio::task_local! {
     /// Who a web request comes from, by the gateway's `X-Gateway-*` headers: a name,
     /// and an email if the gateway gave one. Unset, git's own identity stands.
     pub static AUTHOR: (String, Option<String>);
+    /// The gateway's name for that person, `X-Gateway-User`: unique among
+    /// its users, where their names and emails may not be. Each commit made
+    /// for them says it, as a trailer `Gateway-User:`.
+    pub static USER: String;
 }
 
 /// The author as git takes it from the environment, over its config.

@@ -1031,3 +1031,43 @@ fn an_unreadable_date_exits_2(#[strategy("[a-z0-9 -]{0,10}")] junk: String, #[st
     let o = abo(&books, start(), &argv);
     prop_assert_eq!(o.code, Some(2), "{:?}: {}", argv, o.stderr);
 }
+
+/// G-N2: who wrote a comment, and when, is the author and date of the commit
+/// that added it — whoever comments after, and whatever is taken out around it.
+#[test]
+fn comments_are_signed_by_their_commit() {
+    let (_parent, books) = opened();
+    let o = abo(&books, start(), &args(&["bill", "--desc", "Pens", "--", "Expenses:Hosting=12.00", "Liabilities:Payable=-12.00"]));
+    assert!(o.ok, "{}", o.stderr);
+    let comment = |who: &str, when: &str, a: &[&str]| {
+        let o = Command::new(exe())
+            .arg("--json")
+            .args(a)
+            .current_dir(&books)
+            .env("ABO_TODAY", start().to_string())
+            .env("GIT_AUTHOR_NAME", who)
+            .env("GIT_AUTHOR_EMAIL", format!("{}@example.invalid", who.to_lowercase()))
+            .env("GIT_AUTHOR_DATE", when)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    };
+    // Alike in their lines, so that git could take one's for another's.
+    comment("Ann", "1764590400 +0100", &["comment", "1", "ok"]);
+    comment("Bea", "1764594000 +0100", &["comment", "1", "ok"]);
+    comment("Cy", "1764597600 +0100", &["comment", "1", "Note: ask"]);
+    comment("Ann", "1764601200 +0100", &["uncomment", "1"]);
+    // Undone and redone by others, taken out and put back: still theirs.
+    comment("Dan", "1764604800 +0100", &["uncomment", "2"]);
+    comment("Eve", "1764608400 +0100", &["undo"]);
+    comment("Fay", "1764612000 +0100", &["undo"]);
+    comment("Gil", "1764615600 +0100", &["undo"]);
+    let o = abo(&books, start(), &args(&["comments"]));
+    let got: Vec<(u64, String, String, String)> = o.json.unwrap()["comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| (c["id"].as_u64().unwrap(), c["by"].as_str().unwrap().into(), c["at"].as_str().unwrap().into(), c["text"].as_str().unwrap().into()))
+        .collect();
+    assert_eq!(got, vec![(2, "Bea".into(), "2025-12-01T13:00:00Z".into(), "ok".into()), (3, "Cy".into(), "2025-12-01T14:00:00Z".into(), "Note: ask".into())]);
+}

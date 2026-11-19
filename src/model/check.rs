@@ -598,6 +598,16 @@ pub fn check(m: &Books) -> Vec<Violation> {
     // 4.10 Partners and agreements.
     v.extend(partners_and_agreements(m, &standing, &|id| super::explain::name(m, id)));
 
+    // 4.11 Comments.
+    for (id, c) in &m.comments {
+        if !matches!(m.entry(c.of).map(|e| &e.kind), Some(Kind::Bill(..) | Kind::Invoice { .. })) {
+            no!(@of Subject::Entry(c.of), "I-N1", "comment {id} is not on a bill or an invoice");
+        }
+        if c.text.trim().is_empty() || !lines_ok(&c.text) || c.text.contains(COLON) || c.text.chars().count() > COMMENT_MAX {
+            no!(@of Subject::Entry(c.of), "I-N1", "comment {id} says nothing, holds a hidden character or a {COLON}, or is longer than {COMMENT_MAX} characters");
+        }
+    }
+
     // 3.8 Configuration.
     let c = &m.config;
     let co = &c.company;

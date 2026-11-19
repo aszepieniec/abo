@@ -60,7 +60,28 @@ pub struct Books {
     pub partners: BTreeMap<Id, Partner>,
     /// Contracts with partners, in versions (§2.9).
     pub agreements: BTreeMap<Id, Agreement>,
+    /// What people said of bills and invoices, by the comment's id (§2.10).
+    pub comments: BTreeMap<usize, Comment>,
 }
+
+/// What someone said of a bill or an invoice: written under its entry. Who
+/// said it and when is git's, the commit that wrote its lines (MODEL.md
+/// §2.10). It moves nothing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Comment {
+    /// The bill or invoice it is on.
+    pub of: EntryId,
+    /// Lines, not empty.
+    pub text: String,
+}
+
+/// What a comment's text holds in the journal for a colon, which hledger
+/// would read, after a word, as a tag: U+A789, a letter that looks like one.
+pub const COLON: char = '\u{A789}';
+
+/// The most characters a comment holds: its command goes into its commit's
+/// message, which git takes as one argument.
+pub const COMMENT_MAX: usize = 10_000;
 
 /// Someone the company invoices or is billed by, pays or is paid by.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -738,6 +759,7 @@ impl Books {
             documents: BTreeMap::new(),
             partners: BTreeMap::new(),
             agreements: BTreeMap::new(),
+            comments: BTreeMap::new(),
         }
     }
 

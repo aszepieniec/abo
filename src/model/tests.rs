@@ -301,6 +301,15 @@ pub enum Draw {
         pdf: String,
         when: When,
     },
+    /// On an entry, now and then not a bill or an invoice, saying nothing,
+    /// or with a colon, which the journal writes otherwise.
+    #[weight(2)]
+    Comment {
+        entry: Index,
+        #[strategy(prop_oneof![8 => text(), 1 => Just("Asked\n\nthe accountant: id: 7, partner: acme".to_string()), 1 => Just(" ".to_string())])]
+        text: String,
+    },
+    Uncomment(Index),
     #[weight(2)]
     Undo,
 }
@@ -520,6 +529,8 @@ pub fn op(d: &Draw, m: &Books, today: Date) -> Option<Op> {
             let more = InvoiceMore { to: Some(to), agreement: Some(id), ..Default::default() };
             Op::Invoice { date: when.at(today), customer: String::new(), commodity: "EUR".into(), lines, rate: None, reason: String::new(), reference: String::new(), note: String::new(), pdf, more }
         }
+        Draw::Comment { entry, text } => Op::Comment { of: pick(&entry, &ids).unwrap(), text },
+        Draw::Uncomment(i) => Op::Uncomment { id: pick(&i, &m.comments.keys().copied().collect::<Vec<_>>()).unwrap_or(1) },
         Draw::Undo => return None,
     })
 }
@@ -757,6 +768,7 @@ fn each_operation_changes_only_its_part(#[strategy(plan())] plan: Vec<Step>) {
             ("documents", m.documents != n.documents),
             ("partners", m.partners != n.partners),
             ("agreements", m.agreements != n.agreements),
+            ("comments", m.comments != n.comments),
         ]
         .into_iter()
         .filter(|(_, c)| *c)
@@ -793,6 +805,8 @@ fn each_operation_changes_only_its_part(#[strategy(plan())] plan: Vec<Step>) {
             Op::Amend { id, .. } => (&["agreements"], grows(m.agreements[id].versions.len(), n.agreements[id].versions.len())),
             Op::AgreementEnd { .. } => (&["agreements"], 1),
             Op::AgreementRemove { .. } => (&["agreements"], -grows(m.agreements.len(), n.agreements.len())),
+            Op::Comment { .. } => (&["comments"], grows(m.comments.len(), n.comments.len())),
+            Op::Uncomment { .. } => (&["comments"], -grows(m.comments.len(), n.comments.len())),
         };
         prop_assert!(changed.iter().all(|c| part.contains(c)), "{:?} changed {:?}", op, changed);
         prop_assert_eq!(by, 1, "{:?} does not change its part by one", op);
@@ -924,6 +938,8 @@ fn given_texts(m: &Books, op: &Op) -> Vec<String> {
         Op::PartnerEdit { id, lines, tax_id, .. } => v.extend([Some(id.clone()), lines.clone(), tax_id.clone()].into_iter().flatten()),
         Op::PartnerRemove { id } | Op::AgreementRemove { id } | Op::Amend { id, .. } => v.push(id.clone()),
         Op::AgreementAdd { id, parties, .. } => v.extend([vec![id.clone()], parties.clone()].concat()),
+        Op::Comment { text, .. } => v.push(text.clone()),
+        Op::Uncomment { .. } => {}
         Op::AgreementEnd { id, status } => v.extend([Some(id.clone()), match status {
             AgreementStatus::Subsumed { by, .. } => Some(by.clone()),
             _ => None,
@@ -1357,6 +1373,7 @@ fn tags(m: &Books, id: EntryId) -> BTreeSet<(String, String)> {
         Kind::Reversal { of } => t.push(("reverses", of.to_string())),
         Kind::Gone => {}
     }
+    t.extend(m.comments.iter().filter(|(_, c)| c.of == id).map(|(cid, _)| ("comment", cid.to_string())));
     t.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
 }
 

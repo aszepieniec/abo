@@ -104,6 +104,7 @@ struct Books {
     documents:   Map<Hash, Document>,                         // bills' and agreements' documents, by their hash
     partners:    Map<Id, Partner>,                            // whom invoices go to and bills come from (§2.9)
     agreements:  Map<Id, Agreement>,                          // contracts with partners, in versions (§2.9)
+    comments:    Map<usize, Comment>,                         // what people said of bills and invoices (§2.10)
 }
 ```
 
@@ -655,6 +656,37 @@ terms begin after what has been invoiced.
 An agreement's documents — the contract, each amendment — are kept as bills'
 documents are, each naming its version (§2.5).
 
+### 2.10 Comments
+
+A **comment** is a text a person wrote of one bill or one invoice:
+
+```rust
+struct Comment {
+    of:   EntryId,     // a Bill or an Invoice entry
+    text: Lines,       // not empty; no U+A789 (§7.2)
+}
+```
+
+A comment's id is one more than the highest id held; the id of the last
+comment taken out is therefore given again. Nothing but `uncomment` names a
+comment.
+
+Who wrote a comment, and when, is not in the state. It is what git records
+of the commit that wrote the comment's lines: of those commits, the latest
+committed, its author and its author's date, as the commit holds them,
+whatever a mailmap or a list of revisions for blame to pass over says. abo's
+own rewrites are passed over: a line `tidy` wrote is taken as its parent
+had it, and one `undo` wrote — which makes the files what they were before
+the change it takes back — as it was there. So undoing a comment's removal,
+or redoing it, gives it back to whoever wrote it. A comment's lines are written by `comment`, in one
+commit stamped as every operation's is (§5.4), and by nothing after but a
+hand edit; so the latest commit is the one that added it, or a hand edit of
+it. A comment not yet committed has neither.
+
+A comment moves nothing and is not an entry, but it is written in the
+journal, under the entry it is on (§7.2). That entry's text therefore
+changes when a comment on it is added or taken out, and only then.
+
 ---
 
 ## 3. Guarantees
@@ -762,6 +794,14 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | G-T2 | An agreement is kept as a record: a version once added never changes, and is not removed, nor is a document of one, but by undo; one terminated or subsumed stays so and takes no new version, and no agreement is subsumed, through others, by itself | I-T3, I-T5, N11 | `versions_are_kept`, `ended_agreements_stay_ended` |
 | G-T3 | An invoice under an agreement is to one of its parties, and one standing is for a day on or after the agreement begins, its period, if any, beginning by its last day; the version in force on the day it is for stays the one it was issued under, while it stands | I-T4, N10 | `invoices_under_an_agreement_are_to_its_parties_while_in_force`, `what_is_issued_keeps_its_version` |
 | G-T4 | What a partner owes, and is owed, in each commodity, is what their debts have open | I-T2, I-P1 | `partners_owe_what_their_debts_have_open` |
+
+### Comments
+
+| | Guarantee | Rules | Properties |
+|---|---|---|---|
+| G-N1 | A comment is on a bill or an invoice, and is read back as written; no entry changes for one but in the comments written under it, and hledger reads none of its text as a tag | I-N1, §7 | `files_say_the_state`, `entries_never_change`, `hledger_reads_entries_as_written` |
+| G-N2 | Who wrote a comment, and when, is the author and date of the commit that added it, through any undo, redo or tidy since | §2.10, §5.4 | `comments_are_signed_by_their_commit` |
+| G-N3 | On the pages, a comment is taken out only by whoever wrote it, or by an admin; behind the gateway, whoever wrote it is known by their user name, which each commit made for them says | §5 | `abo-web::comments_are_taken_out_by_their_author_or_an_admin` |
 
 ### Whoever runs a command
 
@@ -1046,6 +1086,13 @@ undo, while nothing has happened since.
 - **I-T5** An agreement is not subsumed by itself, nor by one subsumed,
   through others, by it.
 
+### 4.11 Comments
+
+- **I-N1** A comment is on a `Bill` or an `Invoice` entry; its text is not
+  blank, holds nothing hidden but newlines, no U+A789, which the journal
+  writes for a colon (§7.2), and at most 10 000 characters, so that its
+  command fits in its commit's message (§5.4).
+
 ---
 
 ## 5. Operations
@@ -1097,13 +1144,15 @@ Violations the books held before the operation are kept as `check` says them.
 | `amend(agreement, version)` | a version, added after the agreement's last |
 | `agreement_end(id, status)` | the agreement's status: terminated, or subsumed by another, on a day |
 | `agreement_remove(id)` | an agreement nothing names: one added by mistake |
+| `comment(entry, text)` | a `Comment` on the bill or invoice `entry`: a carriage return a newline, a tab four spaces, each line without the spaces it ends with, and no blank line first or last |
+| `uncomment(id)` | removes comment `id` |
 | `undo()` | the state before the last operation (§5.3) |
 
 No operation changes an entry once added, nor an agreement's version. Every
 one adds something; removes a document that names no bill, an account's
 latest statement, or a partner or agreement nothing names; links a document
-to its bill; or changes the configuration, the declarations, a partner's
-details or an agreement's status.
+to its bill; removes a comment; or changes the configuration, the
+declarations, a partner's details or an agreement's status.
 
 ### 5.1 Declarations
 
@@ -1373,11 +1422,33 @@ The kind is written as tags, and read back from them:
 | Kind | Tags |
 |---|---|
 | `Plain` | `agreement: <id>` and `partner: <id>`, where its link has them |
-| `Bill` | `bill:`, then `number: <text>`, `due: <date>` and `partner: <id>` where given |
-| `Invoice` | `invoice: <number>`, then `agreement: <id>` and `partner: <id>` where it has them; its content in its `.json` |
+| `Bill` | `bill:`, then `number: <text>`, `due: <date>` and `partner: <id>` where given; then its comments |
+| `Invoice` | `invoice: <number>`, then `agreement: <id>` and `partner: <id>` where it has them; then its comments; its content in its `.json` |
 | `CreditNote` | `invoice: <number>`, `credits: <id>` |
 | `Payment` | `pays: <id>` |
 | `Reversal` | `reverses: <id>` |
+
+A bill's or an invoice's comments follow its tags, by id: each the tag
+`comment: <id>`, then a line for each line of its text, `    ;   <line>`,
+or `    ;` for a blank one:
+
+```
+2026-11-03 Kowalczyk Office Supplies, printer and office supplies
+    ; id: 4
+    ; bill:
+    ; number: 2026-0481
+    ; comment: 1
+    ;   Chair goes to equipment꞉ ask the accountant.
+    Expenses:General                              897.80 EUR
+    ...
+```
+
+hledger reads a tag wherever a word is followed by a colon in a comment, and
+so would read `Note: id: 7` in a comment's text as two tags of the entry,
+one of them a second id. A colon in the text is therefore written `꞉`
+(U+A789), which hledger reads as a letter, and `parse` reads back as a
+colon; I-N1 keeps U+A789 out of the text, so that each is read back as
+written.
 
 An entry names another by its id. What that id is — an invoice's number, a
 bill's issuer — is in the description abo writes for the entry ("Pay Invoice
@@ -1414,7 +1485,7 @@ left off, and the model alone checks the statement.
 Clearing is written here alone. hledger's own mark for it, a `*` on the
 posting, is not used: writing it would change an old entry's text each time a
 later statement cleared one of its postings, and an entry's text is fixed when
-it is added.
+it is added, but for the comments under it (§2.10).
 
 ### 7.4 Order and form
 
@@ -1591,7 +1662,8 @@ property there exists, and every property is there, is itself a test,
 
 A plan is a list of steps drawn without looking at the books: post, file,
 unfile, bill, invoice, credit, pay, write-off, revert, record, unrecord,
-config set and unset, the declarations' add and remove, and undo. Each is read
+config set and unset, the declarations' add and remove, comment and
+uncomment, and undo. Each is read
 against the state it meets — an index picks among the debts, entries,
 documents and accounts there are — so that proptest shrinks a failing plan by
 dropping and simplifying steps, and what is left still means something. Values
