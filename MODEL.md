@@ -120,9 +120,10 @@ segment is a non-empty text that holds no `:`, which separates segments, and
 no two spaces in a row, which end the name — those from hledger's grammar —
 and whose every character hledger reads as written where it stands
 (§2.3, *Which characters*). A new account is declared with no segment begun
-by a lower-case letter (N13), so that `Assets:Bank` has no second spelling
+by a lower-case letter, and no space or `;` (N13), so that `Assets:Bank` has no second spelling
 `Assets:bank`. `Commodity` is three or more capital letters, A to
-Z: EUR, CHF, BTC. `Places` is the digits after the point, 0 to 8:
+Z: EUR, CHF, BTC; or a currency's sign alone, `$`, `€`, which hledger takes
+as a commodity of its own, not as USD or EUR. `Places` is the digits after the point, 0 to 8:
 `commodity 1000.00 EUR` declares 2, BTC has 8. A price `P 2026-09-30 BTC
 60000.00 EUR` says that on that date one BTC was worth 60000.00 EUR; hledger
 reads it to value amounts in another commodity.
@@ -775,7 +776,7 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 |---|---|---|---|
 | G-P1 | Nothing dated on or before `closed_through` changes, and it never moves back | N2, N6 | `closed_periods_stay_closed`, `closed_dates_are_refused` |
 | G-P2 | Nothing is dated after the day it is added | N1 | `nothing_is_dated_after_today` |
-| G-P4 | Income and expenses are in the company's currency, so profit and loss, and the balance sheet's unclosed profit, are one amount each | I-E4 | `income_and_expenses_are_in_the_company_currency` |
+| G-P4 | An invoice's income and VAT are in the company's currency, so VAT is reckoned in one currency; an account holds one commodity at a time, and reports show each in it and in the company's currency | I-E4, N12 | `an_invoice_is_booked_in_the_company_currency`, `an_account_holds_one_commodity_at_a_time` |
 | G-P3 | VAT accounts are posted to only as the VAT method in force allows: input VAT by bills, output VAT by invoices, a flat rate's account by neither; each also by plain entries, and by reversals and credit notes, which undo what was booked under the method of its day; none by a payment or a write-off | N3, I-C3 | `vat_accounts_move_as_the_method_says` |
 
 ### A bill's document
@@ -820,8 +821,9 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | G-O12 | An id once given names that entry, or a gap, ever after: no operation and no undo gives it again; an invoice or credit note issued is not undone | §2.3, §5.3 | `ids_are_never_given_twice`, `issued_invoices_are_not_undone` |
 | G-O10 | A refusal says what is wrong with what the operation was given, of the books before it: it names no entry that is not there yet, an invoice or a credit note by its number and never by its id, and quotes nothing as Rust's debug format does | §5 | `refusals_speak_of_the_books_before` |
 | G-O13 | A bill's postings that credit one money account and no other credit but an expense or the one liability a bill is owed on, and debit neither, are read as a bill crediting that liability with all it owes and a payment of what the money account paid; the two, booked in turn, leave open what the liability was credited. Postings that move money in, debit a liability, or credit any other account are not read so. `abo bill`, and a form, given such postings book the two as one change, which one undo takes back. Postings that credit two money accounts so are refused (I-B2) in words that say a bill is paid from one, and to book a payment from each | §4.3, §5 | `a_bill_paid_when_it_came`, `abo_bill_books_a_bill_paid_when_it_came` |
-| G-O14 | An account refused as not declared (I-A1) is said with the declared one likely meant, the same but for case, by its last part, or two letters off; one with accounts under it is said as such, and is nothing to declare; one declared with a part begun by a small letter is refused (N13), written as it should be, and books holding one from before stay as they are | §4.1, §5 | `an_account_misnamed` |
-| G-O15 | A money account moves only what it holds: an entry posting another commodity to one whose balance is not nought is refused (N12), whatever operation adds it, a payment at a cost included; one empty, never used or emptied, takes any | §4.9, §5 | `a_money_account_holds_what_it_held` |
+| G-O14 | An account refused as not declared (I-A1) is said with the declared one likely meant, the same but for case, by its last part, or two letters off; one with accounts under it is said as such, and is nothing to declare; one declared with a part begun by a small letter, or with a space or `;`, is refused (N13), written as it should be, and books holding one from before stay as they are | §4.1, §5 | `an_account_misnamed` |
+| G-O15 | An account holds one commodity at a time: an entry posting another commodity to one whose balance is not nought is refused (N12), whatever operation adds it, a payment at a cost included; one empty, never used or emptied, takes any | §4.9, §5 | `an_account_holds_one_commodity_at_a_time` |
+| G-O16 | Every command abo suggests, in a message or its help, is written in backticks and reads as a command abo takes, its blanks filled in; one a regression test is told to type runs, in a copy of its books, without a usage error or a panic | §5 | `every_command_abo_suggests_reads` |
 
 ### Whoever uses the pages
 
@@ -884,12 +886,14 @@ not reused: those missing below were rules about a value now derived.
   statement is of, or the configuration names for postings is a `leaf`.
   Declaring an account under one of those breaks it, and is refused; to split
   an account, its balance is moved by an entry to new accounts beside it.
-- **I-K0** A commodity is three or more capital letters, A to Z, with 0 to 8
+- **I-K0** A commodity is three or more capital letters, A to Z, or a
+  currency's sign alone, such as `$` or `€`, with 0 to 8
   places — BTC's eight. With the 12 digits I-K3 allows before the point, an
   amount has 20 digits at most, of the 28 an exact decimal holds: a sum of
   fewer than 10^8 amounts then has 28 at most, and is exact.
-- **I-K1** No amount, cost, price or statement balance has more digits after
-  the point than its commodity's places.
+- **I-K1** No amount, cost or statement balance has more digits after the
+  point than its commodity's places, and no price more than 8: one yen is
+  worth 0.0061 EUR.
 - **I-K2** A price is above nought, and in another commodity than its own.
 - **I-K3** Every number the state holds — an amount, a cost, a price, a
   statement's balance, an invoice line's quantity and unit price — is below
@@ -911,11 +915,10 @@ not reused: those missing below were rules about a value now derived.
   are above nought or both below.
 - **I-E3** An entry that names another names one with a smaller id, and is
   dated on or after it.
-- **I-E4** Every posting to an income or an expense account is in the
-  company's currency. What is owed, paid or held in another commodity is in
-  it, at its cost in the company's currency (I-E1 then balances it there), so
-  that a profit is one amount, and a report in the company's currency needs
-  no price.
+- **I-E4** An invoice or a credit note posts to its income and VAT accounts
+  in the company's currency: one in another commodity is booked at the
+  latest price of it on or before its date, and owed in its own commodity at
+  that cost (I-E1 then balances it), so that VAT is reckoned in one currency.
 
 ### 4.3 Bills
 
@@ -1045,17 +1048,34 @@ neither for an entry made long ago.
   (§2.9).
 - **N11** An agreement not active stays as it is: no version is added to it,
   and its status does not change (§2.9).
-- **N12** No entry is added with a posting to a money account in a
-  commodity, while the account's balance, of every entry before it, is not
-  nought in another: an account that holds money moves only what it holds,
-  so that what is paid in another commodity, at a cost, goes through an
-  account for that commodity, and the bank's account in the company's
-  currency never holds a foreign amount no bank would show. Emptied, an
-  account may take another commodity.
-- **N13** No account is declared, by `account add` or as where `account move`
-  moves one, with a segment begun by a lower-case letter: one account has one
-  spelling, `Assets:Bank`, never also `Assets:bank`. One declared before
-  stays as it is, since the entries that post to it never change.
+- **N12** No entry is added with a posting to an account in a commodity,
+  while the account's balance, of every entry before it, is not nought in
+  another: an account holds one commodity at a time, that of its latest
+  posting, and reports show it in that commodity. What is paid in another
+  commodity, at a cost, goes through an account for that commodity, so that
+  the bank's account in the company's currency never holds a foreign amount
+  no bank would show, and an expense in dollars is an account of dollars.
+  Emptied, an account may take another commodity. One named after a
+  commodity, under another, `Assets:Wise:USD`, holds that one alone, empty
+  or not. A debt is owed on an
+  account of its own for its commodity, under the one named:
+  `Assets:Receivable:EUR`, `Assets:Receivable:USD`,
+  `Liabilities:Payable:USD`, which the invoice or the bill declares, so
+  that debts in several commodities are open at once; the one named holds
+  nothing itself, and abo.toml naming the receivable is no use of it (I-A2).
+  Named without its commodity, the account is given it: by a bill's debt,
+  and, for any posting, where an account under the one named is named
+  after the posting's commodity, `Assets:Bank` in USD to `Assets:Bank:USD`.
+  Books that owed on the one named itself before keep doing so in the
+  company's currency, and owe in another beside it, `Assets:ReceivableUSD`:
+  an account posted to has none under it (I-A2).
+- **N13** No account is declared, by `account add`, as where `account move`
+  moves one, or as a payment option's, with a segment begun by a lower-case
+  letter, or with a space or a `;` in it: one account has one spelling,
+  `Assets:Bank`, never also `Assets:bank`; a posting typed `Expenses:General
+  12.50` ends the name at its first space; and `;` begins a comment wherever
+  hledger reads one. One declared before stays as it is, since the
+  entries that post to it never change.
 
 The conditions hold of every operation but `undo`, which takes back the last
 one and makes no change of its own: a period closed by mistake is reopened by

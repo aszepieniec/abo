@@ -78,8 +78,19 @@ fn uses_account(m: &Books, a: &str) -> Vec<String> {
     if m.statements.keys().any(|k| k.0 == a) {
         v.push("a statement is recorded for it".to_string());
     }
-    if m.config_accounts().iter().any(|x| x == a) {
-        v.push("the company's settings name it (a payment option, the receivable, income or VAT)".to_string());
+    let c = &m.config;
+    if c.invoice.receivable == a {
+        v.push("the company's settings name it the receivable".to_string());
+    }
+    if c.invoice.income == a {
+        v.push("the company's settings name it the income invoices are booked to".to_string());
+    }
+    if m.vat_accounts().iter().any(|x| *x == a) {
+        v.push("the company's settings name it a VAT account".to_string());
+    }
+    for (id, o) in c.payment.iter().filter(|(_, o)| o.account == a) {
+        let _ = o;
+        v.push(format!("the payment option {id} names it"));
     }
     v
 }
@@ -190,6 +201,8 @@ pub fn explain(m: &Books, op: &Op, n: &Books, v: Vec<Violation>) -> Vec<Violatio
             _ if removal => *c != "I-A1",
             _ if no_invoice => !["I-I1", "I-D1", "N1", "N2"].contains(c),
             "I-K1" => has("I-A1"),
+            // The account an invoice or bill declares for a commodity not declared.
+            "N13" => has("I-A1") && matches!(op, Op::Invoice { .. } | Op::Bill { .. }),
             "I-E3" => has("N2"),
             "I-I2" => has("N2") || has("I-E3"),
             "I-P2" => matches!(op, Op::Invoice { .. }) && has("I-I1"),
@@ -204,6 +217,10 @@ pub fn explain(m: &Books, op: &Op, n: &Books, v: Vec<Violation>) -> Vec<Violatio
             "I-E0" | "I-E1" => matches!(op, Op::Invoice { .. }) && has("I-I1"),
             // An invoice in a commodity not declared has no price to be booked at.
             "I-E4" => matches!(op, Op::Invoice { .. }) && has("I-A1"),
+            // Booked in a commodity not declared, or with no price: that first.
+            "N12" => has("I-A1") || has("I-E4"),
+            // A customer named by a partner that is not there: that is said.
+            "I-I1" => matches!(op, Op::Invoice { .. }) && has("I-T2") && new.iter().filter(|x| x.code == "I-I1").all(|x| x.what.contains("customer")),
             // A version over what is issued: N10 says why.
             "I-T4" => matches!(op, Op::Amend { .. }) && has("N10"),
             _ => false,
@@ -291,7 +308,8 @@ fn near(m: &Books, a: &str) -> Option<String> {
     let lower = a.to_lowercase();
     let last = |b: &str| b.rsplit(':').next().unwrap_or(b).to_lowercase();
     let off = |b: &str| distance(&lower, &b.to_lowercase());
-    let postable: Vec<&String> = m.accounts.iter().filter(|b| m.postable(b)).collect();
+    // What may be posted to, or owed on per commodity, its own named after it.
+    let postable: Vec<&String> = m.accounts.iter().filter(|b| m.postable(b) || m.owes_per_commodity(b)).collect();
     postable.iter().find(|b| b.to_lowercase() == lower)
         .or_else(|| postable.iter().find(|b| !a.contains(':') && last(b) == lower))
         .or_else(|| postable.iter().filter(|b| off(b) <= 2).min_by_key(|b| off(b)))
@@ -330,7 +348,7 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                 .map(|x| match &x.of {
                     Subject::Total(id) if *id == next => format!("the invoice's total is not below {big} in magnitude"),
                     Subject::Total(id) => format!("{}'s total is not below {big} in magnitude", name(m, *id)),
-                    Subject::Number(q) => format!("{q} is not below {big} in magnitude"),
+                    Subject::Number(q) => format!("{q} is too large: an amount is below {big}"),
                     _ => x.what.clone(),
                 })
                 .collect()
@@ -340,7 +358,7 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
             _ => vec![],
         },
         "I-A1" => match op {
-            Op::AccountRemove(a) => vec![format!("{a} cannot be removed: {}", and(&uses_account(m, a)))],
+            Op::AccountRemove(a) => vec![format!("{a} cannot be removed: {}; `abo entries {a}` lists the entries that post to it", and(&uses_account(m, a)))],
             Op::CommodityRemove(c) => vec![format!("{c} cannot be removed: {}", and(&uses_commodity(m, c)))],
             _ => these
                 .iter()
@@ -348,9 +366,23 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                     Subject::Account(a) => Some(match (under(m, a), near(m, a)) {
                         (Some(c), _) => format!("{} has accounts under it, such as {c}: name one of those", shown(a)),
                         (None, Some(b)) => format!("{} is not declared: {b} is", shown(a)),
+                        // Where a payment books an exchange gain or loss.
+                        (None, None) if matches!(op, Op::Pay { .. }) && [super::ops::EXCHANGE_LOSSES, super::ops::EXCHANGE_GAINS].contains(&a.as_str()) => format!(
+                            "{} is not declared: the payment {} than the debt was booked at, and books the difference there as an exchange {}",
+                            shown(a),
+                            match (a == super::ops::EXCHANGE_LOSSES, matches!(op, Op::Pay { debt, .. } if m.debt(*debt).is_some_and(|d| d.sign > Decimal::ZERO))) {
+                                (true, true) => "brings in less",
+                                (false, true) => "brings in more",
+                                (true, false) => "costs more",
+                                (false, false) => "costs less",
+                            },
+                            if a == super::ops::EXCHANGE_LOSSES { "loss" } else { "gain" }
+                        ),
+                        // Typed with hledger's two spaces after a word of the name.
+                        (None, None) if a.contains(' ') => format!("{} has a space in it, and an account's name has none: write it as one word, {}", shown(a), super::check::canonical_account(a)),
                         (None, None) => format!("{} is not declared", shown(a)),
                     }),
-                    Subject::Commodity(a) => Some(format!("{} is not declared", shown(a))),
+                    Subject::Commodity(a) => Some(format!("the commodity {} is not declared", shown(a))),
                     _ => None,
                 })
                 .collect(),
@@ -362,8 +394,30 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                 _ => None,
             })
             .map(|p| match op {
+                // Under the receivable, owed on per commodity: one named after one.
+                Op::AccountAdd(a) if *p == m.config.invoice.receivable && m.owes_per_commodity(p) => format!(
+                    "{a} cannot be declared under {p}: what is under the receivable is named after a commodity declared, one for each, such as {p}:USD"
+                ),
+                Op::AccountAdd(a) if *p == m.config.invoice.receivable => format!(
+                    "{a} cannot be declared under {p}: {}, and these books owe on it itself; a debt in another commodity is owed beside it, as {p}USD, which the invoice declares",
+                    and(&uses_account(m, p))
+                ),
                 Op::AccountAdd(a) => format!("{a} cannot be declared under {p}: {}", and(&uses_account(m, p))),
-                _ => format!("{p} has accounts under it; name one of them, which has none"),
+                _ => {
+                    // In a commodity none under it is named after, where some are.
+                    let c = match op {
+                        Op::Post { postings, .. } | Op::Bill { postings, .. } => postings.iter().find(|q| q.account == p).map(|q| q.amount.commodity.clone()),
+                        Op::Pay { from, cost, debt, .. } if from == p => cost.as_ref().map(|c| c.commodity.clone()).or_else(|| m.debt(*debt).map(|d| d.owed.commodity)),
+                        Op::Invoice { commodity, .. } => Some(commodity.clone()),
+                        _ => None,
+                    };
+                    let per = m.accounts.iter().any(|b| b.len() > p.len() && b.starts_with(p) && m.base_of(b) == p);
+                    match (c, per, under(m, p)) {
+                        (Some(c), true, _) => format!("{p} has an account under it for each commodity, and none for {c}: declare one, `abo account add {p}:{c}`"),
+                        (_, _, Some(c)) => format!("{p} has accounts under it, such as {c}: post to one of those"),
+                        _ => format!("{p} has accounts under it: post to one of those"),
+                    }
+                }
             })
             .collect(),
         "I-K0" => match op {
@@ -372,7 +426,7 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
             } else if !commodity_ok(c) && commodity_ok(&c.to_uppercase()) {
                 format!("{} is not written in capitals: write {}", shown(c), c.to_uppercase())
             } else if !commodity_ok(c) {
-                format!("{} is not three or more capital letters, A to Z", shown(c))
+                format!("{} is not three or more capital letters, A to Z, nor a currency's sign such as $ or €", shown(c))
             } else {
                 format!("{p} places are more than a commodity has: BTC's 8 are the most")
             }],
@@ -382,8 +436,10 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
             let mut v = vec![];
             let mut see = |what: &str, a: &Amount| {
                 let p = m.places(&a.commodity);
-                if m.commodities.contains_key(&a.commodity) && round(a.quantity, p) != a.quantity {
-                    v.push(format!("{what}{} {} has more places than {}'s {p}", a.quantity, a.commodity, a.commodity));
+                // Said once: a posting's amount, and the one balancing it.
+                let line = format!("{what}{} {} has more places than {}'s {p}", a.quantity.abs(), a.commodity, a.commodity);
+                if m.commodities.contains_key(&a.commodity) && round(a.quantity, p) != a.quantity && !v.contains(&line) {
+                    v.push(line);
                 }
             };
             match op {
@@ -403,7 +459,7 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                         see("what was paid, ", c);
                     }
                 }
-                Op::PriceAdd { price, .. } => see("the price ", price),
+                Op::PriceAdd { price, .. } if round(price.quantity, 8) != price.quantity => v.push(format!("the price {} {} has more than 8 places", price.quantity, price.commodity)),
                 Op::Record { commodity, balance, .. } => see("the balance ", &Amount { quantity: *balance, commodity: commodity.clone() }),
                 _ => {}
             }
@@ -428,11 +484,11 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                     *s = s.checked_add(a.quantity).unwrap_or(*s);
                 }
                 let off: Vec<String> = sums.iter().filter(|(_, s)| !s.is_zero()).map(|(c, s)| amount(m, *s, c)).collect();
-                let mut said = format!("the postings sum to {}, not nought", and(&off));
+                let mut said = format!("the postings come to {} where they should come to nought: change an amount, or leave one out for abo to work out", and(&off));
                 let currency = &m.config.company.currency;
                 match slip(m, ps) {
-                    Some(Slip::Sign(p)) => said += &format!("; {} looks to have the wrong sign: {}={}", p.account, p.account, amount(m, -p.amount.quantity, &p.amount.commodity)),
-                    Some(Slip::Cost(p)) => said += &format!("; what is in another commodity is written with what it cost in {currency}, the whole amount after @@: {}={} @@ <its cost> {currency}", p.account, amount(m, p.amount.quantity, &p.amount.commodity)),
+                    Some(Slip::Sign(p)) => said += &format!("; {} looks to have the wrong sign: {}  {}", p.account, p.account, amount(m, -p.amount.quantity, &p.amount.commodity)),
+                    Some(Slip::Cost(p)) => said += &format!("; what is in another commodity is written with what it cost in {currency}, the whole amount after @@: {}  {} @@ <its cost> {currency}", p.account, amount(m, p.amount.quantity, &p.amount.commodity)),
                     None => {}
                 }
                 vec![said]
@@ -465,7 +521,7 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                 let mut v = vec![];
                 let n = more.number.trim();
                 if !text_ok(n) || n.contains(',') {
-                    v.push(format!("the supplier's number {} is not one line without a comma or anything hidden", shown(n)));
+                    v.push(format!("the supplier's number {} holds a comma or a hidden character, where hledger would end it: write it without, such as {}", shown(n), n.replace([',', ' '], "").chars().filter(|c| !c.is_control()).collect::<String>()));
                 }
                 if let Some(d) = more.due.filter(|d| d < date) {
                     v.push(format!("it would be due on {d}, before its own date, {date}"));
@@ -476,14 +532,8 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
         },
         "I-E4" => {
             let home = &m.config.company.currency;
-            match (op, given_postings(op)) {
-                (_, Some(ps)) => ps
-                    .iter()
-                    .filter(|p| matches!(class(&p.account), "Income" | "Expenses") && p.amount.commodity != *home)
-                    .map(|p| format!("{} is posted {}; income and expenses are in the company currency, {home}: post it in {home}, and what is owed or paid in {} at its cost in {home}", p.account, amount(m, p.amount.quantity, &p.amount.commodity), p.amount.commodity))
-                    .collect(),
-                (Op::WriteOff { debt, .. }, _) => vec![format!("{} is owed in another commodity than {home}, at no cost in {home}, so what is written off cannot be put in {home}", name(m, *debt))],
-                (Op::Invoice { commodity, date, .. }, _) => vec![format!("no price of {commodity} in {home} on or before {date}: an invoice in {commodity} is booked in {home}, at the latest price on or before its date")],
+            match op {
+                Op::Invoice { commodity, date, .. } => vec![format!("no price of {commodity} in {home} on or before {date}: an invoice in {commodity} is booked in {home}, at the latest price on or before its date")],
                 _ => vec![],
             }
         }
@@ -597,7 +647,7 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                 } else if c.lines.iter().any(|l| l.description.trim().is_empty()) {
                     "a line needs a description".into()
                 } else if total <= Decimal::ZERO {
-                    format!("the lines total {}, not more than nought", amount(n, total, &c.commodity))
+                    format!("the lines come to {}, and an invoice comes to more than nought: what is taken back of one is a credit note, `abo credit <number>`", amount(n, total, &c.commodity))
                 } else if let (InvoiceVat::Charged { rate, .. }, true) = (&c.vat, vat <= Decimal::ZERO) {
                     format!("the VAT at {rate}% rounds to nought; at 0% VAT, say why")
                 } else if c.due < *date {
@@ -643,7 +693,8 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
         }
         "I-P1" => match op {
             Op::Pay { debt, .. } | Op::WriteOff { debt, .. } if m_standing.get(*debt) == Some(&false) => vec![gone(m, *debt)],
-            Op::Pay { debt, .. } if m.debt(*debt).is_some() && m.open(*debt, &m_standing).is_zero() => vec![format!("{} is settled: nothing is open", name(m, *debt))],
+            Op::Pay { amount, .. } if *amount < Decimal::ZERO => vec!["the amount must be above nought".into()],
+            Op::Pay { debt, .. } if m.debt(*debt).is_some() && m.open(*debt, &m_standing).is_zero() => vec![format!("{} is {} already: nothing is open on it", name(m, *debt), m.status(*debt, &m_standing).map_or("settled", |s| s.word()))],
             Op::Pay { .. } => vec!["the amount must be above nought".into()],
             _ => vec![],
         },
@@ -666,10 +717,10 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                 let there: Vec<Account> = n.postings(next).into_iter().map(|p| p.account).filter(|a| on_n.contains(a)).collect();
                 for a in there.iter().collect::<BTreeSet<_>>() {
                     v.push(match (op, n.debt(next)) {
-                        (Op::WriteOff { .. }, _) => format!("{a} is an account debts are on; write off to another"),
+                        (Op::WriteOff { .. }, _) => format!("{a} is an account bills and invoices owe on; write off to another, an expense or income"),
                         (_, Some(d)) if d.account == **a && there.len() > 1 => format!("{a} is this debt's own account; the entry posts to it once"),
                         (_, Some(d)) if d.account == **a => continue,
-                        _ => format!("{a} is an account debts are on: only their own entries and payments post to it"),
+                        _ => format!("{a} is an account bills and invoices owe on: only they and their payments post to it"),
                     });
                 }
             }
@@ -689,7 +740,9 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
             let mut v = vec![];
             if let Op::Revert { entry, .. } = op {
                 match m.entry(*entry).map(|e| &e.kind) {
-                    Some(Kind::Invoice { .. }) => v.push(format!("{} cannot be reverted: an invoice is cancelled by a credit note", name(m, *entry))),
+                    // Cancelled already, it is said below by what cancels it.
+                    Some(Kind::Invoice { .. }) if !m.standing()[*entry] => {}
+                    Some(Kind::Invoice { .. }) => v.push(format!("{} cannot be reverted: an invoice is cancelled by a credit note, `abo credit {}`", name(m, *entry), m.number_text(*entry).unwrap_or_default())),
                     Some(Kind::CreditNote { .. }) => v.push(format!("{} cannot be reverted: a credit note stands", name(m, *entry))),
                     _ => {}
                 }

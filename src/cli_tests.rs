@@ -44,7 +44,7 @@ fn build() -> Result<PathBuf, String> {
     let at = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     // Files compiled into the tests alone do not make the binary stale.
-    let newest = || walk(&src).iter().filter(|p| !p.to_string_lossy().ends_with("tests.rs")).filter_map(|p| at(p)).max();
+    let newest = || walk(&src).iter().filter(|p| !p.to_string_lossy().ends_with("tests.rs") && !p.ends_with("suggested.rs")).filter_map(|p| at(p)).max();
     if at(&abo) >= newest() {
         return Ok(abo);
     }
@@ -677,11 +677,10 @@ fn reports_read_the_books_as_the_model_does(#[strategy(plan())] plan: Vec<Step>)
             }
         }
     }
-    // At cost, as abo bal reports unless told: a posting with a cost counts
-    // in its cost's commodity.
+    // Each in its own commodity, as abo bal reports unless told.
     let mut ours = std::collections::BTreeMap::new();
     for (_, _, p) in m.all_postings() {
-        let a = p.cost.unwrap_or(p.amount);
+        let a = p.amount;
         *ours.entry((p.account, a.commodity)).or_insert(Decimal::ZERO) += a.quantity;
     }
     ours.retain(|_, q: &mut Decimal| !q.is_zero());
@@ -816,7 +815,7 @@ fn refusals_in_words_name_their_rules(#[strategy(plan())] plan: Vec<Step>, next:
     let words = String::from_utf8_lossy(&o.stderr);
     // An option's questions may refuse first, in their own words: those
     // are said once each, as sentences.
-    if matches!(op, Op::OptionAdd { .. }) && !v.iter().any(|v| words.contains(&format!("{}: ", v.code))) {
+    if matches!(op, Op::OptionAdd { .. }) && !v.iter().any(|v| words.contains(&format!("{} ({}): ", v.code, model::rule(v.code)))) {
         let lines: Vec<&str> = words.lines().filter(|l| !l.trim().is_empty()).collect();
         let unique: BTreeSet<&str> = lines.iter().copied().collect();
         prop_assert_eq!(unique.len(), lines.len(), "{:?} says a problem twice: {}", argv, words);
@@ -829,7 +828,7 @@ fn refusals_in_words_name_their_rules(#[strategy(plan())] plan: Vec<Step>, next:
         return Ok(());
     }
     for code in v.iter().map(|v| v.code) {
-        prop_assert!(words.contains(&format!("{code}: ")), "{:?}: {} is not said in {}", argv, code, words);
+        prop_assert!(words.contains(&format!("{code} ({}): ", model::rule(code))), "{:?}: {} is not said in {}", argv, code, words);
     }
 }
 
@@ -1070,4 +1069,68 @@ fn comments_are_signed_by_their_commit() {
         .map(|c| (c["id"].as_u64().unwrap(), c["by"].as_str().unwrap().into(), c["at"].as_str().unwrap().into(), c["text"].as_str().unwrap().into()))
         .collect();
     assert_eq!(got, vec![(2, "Bea".into(), "2025-12-01T13:00:00Z".into(), "ok".into()), (3, "Cy".into(), "2025-12-01T14:00:00Z".into(), "Note: ask".into())]);
+}
+
+/// Every command abo tells a reader to type, in a message or the help, is
+/// written in backticks, and reads as a command abo takes: its blanks, a
+/// format's `{name}` and a reader's `<what>`, filled in as below. A command
+/// named in words, `abo record` say, reads as far as it goes. The commands
+/// a test is told to type are run too, where the regression tests meet them
+/// (tests/regressions.rs, `typed`).
+#[test]
+fn every_command_abo_suggests_reads() {
+    let subcommands: Vec<String> = crate::cli::command().get_subcommands().map(|c| c.get_name().to_string()).collect();
+    let tick = crate::suggested::tick();
+    let named = regex::Regex::new(r"\babo ([a-z][a-z-]*)").unwrap();
+    let mut wrong = vec![];
+    let mut files = vec![];
+    let mut dirs = vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))];
+    while let Some(d) = dirs.pop() {
+        for e in std::fs::read_dir(d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else if p.extension().is_some_and(|x| x == "rs") && !["tests.rs", "cli_tests.rs"].contains(&p.file_name().unwrap().to_str().unwrap()) {
+                files.push(p);
+            }
+        }
+    }
+    for p in files {
+        let help = p.ends_with("cli/args.rs");
+        for (i, line) in std::fs::read_to_string(&p).unwrap().lines().enumerate() {
+            let t = line.trim_start();
+            // What a reader sees: a string, or the help's doc comments.
+            let said = if help && t.starts_with("///") { true } else { !t.starts_with("//") && t.contains('"') && !t.contains("assert") && !line.ends_with("// not said") };
+            if !said {
+                continue;
+            }
+            let at = format!("{}:{}", p.strip_prefix(env!("CARGO_MANIFEST_DIR")).unwrap().display(), i + 1);
+            let ticked: Vec<std::ops::Range<usize>> = tick.find_iter(line).map(|m| m.range()).collect();
+            for m in named.captures_iter(line) {
+                let whole = m.get(0).unwrap();
+                if subcommands.contains(&m[1].to_string()) && !ticked.iter().any(|r| r.contains(&whole.start())) {
+                    wrong.push(format!("{at}: {:?} names a command outside backticks", whole.as_str()));
+                }
+            }
+            for c in tick.captures_iter(line) {
+                let typed = crate::suggested::fill(&c[1]);
+                let argv = match crate::suggested::words(&typed) {
+                    Some(a) => a,
+                    None => {
+                        wrong.push(format!("{at}: `{}` does not split into words", &c[1]));
+                        continue;
+                    }
+                };
+                match crate::cli::command().try_get_matches_from(&argv) {
+                    Ok(_) => {}
+                    Err(e) if matches!(e.kind(), clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand) => {}
+                    // A command named, with its flags, not given: as far as
+                    // it goes, every word one abo knows.
+                    Err(e) if !matches!(e.kind(), clap::error::ErrorKind::UnknownArgument | clap::error::ErrorKind::InvalidSubcommand) && crate::suggested::named(&argv) => {}
+                    Err(e) => wrong.push(format!("{at}: `{}`, filled in as {argv:?}: {}", &c[1], e.to_string().lines().next().unwrap_or_default())),
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{} commands abo suggests do not read:\n{}", wrong.len(), wrong.join("\n"));
 }

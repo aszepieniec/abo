@@ -43,6 +43,7 @@
       align: (left, right),
       [Date], d.date,
       [Cancels], [invoice #d.credits of #d.credits_date],
+      ..if at("period") != "" { ([Period], at("period")) } else { () },
       ..if d.reference != "" { ([Your reference], capped(d.reference, 5cm)) } else { () },
     )
   ],

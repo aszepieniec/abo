@@ -86,7 +86,7 @@ fn list(s: &Store, json: bool, with_former: bool) -> Result<()> {
     let shown: Vec<&views::PartnerRow> = all.iter().filter(|p| with_former || !p.former || p.shareholder).collect();
     emit(json, &shown, || {
         if all.is_empty() {
-            return "No partners yet; abo partner add adds one.".into();
+            return "No partners yet; `abo partner add` adds one.".into();
         }
         let row = |p: &views::PartnerRow| {
             let mut out = format!("{}  {}", p.id, p.name);
@@ -123,8 +123,8 @@ fn list(s: &Store, json: bool, with_former: bool) -> Result<()> {
                 out.push("Former employees (every agreement with them has ended):".into());
                 out.extend(former.into_iter().map(row));
             }
-            (1, false) => out.push("1 former employee; abo partner list --former lists them.".into()),
-            (n, false) => out.push(format!("{n} former employees; abo partner list --former lists them.")),
+            (1, false) => out.push("1 former employee; `abo partner list --former` lists them.".into()),
+            (n, false) => out.push(format!("{n} former employees; `abo partner list --former` lists them.")),
         }
         if !shareholders.is_empty() {
             out.push("Shareholders:".into());
@@ -145,7 +145,7 @@ pub(crate) fn agreement(here: &Path, json: bool, change: Option<AgreementCmd>) -
             let shown: Vec<&views::AgreementView> = all.iter().filter(|a| with_ended || !a.ended).collect();
             return emit(json, &shown, || {
                 if all.is_empty() {
-                    return "No agreements yet; abo agreement add adds one.".into();
+                    return "No agreements yet; `abo agreement add` adds one.".into();
                 }
                 let line = |a: &&views::AgreementView| {
                     let v: Vec<String> = a.versions.iter().filter(|v| v.documents.is_empty()).map(|v| v.n.to_string()).collect();
@@ -165,8 +165,8 @@ pub(crate) fn agreement(here: &Path, json: bool, change: Option<AgreementCmd>) -
                         out.push("Ended (terminated, subsumed, or past their last day):".into());
                         out.extend(ended.iter().map(line));
                     }
-                    (1, false) => out.push("1 ended agreement; abo agreement list --ended lists it.".into()),
-                    (n, false) => out.push(format!("{n} ended agreements; abo agreement list --ended lists them.")),
+                    (1, false) => out.push("1 ended agreement; `abo agreement list --ended` lists it.".into()),
+                    (n, false) => out.push(format!("{n} ended agreements; `abo agreement list --ended` lists them.")),
                 }
                 out.join("\n")
             });
@@ -270,7 +270,7 @@ fn show(a: &views::AgreementView) -> String {
             out += &format!("\n    document: {d}");
         }
         if v.documents.is_empty() {
-            out += &format!("\n    no signed copy filed: abo file --for {}/{} --date ... --issuer ... <scan>", a.id, v.n);
+            out += &format!("\n    no signed copy filed: `abo file --for {}/{} --date <date> --issuer <issuer> <scan>`", a.id, v.n);
         }
     }
     if !a.invoices.is_empty() {

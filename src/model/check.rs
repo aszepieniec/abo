@@ -43,7 +43,62 @@ impl Violation {
 
 impl std::fmt::Display for Violation {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}: {}", self.code, self.what)
+        write!(f, "{} ({}): {}", self.code, rule(self.code), self.what)
+    }
+}
+
+/// What a rule says, in a few words, for whoever reads its code: MODEL.md
+/// says it in full, under the code.
+pub fn rule(code: &str) -> &'static str {
+    match code {
+        "OP" => "the change cannot be made as asked",
+        "I-A0" => "an account's name is well formed",
+        "I-A1" => "what is named is declared",
+        "I-A2" => "postings go only to accounts with none under them",
+        "I-K0" => "a commodity's name and places",
+        "I-K1" => "no more places after the point than the commodity has",
+        "I-K2" => "a price is above nought, in another commodity",
+        "I-K3" => "amounts below a million millions",
+        "I-D1" => "dates in the years 1 to 9999",
+        "I-E0" => "a description, one hledger reads as written",
+        "I-E1" => "an entry balances",
+        "I-E2" => "what something cost is in another commodity than it, and of the same sign",
+        "I-E3" => "an entry refers only to entries before it, a payment to an earlier bill or invoice",
+        "I-E4" => "an invoice is booked in the company's currency",
+        "I-B1" => "a document is filed once, under a name of its own",
+        "I-B2" => "a bill credits one liability account",
+        "I-B3" => "a supplier's number and due date",
+        "I-I1" => "an invoice has what it needs",
+        "I-I2" => "invoices are numbered in the order of their dates",
+        "I-P1" => "a payment pays one debt that stands",
+        "I-P2" => "no debt is paid more than it owes",
+        "I-P3" => "the accounts that bills and invoices owe on take only bills, invoices and their payments",
+        "I-R1" => "an entry is reversed once at most, an invoice by a credit note",
+        "I-R3" => "nothing is reversed while an entry names it",
+        "I-S2" => "a statement clears postings that are there to clear",
+        "I-S3" => "a statement's closing balance is the sum of every posting it and the account's earlier statements clear",
+        "I-C1" => "the company's configuration is well formed",
+        "I-C2" => "a payment option has what its kind needs",
+        "I-C3" => "each account the configuration names is of its kind, an asset or income, and no figure in it is below nought",
+        "I-T1" => "a partner's or an agreement's id is well formed",
+        "I-T2" => "what names a partner or an agreement names one there is",
+        "I-T3" => "an agreement has its parties and versions",
+        "I-T4" => "an invoice under an agreement goes to its party",
+        "I-T5" => "agreements subsume no loop",
+        "I-N1" => "a comment is on a bill or an invoice",
+        "N1" => "nothing is dated after today",
+        "N2" => "a closed period stays as it is",
+        "N3" => "VAT is posted only as the VAT method allows",
+        "N4" => "money moves through a money account; a write-off through income or expenses",
+        "N6" => "a closed period stays closed",
+        "N7" => "nothing is booked on or before an account's statement",
+        "N8" => "a bill is booked once",
+        "N9" => "nothing a statement shows is reverted",
+        "N10" => "an agreement's version in force for an invoice stays",
+        "N11" => "an agreement not active stays as it is",
+        "N12" => "an account holds one commodity at a time",
+        "N13" => "a new account's name is written one way",
+        _ => "a rule of the books",
     }
 }
 
@@ -101,28 +156,33 @@ pub fn segment_ok(s: &str) -> bool {
 }
 
 /// An account's name as a new one is declared (N13): no part begun by a
-/// lower-case letter, so that one account is written one way.
+/// lower-case letter, so that one account is written one way; no space, so
+/// that a posting typed as `Account 12.50` ends the name at the first; and
+/// no `;`, which begins a comment wherever hledger reads one.
 pub fn account_canonical(a: &str) -> bool {
-    a.split(':').all(|s| !s.starts_with(char::is_lowercase))
+    !a.contains([' ', ';']) && a.split(':').all(|s| !s.starts_with(char::is_lowercase))
 }
 
-/// `a` written so: each part begun by a capital.
+/// `a` written so: each part, and each word after a space or `;`, begun by
+/// a capital, those taken out: `assets:petty cash` is `Assets:PettyCash`.
 pub fn canonical_account(a: &str) -> String {
-    a.split(':')
-        .map(|s| {
-            let mut c = s.chars();
-            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
-        })
-        .collect::<Vec<_>>()
-        .join(":")
+    let capital = |w: &str| {
+        let mut c = w.chars();
+        c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+    };
+    a.split(':').map(|s| s.split([' ', ';']).map(capital).collect::<String>()).collect::<Vec<_>>().join(":")
 }
 
 pub fn account_ok(a: &str) -> bool {
     a.split(':').all(segment_ok) && CLASSES.contains(&class(a))
 }
 
+/// Three or more capital letters, `EUR`; or a currency's sign alone, `$`
+/// or `€`, which hledger takes as a commodity of its own, not as USD or EUR.
 pub fn commodity_ok(c: &str) -> bool {
-    c.len() >= 3 && c.bytes().all(|b| b.is_ascii_uppercase())
+    let mut chars = c.chars();
+    let sign = matches!((chars.next(), chars.next()), (Some(s), None) if unicode_general_category::get_general_category(s) == unicode_general_category::GeneralCategory::CurrencySymbol);
+    sign || (c.len() >= 3 && c.bytes().all(|b| b.is_ascii_uppercase()))
 }
 
 /// What the journal's date line can hold and give back unchanged: not
@@ -219,7 +279,7 @@ pub fn option_problem(id: &str, o: &PayOption) -> Option<(&'static str, String)>
     };
     let needs = match o.kind {
         PayKind::Bank if o.iban.is_empty() && o.details.is_empty() => Some("an IBAN, or details such as an account number"),
-        PayKind::Cash if o.details.is_empty() => Some("lines saying where and when"),
+        PayKind::Cash if o.details.is_empty() => Some("details, lines saying where and when"),
         PayKind::Crypto if o.network.is_empty() || o.address.is_empty() => Some("a network and an address"),
         _ => None,
     };
@@ -270,7 +330,7 @@ pub fn check(m: &Books) -> Vec<Violation> {
     }
     // First, and alone: what follows computes with these.
     if let Some(q) = numbers(m).into_iter().find(|q| q.abs() >= Decimal::from(BOUND)) {
-        return vec![Violation { code: "I-K3", what: format!("{q} is not below {BOUND} in magnitude"), of: Subject::Number(q) }];
+        return vec![Violation { code: "I-K3", what: format!("{q} is too large: an amount is below {BOUND}"), of: Subject::Number(q) }];
     }
     let mut rates = vec![m.config.invoice.vat_rate];
     if let Vat::Flat { rate, .. } = m.config.vat {
@@ -313,7 +373,9 @@ pub fn check(m: &Books) -> Vec<Violation> {
     let leaf = |a: &str| !m.accounts.iter().any(|b| b.len() > a.len() && b.starts_with(a) && b.as_bytes()[a.len()] == b':');
     let mut posted: BTreeSet<&str> = postings.iter().map(|(_, _, p)| p.account.as_str()).collect();
     posted.extend(m.statements.keys().map(|k| k.0.as_str()));
-    let configured = m.config_accounts();
+    // The receivable is named, and debts are owed under it, one account
+    // per commodity: it is declared, and may have those under it.
+    let configured: Vec<Account> = m.config_accounts().into_iter().filter(|a| *a != m.config.invoice.receivable || !m.owes_per_commodity(a)).collect();
     posted.extend(configured.iter().map(String::as_str));
     for a in &posted {
         if !m.accounts.contains(*a) {
@@ -347,10 +409,17 @@ pub fn check(m: &Books) -> Vec<Violation> {
     }
     for (c, p) in &m.commodities {
         if !commodity_ok(c) || *p > 8 {
-            no!("I-K0", "{c} {p}: a commodity is three or more capital letters, with 0 to 8 places");
+            no!("I-K0", "{c} {p}: a commodity is three or more capital letters, or a currency's sign such as $, with 0 to 8 places");
         }
     }
-    for a in amounts {
+    // A price may take more: one yen is worth 0.0061 EUR.
+    let prices: Vec<&Amount> = m.prices.values().collect();
+    for p in &prices {
+        if round(p.quantity, 8) != p.quantity {
+            no!("I-K1", "a price of {} {} has more than 8 places", p.quantity.normalize(), p.commodity);
+        }
+    }
+    for a in amounts.into_iter().filter(|a| !prices.iter().any(|p| std::ptr::eq(*p, *a))) {
         if !fits(a.quantity, &a.commodity) {
             no!("I-K1", "{} {} has more places than {} has", a.quantity.normalize(), a.commodity, a.commodity);
         }
@@ -404,9 +473,12 @@ pub fn check(m: &Books) -> Vec<Violation> {
                 .collect();
             no!(@of Subject::Entry(id), "I-E1", "entry {id} does not balance: its postings sum to {}, not nought", off.join(" and "));
         }
+        // An invoice in another commodity is booked at its price in the
+        // company's currency: its income and VAT are in it.
         let home = &m.config.company.currency;
-        if let Some(p) = ps.iter().find(|p| matches!(class(&p.account), "Income" | "Expenses") && p.amount.commodity != *home) {
-            no!(@of Subject::Entry(id), "I-E4", "entry {id} posts {} {} to {}; income and expenses are in the company currency, {home}", p.amount.quantity, p.amount.commodity, p.account);
+        let invoiced = matches!(e.kind, Kind::Invoice { .. } | Kind::CreditNote { .. });
+        if let Some(p) = ps.iter().find(|p| invoiced && !matches!(class(&p.account), "Assets") && p.amount.commodity != *home) {
+            no!(@of Subject::Entry(id), "I-E4", "{} posts {} {} to {}; an invoice's income and VAT are in the company currency, {home}", super::explain::name(m, id), p.amount.quantity, p.amount.commodity, p.account);
         }
         if let Some(of) = e.kind.names() {
             match m.entry(of) {
@@ -660,7 +732,7 @@ pub(crate) fn partners_and_agreements(m: &Books, standing: &[bool], who: &dyn Fn
     // I-T1.
     for (id, p) in &m.partners {
         if !id_ok(id) {
-            no!("I-T1", "{} is not a partner's id: one or more of a-z, 0-9 and -", super::explain::shown(id));
+            no!("I-T1", "{} is not a partner's id: an id is small letters, digits and dashes, no space, such as {}", super::explain::shown(id), crate::repo::slug(id));
         }
         if !lines_ok(&p.lines) || p.lines.lines().next().is_none_or(|l| l.trim().is_empty()) {
             no!("I-T1", "partner {id} has no name on their first line, or a hidden character in what they say");
@@ -727,7 +799,7 @@ pub(crate) fn partners_and_agreements(m: &Books, standing: &[bool], who: &dyn Fn
         for (i, x) in a.versions.iter().enumerate() {
             let n = i + 1;
             if i > 0 && x.from < a.versions[i - 1].from {
-                no!("I-T3", "version {n} of agreement {id} takes effect on {}, before version {i}, on {}", x.from, a.versions[i - 1].from);
+                no!("I-T3", "version {n} of agreement {id} takes effect on {}, before version {i}, on {}: give it a later --from", x.from, a.versions[i - 1].from);
             }
             if x.until.is_some_and(|u| u < x.from) {
                 no!("I-T3", "version {n} of agreement {id} ends before it takes effect");
@@ -737,6 +809,11 @@ pub(crate) fn partners_and_agreements(m: &Books, standing: &[bool], who: &dyn Fn
                     no!("I-T3", "the invoice template of version {n} of agreement {id} holds a hidden character");
                 } else if let Some(k) = t.keys().find(|k| !INVOICE_FIELDS.contains(&k.as_str())) {
                     no!("I-T3", "the invoice template of version {n} of agreement {id} has {}, which is not a field of the invoice form: {}", super::explain::shown(k), INVOICE_FIELDS.join(", "));
+                } else if let Some(l) = t.get("items").into_iter().flat_map(|i| i.lines()).filter(|l| !l.trim().is_empty()).find(|l| {
+                    let p: Vec<&str> = l.splitn(3, '|').collect();
+                    p.len() < 3 || Decimal::from_str_exact(p[0].trim()).is_err() || Decimal::from_str_exact(p[1].trim()).is_err()
+                }) {
+                    no!("I-T3", "the invoice template of version {n} of agreement {id} has the line {}, which is not a quantity, a unit price and a description, as `2|120.00|Hosting`", super::explain::shown(l));
                 }
             }
         }
@@ -794,4 +871,15 @@ pub(crate) fn partners_and_agreements(m: &Books, standing: &[bool], who: &dyn Fn
         }
     }
     v
+}
+
+/// Every rule MODEL.md defines is said in words where its code is shown.
+#[test]
+fn every_rule_is_said_in_words() {
+    let model = include_str!("../../MODEL.md");
+    let codes = model.lines().filter_map(|l| l.strip_prefix("- **")?.split_once("**").map(|(c, rest)| (c, rest)));
+    for (code, rest) in codes.filter(|(c, rest)| (c.starts_with("I-") || c.starts_with('N')) && !rest.contains("is now")) {
+        assert_ne!(rule(code), "a rule of the books", "{code} has no words in rule()");
+    }
+    assert_ne!(rule("OP"), "a rule of the books");
 }

@@ -42,7 +42,7 @@
     align: (left, left, right),
     ..s.lines.map(l => (
       [#l.label],
-      money(l.amounts),
+      if l.at("home", default: ()).len() > 0 [#money(l.amounts) (#money(l.home))] else { money(l.amounts) },
     )).flatten(),
     ..if s.total.len() > 0 {
       (table.hline(stroke: 0.5pt), [], [Total], text(weight: "bold", money(s.total)))

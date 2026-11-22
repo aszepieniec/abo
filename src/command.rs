@@ -219,9 +219,9 @@ pub fn argv(op: &Op, m: &Books) -> Vec<String> {
     a
 }
 
-/// `2026-01-01..2026-01-31`.
+/// `2026-01-01..2026-02-01`, as hledger reads a period: the end not in it.
 fn period(p: &model::Period) -> String {
-    format!("{}..{}", p.from, p.to)
+    format!("{}..{}", p.from, p.to.tomorrow().unwrap_or(p.to))
 }
 
 /// A partner's lines as flags: the name, then a line of the address each,
@@ -313,7 +313,7 @@ fn name(m: &Books, id: model::EntryId) -> String {
 }
 
 fn posting(p: &model::Posting) -> String {
-    let mut s = format!("{}={} {}", p.account, p.amount.quantity, p.amount.commodity);
+    let mut s = format!("{}  {} {}", p.account, p.amount.quantity, p.amount.commodity);
     if let Some(c) = &p.cost {
         s += &format!(" @@ {} {}", c.quantity.abs(), c.commodity);
     }

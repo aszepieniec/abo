@@ -570,7 +570,7 @@ subject: the command as it would be typed, to copy into a terminal.
 
     Book Two words
 
-    abo post --date=2026-11-05 '--desc=Two words' -- 'Expenses:General=3 EUR' 'Assets:Bank=-3 EUR'
+    abo post --date=2026-11-05 '--desc=Two words' -- 'Expenses:General  3 EUR' 'Assets:Bank  -3 EUR'
 
 A commit of two operations, as the bill form makes, has two commands, each
 after a comment that says what it did, so that the two can be pasted

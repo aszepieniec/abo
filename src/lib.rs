@@ -16,6 +16,8 @@ pub mod statement;
 pub mod views;
 #[cfg(any(test, feature = "testkit"))]
 pub mod cli_tests;
+#[cfg(any(test, feature = "testkit"))]
+pub mod suggested;
 
 /// The documents, for the tests that hold code to them: abo-web's too.
 #[cfg(any(test, feature = "testkit"))]
@@ -84,6 +86,13 @@ pub fn preflight() -> Result<Vec<&'static Dep>> {
 
 /// The command line, run: what `abo` does with its arguments.
 pub fn cli_main() -> std::process::ExitCode {
+    // Output piped to `head`, and `head` done: end quietly, as a shell tool
+    // does, not panic on the closed pipe. Rust ignores SIGPIPE by default.
+    #[cfg(unix)]
+    // SAFETY: at the start of main, before any thread, the default action.
+    unsafe {
+        let _ = nix::sys::signal::signal(nix::sys::signal::Signal::SIGPIPE, nix::sys::signal::SigHandler::SigDfl);
+    }
     // Under --json a usage error is JSON too: the output is the API.
     let cli = match cli::command().try_get_matches().and_then(|m| <Cli as clap::FromArgMatches>::from_arg_matches(&m)) {
         Ok(cli) => cli,

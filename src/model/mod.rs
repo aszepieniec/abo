@@ -19,9 +19,9 @@ mod text;
 pub mod tests;
 
 pub use answer::hidden;
-pub use check::{check, option_problem, Subject, Violation};
+pub use check::{account_canonical, canonical_account, check, rule, option_problem, Subject, Violation};
 pub use explain::{explain, name};
-pub use ops::{apply, bill_number_key, key_known, shape, undo, InvoiceMore, Op, Shape, BILL_WEEK};
+pub use ops::{apply, bill_number_key, key_known, shape, suffixed, undo, InvoiceMore, Op, Shape, BILL_WEEK, EXCHANGE_GAINS, EXCHANGE_LOSSES};
 pub use text::{parse, read, render, Files};
 
 pub use jiff::civil::Date;
@@ -35,7 +35,7 @@ pub type EntryId = usize;
 pub type Hash = String;
 /// Segments joined by `:`, the first a class (I-A0).
 pub type Account = String;
-/// Three or more capital letters (I-K0).
+/// Three or more capital letters, or a currency's sign alone (I-K0).
 pub type Commodity = String;
 /// A partner's or an agreement's: a-z, 0-9 and `-` (I-T1).
 pub type Id = String;
@@ -949,6 +949,23 @@ impl Books {
 
     /// Whether `a` can be posted to: declared, and no account declared under
     /// it (I-A2: postings go to leaves alone).
+    /// The account a debt account named after its commodity is under:
+    /// `Assets:Receivable` of `Assets:Receivable:USD`, when that is
+    /// declared; any other account, itself.
+    pub fn base_of<'a>(&self, a: &'a str) -> &'a str {
+        match a.rsplit_once(':') {
+            // A commodity declared, or written as one, not declared yet.
+            Some((x, c)) if (self.commodities.contains_key(c) || c == self.config.company.currency || (check::commodity_ok(c) && !c.chars().any(char::is_lowercase))) && self.accounts.contains(x) => x,
+            _ => a,
+        }
+    }
+
+    /// Whether debts may be owed on `a`, or under it, per commodity: it is
+    /// declared, and what is under it is named after a commodity.
+    pub fn owes_per_commodity(&self, a: &str) -> bool {
+        self.accounts.contains(a) && self.accounts.iter().filter(|b| b.len() > a.len() && b.starts_with(a) && b.as_bytes()[a.len()] == b':').all(|b| self.base_of(b) == a)
+    }
+
     pub fn postable(&self, a: &str) -> bool {
         self.accounts.contains(a) && !self.accounts.iter().any(|b| b.len() > a.len() && b.starts_with(a) && b.as_bytes()[a.len()] == b':')
     }
@@ -978,7 +995,10 @@ impl Books {
     /// or go into it (N4): an asset, and not where debts or input VAT are.
     pub fn moves_money(&self, a: &str) -> bool {
         let input = matches!(&self.config.vat, Vat::Effective { input, .. } if input == a);
-        class(a) == "Assets" && a != self.config.invoice.receivable && !input
+        // The receivable, and those for a commodity under it,
+        // `Assets:Receivable:USD`, or beside it, `Assets:ReceivableUSD`.
+        let receivable = a.strip_prefix(self.config.invoice.receivable.as_str()).is_some_and(|c| c.is_empty() || check::commodity_ok(c.strip_prefix(':').unwrap_or(c)));
+        class(a) == "Assets" && !receivable && !input
     }
 
     /// The classes of account debt `d` may be written off to (N4): what a
@@ -1004,6 +1024,19 @@ impl Books {
 
     /// Where a payment comes from unless said: the first payment option's
     /// account, or the bank.
+    /// Where a debt in `commodity` is paid from, or into, by default: the
+    /// first payment option's account that holds it, or is named after it,
+    /// or has one under it that is; else the first option's.
+    pub fn paid_from_in(&self, commodity: &str) -> Account {
+        let balances = self.balances();
+        self.config
+            .payment
+            .values()
+            .map(|o| ops::suffixed(self, &o.account, commodity))
+            .find(|a| a.ends_with(&format!(":{commodity}")) || balances.keys().any(|(b, c)| b == a && c == commodity))
+            .unwrap_or_else(|| self.paid_from())
+    }
+
     pub fn paid_from(&self) -> Account {
         self.config.payment.values().next().map_or_else(|| "Assets:Bank".into(), |o| o.account.clone())
     }
@@ -1014,7 +1047,7 @@ impl Books {
         let open = self.open(d, standing);
         Some(match () {
             _ if !standing[d] => Status::Cancelled,
-            _ if open.is_zero() && self.payments(d, standing).iter().any(|&p| self.postings(p).iter().any(|x| matches!(class(&x.account), "Income" | "Expenses"))) => Status::WrittenOff,
+            _ if open.is_zero() && self.payments(d, standing).iter().any(|&p| self.postings(p).iter().any(|x| matches!(class(&x.account), "Income" | "Expenses") && x.account != ops::EXCHANGE_GAINS && x.account != ops::EXCHANGE_LOSSES)) => Status::WrittenOff,
             _ if open.is_zero() => Status::Settled,
             _ if open < owed => Status::PartPaid,
             _ => Status::Open,
@@ -1064,13 +1097,16 @@ impl Books {
     /// postings that cannot be read so, paid from two money accounts say:
     /// why not, and how to book them instead.
     pub fn paid_at_once(&self, ps: &[Posting]) -> Result<Option<PaidAtOnce>, String> {
+        // Each account with its commodity's under it, where it has one.
+        let ps: Vec<Posting> = ps.iter().map(|p| Posting { account: ops::suffixed(self, &p.account, &p.amount.commodity), ..p.clone() }).collect();
+        let ps = &ps[..];
         let credit = |p: &Posting| p.amount.quantity < Decimal::ZERO;
         // Of accounts declared only: one mistyped is left to I-A1.
         let money = |p: &Posting| self.moves_money(&p.account) && self.postable(&p.account);
         let liability = |p: &Posting| class(&p.account) == "Liabilities";
         // A liability a bill is owed on: VAT a bill charges itself, say, is not.
         let payable = self.payable();
-        let owed_on = |a: &str| payable.as_deref() == Some(a) || (1..=self.entries.len()).any(|id| matches!(self.entries[id - 1].kind, Kind::Bill(..)) && self.debt(id).is_some_and(|d| d.account == a));
+        let owed_on = |a: &str| payable.as_deref() == Some(a) || (1..=self.entries.len()).any(|id| matches!(self.entries[id - 1].kind, Kind::Bill(..)) && self.debt(id).is_some_and(|d| d.account == a || self.base_of(&d.account) == a));
         // Money moved in (cash drawn, say), a liability debited (an old bill
         // paid), or a credit to what is neither: not a bill paid when it came.
         if ps.iter().any(|p| ((money(p) || liability(p)) && !credit(p)) || (credit(p) && !money(p) && !liability(p) && class(&p.account) != "Expenses")) {
@@ -1124,8 +1160,10 @@ impl Books {
     /// booked last is owed on, whatever its date; with no bill yet, the
     /// first named a payable.
     pub fn payable(&self) -> Option<Account> {
-        let last = (1..=self.entries.len()).rev().find_map(|id| matches!(self.entries[id - 1].kind, Kind::Bill(..)).then(|| self.debt(id)).flatten()).map(|d| d.account);
-        last.filter(|a| self.postable(a)).or_else(|| self.accounts.iter().find(|a| class(a) == "Liabilities" && a.to_lowercase().contains("payable") && self.postable(a)).cloned())
+        // Named without its commodity: the bill's own supplies it.
+        let last = (1..=self.entries.len()).rev().find_map(|id| matches!(self.entries[id - 1].kind, Kind::Bill(..)).then(|| self.debt(id)).flatten()).map(|d| self.base_of(&d.account).to_string());
+        let owes = |a: &str| self.postable(a) || self.owes_per_commodity(a);
+        last.filter(|a| owes(a)).or_else(|| self.accounts.iter().find(|a| class(a) == "Liabilities" && a.to_lowercase().contains("payable") && self.base_of(a) == a.as_str() && owes(a)).cloned())
     }
 
     /// What payment `id` takes off its debt: its one posting to the debt's
@@ -1162,6 +1200,45 @@ impl Books {
             Some(debt) if standing[d] => debt.owed.quantity - self.paid(d, standing),
             _ => Decimal::ZERO,
         }
+    }
+
+    /// Debts settled where a payment in another commodity took them off at
+    /// a cost other than their share of what the debt was booked at, the
+    /// difference booked to no exchange account: each debt, with those
+    /// payments (the payment, the amount it took off, its cost, the account
+    /// it came from), what they cost, and the difference, a loss above nought.
+    pub fn exchange_unbooked(&self) -> Vec<(EntryId, Vec<(EntryId, Amount, Amount, Account)>, Amount, Amount)> {
+        let standing = self.standing();
+        let mut out = vec![];
+        for debt in (1..=self.entries.len()).filter(|&d| standing[d] && self.open(d, &standing).is_zero()) {
+            let Some(d) = self.debt(debt) else { continue };
+            let Some(own) = self.postings(debt).into_iter().find(|p| p.account == d.account) else { continue };
+            let Some(c) = own.cost.clone() else { continue };
+            let pays: Vec<EntryId> = (1..=self.entries.len()).filter(|&p| standing[p] && matches!(self.entries[p - 1].kind, Kind::Payment { of, .. } if of == debt)).collect();
+            if pays.iter().flat_map(|&p| self.postings(p)).any(|x| x.account == ops::EXCHANGE_LOSSES || x.account == ops::EXCHANGE_GAINS) {
+                continue;
+            }
+            // Only what came at a cost: a payment in the debt's own commodity
+            // exchanges nothing.
+            let mut at_cost = vec![];
+            let (mut covered, mut took) = (Decimal::ZERO, Decimal::ZERO);
+            for &p in &pays {
+                let ps = self.postings(p);
+                for x in ps.iter().filter(|x| x.account == d.account) {
+                    let Some(k) = x.cost.clone().filter(|k| k.commodity == c.commodity) else { continue };
+                    covered += x.amount.quantity.abs();
+                    took += k.quantity.abs();
+                    let from = ps.iter().find(|y| y.account != d.account).map(|y| y.account.clone()).unwrap_or_default();
+                    at_cost.push((p, Amount { quantity: x.amount.quantity.abs(), commodity: x.amount.commodity.clone() }, Amount { quantity: k.quantity.abs(), commodity: k.commodity.clone() }, from));
+                }
+            }
+            let Some(share) = c.quantity.abs().checked_mul(covered).and_then(|x| x.checked_div(own.amount.quantity.abs())) else { continue };
+            let difference = (took - round(share, self.places(&c.commodity))) * -d.sign;
+            if !difference.is_zero() && !at_cost.is_empty() {
+                out.push((debt, at_cost, Amount { quantity: took, commodity: c.commodity.clone() }, Amount { quantity: difference, commodity: c.commodity }));
+            }
+        }
+        out
     }
 
     /// Every posting, with where it is.

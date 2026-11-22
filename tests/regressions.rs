@@ -56,9 +56,40 @@ fn made(base: &Path, name: &str) -> PathBuf {
     d
 }
 
+#[path = "../src/suggested.rs"]
+mod suggested;
+
 fn abo(dir: &Path, args: &[&str]) -> Output {
     sweep();
+    let o = run(dir, args);
+    typed(dir, &o);
+    o
+}
+
+fn run(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_abo")).args(args).current_dir(dir).env("ABO_TODAY", TODAY).stdin(Stdio::null()).output().unwrap()
+}
+
+/// Every command abo tells a test to type, typed, in a copy of its books:
+/// each reads as a command abo takes (2 is a usage or unreadable error),
+/// and runs without a panic. Whether the books then take the change is
+/// theirs to say.
+fn typed(dir: &Path, o: &Output) {
+    let said = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    for argv in suggested::suggested(&said) {
+        let copy = dir.with_extension(format!("typed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&copy);
+        assert!(Command::new("cp").arg("-a").arg(dir).arg(&copy).status().unwrap().success());
+        let words: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+        let t = run(&copy, &words);
+        let _ = std::fs::remove_dir_all(&copy);
+        assert!(
+            !matches!(t.status.code(), Some(2) | Some(101) | None) && !err(&t).contains("panicked"),
+            "abo said to type {argv:?}, which does not run ({:?}): {}\nIt was said in: {said}",
+            t.status.code(),
+            err(&t)
+        );
+    }
 }
 
 fn ok(dir: &Path, args: &[&str]) -> String {
@@ -78,9 +109,10 @@ fn entry(dir: &Path, args: &[&str]) -> String {
     v["entry"].as_u64().unwrap_or_else(|| panic!("{args:?} booked no entry: {v}")).to_string()
 }
 
-fn refused(dir: &Path, args: &[&str], says: &str) {
+fn refused(dir: &Path, args: &[&str], says: &str) -> String {
     let o = abo(dir, args);
     assert!(!o.status.success() && err(&o).contains(says), "{args:?} should be refused with {says:?}: {}", err(&o));
+    err(&o)
 }
 
 fn err(o: &Output) -> String {
@@ -331,10 +363,12 @@ fn an_ambiguous_id_names_only_what_it_matches() {
     ok(&dir, &["payment-options", "add", "bank", "--kind", "bank", "--iban", "CH93 0076 2011 6238 5295 7"]);
     let o = abo(&dir, &["payment-options", "edit", "cr", "--label", "y"]);
     assert!(!o.status.success() && err(&o).contains("crypto, crypto-eth") && !err(&o).contains("bank"), "{}", err(&o));
-    // Removed by the start of its id, it is logged by the whole of it.
-    ok(&dir, &["payment-options", "remove", "crypto-e"]);
+    // Edited by the start of its id, it is logged by the whole of it.
+    ok(&dir, &["payment-options", "edit", "crypto-e", "--label", "Ether"]);
     let last = log_jsonl(&dir).lines().last().unwrap().to_string();
     assert!(last.contains("payment option crypto-eth"), "{last}");
+    // Removed, only by the whole: the start of one may name another than meant.
+    refused(&dir, &["payment-options", "remove", "crypto-e"], "`abo payment-options remove crypto-eth`");
 }
 
 // ---- in the browser ----
@@ -366,7 +400,7 @@ fn an_invoice_is_in_a_declared_commodity() {
 fn a_commodity_in_the_wrong_case_is_refused() {
     invoice_refused("wrong-case", &["--item", "1|10|x", "--currency", "eur"], "eur");
     let dir = books("wrong-case-post", &[]);
-    refused(&dir, &["post", "--date", "2026-03-01", "--desc", "x", "Expenses:General=10 eur", "Assets:Bank=-10 eur"], "I-A1: eur is not declared");
+    refused(&dir, &["post", "--date", "2026-03-01", "--desc", "x", "Expenses:General=10 eur", "Assets:Bank=-10 eur"], "I-A1 (what is named is declared): the commodity eur is not declared");
 }
 
 /// An invoice takes the places its commodity is declared with: a small
@@ -430,7 +464,7 @@ fn init_stops_when_its_input_runs_out() {
         std::thread::sleep(Duration::from_millis(20));
     }
     let o = c.wait_with_output().unwrap();
-    assert!(!o.status.success() && err(&o).contains("ran out at Account holder"), "{}", err(&o));
+    assert!(!o.status.success() && err(&o).contains("no answer came in at Account holder"), "{}", err(&o));
     assert!(std::fs::read_dir(&base).unwrap().next().is_none(), "left behind");
 }
 
@@ -487,7 +521,7 @@ fn a_document_filed_for_a_booking_is_not_booked_again() {
     std::fs::write(&found, b"%PDF-1.4\n% found\n%%EOF\n").unwrap();
     let path = filed(&dir, &["file", "--date", "2026-03-01", "--issuer", "Lost", "--for", &lost, &found.to_string_lossy()]);
     assert!(read(&dir, "bills/index").contains(&format!("{path} {lost}")), "{}", read(&dir, "bills/index"));
-    refused(&dir, &["bill", "--desc", "Twice", "--document", &path, "Expenses:General=9.00", "Liabilities:Payable=-9.00"], "which stands");
+    refused(&dir, &["bill", "--desc", "Twice", "--document", &path, "Expenses:General=9.00", "Liabilities:Payable=-9.00"], "already; another bill's document is filed");
     clean(&dir);
 }
 
@@ -509,7 +543,7 @@ fn an_edit_whose_input_runs_out_changes_nothing() {
     let dir = books("edit-eof", &["--payment", "{ kind = \"cash\", details = \"Office\\nMon-Fri\" }"]);
     let before = read(&dir, "abo.toml");
     let o = abo(&dir, &["payment-options", "edit", "cash"]);
-    assert!(!o.status.success() && err(&o).contains("ran out"), "{}", err(&o));
+    assert!(!o.status.success() && err(&o).contains("no answer came in"), "{}", err(&o));
     assert_eq!(read(&dir, "abo.toml"), before);
 }
 
@@ -520,7 +554,7 @@ fn a_bill_is_booked_once() {
     refused(&dir, &["bill", "--date", "2026-03-02", "--desc", "Again", "--document", &b, "Expenses:General=60.00", "Liabilities:Payable=-60.00"],
             "a bill is dated as its document");
     refused(&dir, &["bill", "--desc", "Again", "--document", &b, "Expenses:General=60.00", "Liabilities:Payable=-60.00"],
-            "which stands");
+            "already; another bill's document is filed");
     clean(&dir);
 }
 
@@ -657,7 +691,7 @@ fn money_paid_by_an_option_arrives_in_an_asset() {
 #[test]
 fn a_cash_option_says_where_and_when() {
     let dir = books("cash-lines", &[]);
-    refused(&dir, &["payment-options", "add", "till", "--kind", "cash"], "needs lines saying where and when");
+    refused(&dir, &["payment-options", "add", "till", "--kind", "cash"], "needs details, lines saying where and when");
 }
 
 #[test]
@@ -749,7 +783,7 @@ fn abo_toml_is_checked_when_read() {
     let dir = books("config-check", &[]);
     let toml = read(&dir, "abo.toml");
     for (from, to, says) in [("receivable = \"Assets:Receivable\"", "receivable = \"Income:Sales\"", "I-C3"),
-                             ("Liabilities:VAT:Output", "Liabilities:VAT:Owed", "I-A1: Liabilities:VAT:Owed is not declared")] {
+                             ("Liabilities:VAT:Output", "Liabilities:VAT:Owed", "I-A1 (what is named is declared): Liabilities:VAT:Owed is not declared")] {
         std::fs::write(dir.join("abo.toml"), toml.replace(from, to)).unwrap();
         let o = abo(&dir, &["check"]);
         assert!(!o.status.success() && String::from_utf8_lossy(&o.stdout).contains(says), "{says}: {}", String::from_utf8_lossy(&o.stdout));
@@ -821,7 +855,7 @@ fn an_answer_of_spaces_is_no_answer() {
     ok(&dir, &["account", "add", "Assets:Crypto"]);
     refused(&dir, &["payment-options", "add", "w", "--kind", "crypto", "--network", " ", "--address", "bc1q"], "A network is needed");
     refused(&dir, &["payment-options", "add", "v", "--kind", "crypto", "--network", "BTC", "--address", " "], "An address is needed");
-    refused(&dir, &["payment-options", "add", "t", "--kind", "cash", "--detail", " "], "needs lines saying where and when");
+    refused(&dir, &["payment-options", "add", "t", "--kind", "cash", "--detail", " "], "needs details, lines saying where and when");
 }
 
 #[test]
@@ -971,7 +1005,7 @@ fn tidy_mends_an_uncommitted_edit() {
         .collect::<Vec<_>>().join("\n") + "\n";
     assert_ne!(spaced, journal);
     std::fs::write(dir.join("journal/2026.journal"), spaced).unwrap();
-    refused(&dir, &["tidy"], "Please take it out (git checkout --");
+    refused(&dir, &["tidy"], "or take it out (git checkout --");
     git(&dir, &["commit", "-qam", "By hand"]);
     ok(&dir, &["tidy"]);
     assert_eq!(read(&dir, "journal/2026.journal"), journal);
@@ -1264,9 +1298,10 @@ fn an_invoice_in_another_currency_is_booked_in_the_companys() {
     assert!(j.contains("1500.00 USD @@ 1380.00 EUR") && j.contains("-1380.00 EUR"), "{j}");
     let pl = json(&dir, &["pl", "--period", "2026"]);
     assert!(!pl.to_string().contains("USD"), "{pl}");
-    // So is a bill: its expense in the company's currency.
-    refused(&dir, &["bill", "--date", "2026-03-01", "--desc", "Licence", "Expenses:General=250.00 USD", "Liabilities:Payable=-250.00 USD"], "I-E4");
-    ok(&dir, &["bill", "--date", "2026-03-01", "--desc", "Licence", "Expenses:General=230.00", "Liabilities:Payable=-250.00 USD @@ 230.00 EUR"]);
+    // A bill's expense may be in dollars, an account then of dollars: one
+    // that holds them takes no euros (N12).
+    ok(&dir, &["bill", "--date", "2026-03-01", "--desc", "Licence", "Expenses:General=250.00 USD", "Liabilities:Payable=-250.00 USD"]);
+    refused(&dir, &["bill", "--date", "2026-03-02", "--desc", "Licence", "Expenses:General=230.00", "Liabilities:Payable=-230.00"], "N12");
 }
 
 /// A reversal dated back to May slipped under two recorded statements, and
@@ -1380,7 +1415,7 @@ fn a_refusal_says_what_to_type() {
     refused(&dir, &["invoice", "--to", "X", "--item", "1|100|a", "--vat-rate", "0", "--date", "2026-03-01"], "--vat-reason");
     let id = entry(&dir, &["bill", "--date", "2026-03-03", "--desc", "Chairs", "Expenses:General=40.00", "Liabilities:Payable=-40.00"]);
     ok(&dir, &["pay", &id, "--date", "2026-03-04"]);
-    refused(&dir, &["pay", &id, "--date", "2026-03-04"], "is settled: nothing is open");
+    refused(&dir, &["pay", &id, "--date", "2026-03-04"], "is settled already: nothing is open");
 }
 
 /// Closing a period was in no help; bal and reg did not say what they pass on.
@@ -1468,7 +1503,7 @@ fn check_mends_a_hand_edit_not_committed_by_taking_it_out() {
     assert!(said.contains("git checkout -- journal/accounts.journal") && !said.contains("abo account add"), "{said}");
     git(&dir, &["checkout", "--", "journal/accounts.journal"]);
     std::fs::write(dir.join("journal/2026.journal"), read(&dir, "journal/2026.journal").replace("Fees", "Bank fees")).unwrap();
-    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"], "Please take it out (git checkout --");
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"], "or take it out (git checkout --");
 }
 
 /// A change made on books holding a problem went ahead without a word.
@@ -1581,15 +1616,19 @@ fn a_debt_written_off_says_so() {
     assert!(ok(&dir, &["bills"]).contains("written off"));
 }
 
-/// The balance sheet showed what is owed in dollars in dollars, beside
-/// hledger's own conversion accounts.
+/// The balance sheet showed what is owed in dollars in dollars alone, beside
+/// hledger's own conversion accounts. Now in dollars and, beside it, euros;
+/// the conversion one line of what exchanges come to; the sheet nil.
 #[test]
-fn the_balance_sheet_is_in_the_companys_currency() {
+fn the_balance_sheet_shows_the_companys_currency_too() {
     let dir = books("bs-cost", &[]);
     ok(&dir, &["commodity", "add", "USD", "2"]);
     ok(&dir, &["bill", "--date", "2026-03-01", "--desc", "Licence", "Expenses:General=230.00", "Liabilities:Payable=-250.00 USD @@ 230.00 EUR"]);
     let bs = ok(&dir, &["bs", "--date", "2026-03-31"]);
-    assert!(!bs.contains("USD") && !bs.contains("conversion"), "{bs}");
+    assert!(bs.contains("250.00 USD (230.00 EUR)") && !bs.contains("conversion"), "{bs}");
+    ok(&dir, &["price", "add", "2026-03-02", "USD", "0.90", "EUR"]);
+    let bs = ok(&dir, &["bs", "--date", "2026-03-31"]);
+    assert!(bs.contains("250.00 USD (225.00 EUR)") && bs.contains("Exchange differences not realised") && bs.trim_end().ends_with("0.00 EUR"), "{bs}");
 }
 
 /// A loss was said as a profit below nought; pl and vat took no -p.
@@ -1600,11 +1639,13 @@ fn a_loss_is_said_as_one_and_reports_take_p() {
     assert!(ok(&dir, &["pl", "-p", "2026"]).contains("Loss for the period"));
 }
 
-/// Run in the data directory, a command said only that there were no books.
+/// Run where there are no books, abo says so and how to find them, and
+/// looks no further: books in a directory below are not its business.
 #[test]
-fn the_data_directory_names_its_companies() {
+fn no_books_here_is_said_plainly() {
     let dir = books("data-dir", &[]);
-    refused(dir.parent().unwrap(), &["bills"], "it holds the books of test-ltd");
+    let said = refused(dir.parent().unwrap(), &["bills"], "there are no books here");
+    assert!(!said.contains("test-ltd") && said.contains("--dir"), "{said}");
 }
 
 // ---- decided after the third CLI run, 2026-10-07 ----
@@ -1797,7 +1838,7 @@ fn text_not_as_abo_writes_it_holds_changes_up_until_tidied() {
     let o = abo(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"]);
     assert!(err(&o).contains("git checkout") && !err(&o).contains("git commit"), "{}", err(&o));
     git(&dir, &["commit", "-qam", "By hand"]);
-    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"], "until abo tidy");
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"], "until `abo tidy`");
     assert!(ok(&dir, &["tidy"]).contains("Rewrote journal/2026.journal"));
     assert_eq!(read(&dir, "journal/2026.journal"), j);
     ok(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"]);
@@ -1811,17 +1852,23 @@ fn a_document_is_named_by_its_own_file_too() {
     let scan = dir.join("../scan.pdf").display().to_string();
     ok(&dir, &["file", "--date", "2026-03-05", "--issuer", "Shop", &scan]);
     ok(&dir, &["unfile", &scan]);
-    refused(&dir, &["unfile", &scan], "is not filed; abo file files it");
+    refused(&dir, &["unfile", &scan], "is not filed; `abo file` files it");
 }
 
-/// Plain `abo bal` came out short of nil, what is owed in USD not at its cost.
+/// Plain `abo bal` came out short of nil, what is owed in USD not at its
+/// cost. Now each account in its own commodity, and one in another than the
+/// company's in that too, at cost where there is no price; the total nil.
 #[test]
-fn bal_is_at_cost_unless_told() {
+fn bal_shows_each_account_in_its_own_commodity_and_the_companys() {
     let dir = books("bal-cost", &[]);
     ok(&dir, &["commodity", "add", "USD", "2"]);
     ok(&dir, &["bill", "--date", "2026-03-01", "--desc", "Licence", "Expenses:General=230.00", "Liabilities:Payable=-250.00 USD @@ 230.00 EUR"]);
     let said = ok(&dir, &["bal"]);
-    assert!(said.trim_end().ends_with('0') && !said.contains("USD"), "{said}");
+    assert!(said.contains("-250.00 USD") && said.contains("(-230.00 EUR)  Liabilities:Payable:USD") && said.trim_end().ends_with("0.00 EUR"), "{said}");
+    // At the latest price, once there is one.
+    ok(&dir, &["price", "add", "2026-03-02", "USD", "0.90", "EUR"]);
+    let said = ok(&dir, &["bal"]);
+    assert!(said.contains("(-225.00 EUR)  Liabilities:Payable:USD") && said.trim_end().ends_with("0.00 EUR"), "{said}");
 }
 
 /// Splitting an account in use was refused with no way round said.
@@ -1829,7 +1876,7 @@ fn bal_is_at_cost_unless_told() {
 fn splitting_an_account_in_use_says_how() {
     let dir = books("split", &[]);
     ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Float", "Assets:Bank=10.00", "Equity:Opening=-10.00"]);
-    refused(&dir, &["account", "add", "Assets:Bank:Savings"], "declare the new one beside it, or move what names Assets:Bank under it first");
+    refused(&dir, &["account", "add", "Assets:Bank:Savings"], "an account in use takes no accounts under it: declare the new one beside it");
 }
 
 /// The crypto option's wallet was --address, as a company's address line is.
@@ -1855,7 +1902,7 @@ fn bal_takes_ytd_as_pl_does() {
 #[test]
 fn a_bill_without_its_debt_says_what_to_add() {
     let dir = books("bill-debt", &[]);
-    refused(&dir, &["bill", "--date", "2026-03-03", "--desc", "Chairs", "Expenses:General=400.00", "Assets:VAT:Input=40.00"], "Liabilities:Payable=-<the bill's total>");
+    refused(&dir, &["bill", "--date", "2026-03-03", "--desc", "Chairs", "Expenses:General=400.00", "Assets:VAT:Input=40.00"], "a posting crediting what is owed, 'Liabilities:Payable'");
 }
 
 /// Booking to an account with accounts under it gave the hint for declaring one.
@@ -2062,15 +2109,15 @@ fn former_employees_are_listed_apart() {
     ok(&dir, &["agreement", "add", "alex", "--partner", "alex", "--from", "2026-01-01"]);
     ok(&dir, &["agreement", "terminate", "alex", "--on", "2026-12-31"]);
     let said = ok(&dir, &["partner"]);
-    assert!(said.contains("Sam Now") && !said.contains("Alex Then") && said.contains("1 former employee; abo partner list --former"), "{said}");
+    assert!(said.contains("Sam Now") && !said.contains("Alex Then") && said.contains("1 former employee; `abo partner list --former`"), "{said}");
     let said = ok(&dir, &["partner", "list", "--former"]);
     let (now, then) = said.split_once("Former employees").unwrap_or_else(|| panic!("{said}"));
     assert!(now.contains("Sam Now") && !now.contains("Alex Then") && then.contains("Alex Then"), "{said}");
     let said = ok(&dir, &["agreement", "show", "alex"]);
-    assert!(said.contains("no signed copy filed: abo file --for alex/1"), "{said}");
+    assert!(said.contains("no signed copy filed: `abo file --for alex/1"), "{said}");
     // An ended agreement likewise: counted, and listed with --ended.
     let said = ok(&dir, &["agreement"]);
-    assert!(!said.contains("alex  ") && said.contains("1 ended agreement; abo agreement list --ended"), "{said}");
+    assert!(!said.contains("alex  ") && said.contains("1 ended agreement; `abo agreement list --ended`"), "{said}");
     let said = ok(&dir, &["agreement", "list", "--ended"]);
     assert!(said.split_once("Ended").is_some_and(|(_, e)| e.contains("alex  ")), "{said}");
 }
@@ -2232,4 +2279,290 @@ fn a_typst_error_is_ascii() {
     let o = abo(&dir, &["invoice", "--to", "C", "--item", "1|10|x", "--vat-rate", "0", "--vat-reason", "Export", "--date", "2026-03-02"]);
     let e = err(&o);
     assert!(!o.status.success() && e.contains("templates/invoice.typ:") && e.contains("unclosed delimiter") && e.is_ascii(), "{e}");
+}
+
+// ---- decided after the CLI swarm, 2026-11-22 ----
+
+/// An entry typed by hand into main.journal was not read: `abo check` called
+/// the file only not as abo writes it, and `abo tidy`, which it pointed to,
+/// took the entry out. Now one typed anywhere is read as hledger reads it,
+/// named, and taken in by tidy; one that breaks a rule, said at its line,
+/// and left where it is.
+#[test]
+fn an_entry_typed_by_hand_is_taken_in() {
+    let dir = books("by-hand", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "First", "Expenses:General 5", "Assets:Bank"]);
+    let main = read(&dir, "journal/main.journal");
+    std::fs::write(dir.join("journal/main.journal"), format!("{main}\n2026-03-02 Typed by hand\n    Expenses:General  4.00 EUR\n    Assets:Bank\n")).unwrap();
+    let year = read(&dir, "journal/2026.journal");
+    std::fs::write(dir.join("journal/2026.journal"), format!("{year}\n2026/03/03 Typed too\n  Expenses:General  EUR 1,000\n  Assets:Bank\n")).unwrap();
+    by_hand(&dir, "By hand");
+    let o = abo(&dir, &["check"]);
+    let said = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert!(said.contains("journal/main.journal:4") && said.contains("\"2026-03-02 Typed by hand\" is an entry abo did not write") && said.contains("as entry 3"), "{said}");
+    ok(&dir, &["tidy"]);
+    ok(&dir, &["check"]);
+    let j = read(&dir, "journal/2026.journal");
+    assert!(j.contains("2026-03-02 Typed by hand\n    ; id: 3") && j.contains("2026-03-03 Typed too\n    ; id: 2") && j.contains("-1000.00 EUR"), "{j}");
+    assert!(!read(&dir, "journal/main.journal").contains("Typed"));
+    // One that does not balance: said as hledger says it, and not taken in.
+    let main = read(&dir, "journal/main.journal");
+    std::fs::write(dir.join("journal/main.journal"), format!("{main}\n2026-03-04 Unbalanced\n    Expenses:General  4.00 EUR\n    Assets:Bank  -3.00 EUR\n")).unwrap();
+    by_hand(&dir, "By hand again");
+    let o = abo(&dir, &["check"]);
+    let said = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert!(!o.status.success() && said.contains("journal/main.journal:4: I-E1 (an entry balances): entry 4 does not balance: its postings sum to 1.00 EUR") && !said.contains("`abo tidy`, for"), "{said}");
+    refused(&dir, &["tidy"], "takes in no entry typed by hand while the books break a rule");
+    assert!(read(&dir, "journal/main.journal").contains("Unbalanced"));
+}
+
+/// `abo entries Pens` found every entry posting to Expenses. Each word is a
+/// pattern now, as hledger takes a query.
+#[test]
+fn entries_takes_patterns() {
+    let dir = books("patterns", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Pens", "Expenses:General 5", "Assets:Bank"]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Paper", "Expenses:General 6", "Assets:Bank"]);
+    let all = ok(&dir, &["entries", "pens"]);
+    assert!(all.contains("Paper"), "{all}");
+    let one = ok(&dir, &["entries", "^pens$"]);
+    assert!(one.contains("Pens") && !one.contains("Paper"), "{one}");
+    refused(&dir, &["entries", "("], "is not a pattern");
+}
+
+/// Piped to `head`, abo panicked when head was done.
+#[test]
+fn a_closed_pipe_ends_abo_quietly() {
+    let dir = books("pipe", &[]);
+    for i in 0..30 {
+        ok(&dir, &["post", "--date", "2026-03-01", "--desc", &format!("Entry {i}"), "Expenses:General 1", "Assets:Bank"]);
+    }
+    let mut child = Command::new(env!("CARGO_BIN_EXE_abo")).args(["log", "--last", "1000"]).current_dir(&dir).env("ABO_TODAY", TODAY).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    drop(child.stdout.take());
+    let o = child.wait_with_output().unwrap();
+    assert!(!err(&o).contains("panicked"), "{}", err(&o));
+}
+
+/// A file beside the books held undo up while `abo check` said all was
+/// well. Now undo stops only at what holds git up, which check says too.
+#[test]
+fn undo_and_check_agree() {
+    let dir = books("undo-check", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Pens", "Expenses:General 5", "Assets:Bank"]);
+    std::fs::write(dir.join("stray.pdf"), "x").unwrap();
+    assert!(ok(&dir, &["check"]).contains("No problems."));
+    ok(&dir, &["undo"]);
+    ok(&dir, &["undo"]);
+    Command::new("git").args(["add", "stray.pdf"]).current_dir(&dir).status().unwrap();
+    let said = ok(&dir, &["check"]);
+    assert!(said.contains("stray.pdf is staged and not committed, and `abo undo` takes nothing back"), "{said}");
+    refused(&dir, &["undo"], "stray.pdf is staged");
+}
+
+/// A debt in another commodity paid at another cost than it was booked at
+/// left the difference on its account at cost. The payment books it now,
+/// as an exchange gain or loss, and says so; `abo check` says one booked
+/// before with the commands that book it.
+#[test]
+fn an_exchange_difference_is_booked_with_its_payment() {
+    let dir = books("exchange", &[]);
+    ok(&dir, &["commodity", "add", "USD", "2"]);
+    let bill = entry(&dir, &["bill", "--date", "2026-03-01", "--desc", "Licence", "Expenses:General 92.00", "Liabilities:Payable -100.00 USD @@ 92.00 EUR"]);
+    refused(&dir, &["pay", &bill, "--cost", "95.00 EUR", "--from", "Assets:Bank", "--date", "2026-03-05"], "Expenses:ExchangeLosses is not declared: the payment costs more than the debt was booked at");
+    ok(&dir, &["account", "add", "Expenses:ExchangeLosses"]);
+    let said = ok(&dir, &["pay", &bill, "--cost", "95.00 EUR", "--from", "Assets:Bank", "--date", "2026-03-05"]);
+    assert!(said.contains("It cost 3.00 EUR more than its debt was booked at: an exchange loss, booked to Expenses:ExchangeLosses."), "{said}");
+    let j = read(&dir, "journal/2026.journal");
+    assert!(j.contains("100.00 USD @@ 92.00 EUR") && j.contains("Expenses:ExchangeLosses                         3.00 EUR"), "{j}");
+    // Booked as payments were before: said, with what books it, which runs.
+    let j = j.replace("    Expenses:ExchangeLosses                         3.00 EUR\n", "").replace("100.00 USD @@ 92.00 EUR\n    Assets:Bank", "100.00 USD @@ 95.00 EUR\n    Assets:Bank");
+    std::fs::write(dir.join("journal/2026.journal"), j).unwrap();
+    by_hand(&dir, "As before");
+    let said = ok(&dir, &["check"]);
+    assert!(said.contains("was paid at 95.00 EUR where its share of what it was booked at is 92.00 EUR: an exchange loss of 3.00 EUR, booked nowhere") && said.contains("`abo revert 2`"), "{said}");
+}
+
+/// An invoice in another commodity waited while one in the company's was
+/// open: each is owed on a receivable of its own, declared with it.
+#[test]
+fn debts_in_two_commodities_are_open_at_once() {
+    let dir = books("two-receivables", &[]);
+    ok(&dir, &["commodity", "add", "USD", "2"]);
+    ok(&dir, &["price", "add", "2026-03-01", "USD", "0.92", "EUR"]);
+    ok(&dir, &["invoice", "--to", "C", "--item", "1|100|Work", "--date", "2026-03-01"]);
+    ok(&dir, &["invoice", "--to", "Hudson", "--item", "1|1500|Consulting", "--currency", "USD", "--date", "2026-03-02", "--vat-rate", "0", "--vat-reason", "Export"]);
+    assert!(read(&dir, "journal/accounts.journal").contains("account Assets:Receivable:USD"));
+    assert!(read(&dir, "journal/2026.journal").contains("Assets:Receivable:USD"));
+    ok(&dir, &["bill", "--date", "2026-03-03", "--desc", "Hosting", "Expenses:General 10", "Liabilities:Payable"]);
+    ok(&dir, &["account", "add", "Expenses:Hosting"]);
+    ok(&dir, &["bill", "--date", "2026-03-03", "--desc", "Licence", "Expenses:Hosting 250.00 USD", "Liabilities:Payable -250.00 USD"]);
+    assert!(read(&dir, "journal/2026.journal").contains("Liabilities:Payable:USD"));
+}
+
+/// `$` was refused as a commodity, while hledger takes it as one of its own.
+#[test]
+fn a_currency_sign_is_a_commodity_of_its_own() {
+    let dir = books("sign", &[]);
+    refused(&dir, &["post", "--date", "2026-03-01", "--desc", "x", "Assets:Cash $5", "Equity:Opening"], "$ is not declared");
+    ok(&dir, &["commodity", "add", "$", "2"]);
+    ok(&dir, &["account", "add", "Equity:OpeningDollars"]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "x", "Assets:Cash $5", "Equity:OpeningDollars"]);
+    assert!(read(&dir, "journal/2026.journal").contains("5.00 $"));
+}
+
+/// `abo bs 2026-02-28` was refused: the date was --date only.
+#[test]
+fn bs_takes_a_plain_date() {
+    let dir = books("bs-date", &[]);
+    assert!(ok(&dir, &["bs", "2026-02-28"]).contains("as at 2026-02-28"));
+}
+
+/// An invoice's period was abo's own, both days in it; now hledger's.
+#[test]
+fn an_invoice_period_is_read_as_hledger_reads_one() {
+    let dir = books("period", &[]);
+    for (p, from, to) in [("2026-02", "2026-02-01", "2026-02-28"), ("2026-02-01..2026-03-01", "2026-02-01", "2026-02-28"), ("2026q1", "2026-01-01", "2026-03-31")] {
+        let v = json(&dir, &["invoice", "--to", "C", "--item", "1|10|Work", "--date", "2026-03-05", "--period", p]);
+        let kept = read(&dir, &format!("invoices/2026/{}.json", v["number"].as_str().unwrap()));
+        assert!(kept.contains(&format!("\"from\": \"{from}\"")) && kept.contains(&format!("\"to\": \"{to}\"")), "{p}: {kept}");
+    }
+    refused(&dir, &["invoice", "--to", "C", "--item", "1|10|Work", "--date", "2026-03-05", "--period", "from 2026-02-01"], "a first and a last day");
+}
+
+/// Accounts with a space or a `;` in their names can no longer be declared:
+/// a posting's first space ends the name, and `;` begins a comment.
+#[test]
+fn a_new_account_has_no_space_or_semicolon() {
+    let dir = books("account-names", &[]);
+    refused(&dir, &["account", "add", "Expenses:Office supplies"], "Expenses:OfficeSupplies");
+    refused(&dir, &["account", "add", "Assets:Hi;there"], "Assets:HiThere");
+}
+
+// ---- decided after the third CLI swarm, 2026-11-22 ----
+
+/// A comment typed between entries is said, and abo tidy drops nothing:
+/// it refuses until the comment is taken out by hand. A cleared mark is
+/// taken in without the mark, and said so.
+#[test]
+fn tidy_drops_no_comment_and_takes_a_mark_off() {
+    let dir = books("comments", &[]);
+    ok(&dir, &["post", "--date", "2026-03-01", "--desc", "First", "Expenses:General 5", "Assets:Bank"]);
+    let main = read(&dir, "journal/main.journal");
+    std::fs::write(dir.join("journal/main.journal"), format!("{main}; a note of mine\n")).unwrap();
+    let year = read(&dir, "journal/2026.journal");
+    std::fs::write(dir.join("journal/2026.journal"), format!("{year}\n2026-03-02 * Fee\n    Expenses:General  2 EUR\n    Assets:Bank\n")).unwrap();
+    by_hand(&dir, "By hand");
+    let o = abo(&dir, &["check"]);
+    let said = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert!(said.contains("\"; a note of mine\" is a comment, and abo keeps none") && said.contains("without its mark *"), "{said}");
+    refused(&dir, &["tidy"], "`abo tidy` would drop what these lines say");
+    assert!(read(&dir, "journal/main.journal").contains("; a note of mine"));
+    std::fs::write(dir.join("journal/main.journal"), main).unwrap();
+    by_hand(&dir, "Note out");
+    ok(&dir, &["tidy"]);
+    assert!(read(&dir, "journal/2026.journal").contains("2026-03-02 Fee\n    ; id: 2"));
+}
+
+/// A bill names a liability declared: a misspelt one is refused, not
+/// declared with the bill.
+#[test]
+fn a_bill_declares_no_misspelt_liability() {
+    let dir = books("misspelt", &[]);
+    refused(&dir, &["bill", "--date", "2026-03-01", "--desc", "Typo", "Expenses:General 10", "Liabilities:Payabel"], "Liabilities:Payabel");
+    assert!(!ok(&dir, &["account"]).contains("Payabel"));
+}
+
+/// An invoice in dollars paid in euros: a gain or loss said as what it
+/// brings in, taken back by a revert as such; paid in full, it is settled,
+/// not written off. The amount may be grouped, and carry its commodity.
+#[test]
+fn an_exchange_on_an_invoice_is_said_as_what_it_brings_in() {
+    let dir = books("fx-brings-in", &[]);
+    ok(&dir, &["commodity", "add", "USD", "2"]);
+    ok(&dir, &["price", "add", "2026-01-01", "USD", "0.92", "EUR"]);
+    for a in ["Income:ExchangeGains", "Expenses:ExchangeLosses", "Assets:Checking"] {
+        ok(&dir, &["account", "add", a]);
+    }
+    ok(&dir, &["partner", "add", "acme", "--name", "Acme Inc", "--address", "NY", "--ni"]);
+    ok(&dir, &["invoice", "--date", "2026-02-01", "--to", "acme", "--currency", "USD", "--item", "1|1000|Work", "--ni"]);
+    let said = ok(&dir, &["pay", "2026-0001", "--amount", "500", "--cost", "470.00 EUR", "--from", "Assets:Checking", "--date", "2026-03-01"]);
+    assert!(said.contains("It brings in 10.00 EUR more than its debt was booked at: an exchange gain, booked to Income:ExchangeGains."), "{said}");
+    let said = ok(&dir, &["pay", "2026-0001", "--amount", "600.00 USD", "--cost", "1,000.00 EUR", "--from", "Assets:Checking", "--date", "2026-03-02"]);
+    assert!(said.contains("an exchange gain"), "{said}");
+    assert!(ok(&dir, &["invoices"]).contains("settled"));
+    let said = ok(&dir, &["revert", "3"]);
+    assert!(said.contains("It takes back an exchange gain of 448.00 EUR, booked to Income:ExchangeGains."), "{said}");
+    refused(&dir, &["pay", "2026-0001", "--amount", "EUR 10"], "give the amount in USD");
+    // Paid in its own commodity, it exchanges nothing: check notes no difference.
+    ok(&dir, &["account", "add", "Assets:Dollars"]);
+    ok(&dir, &["pay", "2026-0001", "--from", "Assets:Dollars", "--date", "2026-03-03"]);
+    assert!(ok(&dir, &["invoices"]).contains("settled"));
+    let said = ok(&dir, &["check"]);
+    assert!(!said.contains("Note:"), "{said}");
+}
+
+/// Debts are owed under the account named, one account per commodity, as
+/// an hledger user names them; named without its commodity, an account is
+/// given it. Books that owed on the receivable itself keep doing so in the
+/// company's currency, and owe in another beside it.
+#[test]
+fn a_debt_is_owed_under_the_account_named_per_commodity() {
+    let dir = books("per-commodity", &[]);
+    ok(&dir, &["commodity", "add", "USD", "2"]);
+    ok(&dir, &["price", "add", "2026-03-01", "USD", "0.92", "EUR"]);
+    ok(&dir, &["invoice", "--to", "C", "--item", "1|100|Work", "--date", "2026-03-01"]);
+    ok(&dir, &["invoice", "--to", "Hudson", "--item", "1|1500|Consulting", "--currency", "USD", "--date", "2026-03-02", "--vat-rate", "0", "--vat-reason", "Export"]);
+    ok(&dir, &["bill", "--date", "2026-03-03", "--desc", "Paper", "Expenses:General 10", "Liabilities:Payable"]);
+    ok(&dir, &["bill", "--date", "2026-03-03", "--desc", "Pens", "Expenses:General 5", "Liabilities:Payable:EUR"]);
+    let j = read(&dir, "journal/2026.journal");
+    assert!(j.contains("Assets:Receivable:EUR") && j.contains("Assets:Receivable:USD") && j.matches("Liabilities:Payable:EUR").count() == 2, "{j}");
+    ok(&dir, &["check"]);
+    // Any account: posted in a commodity one under it is named after.
+    for a in ["Assets:Wise", "Assets:Wise:EUR", "Assets:Wise:USD"] {
+        ok(&dir, &["account", "add", a]);
+    }
+    ok(&dir, &["post", "--date", "2026-03-04", "--desc", "Dollars", "Assets:Wise 100 USD @@ 92 EUR", "Assets:Bank"]);
+    ok(&dir, &["pay", "2026-0002", "--amount", "100", "--from", "Assets:Wise", "--date", "2026-03-05"]);
+    let j = read(&dir, "journal/2026.journal");
+    assert!(j.contains("    Assets:Wise:USD                               100.00 USD @@ 92.00 EUR") && j.matches("Assets:Wise:USD").count() == 2, "{j}");
+
+    let old = books("owed-on-itself", &[]);
+    ok(&old, &["commodity", "add", "USD", "2"]);
+    ok(&old, &["price", "add", "2026-03-01", "USD", "0.92", "EUR"]);
+    // An invoice as abo booked one before: on the receivable itself.
+    ok(&old, &["invoice", "--to", "C", "--item", "1|100|Work", "--date", "2026-03-01"]);
+    for f in ["journal/2026.journal", "journal/accounts.journal", "invoices/2026/2026-0001.json"] {
+        let t = read(&old, f).replace("account Assets:Receivable:EUR\n", "").replace("Assets:Receivable:EUR     ", "Assets:Receivable         ").replace("Assets:Receivable:EUR", "Assets:Receivable");
+        std::fs::write(old.join(f), t).unwrap();
+    }
+    by_hand(&old, "As abo booked it before");
+    ok(&old, &["check"]);
+    ok(&old, &["invoice", "--to", "C", "--item", "1|10|More", "--date", "2026-03-01"]);
+    ok(&old, &["invoice", "--to", "Hudson", "--item", "1|1500|Consulting", "--currency", "USD", "--date", "2026-03-02", "--vat-rate", "0", "--vat-reason", "Export"]);
+    let j = read(&old, "journal/2026.journal");
+    assert!(j.matches("    Assets:Receivable  ").count() == 2 && j.contains("Assets:ReceivableUSD") && !j.contains("Assets:Receivable:"), "{j}");
+    ok(&old, &["check"]);
+}
+
+/// An account named after a commodity, under another, holds that one alone;
+/// one abo books to in place of the one named is said; a price may have
+/// more places than its commodity; a statement of a parent names its own.
+#[test]
+fn an_account_named_after_a_commodity_holds_it_alone() {
+    let dir = books("named-after", &[]);
+    ok(&dir, &["commodity", "add", "USD", "2"]);
+    ok(&dir, &["price", "add", "2026-03-01", "USD", "0.92", "EUR"]);
+    refused(&dir, &["bill", "--date", "2026-03-02", "--desc", "Hosting", "Expenses:General 90 USD", "Liabilities:Payable:EUR"], "post USD to Liabilities:Payable:USD");
+    let said = ok(&dir, &["bill", "--date", "2026-03-02", "--desc", "Hosting", "Expenses:General 90 USD", "Liabilities:Payable"]);
+    assert!(said.contains("Liabilities:Payable is booked as Liabilities:Payable:USD"), "{said}");
+    for a in ["Assets:Wise", "Assets:Wise:EUR", "Assets:Wise:USD"] {
+        ok(&dir, &["account", "add", a]);
+    }
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "Mixed", "Assets:Wise:EUR 10 USD @@ 9 EUR", "Assets:Bank"], "post USD to Assets:Wise:USD");
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "Mixed", "Assets:Wise 10 CHF", "Assets:Bank"], "");
+    refused(&dir, &["reconcile", "Assets:Wise"], "`abo reconcile Assets:Wise:EUR`");
+    ok(&dir, &["commodity", "add", "JPY", "0"]);
+    ok(&dir, &["price", "add", "2026-03-01", "JPY", "0.0061", "EUR"]);
+    refused(&dir, &["price", "add", "2026-03-02", "JPY", "0.000000001", "EUR"], "more than 8 places");
+    ok(&dir, &["check"]);
 }

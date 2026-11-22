@@ -250,7 +250,7 @@ brings them forward, and nothing made here is ever lost to one.
 
 ### B1. Book an entry by hand — Supported (browser, CLI)
 Browser: **Entry**, fill in date, description and one posting per line
-(`account=amount`, every amount written). CLI: `abo post`.
+as hledger writes them (`Expenses:General  12.50`; `account=amount` is read too, and one may leave its amount out). CLI: `abo post`.
 **Done when** the entry is in the year's journal file in date order, one commit
 holds it, and the front page says **Booked** with that commit. An entry that
 does not balance, names an undeclared account, or falls in a closed period is
@@ -395,10 +395,12 @@ stated to those. It needs a price of its commodity in the company's
 currency on or before its date, which it keeps: its VAT is stated in the
 company's currency at it, and its entry booked at it (MODEL.md I-E4).
 **Done when** the PDF is in that commodity, and the entry has the
-receivable in it at its cost in the company's currency, and income and VAT
-in the company's currency; a bill owed in another commodity likewise has
-its expense in the company's currency, and what is owed at its cost. So
-profit and loss is one amount.
+receivable in it at its cost in the company's currency, on a receivable of
+its own for that commodity (`Assets:Receivable:USD`, declared with it, MODEL.md
+N12), and income and VAT in the company's currency. A bill owed in another
+commodity is owed on a payable of its own likewise. Paid at another cost
+than it was booked at, the payment books the difference to
+`Income:ExchangeGains` or `Expenses:ExchangeLosses`, and says so.
 
 ### C4. Invoice a partner, or under an agreement — Supported (browser, CLI)
 The invoice form's **Partner** fills in their name, address and tax number
@@ -461,15 +463,21 @@ the period, matching `hledger balance` over the same period. Downloading a PDF
 changes nothing in the books.
 
 ### E2. Balance sheet at a date — Supported
-**Done when** assets, liabilities and equity are listed in the company's
-currency — what is held or owed in another at what it was booked at —
-unclosed profit shows as an equity line, and the bottom line (assets less
-liabilities and equity) is nil.
+CLI: `abo bs 2026-12-31`, or `--date`.
+**Done when** assets, liabilities and equity are listed, each account in its
+own commodity and, where that is not the company's, in the company's
+currency beside it — at the latest price, or at cost where there is none —
+with totals in the company's currency; what exchanges come to against their
+cost is one equity line; unclosed profit shows as an equity line; and the
+bottom line (assets less liabilities and equity) is nil.
 
 ### E3. Ask hledger anything — Supported (CLI)
 `abo balance …` and `abo register …` pass their arguments to hledger: a query, and the
 options that choose what is reported and how — periods, depth, value,
-the output format. (A statement clears postings in abo's own tags, not
+the output format. Each account is in its own commodity; a plain `abo
+balance` shows beside one not in the company's currency what it comes to in
+it, as the balance sheet does. `abo entries` takes patterns, as hledger takes
+a query: `^pens$` for the description Pens alone. (A statement clears postings in abo's own tags, not
 hledger's cleared mark, so `--cleared` says nothing of reconciling.) Any other option is refused, so that they
 read the books and no other file, write none, and take no `hledger.conf`;
 neither does any report abo makes.
@@ -596,6 +604,102 @@ Listed so the list is complete; each has its trigger in DESIGN.md.
 - **Tax return** (§12) — not on the roadmap: each country's form is its own.
 
 ---
+
+## Web swarm of 2026-11-22: found and fixed
+
+Four testers on abo-web, forms sent as a browser sends them, the layout
+seen in screenshots at desktop and phone widths. No page failed. Fixed,
+with abo-web's `the_web_says_its_own_words` and the tests beside the ones
+changed: refusals named commands, `abo record` and `abo entries` — the web
+says the page that does it; the rules folded away for whoever runs abo are
+said in words; a refusal's `--cost` is "its cost"; `€12.50` was told to
+declare € — it is told EUR is likely meant, as `usd` is told USD, which the
+page had made `Usd`; an invoice in `usd` also blamed `Assets:Receivable:usd`;
+an account name with a space, typed with hledger's two spaces, was only "not
+declared"; "Invalid decimal: unknown character" for an amount, a price or a
+VAT rate — said in words, the Pay amount read as the CLI reads it; a price
+typed as `abc` came back as "Abc EUR"; one amount's places were refused
+twice, once negated; an invoice template took `2|abc|Hosting` (I-T3); the
+import of a file not books showed git's output and a temporary path; a
+stale Undo named a commit's code; the toast after a bill did not say it was
+booked to `Liabilities:Payable:EUR`; an account's page showed a foreign
+account at cost in the company's currency and a parent as empty — each in
+its own commodity, the parent with those under it; Show on Reconcile
+dropped the ticks; the hint to declare an account under one in use offered
+a payment option's account where none was.
+
+Not changed: the Log's command and file changes, which are folded away as a
+record; postings of nought or below, as hledger takes them; one refusal at a
+time on a form; the phone's row of icons.
+
+## Fourth CLI swarm of 2026-11-22: debts per commodity
+
+Four testers on debts owed under the account named, `Assets:Receivable:USD`,
+and on the commodity supplied where it is left out. Fixed, with a test under
+"an account named after a commodity": `Liabilities:Payable:EUR` and
+`Assets:Bank:EUR`, empty, took dollars, and later euros were refused — an
+account named after a commodity holds it alone (MODEL.md N12); hints named
+`Assets:Bank:EURUSD` and `Liabilities:Payable:USDUSD` — now the account for
+the commodity beside one named after another; a posting to a parent moved
+away still reached its old sub-account — only a declared parent is given
+one; abo booked to `…:EUR` unsaid — it says which account it booked to in
+place of the one named; a parent in a commodity none under it is named
+after said only "post to one of those" — it names the one to declare;
+`Liabilities:Payable:EUR` in books that owe on the payable itself was
+refused as if the parent were at fault — read as those books owe; the
+receivable and a payable with accounts under it were no "did you mean"; an
+invoice in a commodity not declared also blamed the receivable; a price of
+one yen, 0.0061 EUR, was refused — a price takes up to 8 places; `abo
+reconcile Assets:Wise` showed nothing — it names the account of each
+commodity; `pay` without `--from` took an account in another commodity — it
+takes the first payment option's in the debt's; a figure with no price was
+shown twice; a refusal under the receivable named the setting vaguely, and
+offered a payment option's edit where none named it.
+
+## Third CLI swarm of 2026-11-22: found and fixed
+
+Five testers again, on the release just fixed. Fixed, each with a test under
+"decided after the third CLI swarm" or beside the test it changed: `abo tidy`
+dropped a comment typed between entries — `check` names it, and `tidy`
+refuses until it is taken out by hand; a cleared mark `*` made the books
+unreadable — the entry is taken in without it, and said so; `abo bill`
+declared a misspelt liability with the bill — only a declared one is split
+per commodity; an exchange difference on an invoice was said as what it
+"costs", and a revert said a gain it took back as a loss; an invoice paid in
+full with an exchange gain was listed as written off; `check` noted a loss
+of the whole debt for a debt paid in its own commodity, with a command that
+booked a cost of nought — only what was paid at a cost is weighed, against
+its share of what the debt was booked at; `payment-options remove main`
+removed `main2` — a removal takes the whole id. Hints that failed when typed:
+`abo commodity add eur`, now in capitals; `payment-options add main --kind
+bank --ni`, now one that adds; N12's `Assets:Bank:CurrentEURUSD`, now named
+after the commodity moved, and through an account in the debt's own
+commodity, "without --cost". Said better: a day a month lacks, a date left
+out of `price add`, a missing `--dir`, git with no identity, `--amount` with
+digit groups or its commodity, five rules' words. Decided after: a debt is
+owed under the account named, `Assets:Receivable:USD`, as an hledger user
+expects, and an account named without its commodity is given it (MODEL.md
+N12).
+
+## CLI swarm of 2026-11-22: found, decided and fixed
+
+Six testers on the CLI, made to slip as a person does. Fixed, each with a
+test under "decided after the CLI swarm": an entry typed by hand into
+`main.journal` was not read, and `abo tidy` took it out — one typed anywhere
+is now read as hledger reads it, named by `check`, and taken in by `tidy`,
+unless it breaks a rule, which is said at its line; `abo entries Pens` found
+every expense — it takes patterns; piped to `head`, abo panicked; a file
+beside the books held `undo` up while `check` said nothing — undo stops
+only at what holds git up, which `check` says too; a debt in another
+commodity paid at another cost left the difference on its account — the
+payment books it as an exchange gain or loss; `$` was refused as a commodity.
+Decided: postings are written as hledger writes them, `=` read too; a new
+account's name holds no space or `;`; an account holds one commodity at a
+time, a debt in another on an account of its own; reports show each account
+in its own commodity and the company's; an invoice's period is hledger's;
+every refusal says its rule in words; every command abo suggests is in
+backticks and read by a test, and run where a regression test meets it;
+outside any books, abo says so and looks no further.
 
 ## Backups, web and CLI runs of 2026-11-05: found and fixed
 

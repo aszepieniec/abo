@@ -153,7 +153,7 @@ fn whole(bytes: &[u8]) -> Result<()> {
         _ => bail!("not a PDF, JPEG, PNG or WebP"),
     };
     if !whole {
-        bail!("not a whole {what}: it ends before a {what} does, so it may have been cut short");
+        bail!("not a whole {what}: it ends before a {what} does, so it may have been cut short; download or scan it again, and file that");
     }
     Ok(())
 }
@@ -197,14 +197,11 @@ pub fn text_files(root: &Path) -> Result<Files> {
 
 impl Store {
     pub fn open(dir: &Path) -> Result<Store> {
+        if !dir.is_dir() {
+            bail!("there is no directory {}: --dir names the directory of the books", dir.display());
+        }
         let root = repo::books_root(dir)?.with_context(|| {
-            // A data directory: the companies in it, by their directories.
-            let mut here: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten().filter(|e| e.path().join("abo.toml").is_file()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-            here.sort();
-            match here.is_empty() {
-                true => format!("no abo.toml in {} or any parent directory", dir.display()),
-                false => format!("no abo.toml in {} or any parent directory; it holds the books of {}: cd into one, or give --dir", dir.display(), here.join(", ")),
-            }
+            format!("there are no books here: no abo.toml in {} or any directory above it. Run abo in the directory of your books, or give it with --dir; `abo init` opens new ones", dir.display())
         })?;
         let (books, mut problems) = model::read(&text_files(&root)?);
         let books = books.ok_or_else(|| amiss(AmissKind::Unreadable, format!("the books cannot be read:\n  {}\n{}", problems.join("\n  "), unreadable_mend(&problems))))?;
@@ -303,10 +300,10 @@ impl Store {
         let breaks = self.broken_by_hand()?;
         let said = if breaks.is_empty() { String::new() } else { format!("\nIt breaks the books:\n  {}", breaks.join("\n  ")) };
         let ways = if breaks.is_empty() {
-            format!("take it out (git checkout -- {these}), or commit it yourself (git commit -m '...' -- {these})")
+            format!("commit it yourself (git commit -m '...' -- {these}), or take it out (git checkout -- {these}), which throws it away")
         } else {
             // Committed, a change that breaks the books would be their history.
-            format!("take it out (git checkout -- {these}), which puts back what the last commit holds; or mend it by hand and then commit it yourself")
+            format!("mend it by hand and then commit it yourself; or take it out (git checkout -- {these}), which puts back what the last commit holds and throws the edit away")
         };
         Ok(Some(format!(
             "{these} {} a change abo did not make:{shown}{said}\n\
@@ -327,7 +324,7 @@ impl Store {
             return Err(amiss(
                 AmissKind::Problems,
                 format!(
-                    "the books are not written as abo writes them:\n  {}\nabo changes nothing until abo tidy has written them so, and said what it changed",
+                    "the books are not written as abo writes them:\n  {}\nabo changes nothing until `abo tidy` has written them so, and said what it changed",
                     form.iter().map(|p| p.as_str()).collect::<Vec<_>>().join("\n  ")
                 ),
             ));
@@ -376,6 +373,25 @@ impl Store {
     /// files rewritten.
     pub fn tidy(&mut self) -> Result<(Option<String>, Vec<String>)> {
         self.changeable()?;
+        // An entry typed by hand is taken in as it is: one that breaks a
+        // rule is mended where it was typed first, not written as abo's.
+        // A comment typed by hand abo would drop: it is taken out by hand.
+        let notes: Vec<&String> = self.problems.iter().filter(|p| p.contains("is a comment, and abo keeps none")).collect();
+        if !notes.is_empty() {
+            return Err(amiss(AmissKind::Problems, format!("`abo tidy` would drop what these lines say:\n  {}", notes.iter().map(|p| p.as_str()).collect::<Vec<_>>().join("\n  "))));
+        }
+        let broken = model::check(&self.books);
+        if !broken.is_empty() && self.problems.iter().any(|p| p.contains("is an entry abo did not write")) {
+            let these: Vec<&String> = self.problems.iter().filter(|p| broken.iter().any(|v| p.ends_with(&v.to_string()))).collect();
+            return Err(amiss(
+                AmissKind::Problems,
+                format!(
+                    "`abo tidy` takes in no entry typed by hand while the books break a rule:\n  {}\n{}",
+                    these.iter().map(|p| p.as_str()).collect::<Vec<_>>().join("\n  "),
+                    by_hand_first(&broken)
+                ),
+            ));
+        }
         let differ = render_on_disk(&self.root, &self.books)?;
         if differ.is_empty() {
             return Ok((None, vec![]));
@@ -456,23 +472,39 @@ impl Store {
         Ok((!commit.is_empty()).then_some(commit))
     }
 
+    /// What in git holds `abo undo` up, which `abo check` says too. Undo
+    /// reverts the last commit, which git does whatever else is changed or
+    /// lies beside the books, but not while anything is staged, nor over a
+    /// change, or a file not committed, where the commit wrote.
+    pub fn git_holds_undo_up(&self) -> Result<Option<String>> {
+        if let Some(f) = repo::git_in(&self.root, &["diff", "--cached", "--name-only"])?.lines().next() {
+            return Ok(Some(format!("{f} is staged and not committed, and `abo undo` takes nothing back while anything is: commit it yourself, or unstage it (git restore --staged {f})")));
+        }
+        let touched = repo::git_in(&self.root, &["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]).unwrap_or_default();
+        if touched.lines().next().is_some() {
+            let mut status = vec!["status", "--porcelain", "--"];
+            status.extend(touched.lines());
+            if let Some(l) = repo::git_in(&self.root, &status)?.lines().next() {
+                let f = l.get(3..).unwrap_or(l);
+                return Ok(Some(format!("{f} is where the last change wrote, and holds something not committed, which `abo undo` would write over: commit it yourself, or take it out")));
+            }
+        }
+        Ok(None)
+    }
+
     /// Why the last change cannot be taken back, if it cannot: `undo`
     /// refuses for it, and a page offers Undo only where there is nothing.
     pub fn undo_refused(&self) -> Result<Option<String>> {
         let head = repo::git_in(&self.root, &["rev-parse", "--short", "HEAD"])?.trim().to_string();
         let last = lines(&self.root).last().and_then(|l| l["commit"].as_str().map(String::from));
         if last.as_deref() != Some(head.as_str()) {
-            return Ok(Some(format!("the last commit, {head}, is not a change abo logged; undo takes back only abo's last change")));
+            return Ok(Some(format!("the last commit, {head}, is not a change abo made; `abo undo` takes back only abo's own: take back yours with git (git revert {head})")));
         }
         if let Err(e) = self.changeable() {
             return Ok(Some(e.to_string()));
         }
-        // Undo reverts a commit, which git does only over a clean tree: a
-        // file beside the books, changed, holds it up too.
-        let dirty = repo::git_in(&self.root, &["status", "--porcelain"])?;
-        if let Some(l) = dirty.lines().next() {
-            let f = l.get(3..).unwrap_or(l);
-            return Ok(Some(format!("{f} holds changes abo did not make, and undo needs none: please commit them yourself, or take them out, first")));
+        if let Some(why) = self.git_holds_undo_up()? {
+            return Ok(Some(why));
         }
         if repo::git_in(&self.root, &["rev-parse", "--verify", "-q", "HEAD~1"]).is_err() {
             return Ok(Some("the last change opened the books; there is nothing before it to go back to".into()));
@@ -518,7 +550,7 @@ impl Store {
                 body.lines().any(|l| l == cmd).then(|| h.to_string())
             }).collect())
         };
-        let (undos, tidies) = (ours("abo undo")?, ours("abo tidy")?);
+        let (undos, tidies) = (ours("abo undo")?, ours("abo tidy")?); // not said
         let mut blame = vec!["blame", "--porcelain"];
         for t in &tidies {
             blame.extend(["--ignore-rev", t.as_str()]);
@@ -641,7 +673,7 @@ impl Store {
 fn unreadable_mend(problems: &[String]) -> String {
     let mut files: Vec<&str> = problems.iter().filter_map(|p| p.split(':').next()).collect();
     files.dedup();
-    format!("Mend it by hand at the line named, or take the edit out (git checkout -- {}); git diff shows what changed", files.join(" "))
+    format!("Mend it by hand at the line named. git diff shows what changed since the last commit, and git checkout -- {} puts back what that commit holds, throwing the edit away", files.join(" "))
 }
 
 /// The text files `render` writes, as the last commit has them.
@@ -822,7 +854,7 @@ pub fn import(dir: &Path, bundle: &Path, author: Option<(String, String)>) -> Re
     let r = (|| -> Result<()> {
         let to = dir.to_str().context("the directory's name is not text")?;
         repo::git_in(dir.parent().unwrap_or(Path::new(".")), &["clone", "-q", "--", &bundle.display().to_string(), to])
-            .map_err(|e| anyhow::anyhow!("the file is not books Download the books gave: {e}"))?;
+            .map_err(|_| anyhow::anyhow!("the file is not a copy of books, as Download the books makes one; books are brought up to date only from such a file"))?;
         // Where it came from is a file gone by now.
         repo::git_in(dir, &["remote", "remove", "origin"])?;
         plain(dir, "HEAD")?;
@@ -893,7 +925,7 @@ impl Store {
         self.changeable()?;
         let git = |args: &[&str]| repo::git_in(&self.root, args);
         let fetched = format!("+HEAD:{IMPORTED}");
-        git(&["fetch", "-q", "--no-tags", "--", &bundle.display().to_string(), &fetched]).map_err(|e| anyhow::anyhow!("the file is not books Download the books gave: {e}"))?;
+        git(&["fetch", "-q", "--no-tags", "--", &bundle.display().to_string(), &fetched]).map_err(|_| anyhow::anyhow!("the file is not a copy of books, as Download the books makes one; books are brought up to date only from such a file"))?;
         let rev = |r: &str| git(&["rev-parse", "--verify", "-q", r]).map(|h| h.trim().to_string());
         let (head, new) = (rev("HEAD")?, rev(IMPORTED)?);
         let below = |a: &str, b: &str| git(&["merge-base", "--is-ancestor", a, b]).is_ok();
@@ -951,4 +983,21 @@ impl Store {
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
+}
+
+/// How what an entry typed by hand breaks is mended, by hand too: while it
+/// is there abo changes nothing, `abo account add` included, so what it
+/// names is declared where abo declares it, in journal/accounts.journal.
+pub fn by_hand_first(broken: &[model::Violation]) -> String {
+    let mut lines: Vec<String> = broken
+        .iter()
+        .filter_map(|v| match (&v.of, v.code) {
+            (model::Subject::Account(a), "I-A1") => Some(format!("account {a}")),
+            (model::Subject::Commodity(c), "I-A1") => Some(format!("commodity 1000.00 {c}")),
+            _ => None,
+        })
+        .collect();
+    lines.dedup();
+    let declare = if lines.is_empty() { String::new() } else { format!("declare what it names by adding to journal/accounts.journal the line{} {}; ", if lines.len() == 1 { "" } else { "s" }, lines.iter().map(|l| format!("`{l}`")).collect::<Vec<_>>().join(", ")) };
+    format!("Mend it by hand, as abo changes nothing while it is there: {declare}put right at the line named what else it breaks; commit that; then `abo tidy` takes it in.")
 }

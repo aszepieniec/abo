@@ -340,6 +340,10 @@ pub fn parse(f: &Files) -> Result<Books, Vec<String>> {
                 continue;
             }
             let at = block[0].0;
+            if by_hand(&block) || block.iter().all(|(_, l)| comment_line(l)) {
+                block.clear();
+                continue;
+            }
             if let Err(e) = parse_block(f, &block, &mut m, &mut entries, &amt, &date) {
                 errs.push(format!("{name}:{at}: {e}"));
             }
@@ -364,6 +368,14 @@ pub fn parse(f: &Files) -> Result<Books, Vec<String>> {
     }
     while m.entries.len() + 1 < next {
         m.entries.push(Entry::gone());
+    }
+    // Entries typed by hand, as hledger reads them, after abo's: given the
+    // next ids, which abo tidy writes them with.
+    for (name, at, block) in hand_entries(f) {
+        match parse_hand(&block) {
+            Ok(e) => m.entries.push(e),
+            Err(e) => errs.push(format!("{name}:{at}: {e}")),
+        }
     }
 
     for index in ["bills/index", "contracts/index"] {
@@ -410,6 +422,84 @@ pub fn parse(f: &Files) -> Result<Books, Vec<String>> {
     } else {
         Err(errs)
     }
+}
+
+/// A block of a year's journal that abo did not write: no `; id:` and no
+/// statement, which every block abo writes has.
+fn by_hand(block: &[(usize, &str)]) -> bool {
+    !block.iter().any(|(_, l)| l.starts_with("    ; id: ") || l.starts_with("    ; statement: "))
+}
+
+/// Every entry typed by hand into the journal, as hledger reads one: in a
+/// year's file, a block abo did not write; in main.journal, a line begun by
+/// neither `include` nor `;`, and the indented lines under it. Each with its
+/// file, the line it starts on, and its lines.
+fn hand_entries(f: &Files) -> Vec<(String, usize, Vec<(usize, &str)>)> {
+    let mut found = vec![];
+    for (name, text) in f.range("journal/".to_string()..).take_while(|(k, _)| k.starts_with("journal/")) {
+        let year = name.strip_prefix("journal/").and_then(|n| n.strip_suffix(".journal")).is_some_and(|y| y.len() == 4 && y.bytes().all(|b| b.is_ascii_digit()));
+        let main = name == "journal/main.journal";
+        if !year && !main {
+            continue;
+        }
+        let mut block: Vec<(usize, &str)> = vec![];
+        for (i, line) in text.lines().chain([""]).enumerate() {
+            let starts = main && !line.is_empty() && !line.starts_with(char::is_whitespace);
+            let ends = line.trim().is_empty() || starts;
+            if ends && !block.is_empty() && (main || by_hand(&block)) && !block.iter().all(|(_, l)| comment_line(l)) {
+                found.push((name.clone(), block[0].0, std::mem::take(&mut block)));
+            }
+            if ends {
+                block.clear();
+            }
+            match main {
+                true if starts && !line.starts_with("include ") && !comment_line(line) => block.push((i + 1, line)),
+                true if !block.is_empty() && !line.trim().is_empty() => block.push((i + 1, line)),
+                false if !line.trim().is_empty() => block.push((i + 1, line)),
+                _ => {}
+            }
+        }
+    }
+    found
+}
+
+/// A line hledger reads as a comment: begun by `;`, `#` or `*`.
+fn comment_line(l: &str) -> bool {
+    l.starts_with([';', '#', '*'])
+}
+
+/// Every comment typed by hand into the journal, between entries: a line
+/// hledger reads as one, but for the next id abo writes in main.journal.
+/// Each with its file and line.
+fn hand_comments(f: &Files) -> Vec<(String, usize, &str)> {
+    f.range("journal/".to_string()..)
+        .take_while(|(k, _)| k.starts_with("journal/"))
+        .filter(|(k, _)| *k != "journal/accounts.journal")
+        .flat_map(|(name, text)| text.lines().enumerate().filter(|(_, l)| comment_line(l) && !l.starts_with("; next id: ")).map(move |(i, l)| (name.clone(), i + 1, l)))
+        .collect()
+}
+
+/// An entry typed by hand: a date, as hledger writes one, a description,
+/// and its postings, as `abo post` takes them, every commodity written.
+/// What abo keeps elsewhere, or not at all, is said, not dropped.
+fn parse_hand(block: &[(usize, &str)]) -> Result<Entry, String> {
+    let head = block[0].1;
+    let (d, description) = head.split_once(char::is_whitespace).map_or((head, ""), |(d, r)| (d, r.trim()));
+    let date = super::ymd(&d.replace(['/', '.'], "-")).ok_or(format!("{d:?} is not a date, such as 2026-01-05"))?;
+    // A mark, cleared or pending, is dropped: abo clears a posting by the
+    // statement that shows it, which `abo record` records.
+    let description = description.strip_prefix(['*', '!']).map_or(description, str::trim_start);
+    if description.starts_with('(') {
+        return Err(format!("{head:?}: abo gives an entry no code; take the code out"));
+    }
+    if description.contains(';') || block[1..].iter().any(|(_, l)| l.trim_start().starts_with(';')) {
+        return Err(format!("{head:?} has a comment, and abo keeps none on an entry typed by hand; take it out (`abo comment` keeps a note on a bill or an invoice)"));
+    }
+    if block[1..].iter().any(|(_, l)| !l.starts_with(char::is_whitespace)) {
+        return Err(format!("{head:?}: a posting is indented"));
+    }
+    let postings = crate::input::postings_in(None, block[1..].iter().map(|(_, l)| l.trim().strip_prefix(['*', '!']).map_or(l.trim(), str::trim_start))).map_err(|e| format!("{head:?}: {e}"))?;
+    Ok(Entry { date, description: description.into(), kind: Kind::Plain(postings, Link::default()) })
 }
 
 fn parse_block(
@@ -525,10 +615,28 @@ pub fn read(f: &Files) -> (Option<Books>, Vec<String>) {
         Err(e) => return (None, e),
     };
     let violations = check(&m);
-    let mut problems: Vec<String> = violations.iter().map(|v| place(f, &v.of).map_or_else(|| v.to_string(), |at| format!("{at}: {v}"))).collect();
+    let first_by_hand = m.entries.len() + 1 - hand_entries(f).len();
+    let mut problems: Vec<String> = violations.iter().map(|v| place(f, &v.of, first_by_hand).map_or_else(|| v.to_string(), |at| format!("{at}: {v}"))).collect();
     // A number or date out of range is reported alone: rendering computes
     // with them.
     if violations.iter().any(|v| matches!(v.code, "I-K3" | "I-D1")) {
+        return (Some(m), problems);
+    }
+    // An entry typed by hand is named, and where abo tidy writes it; the
+    // files it changes are not as abo writes them for that alone.
+    let hand = hand_entries(f);
+    let first = m.entries.len() + 1 - hand.len();
+    for (k, (name, at, block)) in hand.iter().enumerate() {
+        let id = first + k;
+        let year = m.entry(id).map_or(0, |e| e.date.year());
+        let mark = block[0].1.split_whitespace().nth(1).filter(|w| matches!(*w, "*" | "!")).map_or(String::new(), |m| format!(", without its mark {m}: abo marks no entry, and clears a posting by the statement `abo record` records"));
+        problems.push(format!("{name}:{at}: not as abo writes it: {:?} is an entry abo did not write; `abo tidy` takes it in as entry {id}, in journal/{year:04}.journal{mark}", block[0].1));
+    }
+    let notes = hand_comments(f);
+    for (name, at, line) in &notes {
+        problems.push(format!("{name}:{at}: not as abo writes it: {line:?} is a comment, and abo keeps none between entries; take it out by hand (`abo comment` keeps a note on a bill or an invoice)"));
+    }
+    if !hand.is_empty() || !notes.is_empty() {
         return (Some(m), problems);
     }
     let canonical = render(&m);
@@ -552,10 +660,12 @@ pub fn read(f: &Files) -> (Option<Books>, Vec<String>) {
 /// Where in the files a violation is: an entry's date line, or the first
 /// line that posts to an account, records a statement of it, or names it in
 /// abo.toml.
-fn place(f: &Files, of: &super::check::Subject) -> Option<String> {
+fn place(f: &Files, of: &super::check::Subject, first_by_hand: EntryId) -> Option<String> {
     use super::check::Subject;
     let journals = || f.iter().filter(|(k, _)| k.starts_with("journal/") && *k != "journal/accounts.journal" && *k != "journal/main.journal");
     match of {
+        // Typed by hand, where it was typed.
+        Subject::Entry(id) if *id >= first_by_hand => hand_entries(f).get(id - first_by_hand).map(|(name, at, _)| format!("{name}:{at}")),
         Subject::Entry(id) => {
             let tag = format!("    ; id: {id}");
             journals().find_map(|(name, text)| {
@@ -595,10 +705,10 @@ fn derived(text: &str, at: usize) -> &'static str {
     let block = lines[start + 1..].iter().take_while(|l| l.starts_with(' '));
     for l in block {
         if l.starts_with("    ; invoice:") {
-            return ": an invoice's or credit note's postings follow from what it says (its .json), so a change typed here changes nothing: take it out (git checkout), or, once it is committed, abo tidy writes them back";
+            return ": an invoice's or credit note's postings follow from what it says (its .json), so a change typed here changes nothing: take it out (git checkout), or, once it is committed, `abo tidy` writes them back";
         }
         if l.starts_with("    ; reverses:") {
-            return ": a reversal's postings follow from the entry it reverses, so a change typed here changes nothing: take it out (git checkout), or, once it is committed, abo tidy writes them back";
+            return ": a reversal's postings follow from the entry it reverses, so a change typed here changes nothing: take it out (git checkout), or, once it is committed, `abo tidy` writes them back";
         }
     }
     ""

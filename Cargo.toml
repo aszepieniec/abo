@@ -18,13 +18,15 @@ toml = "0.8"
 # Reads every answer to init. tests/tty.rs presses its keys: run it after a bump.
 rustyline = { version = "18.0.1", default-features = false }
 deunicode = "1.6.2"
+# abo entries: each word a case-insensitive pattern, as hledger takes them.
+regex = "1"
 toml_edit = "0.22"
 unicode-general-category = "1.1.0"
 
 # Already built for rustyline; used directly for the key-by-key VAT method
 # list, and by tests/tty.rs for a terminal to press keys on.
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31", default-features = false, features = ["term"] }
+nix = { version = "0.31", default-features = false, features = ["term", "signal"] }
 
 # The model's plans and the command line's replays (src/model/tests.rs,
 # src/cli_tests.rs), for another crate's tests: abo-web's, as a dev-dependency.

@@ -236,15 +236,20 @@ pub struct EntryRow {
 
 /// The entries whose description or an account posted to holds each of
 /// `words`, case aside; every entry, given none.
-pub fn entries(b: &Books, words: &[String]) -> Vec<EntryRow> {
+pub fn entries(b: &Books, words: &[String]) -> anyhow::Result<Vec<EntryRow>> {
     let standing = b.standing();
-    let words: Vec<String> = words.iter().map(|w| w.to_lowercase()).collect();
-    (1..=b.entries.len())
+    // Each word a pattern, case aside, as hledger takes a query: `^Pens$`
+    // for the description Pens alone, `Pens` for any that holds it.
+    let words = words
+        .iter()
+        .map(|w| regex::RegexBuilder::new(w).case_insensitive(true).build().map_err(|e| crate::input::Unreadable(format!("{w} is not a pattern: {}", e.to_string().lines().last().unwrap_or_default().trim_start_matches("error: ")))))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((1..=b.entries.len())
         .filter_map(|id| {
             let e = b.entry(id)?;
             let ps = b.postings(id);
-            let text = std::iter::once(e.description.as_str()).chain(ps.iter().map(|p| p.account.as_str())).collect::<Vec<_>>().join(" ").to_lowercase();
-            if !words.iter().all(|w| text.contains(w.as_str())) {
+            let texts = std::iter::once(e.description.as_str()).chain(ps.iter().map(|p| p.account.as_str()));
+            if !words.iter().all(|w| texts.clone().any(|t| w.is_match(t))) {
                 return None;
             }
             let mut debits: std::collections::BTreeMap<&str, Decimal> = Default::default();
@@ -259,7 +264,7 @@ pub fn entries(b: &Books, words: &[String]) -> Vec<EntryRow> {
                 reversed: !standing[id],
             })
         })
-        .collect()
+        .collect())
 }
 
 /// The VAT an invoice charges, and why that rate: as given, as the company
@@ -515,7 +520,7 @@ pub fn fields_of(b: &Books, id: usize) -> Option<std::collections::BTreeMap<Stri
             link.partner.iter().for_each(|p| put("partner", p.clone()));
             link.agreement.iter().for_each(|a| put("agreement", a.clone()));
             let posting = |p: &model::Posting| {
-                let mut s = format!("{}={} {}", p.account, Amount::new(b, p.amount.quantity, &p.amount.commodity).quantity, p.amount.commodity);
+                let mut s = format!("{}  {} {}", p.account, Amount::new(b, p.amount.quantity, &p.amount.commodity).quantity, p.amount.commodity);
                 if let Some(c) = &p.cost {
                     s += &format!(" @@ {} {}", c.quantity.abs(), c.commodity);
                 }

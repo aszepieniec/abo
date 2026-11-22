@@ -13,7 +13,7 @@ use std::path::PathBuf;
     name = "abo",
     version,
     about = "accountant back office",
-    after_help = "abo commits every change it makes. While the books' files hold a change it did not make (a file edited by hand, say), abo changes nothing, not even to mend what that change breaks: its commit would take the change in as abo's own. Take the change out with git checkout, or commit it yourself; abo check says which files, and what they break."
+    after_help = "abo commits every change it makes. While the books' files hold a change it did not make (a file edited by hand, say), abo changes nothing, not even to mend what that change breaks: its commit would take the change in as abo's own. Take the change out with git checkout, or commit it yourself; `abo check` says which files, and what they break."
 )]
 pub(crate) struct Cli {
     /// Machine-readable output. This is the API schema.
@@ -104,8 +104,9 @@ pub(crate) enum AgreementCmd {
         ended: bool,
     },
     /// An agreement: its parties, status, versions with their invoice
-    /// templates and documents, and the invoices issued under it. `abo file
-    /// --for AGREEMENT/N` files a version's document.
+    /// templates and documents, and the invoices issued under it.
+    /// `abo file --for <agreement>/<n> --date <date> --issuer <issuer> <scan>`
+    /// files a version's document.
     Show { id: String },
     /// Add an agreement with the partners party to it, and its first
     /// version.
@@ -118,11 +119,12 @@ pub(crate) enum AgreementCmd {
         #[command(flatten)]
         version: VersionFlags,
         /// Its signed copy, a PDF or a JPEG, filed with it under
-        /// contracts/. Without one, `abo file --for ID/N` files it later.
+        /// contracts/. Without one, `abo file --for <agreement>/<n> --date <date> --issuer <issuer> <scan>` files it later.
         #[arg(long, value_name = "FILE")]
         scan: Option<PathBuf>,
-        /// The day it was signed, as its document is dated. Without it,
-        /// the copy is dated --from, and abo says so.
+        /// The day the copy given with --scan was signed, which dates it;
+        /// only with --scan. Without it, the copy is dated --from, and abo
+        /// says so.
         #[arg(long, requires = "scan")]
         signed: Option<String>,
         /// An agreement this one takes the place of: it ends, subsumed by
@@ -141,11 +143,12 @@ pub(crate) enum AgreementCmd {
         #[arg(long)]
         no_template: bool,
         /// Its signed copy, a PDF or a JPEG, filed with it under
-        /// contracts/. Without one, `abo file --for ID/N` files it later.
+        /// contracts/. Without one, `abo file --for <agreement>/<n> --date <date> --issuer <issuer> <scan>` files it later.
         #[arg(long, value_name = "FILE")]
         scan: Option<PathBuf>,
-        /// The day it was signed, as its document is dated. Without it,
-        /// the copy is dated --from, and abo says so.
+        /// The day the copy given with --scan was signed, which dates it;
+        /// only with --scan. Without it, the copy is dated --from, and abo
+        /// says so.
         #[arg(long, requires = "scan")]
         signed: Option<String>,
     },
@@ -191,7 +194,7 @@ pub(crate) struct VersionFlags {
     #[arg(long = "template", value_name = "NAME=VALUE")]
     pub(crate) template: Vec<String>,
     /// The invoice template, from an issued invoice, by its number: what it
-    /// says, as `abo invoice --like` takes it.
+    /// says, as `abo invoice --like <number>` takes it.
     #[arg(long, value_name = "INVOICE")]
     pub(crate) template_from: Option<String>,
 }
@@ -421,12 +424,23 @@ pub(crate) enum AccountCmd {
     },
 }
 
+/// A commodity's places, said in words when they are none.
+fn places(s: &str) -> Result<u32, String> {
+    // How many the model says (I-K0): here, only that it is a number.
+    s.parse::<u32>().map_err(|_| format!("{s} is not a number of places: the digits after the point, 0 to 8, such as 2"))
+}
+
 #[derive(Subcommand)]
 pub(crate) enum CommodityCmd {
     /// The commodities, with their places. The same as no subcommand.
     List,
     /// Declare a commodity, such as `EUR 2` or `BTC 8`: 0 to 8 places.
-    Add { code: String, places: u32 },
+    Add {
+        code: String,
+        /// Its places: the digits after the point, 0 to 8; 2 for most currencies.
+        #[arg(allow_negative_numbers = true, value_parser = places)]
+        places: u32,
+    },
     /// Take out a commodity nothing is in.
     Remove { code: String },
 }
@@ -445,7 +459,7 @@ pub(crate) enum PriceCmd {
         code: String,
         /// What one unit was worth, and in what: `0.92 EUR`. The commodity
         /// defaults to the company currency.
-        #[arg(num_args = 1..=2, required = true)]
+        #[arg(num_args = 1..=2, required = true, allow_negative_numbers = true)]
         price: Vec<String>,
     },
     /// Take out a price.
@@ -457,7 +471,7 @@ pub(crate) enum PriceCmd {
 pub(crate) const PASSED_HELP: &str = "Options passed on to hledger: -b --begin -e --end -p --period -D --daily -W --weekly -M --monthly \
 -Q --quarterly -Y --yearly --depth -V --market -B --cost -X --exchange --value -O --output-format -E --empty -R --real \
 -U --unmarked -P --pending -C --cleared -H --historical -A --average -T --row-total -N --no-total --flat --tree --layout. \
---period (-p) also takes ytd, the year to date. Amounts are at cost (-B) unless one of -B -V -X --value says otherwise. abo reads these books alone: any other option is refused. A statement clears postings in abo's own tags, not hledger's \
+--period (-p) also takes ytd, the year to date. Each account is shown in its own commodity; abo balance shows beside one not in the company's currency what it comes to in it, at the latest price, or at cost where there is none, unless one of -B -V -X --value, a report by period, --tree or -O says how to report it, which hledger then does. abo reads these books alone: any other option is refused. A statement clears postings in abo's own tags, not hledger's \
 cleared mark, so --cleared says nothing of reconciling.";
 
 #[derive(Subcommand)]
@@ -473,9 +487,10 @@ pub(crate) enum Cmd {
         #[command(flatten)]
         flags: InitFlags,
     },
-    /// Book an entry. POSTINGs are `account=amount [COMMODITY]`, with `@@
-    /// cost COMMODITY` after one exchanged for another; every amount is
-    /// written.
+    /// Book an entry. POSTINGs are hledger's, each one word: `'Expenses:General
+    /// 12.50'`, the commodity after or before the amount unless it is the
+    /// company's, `@@ total cost` or `@ unit cost` after one exchanged for
+    /// another; one may leave its amount out, to balance the others.
     Post {
         /// Defaults to today.
         #[arg(long)]
@@ -491,14 +506,14 @@ pub(crate) enum Cmd {
         /// has one.
         #[arg(long)]
         agreement: Option<String>,
-        /// Each `account=amount`, the amount with its commodity unless it is
-        /// the company's, in one word: `Expenses:General=12.50` or
-        /// `'Expenses:General=12.50 USD'`.
+        /// Each the account and its amount, one space or more between them,
+        /// in one word: `'Expenses:General 12.50'`, `'Assets:Bank:USD 250.00
+        /// USD @@ 230.00 EUR'`, `Assets:Bank` for what balances; or
+        /// `Expenses:General=12.50`.
         postings: Vec<String>,
     },
     /// Put a document in the books: a bill's, at
-    /// bills/<year>/<date>-<issuer>-<hash>.<ext>, which `abo bill --document`
-    /// then books; or, with --for AGREEMENT/N, a contract or an amendment as
+    /// bills/<year>/<date>-<issuer>-<hash>.<ext>, which `abo bill` then books; or, with --for AGREEMENT/N, a contract or an amendment as
     /// signed, at contracts/<agreement>/<date>-<issuer>-<hash>.<ext>.
     File {
         /// The date on it.
@@ -539,9 +554,9 @@ pub(crate) enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Book a supplier's bill: its postings, written as abo post takes them,
+    /// Book a supplier's bill: its postings, written as `abo post` takes them,
     /// one of which credits what is owed to a liability account, as
-    /// `Expenses:General=400.00 Assets:VAT:Input=40.00 Liabilities:Payable=-440.00`.
+    /// `'Expenses:General 400.00' 'Assets:VAT:Input 40.00' Liabilities:Payable`.
     Bill {
         /// Defaults to the document's date, else today.
         #[arg(long)]
@@ -560,7 +575,7 @@ pub(crate) enum Cmd {
         /// has one: one line, without a comma.
         #[arg(long)]
         number: Option<String>,
-        /// The day it is due, if it says: on or after its date. abo bills
+        /// The day it is due, if it says: on or after its date. `abo bills`
         /// then says when it is overdue.
         #[arg(long)]
         due: Option<String>,
@@ -587,7 +602,8 @@ pub(crate) enum Cmd {
         /// version in force on its date.
         #[arg(long)]
         agreement: Option<String>,
-        /// What it is for, as `2026-01-01..2026-01-31`, printed on it.
+        /// What it is for, printed on it: a period as hledger reads one,
+        /// `2026-01`, or `2026-01-01..2026-02-01`, the end not in it.
         #[arg(long)]
         period: Option<String>,
         /// Another like invoice NUMBER: its
@@ -631,7 +647,7 @@ pub(crate) enum Cmd {
         #[arg(long, default_value = "")]
         customer_tax_id: String,
         /// The income account it books to, an Income account declared first
-        /// (abo account add), such as Income:Exports for exports or
+        /// (`abo account add`), such as Income:Exports for exports or
         /// reverse-charge sales, to read them apart. Defaults to
         /// invoice.income.
         #[arg(long)]
@@ -655,11 +671,14 @@ pub(crate) enum Cmd {
         #[arg(long)]
         pdf: Option<PathBuf>,
     },
-    /// Balance sheet as at a date.
+    /// Balance sheet as at a date: `abo bs 2026-12-31`, or `--date`.
     Bs {
         /// Defaults to today.
         #[arg(long)]
         date: Option<String>,
+        /// The date, given plainly.
+        #[arg(conflicts_with = "date", value_name = "DATE")]
+        at: Option<String>,
         /// Also write a PDF here.
         #[arg(long)]
         pdf: Option<PathBuf>,
@@ -671,6 +690,9 @@ pub(crate) enum Cmd {
         /// with none, Assets:Bank.
         #[arg(long)]
         account: Option<String>,
+        /// The account, given plainly: `abo reconcile Assets:Bank`.
+        #[arg(conflicts_with = "account", value_name = "ACCOUNT")]
+        at: Option<String>,
         /// Defaults to the company currency.
         #[arg(long)]
         commodity: Option<String>,
@@ -722,9 +744,10 @@ pub(crate) enum Cmd {
         /// A bill's id, as `abo bills` shows it, or an invoice's number, as
         /// `abo invoices` shows it, such as 2026-0003.
         debt: String,
-        /// Defaults to what it has open.
+        /// Defaults to what it has open. In the debt's commodity, which may
+        /// be left out: `400.00`, `1,250.00` or `400.00 USD`.
         #[arg(long, allow_hyphen_values = true)]
-        amount: Option<Decimal>,
+        amount: Option<String>,
         /// The money account it is paid from, or, for an invoice, into.
         /// Defaults to the first payment option's.
         #[arg(long)]
@@ -822,23 +845,25 @@ pub(crate) enum Cmd {
     },
     /// Every bill: its id, which `pay`, `write-off` and `revert` take, what it
     /// owes and what is open; then the documents filed and not booked yet,
-    /// which `abo bill --document` books.
+    /// which `abo bill --document <path> --desc <description> <postings>` books.
     Bills {
         /// Only those with something open.
         #[arg(long)]
         open: bool,
     },
     /// Find entries, with the ids `revert` and `pay` take: those whose
-    /// description or an account they post to holds every word given, case
-    /// aside; every entry, given none.
+    /// description or an account they post to matches every pattern given,
+    /// a regular expression as hledger takes one, case aside: `pens` matches
+    /// Expenses too, `^pens$` the description Pens alone. Every entry, given
+    /// none.
     Entries {
-        words: Vec<String>,
+        patterns: Vec<String>,
     },
     /// Book the opposite of an entry, by its id. Not an invoice, which a
     /// credit note cancels; and not an entry a recorded statement shows, a
     /// payment from the bank say: that money moved as booked, and reverting
     /// it would book a movement the bank never made. Correct the other side
-    /// with abo post instead, moving an expense to the right period, say; or
+    /// with `abo post` instead, moving an expense to the right period, say; or
     /// take the statement out first, if it was wrong.
     Revert {
         /// Defaults to today.

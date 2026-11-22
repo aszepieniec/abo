@@ -92,7 +92,7 @@ fn m0() {
     assert_eq!(lines[0]["argv"][0], "init");
     assert_eq!(
         lines[1]["argv"],
-        serde_json::json!(["post", "--date=2026-09-21", "--desc=Acme Hosting", "--", "Expenses:General=100.00 EUR", "Liabilities:Payable=-100.00 EUR"]),
+        serde_json::json!(["post", "--date=2026-09-21", "--desc=Acme Hosting", "--", "Expenses:General  100.00 EUR", "Liabilities:Payable  -100.00 EUR"]),
     );
     assert!(lines[1]["commit"].is_string(), "{log}");
 
@@ -115,10 +115,10 @@ fn m0() {
     // undeclared account, and a description that is not one line
     for (postings, says) in [
         (["Expenses:General=100.00", "Liabilities:Payable=-90.00"], "I-E1"),
-        (["Expenses:General=10 GBP", "Liabilities:Payable=-10 GBP"], "I-A1: GBP is not declared"),
-        (["Expenses:General=10 eur", "Liabilities:Payable=-10 eur"], "I-A1: eur is not declared"),
+        (["Expenses:General=10 GBP", "Liabilities:Payable=-10 GBP"], "I-A1 (what is named is declared): the commodity GBP is not declared"),
+        (["Expenses:General=10 eur", "Liabilities:Payable=-10 eur"], "I-A1 (what is named is declared): the commodity eur is not declared"),
         (["Expenses:General=1.001", "Liabilities:Payable=-1.001"], "I-K1"),
-        (["Expenses:Hostng=100.00", "Liabilities:Payable=-100.00"], "I-A1: Expenses:Hostng is not declared"),
+        (["Expenses:Hostng=100.00", "Liabilities:Payable=-100.00"], "I-A1 (what is named is declared): Expenses:Hostng is not declared"),
     ] {
         let o = abo(&dir, &[&["post", "--date", "2026-09-22", "--desc", "Odd"][..], &postings].concat(), "");
         assert!(!o.status.success() && err(&o).contains(says), "{postings:?}: {}", err(&o));
@@ -238,7 +238,7 @@ fn invoices() {
     // 161 - 160 of output tax; 1760 + 11 + 500 - 1760 receivable
     assert!(bal.contains("-1.00") && bal.contains("511.00"), "{bal}");
     // Once only; never a credit note; never a number the books lack.
-    for (n, why) in [("2026-0001", "I-R1"), ("2026-0004", "is not an invoice"), ("2026-0099", "there is no entry")] {
+    for (n, why) in [("2026-0001", "I-R1"), ("2026-0004", "is not an invoice"), ("2026-0099", "there is no invoice 2026-0099")] {
         let o = abo(&dir, &["credit", "--date", "2026-09-23", n], "");
         assert!(!o.status.success() && err(&o).contains(why), "{n}: {}", err(&o));
     }
@@ -490,7 +490,7 @@ fn undo_and_revert() {
     Command::new("git").args(["add", "notes.txt"]).current_dir(&dir).status().unwrap();
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "Notes"]).current_dir(&dir).status().unwrap();
     let o = abo(&dir, &["undo"], "");
-    assert!(!o.status.success() && err(&o).contains("is not a change abo logged"), "{}", err(&o));
+    assert!(!o.status.success() && err(&o).contains("is not a change abo made"), "{}", err(&o));
 
     // revert the second: a new entry with the opposite amounts; the original stays
     let o = abo(&dir, &["revert", "--date", "2026-01-12", &ids[1]], "");
@@ -540,7 +540,7 @@ fn init_asks_again() {
     // The input run out in the middle of a bank option: stopped, not asked
     // again for ever.
     let o = abo(&fresh("piped"), &["init", "Piped"], "\n\n\nbank\n");
-    assert!(!o.status.success() && err(&o).contains("ran out at Account holder") && err(&o).len() < 10_000, "{}", err(&o));
+    assert!(!o.status.success() && err(&o).contains("no answer came in at Account holder") && err(&o).len() < 10_000, "{}", err(&o));
     // A flag no question asks for is refused, not dropped.
     let o = abo(&fresh("flagged"), &["init", "Flagged", "--currency", "EUR", "--vat", "none", "--sales-rate", "5"], "");
     assert!(!o.status.success() && err(&o).contains("--sales-rate does not apply"), "{}", err(&o));
@@ -548,7 +548,7 @@ fn init_asks_again() {
     assert!(!o.status.success() && err(&o).contains("a cash option has no iban"), "{}", err(&o));
 
     let o = abo(&fresh("other"), &["init", "Other"], "\n\n\nskip\n");
-    assert!(!o.status.success() && err(&o).contains("ran out at Currency code (such as USD, EUR or BTC)"), "{}", err(&o));
+    assert!(!o.status.success() && err(&o).contains("no answer came in at Currency code (such as USD, EUR or BTC)"), "{}", err(&o));
     assert!(std::fs::read_dir(base.join("other")).unwrap().next().is_none(), "left behind");
 
     std::fs::remove_dir_all(&base).unwrap();
@@ -613,7 +613,10 @@ fn payment_options() {
     let o = po(&["edit", "post", "--kind", "cash", "--id", "counter", "--detail", "At the counter"]);
     assert!(o.status.success(), "edit failed: {}", err(&o));
     assert_eq!(list(), "cash (cash): Cash -> Assets:Cash\n    At our office\ncounter (cash): PostFinance -> Assets:Cash\n    At the counter\n");
+    // A removal takes the whole id: the start of one may name another than meant.
     let o = po(&["remove", "coun"]);
+    assert!(!o.status.success() && err(&o).contains("`abo payment-options remove counter`"), "{}", err(&o));
+    let o = po(&["remove", "counter"]);
     assert!(o.status.success(), "remove failed: {}", err(&o));
     assert_eq!(list(), "cash (cash): Cash -> Assets:Cash\n    At our office\n");
     // Undone, the removal puts it back.
@@ -772,7 +775,7 @@ fn paying_invoices() {
     for (args, why) in [
         (&["pay", "2026-0001", "--date", "2026-02-06"][..], "I-P1"),
         (&["pay", "2026-0002", "--amount", "80.00", "--date", "2026-02-06"], "I-P2"),
-        (&["pay", "2026-0009", "--date", "2026-02-06"], "there is no entry"),
+        (&["pay", "2026-0009", "--date", "2026-02-06"], "there is no invoice 2026-0009"),
     ] {
         let o = abo(&dir, args, "");
         assert!(!o.status.success() && err(&o).contains(why), "{args:?}: {}", err(&o));

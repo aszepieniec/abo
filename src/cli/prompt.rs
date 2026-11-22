@@ -22,7 +22,7 @@ pub(crate) fn ni() -> bool {
 pub(crate) fn ran_out(question: &str) -> Result<Option<String>> {
     use std::io::IsTerminal as _;
     if !std::io::stdin().is_terminal() {
-        bail!("the input ran out at {question}");
+        bail!("no answer came in at {question}: give the answers as flags, or --ni to take what each question offers");
     }
     Ok(None)
 }
@@ -363,7 +363,8 @@ impl questions::Source for Flags {
     fn text(&mut self, key: &str, label: &str, _: &str, _: &str, check: &dyn Fn(&str) -> Result<String, String>) -> Result<String> {
         let v = self.given.get(key).map_or("", String::as_str).trim().to_string();
         Ok(check(&v).unwrap_or_else(|e| {
-            self.problems.push(format!("{label}: {e}"));
+            // As a flag gives it: the id is given after add, not asked for.
+            self.problems.push(format!("{}: {e}", if key == "id" { "The id" } else { label }));
             self.said.insert(key.rsplit_once('.').map_or(String::new(), |(p, _)| format!("{p}.")));
             v
         }))

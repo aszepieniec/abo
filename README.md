@@ -42,7 +42,7 @@ questions instead. Then:
 
 ```sh
 abo account add Equity:Capital
-abo post --desc "Capital paid in" Assets:Bank=1000 Equity:Capital=-1000
+abo post --desc "Capital paid in" 'Assets:Bank 1000' Equity:Capital
 abo pl --period 2026
 abo log
 ```

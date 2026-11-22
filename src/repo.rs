@@ -81,7 +81,12 @@ pub(crate) fn git_env(dir: &Path, args: &[&str], env: &[(&str, String)]) -> Resu
         .output()
         .context("running git")?;
     if !out.status.success() {
-        bail!("git {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
+        let err = String::from_utf8_lossy(&out.stderr);
+        // Said as what to do, not as git's dump of the machine's names.
+        if err.contains("Author identity unknown") || err.contains("Committer identity unknown") {
+            bail!("git has no name and email to sign abo's commits with: give them for these books, git config user.name 'Your Name' and git config user.email you@example.com, run in the books' directory");
+        }
+        bail!("git {}: {}", args.join(" "), err.trim());
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }

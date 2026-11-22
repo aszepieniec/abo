@@ -776,8 +776,14 @@ fn each_operation_changes_only_its_part(#[strategy(plan())] plan: Vec<Step>) {
         .collect();
         let grows = |a: usize, b: usize| b as i64 - a as i64;
         let (part, by): (&[&str], i64) = match op {
-            Op::Post { .. } | Op::Invoice { .. } | Op::Credit { .. } | Op::Pay { .. } | Op::WriteOff { .. } | Op::Revert { .. } => (&["entries"], grows(m.entries.len(), n.entries.len())),
-            Op::Bill { .. } => (&["entries", "documents"], grows(m.entries.len(), n.entries.len())),
+            Op::Post { .. } | Op::Credit { .. } | Op::Pay { .. } | Op::WriteOff { .. } | Op::Revert { .. } => (&["entries"], grows(m.entries.len(), n.entries.len())),
+            // A debt in another commodity declares the account it is owed
+            // on, if it is not: of its own for that commodity (N12).
+            Op::Invoice { .. } | Op::Bill { .. } => {
+                let new: Vec<_> = n.accounts.difference(&m.accounts).collect();
+                prop_assert!(m.accounts.is_subset(&n.accounts) && new.iter().all(|a| n.debt(n.entries.len()).is_some_and(|d| &&d.account == a)), "{:?} declared {:?}", op, new);
+                (&["entries", "documents", "accounts"], grows(m.entries.len(), n.entries.len()))
+            }
             Op::File { .. } => (&["documents"], grows(m.documents.len(), n.documents.len())),
             Op::Unfile { .. } => (&["documents"], -grows(m.documents.len(), n.documents.len())),
             Op::Record { .. } => (&["statements"], grows(m.statements.len(), n.statements.len())),
@@ -1609,7 +1615,13 @@ fn payments_are_reverted_first(#[strategy(plan())] plan: Vec<Step>, debt: Index)
     prop_assert!(early.as_ref().is_err_and(|v| v.iter().any(|v| v.code == "I-R3" || v.code == "I-P1")), "{:?}", early.map(|_| ()));
     let mut n = m.clone();
     for p in pays(d) {
-        n = apply(&n, &Op::Revert { entry: p, date: today }, today).map_err(|v| TestCaseError::fail(format!("reverting payment {p}: {v:?}")))?;
+        n = match apply(&n, &Op::Revert { entry: p, date: today }, today) {
+            Ok(n) => n,
+            // What it took off the debt put back where a debt in another
+            // commodity is open now: that waits (N12).
+            Err(v) if v.iter().all(|v| v.code == "N12") => return Ok(()),
+            Err(v) => return Err(TestCaseError::fail(format!("reverting payment {p}: {v:?}"))),
+        };
     }
     let late = apply(&n, &cancel, today);
     prop_assert!(late.is_ok(), "{:?}", late.map(|_| ()));
@@ -1655,7 +1667,11 @@ fn a_document_follows_its_bill(#[strategy(plan())] plan: Vec<Step>, #[strategy("
     let fail = |what: &'static str| move |v: Vec<Violation>| TestCaseError::fail(format!("{what}: {v:?}"));
     let file = Op::File { sha256: h.clone(), date: today, name: "acme-ag".into(), ext: "pdf".into(), of: None };
     let n = apply(&m, &file, today).map_err(fail("filing"))?;
-    let n = apply(&n, &bill(&h), today).map_err(fail("booking"))?;
+    // A bill in euros waits while one in another commodity is open (N12).
+    let n = match apply(&n, &bill(&h), today) {
+        Err(v) if v.iter().all(|v| v.code == "N12") => return Ok(()),
+        r => r.map_err(fail("booking"))?,
+    };
     let first = n.entries.len();
     prop_assert_eq!(n.documents[&h].bill(), Some(first));
     let unfiled = apply(&n, &Op::Unfile { sha256: h.clone() }, today);
@@ -1729,7 +1745,7 @@ fn issuing_follows_the_configuration(#[strategy(plan())] plan: Vec<Step>, usd: b
     let Ok(n) = apply(&m, &issue, today) else { return Ok(()) };
     let Kind::Invoice { content: c, .. } = &n.entries.last().unwrap().kind else { unreachable!() };
     let cfg = &m.config;
-    prop_assert_eq!(&c.accounts.receivable, &cfg.invoice.receivable);
+    prop_assert_eq!(&c.accounts.receivable, &super::ops::owed_on(&m, &cfg.invoice.receivable, &c.commodity));
     prop_assert_eq!(&c.accounts.income, &cfg.invoice.income);
     prop_assert_eq!(c.due, today.checked_add(jiff::Span::new().days(cfg.invoice.terms_days)).unwrap());
     match (&cfg.vat, &c.vat) {
@@ -1902,11 +1918,24 @@ fn names_mean_nothing(
     for a in &all {
         segments.extend(a.split(':').skip(1).map(String::from));
     }
+    // The stem of a debt's own account for a commodity is named too, though
+    // it be declared no longer: an operation may name it.
+    let stems: Vec<String> = segments.iter().filter_map(|s| m.commodities.keys().find_map(|c| s.strip_suffix(c.as_str()).filter(|x| !x.is_empty()).map(String::from))).collect();
+    segments.extend(stems);
     let names: BTreeMap<String, String> = segments.into_iter().enumerate().map(|(i, s)| (s, format!("S{i}"))).collect();
+    // A debt's own account for a commodity is named after it, under the one
+    // it is owed on (N12), or, in books that owed on that one itself, beside
+    // it: renamed as that one is, the commodity kept.
+    let segment = |s: &str| -> String {
+        if m.commodities.contains_key(s) || s == m.config.company.currency {
+            return s.to_string();
+        }
+        m.commodities.keys().find_map(|c| Some(format!("{}{c}", names.get(s.strip_suffix(c.as_str())?)?))).or_else(|| names.get(s).cloned()).unwrap_or_else(|| format!("U{s}"))
+    };
     let f = |a: &str| -> String {
         let mut parts = a.split(':');
         let class = parts.next().unwrap_or("").to_string();
-        std::iter::once(class).chain(parts.map(|s| names.get(s).cloned().unwrap_or_else(|| format!("U{s}")))).collect::<Vec<_>>().join(":")
+        std::iter::once(class).chain(parts.map(segment)).collect::<Vec<_>>().join(":")
     };
     let r = rename(&m, &f);
     prop_assert_eq!(check(&r).len(), 0);
@@ -2081,7 +2110,9 @@ fn any_text_the_rules_allow_survives(
     prop_assert!(check::segment_ok(&segment), "the strategy drew {:?}", segment);
     let today = day("2026-06-30");
     let account = format!("Expenses:{segment}");
-    let m = apply(&fresh(), &Op::AccountAdd(account.clone()), today).map_err(|v| TestCaseError::fail(format!("{v:?}")))?;
+    // Declared as before N13 refused a space: hledger reads one still.
+    let mut m = fresh();
+    m.accounts.insert(account.clone());
     let post = Op::Post { date: today, description: description.clone(), postings: vec![Posting::new(&account, Decimal::ONE, "EUR"), Posting::new("Assets:Bank", -Decimal::ONE, "EUR")], link: Default::default() };
     let mut m = apply(&m, &post, today).map_err(|v| TestCaseError::fail(format!("{v:?}")))?;
     if check::lines_ok(&lines) {
@@ -2247,14 +2278,14 @@ fn hledger_reads_these_characters() {
     }
 }
 
-/// I-E4: income and expenses are in the company's currency, so a profit is
-/// one amount; what is owed or paid in another is there at its cost.
+/// I-E4: an invoice's income and VAT are in the company's currency, so VAT
+/// is reckoned in one; what is owed in another is there at its cost.
 #[proptest]
-fn income_and_expenses_are_in_the_company_currency(#[strategy(plan())] plan: Vec<Step>) {
+fn an_invoice_is_booked_in_the_company_currency(#[strategy(plan())] plan: Vec<Step>) {
     walk(&plan, |_, _, n| {
         let home = &n.config.company.currency;
-        for (_, _, p) in n.all_postings() {
-            if matches!(class(&p.account), "Income" | "Expenses") {
+        for id in (1..=n.entries.len()).filter(|&id| matches!(n.entries[id - 1].kind, Kind::Invoice { .. } | Kind::CreditNote { .. })) {
+            for p in n.postings(id).iter().filter(|p| class(&p.account) != "Assets") {
                 prop_assert_eq!(&p.amount.commodity, home, "{:?}", p);
             }
         }
@@ -2605,11 +2636,12 @@ fn an_account_misnamed() {
     let v = apply(&m, &post("Assets:VAT"), day("2026-02-01")).unwrap_err();
     assert!(v.iter().any(|v| v.code == "I-A1" && v.what.contains("has accounts under it") && v.of == Subject::None), "{v:?}");
     // A part begun by a small letter: refused, written as it should be.
-    for (typed, fixed) in [("Assets:bank", "Assets:Bank"), ("assets:Petty cash", "Assets:Petty cash"), ("Expenses:Travel:taxi", "Expenses:Travel:Taxi")] {
+    // A space too, so that a posting's first space ends the name.
+    for (typed, fixed) in [("Assets:bank", "Assets:Bank"), ("assets:Petty cash", "Assets:PettyCash"), ("Expenses:Travel:taxi", "Expenses:Travel:Taxi"), ("Expenses:2026 Travel", "Expenses:2026Travel"), ("Assets:Hi;there", "Assets:HiThere")] {
         let v = apply(&m, &Op::AccountAdd(typed.into()), day("2026-02-01")).unwrap_err();
-        assert!(v.iter().any(|v| v.code == "N13" && v.what.ends_with(&format!("never a small letter: {fixed}"))), "{typed}: {v:?}");
+        assert!(v.iter().any(|v| v.code == "N13" && v.what.ends_with(&format!("never a small letter, and holds no space or semicolon: {fixed}"))), "{typed}: {v:?}");
     }
-    assert!(apply(&m, &Op::AccountAdd("Expenses:2026 Travel".into()), day("2026-02-01")).is_ok());
+    assert!(apply(&m, &Op::AccountAdd("Expenses:2026Travel".into()), day("2026-02-01")).is_ok());
     // Declared before, it stays: the books hold no problem, and take entries.
     let mut old = m.clone();
     old.accounts.insert("Expenses:travel".into());
@@ -2621,7 +2653,7 @@ fn an_account_misnamed() {
 /// commodity is refused through the bank that holds EUR, and taken through
 /// an account that holds nothing, never used or emptied.
 #[test]
-fn a_money_account_holds_what_it_held() {
+fn an_account_holds_one_commodity_at_a_time() {
     let mut m = fresh();
     let today = day("2026-02-01");
     let date = day("2026-01-05");
@@ -2632,7 +2664,7 @@ fn a_money_account_holds_what_it_held() {
     let id = m.entries.len();
     let pay = |from: &str| Op::Pay { debt: id, date, amount: Decimal::new(1940, 2), from: from.into(), cost: Some(Amount { quantity: Decimal::new(2100, 2), commodity: "USD".into() }) };
     let v = apply(&m, &pay(BANK), today).unwrap_err();
-    assert!(v.iter().any(|v| v.code == "N12" && v.what.starts_with("Assets:Bank holds 1000.00 EUR, and this moves 21.00 USD") && v.of == Subject::Account(BANK.into())), "{v:?}");
+    assert!(v.iter().any(|v| v.code == "N12" && v.what.starts_with("Assets:Bank holds 1000.00 EUR, the debt's own commodity, and its cost moves 21.00 USD") && v.of == Subject::Account(BANK.into())), "{v:?}");
     // In EUR it is taken; through an account for USD, holding nothing yet, too.
     m.accounts.insert("Assets:Dollars".into());
     let n = apply(&m, &pay("Assets:Dollars"), today).unwrap();
@@ -2643,4 +2675,18 @@ fn a_money_account_holds_what_it_held() {
     // Emptied, the bank takes USD: the same payment at a cost goes through.
     let emptied = apply(&m, &Op::Post { date, description: "Out".into(), postings: vec![p(BANK, -100000, "EUR"), p("Equity:Opening", 100000, "EUR")], link: Link::default() }, today).unwrap();
     assert!(apply(&emptied, &pay(BANK), today).is_ok());
+    // Not money alone: an expense booked in EUR takes no USD, one never
+    // used takes it; and a bill in USD waits while one in EUR is open.
+    let usd = |a: &str| Op::Post { date, description: "Software".into(), postings: vec![p(a, 2000, "USD"), p("Assets:Dollars", -2000, "USD")], link: Link::default() };
+    let v = apply(&n, &usd("Expenses:Hosting"), today).unwrap_err();
+    assert!(v.iter().any(|v| v.code == "N12" && v.what.starts_with("Expenses:Hosting holds")), "{v:?}");
+    let mut n2 = n.clone();
+    n2.accounts.insert("Expenses:Software".into());
+    let n2 = apply(&n2, &usd("Expenses:Software"), today).unwrap();
+    let second = Op::Bill { date, description: "Licence".into(), postings: vec![p("Expenses:Software", 500, "USD"), p(PAYABLE, -500, "USD")], document: None, again: false, more: BillMore::default() };
+    // Owed in USD while a bill in EUR is open: on a payable of its own.
+    m.accounts.insert("Expenses:Software".into());
+    let both = apply(&m, &second, today).unwrap();
+    assert!(both.postings(both.entries.len()).iter().any(|p| p.account == "Liabilities:Payable:USD"), "{:?}", both.entries.last());
+    assert!(apply(&n2, &second, today).is_ok());
 }

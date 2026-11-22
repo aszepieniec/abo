@@ -110,6 +110,7 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
             if let (None, Some([p])) = (&link.partner, link.agreement.as_ref().and_then(|a| m.agreements.get(a)).map(|a| &a.parties[..])) {
                 link.partner = Some(p.clone());
             }
+            let postings = postings.into_iter().map(|p| Posting { account: suffixed(m, &p.account, &p.amount.commodity), ..p }).collect();
             n.entries.push(entry(date, description, Kind::Plain(postings, link)))
         }
         Op::File { sha256, date, name, ext, of } => {
@@ -128,10 +129,22 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
             // As Bill: a reverted bill's document is booked by none.
             Some(d) if d.bill().is_none_or(|of| !m.standing()[of]) => drop(n.documents.remove(&sha256)),
             Some(d) => return Err(format!("{} is the document of {}; revert the bill first", d.path(&sha256), name(m, d.bill().unwrap_or_default()))),
-            None => return Err("no document is filed with this hash".into()),
+            None => return Err("no document is filed with this hash; `abo bills` lists those filed".into()),
         },
-        Op::Bill { date, description, postings, document, more, .. } => {
+        Op::Bill { date, description, mut postings, document, more, .. } => {
             let more = BillMore { number: more.number.trim().to_string(), due: more.due, partner: more.partner };
+            // What is owed, on a liability of its own for its commodity
+            // (N12), declared with it; not VAT the bill charges itself. Only
+            // under a liability declared: a misspelt one is refused (I-A1).
+            let vat: Vec<Account> = m.vat_accounts().into_iter().cloned().collect();
+            for p in postings.iter_mut() {
+                if class(&p.account) == "Liabilities" && p.amount.quantity < Decimal::ZERO && m.accounts.contains(m.base_of(&p.account)) && !vat.contains(&p.account) {
+                    p.account = owed_on(m, &p.account, &p.amount.commodity);
+                    n.accounts.insert(p.account.clone());
+                } else {
+                    p.account = suffixed(m, &p.account, &p.amount.commodity);
+                }
+            }
             n.entries.push(entry(date, description, Kind::Bill(postings, more)));
             if let Some(h) = document {
                 let standing = m.standing();
@@ -139,8 +152,8 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
                     Some(d) if d.version().is_some() => return Err(format!("{} is an agreement's document, not a bill's", d.path(&h))),
                     Some(d) if d.date != date => return Err(format!("{} is dated {}; a bill is dated as its document", d.path(&h), d.date)),
                     Some(d) if d.bill().is_none_or(|of| !standing[of]) => d.of = Some(Of::Bill(next)),
-                    Some(d) => return Err(format!("{} is the document of {}, which stands", d.path(&h), name(m, d.bill().unwrap_or_default()))),
-                    None => return Err("no document is filed with this hash".into()),
+                    Some(d) => return Err(format!("{} is the document of {} already; another bill's document is filed with `abo file` first", d.path(&h), name(m, d.bill().unwrap_or_default()))),
+                    None => return Err("no document is filed under that name or hash; `abo file` files one, and says where, and `abo bills` lists those filed".into()),
                 }
             }
         }
@@ -181,7 +194,10 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
             // In the order of their ids, as the list shows them, however given.
             let ids: Vec<&String> = c.payment.keys().filter(|k| more.pay_to.is_empty() || more.pay_to.contains(k)).collect();
             let pay_to = ids.into_iter().map(|id| c.payment[id].printed()).collect();
-            let accounts = InvoiceAccounts { receivable: c.invoice.receivable.clone(), income: more.income.clone().unwrap_or_else(|| c.invoice.income.clone()), output };
+            // Owed in another commodity on a receivable of its own (N12).
+            let receivable = owed_on(m, &c.invoice.receivable, &commodity);
+            n.accounts.insert(receivable.clone());
+            let accounts = InvoiceAccounts { receivable, income: more.income.clone().unwrap_or_else(|| c.invoice.income.clone()), output };
             let first = customer.lines().next().unwrap_or("").trim().to_string();
             let content = Content { to: more.to, agreement: more.agreement, period: more.period, customer, customer_tax_id: more.customer_tax_id, commodity, home, lines, vat, due, pay_to, reference, note, accounts };
             n.entries.push(entry(date, String::new(), Kind::Invoice { content: Box::new(content), pdf }));
@@ -201,18 +217,13 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
             let open = m.open(debt, &standing);
             if m.debt(debt).is_some() && open <= Decimal::ZERO {
                 return Err(match standing[debt] {
-                    true => format!("{} is settled", name(m, debt)),
+                    true => format!("{} is {} already: nothing is open on it", name(m, debt), m.status(debt, &standing).map_or("settled", |s| s.word())),
                     false => gone(m, debt),
                 });
             }
-            // In another commodity, at the debt's own cost of it: what it was
-            // booked at in the company's currency (I-E4).
-            let cost = m.debt(debt).and_then(|d| {
-                let own = m.postings(debt).into_iter().find(|p| p.account == d.account)?;
-                let c = own.cost?;
-                let places = m.places(&c.commodity);
-                Some(Amount { quantity: round(open * c.quantity.abs() / own.amount.quantity.abs(), places), commodity: c.commodity })
-            });
+            // In another commodity, at what is left of the debt's own cost of
+            // it: what it was booked at in the company's currency (I-E4).
+            let cost = booked(m, debt, open);
             n.entries.push(payment(m, debt, date, open, &to, cost, "Write off")?);
         }
         Op::Revert { entry: id, date } => n.entries.push(entry(date, format!("Revert {}", about(id)?), Kind::Reversal { of: id })),
@@ -286,14 +297,14 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
                 return Err(format!("{from} is in {}; an account keeps its class, as its balance says what it is", class(&from)));
             }
             if under(&to, &from) {
-                return Err(format!("{to} is {from} or under it"));
+                return Err(format!("{to} is under {from}: an account is not moved under itself; move it beside, or move what is under it"));
             }
             let new = |a: &str| format!("{to}{}", &a[from.len()..]);
             // Onto one that holds nothing, as the old name a move left: back
             // where it was, say. Onto one that holds something, never.
             let balances = m.balances();
             if let Some(a) = moved.iter().map(|a| new(a)).find(|a| balances.keys().any(|(b, _)| b == a)) {
-                return Err(format!("{a} is declared already, and holds a balance"));
+                return Err(format!("{a} is declared already, and holds a balance: move it to a name not in use"));
             }
             // A payment takes off the debt's own account: one moved would
             // be posted to again.
@@ -417,8 +428,8 @@ pub fn undo(after: &Books, before: &Books) -> Result<Books, String> {
     for id in before.entries.len() + 1..=after.entries.len() {
         let number = after.number_text(id).unwrap_or_default();
         match after.entry(id).map(|e| &e.kind) {
-            Some(Kind::Invoice { .. }) => return Err(format!("the last change issued invoice {number}, which may be with the customer already; an issued invoice is not taken back, but cancelled by a credit note: abo credit {number}")),
-            Some(Kind::CreditNote { .. }) => return Err(format!("the last change issued credit note {number}, which may be with the customer already; it is not taken back: issue the invoice again, with abo invoice")),
+            Some(Kind::Invoice { .. }) => return Err(format!("the last change issued invoice {number}, which may be with the customer already; an issued invoice is not taken back, but cancelled by a credit note: `abo credit {number}`")),
+            Some(Kind::CreditNote { .. }) => return Err(format!("the last change issued credit note {number}, which may be with the customer already; it is not taken back: issue the invoice again, with `abo invoice`")),
             _ => {}
         }
     }
@@ -433,20 +444,103 @@ pub fn undo(after: &Books, before: &Books) -> Result<Books, String> {
 fn payment(m: &Books, debt: EntryId, date: Date, amount: Decimal, from: &str, cost: Option<Amount>, verb: &str) -> Result<Entry, String> {
     let d = m.debt(debt).ok_or(match m.entry(debt) {
         Some(_) => format!("{} is not a bill or an invoice", name(m, debt)),
-        None => format!("no entry has the id {debt}"),
+        None => format!("no bill or invoice has the id {debt}: `abo bills` and `abo invoices` list them"),
     })?;
     let q = -amount * d.sign;
     let mut off = Posting::new(&d.account, q, &d.owed.commodity);
-    let other = match cost {
+    let sign = |x: Decimal| if q < Decimal::ZERO { -x.abs() } else { x.abs() };
+    let mut postings = vec![];
+    match cost {
         Some(c) => {
-            let signed = Amount { quantity: if q < Decimal::ZERO { -c.quantity } else { c.quantity }, commodity: c.commodity };
-            off.cost = Some(signed.clone());
-            Posting::new(from, -signed.quantity, &signed.commodity)
+            let paid = sign(c.quantity);
+            // What it takes off the debt at the cost the debt was booked at;
+            // what it cost besides is an exchange gain or loss, realised.
+            // Paid more than is open, I-P2 refuses it: no difference to say.
+            let open = m.open(debt, &m.standing());
+            let at = (amount <= open).then(|| booked(m, debt, amount)).flatten().filter(|b| b.commodity == c.commodity).map_or(paid, |b| sign(b.quantity));
+            off.cost = Some(Amount { quantity: at, commodity: c.commodity.clone() });
+            postings.push(off);
+            postings.push(Posting::new(&suffixed(m, from, &c.commodity), -paid, &c.commodity));
+            let difference = paid - at;
+            if !difference.is_zero() {
+                let to = if difference > Decimal::ZERO { EXCHANGE_LOSSES } else { EXCHANGE_GAINS };
+                postings.push(Posting::new(to, difference, &c.commodity));
+            }
         }
-        None => Posting::new(from, -q, &d.owed.commodity),
-    };
+        None => {
+            postings.push(off);
+            postings.push(Posting::new(&suffixed(m, from, &d.owed.commodity), -q, &d.owed.commodity));
+        }
+    }
     let what = &m.entry(debt).unwrap().description;
-    Ok(Entry { date, description: format!("{verb} {what}"), kind: Kind::Payment { of: debt, postings: vec![off, other] } })
+    Ok(Entry { date, description: format!("{verb} {what}"), kind: Kind::Payment { of: debt, postings } })
+}
+
+/// The account a debt in `commodity` is owed on, of those that `account`
+/// names: under it, named after the commodity, `Assets:Receivable:USD`, so
+/// that each holds one commodity (N12) and debts in several are open at
+/// once. Given with its commodity, as it is. Books that held their debts on
+/// `account` itself, before debts were owed per commodity, hold those in
+/// the company's currency there still, and those in another beside it,
+/// `Assets:ReceivableUSD`: an account posted to takes none under it (I-A2).
+pub fn owed_on(m: &Books, account: &str, commodity: &str) -> Account {
+    let posted = |a: &str| (1..=m.entries.len()).any(|id| m.postings(id).iter().any(|p| p.account == a));
+    let base = m.base_of(account);
+    // Named under one that owed on itself before: as those books owe.
+    if base != account && posted(base) {
+        return owed_on(m, base, commodity);
+    }
+    // Named after its commodity already, under another or beside it.
+    if base != account || account.ends_with(commodity) {
+        return account.to_string();
+    }
+    let itself = posted(account);
+    match (itself, commodity == m.config.company.currency) {
+        (true, true) => account.to_string(),
+        (true, false) => format!("{account}{commodity}"),
+        (false, _) => format!("{account}:{commodity}"),
+    }
+}
+
+/// `account`, or, where it has accounts under it and one is named after
+/// `commodity`, that one: `Assets:Bank` posted in USD is `Assets:Bank:USD`,
+/// when that is declared.
+pub fn suffixed(m: &Books, account: &str, commodity: &str) -> Account {
+    let under = format!("{account}:{commodity}");
+    match m.accounts.contains(account) && !m.postable(account) && m.accounts.contains(&under) {
+        true => under,
+        false => account.to_string(),
+    }
+}
+
+/// Where a payment books what a debt in another commodity cost more, or
+/// less, than it was booked at.
+pub const EXCHANGE_LOSSES: &str = "Expenses:ExchangeLosses";
+pub const EXCHANGE_GAINS: &str = "Income:ExchangeGains";
+
+/// What `amount` of debt `debt` was booked at, in the company's currency,
+/// if it was booked at a cost: its share of the cost, and all that is left
+/// of it when `amount` is all that is open, so that a debt paid off leaves
+/// nothing at cost on its account.
+fn booked(m: &Books, debt: EntryId, amount: Decimal) -> Option<Amount> {
+    let d = m.debt(debt)?;
+    let own = m.postings(debt).into_iter().find(|p| p.account == d.account)?;
+    let c = own.cost?;
+    let places = m.places(&c.commodity);
+    let standing = m.standing();
+    // Divided first where the product would pass what a decimal holds.
+    let (k, o) = (c.quantity.abs(), own.amount.quantity.abs());
+    let share = |q: Decimal| q.checked_mul(k).and_then(|x| x.checked_div(o)).or_else(|| q.checked_div(o)?.checked_mul(k)).map(|x| round(x, places));
+    if amount < m.open(debt, &standing) {
+        return Some(Amount { quantity: share(amount)?, commodity: c.commodity });
+    }
+    // What the payments standing took off it at cost: their own, or their share.
+    let taken: Decimal = (1..=m.entries.len())
+        .filter(|&p| standing[p] && matches!(m.entries[p - 1].kind, Kind::Payment { of, .. } if of == debt))
+        .flat_map(|p| m.postings(p).into_iter().filter(|x| x.account == d.account))
+        .map(|x| x.cost.filter(|k| k.commodity == c.commodity).map_or_else(|| share(x.amount.quantity.abs()), |k| Some(k.quantity.abs())))
+        .sum::<Option<Decimal>>()?;
+    Some(Amount { quantity: c.quantity.abs() - taken, commodity: c.commodity })
 }
 
 fn latest(m: &Books, account: &str, commodity: &str) -> Option<(Account, Commodity, Date)> {
@@ -588,7 +682,10 @@ fn config_problem(root: &toml::Value, key: &str, value: Option<&str>) -> Option<
                 let at = if path.is_empty() { name.to_string() } else { format!("{}.{name}", path.join(".")) };
                 let given = text.map_or_else(|| v.to_string(), shown);
                 return Some(match kind {
-                    Holds::Date => format!("{at} takes a date written yyyy-mm-dd, such as 2026-06-30; {given} is not one"),
+                    Holds::Date => match given.is_empty() {
+                        true => format!("{at} takes a date written yyyy-mm-dd, such as 2026-06-30, and was given none"),
+                        false => format!("{at} takes a date written yyyy-mm-dd, such as 2026-06-30; {given} is not one"),
+                    },
                     Holds::Number => format!("{at} takes a number, such as 8.1; {given} is not one"),
                     Holds::WholeNumber => format!("{at} takes a whole number; {given} is not one"),
                     Holds::Flag => format!("{at} takes true or false; {given} is not one"),
@@ -740,19 +837,29 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
             }
         }
     }
-    // A new account is written one way: no part begun by a small letter.
+    // A new account is written one way: no part begun by a small letter, no space.
     // Those declared before stay as they are, as the entries posting to them.
-    if let Op::AccountAdd(a) | Op::AccountMove { to: a, .. } = op {
+    // Whatever declares it: account add or move, a payment option.
+    for a in n.accounts.difference(&m.accounts) {
         if !super::check::account_canonical(a) {
-            no!("N13", "{a}: each part of an account's name begins with a capital letter or another character, never a small letter: {}", super::check::canonical_account(a));
+            no!("N13", "{a}: each part of an account's name begins with a capital letter or another character, never a small letter, and holds no space or semicolon: {}", super::check::canonical_account(a));
         }
     }
-    // A money account moves only what it holds while it holds anything:
-    // emptied, it may take another commodity.
+    // An account holds one commodity at a time, that of its latest
+    // posting: emptied, it may take another. One named after a commodity,
+    // under another, holds that one alone.
     if added.is_some() {
         for p in n.postings(n.entries.len()) {
-            if !m.moves_money(&p.account) {
-                continue;
+            if let Some((parent, named)) = p.account.rsplit_once(':').filter(|(_, c)| m.commodities.contains_key(*c) || *c == m.config.company.currency) {
+                if *named != p.amount.commodity && n.base_of(&p.account) == parent {
+                    let c = &p.amount.commodity;
+                    v.push(Violation {
+                        code: "N12",
+                        what: format!("{} is named after {named}, and this posts {} {c} to it; an account holds one commodity at a time: post {c} to {parent}:{c}", p.account, p.amount.quantity.abs()),
+                        of: Subject::Account(p.account.clone()),
+                    });
+                    continue;
+                }
             }
             let mut held: BTreeMap<Commodity, Decimal> = BTreeMap::new();
             for q in (1..=m.entries.len()).flat_map(|id| m.postings(id)).filter(|q| q.account == p.account) {
@@ -768,12 +875,22 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
                     format!("{b} {c}")
                 }).collect();
                 let c = &p.amount.commodity;
+                // Paid at a cost from an account in the debt's own commodity:
+                // the cost is what is amiss.
+                let own = match op {
+                    Op::Pay { debt, cost: Some(_), from, .. } if *from == p.account => m.debt(*debt).map(|d| d.owed.commodity).filter(|d| held.contains_key(d)),
+                    _ => None,
+                };
                 v.push(Violation {
                     code: "N12",
-                    what: format!(
-                        "{} holds {}, and this moves {q} {c} through it; an account that holds money moves only what it holds: what is paid in {c} goes through an account for {c}, or through this one once it is empty",
-                        p.account, super::explain::and(&balance)
-                    ),
+                    what: match own {
+                        Some(d) => format!("{} holds {}, the debt's own commodity, and its cost moves {q} {c} through it: a payment from it in {d} is given with no cost", p.account, super::explain::and(&balance)),
+                        None => format!(
+                            "{} holds {}, and this moves {q} {c} through it; an account holds one commodity at a time: post {c} to an account of its own, or to this one once its balance is nought",
+                            p.account,
+                            super::explain::and(&balance)
+                        ),
+                    },
                     of: Subject::Account(p.account.clone()),
                 });
                 break;

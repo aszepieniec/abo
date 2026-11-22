@@ -396,7 +396,7 @@ pub static OPTION: &[Q] = &[
                 label: "Account the money arrives in",
                 hint: "",
                 offer: Offer::From("Assets:Bank, Assets:Cash or Assets:Crypto, by kind", |env| env.kind().account().to_string()),
-                check: Check::By(|s, _| answer::account(s).and_then(|a| if model::class(&a) == "Assets" { Ok(a) } else { Err(format!("{a} is not an account money arrives in: an asset.")) })),
+                check: Check::By(|s, env| answer::account(s).and_then(|a| as_new(a, env)).and_then(|a| if model::class(&a) == "Assets" { Ok(a) } else { Err(format!("{a} is not an account money arrives in: an asset.")) })),
             },
         ],
     },
@@ -439,7 +439,19 @@ fn account_check(s: &str, env: &Env) -> Result<String, String> {
         Some(d) if !d.contains(&a) => {
             Err(format!("{a} is not declared; declare it first, or choose another."))
         }
-        _ => Ok(a),
+        _ => as_new(a, env),
+    }
+}
+
+/// An account declared by this answer, unless it is already: written as a
+/// new account is (N13).
+fn as_new(a: String, env: &Env) -> Result<String, String> {
+    match env.context.declared.as_ref().is_some_and(|d| d.contains(&a)) || model::account_canonical(&a) {
+        true => Ok(a),
+        false => Err(format!(
+            "{a}: each part of an account's name begins with a capital letter or another character, never a small letter, and holds no space or semicolon: {}",
+            model::canonical_account(&a)
+        )),
     }
 }
 

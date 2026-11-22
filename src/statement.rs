@@ -13,7 +13,27 @@ use std::path::Path;
 #[derive(Serialize, Clone)]
 pub struct Line {
     pub label: String,
+    /// In the account's own commodity.
     pub amounts: Vec<Amount>,
+    /// In the company's currency, where `amounts` is in another: at the
+    /// latest price, or at cost where there is no price.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub home: Vec<Amount>,
+}
+
+impl Line {
+    pub fn new(label: impl Into<String>, amounts: Vec<Amount>) -> Line {
+        Line { label: label.into(), amounts, home: vec![] }
+    }
+
+    /// Its figures as a person reads them: `2565.00 USD (2385.45 EUR)`.
+    pub fn shown(&self) -> String {
+        // Not to be had in the company's currency, at no price nor cost: once.
+        match self.home.is_empty() || self.home.iter().map(|a| (&a.commodity, &a.quantity)).eq(self.amounts.iter().map(|a| (&a.commodity, &a.quantity))) {
+            true => money(&self.amounts),
+            false => format!("{} ({})", money(&self.amounts), money(&self.home)),
+        }
+    }
 }
 
 #[derive(Serialize, Default)]
@@ -119,21 +139,75 @@ fn top(account: &str) -> String {
     format!("acct:^{account}(:|$)")
 }
 
+/// The accounts' balances over `query`, each in its own commodity and in
+/// the company's: at the latest price, `-X`, where every commodity it and
+/// the other side of its exchanges hold has one; at cost, `-B`, where not.
+/// An exchange is split, `--infer-equity`, into equity's conversion of one
+/// commodity to the other, valued as its two sides are, so that what comes
+/// to nought in each commodity comes to nought valued. Each account with
+/// its own bag and its bag in the company's currency.
+pub fn valued(s: &Store, query: &str, extra: &[&str]) -> Result<Vec<(String, Bag, Bag)>> {
+    let home = s.books.config.company.currency.clone();
+    let with = |more: &[&str]| -> Result<BTreeMap<String, Bag>> {
+        let mut args: Vec<&str> = extra.to_vec();
+        args.push("--infer-equity");
+        args.extend_from_slice(more);
+        Ok(balances(s, query, &args)?.into_iter().collect())
+    };
+    let (own, at_price, at_cost) = (with(&[])?, with(&["-X", &home])?, with(&["-B"])?);
+    let in_home = |b: Option<&Bag>| b.is_none_or(|b| b.iter().all(|(c, q)| *c == home || q.is_zero()));
+    // An exchange's conversion, `equity:conversion:EUR-USD:USD`, by its pair.
+    let pair = |a: &str| a.starts_with("equity:conversion:").then(|| a.rsplit_once(':').map_or(a, |(p, _)| p).to_string());
+    let priced = |a: &str| match pair(a) {
+        Some(p) => own.keys().filter(|k| pair(k).as_deref() == Some(p.as_str())).all(|k| in_home(at_price.get(k))),
+        None => in_home(at_price.get(a)),
+    };
+    Ok(own
+        .iter()
+        .map(|(a, bag)| {
+            let valued = if priced(a) { at_price.get(a) } else { at_cost.get(a) }.cloned().unwrap_or_default();
+            (a.clone(), bag.clone(), valued)
+        })
+        .collect())
+}
+
 /// Income and expenses have credit balances and debit balances respectively;
-/// a reader wants both columns positive, so one side is turned over.
+/// a reader wants both columns positive, so one side is turned over. Each
+/// account in its own commodity, and in the company's where that is
+/// another; the total in the company's. Exchanges' conversion, which is
+/// equity, is one line: what they come to valued.
 fn section(s: &Store, title: &str, account: &str, extra: &[&str], invert: bool) -> Result<(Section, Bag)> {
     let sign = if invert { Decimal::NEGATIVE_ONE } else { Decimal::ONE };
+    let home = &s.books.config.company.currency;
     let mut total = Bag::new();
     let mut lines = Vec::new();
-    for (name, bag) in balances(s, &top(account), extra)? {
+    let mut conversion = Bag::new();
+    for (name, bag, valued) in valued(s, &top(account), extra)? {
+        add(&mut total, &valued, sign);
+        if name.starts_with("equity:conversion:") {
+            add(&mut conversion, &valued, sign);
+            continue;
+        }
         let mut shown = Bag::new();
         add(&mut shown, &bag, sign);
-        add(&mut total, &bag, sign);
-        lines.push(Line { label: name, amounts: amounts(&s.books, &shown) });
+        let mut line = Line::new(name, amounts(&s.books, &shown));
+        if bag.iter().any(|(c, q)| c != home && !q.is_zero()) {
+            let mut v = Bag::new();
+            add(&mut v, &valued, sign);
+            line.home = amounts(&s.books, &v);
+        }
+        lines.push(line);
+    }
+    if conversion.values().any(|q| !q.is_zero()) {
+        lines.push(Line::new(UNREALISED, amounts(&s.books, &conversion)));
     }
     let t = amounts(&s.books, &total);
     Ok((Section { title: title.into(), lines, total: t, net: vec![] }, total))
 }
+
+/// Equity's line for what exchanges come to, valued at the latest prices
+/// against their cost: gains and losses not realised.
+pub const UNREALISED: &str = "Exchange differences not realised";
 
 fn period_flags(period: &str) -> Vec<&str> {
     if period.is_empty() { vec![] } else { vec!["-p", period] }
@@ -234,9 +308,9 @@ pub fn profit_and_loss(s: &Store, period: &str) -> Result<Statement> {
             true => {
                 let mut loss = Bag::new();
                 add(&mut loss, &profit, Decimal::NEGATIVE_ONE);
-                Line { label: "Loss for the period".into(), amounts: amounts(&s.books, &loss) }
+                Line::new("Loss for the period", amounts(&s.books, &loss))
             }
-            false => Line { label: "Profit for the period".into(), amounts: amounts(&s.books, &profit) },
+            false => Line::new("Profit for the period", amounts(&s.books, &profit)),
         }),
     })
 }
@@ -247,14 +321,12 @@ pub const NET_INCOME: &str = "Net income";
 pub fn balance_sheet(s: &Store, date: &str) -> Result<Statement> {
     // -H gives the running balance, and -e is exclusive, so ask for the day after.
     let end = crate::model::ymd(date)
-        .ok_or_else(|| anyhow::anyhow!("{date} is not a date: write it yyyy-mm-dd, such as 2026-09-30"))?
+        .ok_or_else(|| anyhow::anyhow!(crate::input::not_a_date(date)))?
         .tomorrow()?
         .to_string();
-    // An exchange, booked at its cost, is equity's conversion, or the sheet
-    // would not come out nil.
-    // At cost, so that what is held or owed in another commodity is in the
-    // company's currency, at what it was booked at (MODEL.md I-E4).
-    let extra = vec!["-H", "-e", end.as_str(), "--infer-equity", "-B"];
+    // Each account in its own commodity, and in the company's currency at
+    // the latest price, or at cost where there is none (`valued`).
+    let extra = vec!["-H", "-e", end.as_str()];
 
     let (assets, asset_total) = section(s, "Assets", "assets", &extra, false)?;
     let (liabilities, liability_total) = section(s, "Liabilities", "liabilities", &extra, true)?;
@@ -266,18 +338,15 @@ pub fn balance_sheet(s: &Store, date: &str) -> Result<Statement> {
     let mut retained = Bag::new();
     let mut net = Vec::new();
     for account in ["income", "expenses"] {
-        for (name, bag) in balances(s, &top(account), &extra)? {
-            add(&mut retained, &bag, Decimal::NEGATIVE_ONE);
+        for (name, _, valued) in valued(s, &top(account), &extra)? {
+            add(&mut retained, &valued, Decimal::NEGATIVE_ONE);
             let mut part = Bag::new();
-            add(&mut part, &bag, Decimal::NEGATIVE_ONE);
-            net.push(Line { label: name, amounts: amounts(&s.books, &part) });
+            add(&mut part, &valued, Decimal::NEGATIVE_ONE);
+            net.push(Line::new(name, amounts(&s.books, &part)));
         }
     }
     if retained.values().any(|v| !v.is_zero()) {
-        equity.lines.push(Line {
-            label: NET_INCOME.into(),
-            amounts: amounts(&s.books, &retained),
-        });
+        equity.lines.push(Line::new(NET_INCOME, amounts(&s.books, &retained)));
         equity.net = net;
         add(&mut equity_total, &retained, Decimal::ONE);
         equity.total = amounts(&s.books, &equity_total);
@@ -296,10 +365,7 @@ pub fn balance_sheet(s: &Store, date: &str) -> Result<Statement> {
         date: Some(date.to_string()),
         company: s.books.config.company.name.clone(),
         sections: vec![assets, liabilities, equity],
-        bottom: Some(Line {
-            label: "Difference (should be nil)".into(),
-            amounts: amounts(&s.books, &difference),
-        }),
+        bottom: Some(Line::new("Difference (should be nil)", amounts(&s.books, &difference))),
     })
 }
 
