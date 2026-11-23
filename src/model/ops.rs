@@ -110,8 +110,7 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
             if let (None, Some([p])) = (&link.partner, link.agreement.as_ref().and_then(|a| m.agreements.get(a)).map(|a| &a.parties[..])) {
                 link.partner = Some(p.clone());
             }
-            let postings = postings.into_iter().map(|p| Posting { account: suffixed(m, &p.account, &p.amount.commodity), ..p }).collect();
-            n.entries.push(entry(date, description, Kind::Plain(postings, link)))
+            n.entries.push(entry(date, description, Kind::Plain(routed(m, postings, date), link)))
         }
         Op::File { sha256, date, name, ext, of } => {
             if let Some(d) = m.documents.get(&sha256) {
@@ -142,7 +141,7 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
                     p.account = owed_on(m, &p.account, &p.amount.commodity);
                     n.accounts.insert(p.account.clone());
                 } else {
-                    p.account = suffixed(m, &p.account, &p.amount.commodity);
+                    p.account = suffixed_on(m, &p.account, &p.amount.commodity, Some(date));
                 }
             }
             n.entries.push(entry(date, description, Kind::Bill(postings, more)));
@@ -228,12 +227,25 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
         }
         Op::Revert { entry: id, date } => n.entries.push(entry(date, format!("Revert {}", about(id)?), Kind::Reversal { of: id })),
         Op::Record { account, commodity, date, balance, clears } => {
+            // Of `Assets:Bank` in CHF: recorded on `Assets:Bank`, of it and of
+            // `Assets:Bank:CHF` alike; once on a day.
+            let account = match account.rsplit_once(':') {
+                Some((base, c)) if c == commodity && m.base_of(&account) == base => base.to_string(),
+                _ => account,
+            };
+            if m.statements.keys().any(|k| k.1 == commodity && k.2 == date && m.same(&k.0, &account)) {
+                return Err(format!("there is a statement of {} in {commodity} on {date} already; to record it again, take it out first", m.base_of(&account)));
+            }
             if n.statements.insert((account.clone(), commodity.clone(), date), Statement { balance, clears }).is_some() {
                 return Err(format!("there is a statement of {account} in {commodity} on {date} already; to record it again, take it out first"));
             }
         }
         Op::Unrecord { account, commodity } => {
-            let key = latest(m, &account, &commodity).ok_or(format!("there is no statement of {account} in {commodity}"))?;
+            // The latest in it, of the account itself or of its account in it:
+            // where it was recorded, whatever holds the commodity now.
+            let base = m.base_of(&account).to_string();
+            let key = m.statements.keys().filter(|k| k.1 == commodity && (k.0 == base || m.base_of(&k.0) == base)).max_by_key(|k| k.2).cloned();
+            let key = key.ok_or(format!("there is no statement of {base} in {commodity}"))?;
             n.statements.remove(&key);
         }
         Op::ConfigSet { key, value } => n.config = config_edit(&m.config, &key, Some(&value))?,
@@ -275,16 +287,27 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
         Op::OptionRemove { id } => drop(n.config.payment.remove(&id).ok_or(format!("there is no payment option {}", shown(&id)))?),
         Op::ConfigUnset { key } => n.config = config_edit(&m.config, &key, None)?,
         Op::AccountAdd(a) => {
+            if let Some(why) = held_itself(m, &a) {
+                return Err(why);
+            }
             if !n.accounts.insert(a.clone()) {
                 return Err(format!("{a} is declared already"));
             }
         }
         Op::AccountRemove(a) => {
+            // Only one empty: what is under it is taken out first.
+            let under: Vec<&str> = m.accounts.iter().filter(|b| b.strip_prefix(a.as_str()).is_some_and(|r| r.starts_with(':'))).map(String::as_str).collect();
+            if !under.is_empty() {
+                return Err(format!("{a} has accounts under it, {}: take those out first", under.join(", ")));
+            }
             if !n.accounts.remove(&a) {
                 return Err(format!("{} is not declared", shown(&a)));
             }
         }
         Op::AccountMove { from, to, date } => {
+            if let Some(why) = held_itself(m, &to) {
+                return Err(why);
+            }
             let under = |a: &str, b: &str| a == b || a.strip_prefix(b).is_some_and(|r| r.starts_with(':'));
             let moved: Vec<Account> = m.accounts.iter().filter(|a| under(a, &from)).cloned().collect();
             if moved.is_empty() {
@@ -313,10 +336,22 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
                 return Err(format!("{} is owed on {}; pay or write it off first", name(m, d), m.debt(d).unwrap().account));
             }
             n.accounts.extend(moved.iter().map(|a| new(a)));
+            // Income, expenses and equity in another commodity move at what
+            // they were booked at, not at the price of the day they move:
+            // what each year made is as it was.
+            let home = &m.config.company.currency;
+            let (costed, all) = (m.exchanged(None, None).costed, m.all_postings());
+            let booked = |a: &str, c: &str| -> Option<Decimal> {
+                all.iter().filter(|(_, _, p)| p.account == a && p.amount.commodity == c).map(|(r, d, p)| costed.get(r).copied().or_else(|| m.worth(p, *d))).sum()
+            };
             let postings: Vec<Posting> = balances
                 .into_iter()
                 .filter(|((a, _), _)| under(a, &from))
-                .flat_map(|((a, c), q)| [Posting::new(&new(&a), q, &c), Posting::new(&a, -q, &c)])
+                .flat_map(|((a, c), q)| {
+                    let cost = (c != *home && !["Assets", "Liabilities"].contains(&class(&a))).then(|| booked(&a, &c)).flatten().filter(|w| !w.is_zero() && w.is_sign_negative() == q.is_sign_negative()).map(|w| Amount { quantity: w, commodity: home.clone() });
+                    let with = |account: &str, sign: Decimal| Posting { cost: cost.clone().map(|k| Amount { quantity: k.quantity * sign, ..k }), ..Posting::new(account, q * sign, &c) };
+                    [with(&new(&a), Decimal::ONE), with(&a, Decimal::NEGATIVE_ONE)]
+                })
                 .collect();
             if !postings.is_empty() {
                 n.entries.push(entry(date, format!("Move {from} to {to}"), Kind::Plain(postings, Link::default())));
@@ -400,6 +435,12 @@ fn build(m: &Books, op: &Op) -> Result<Books, String> {
         }
         Op::Uncomment { id } => drop(n.comments.remove(&id).ok_or(format!("there is no comment {id}"))?),
     }
+    // An account in a commodity, `Assets:Bank:CHF`, is declared with the
+    // entry or the statement that first uses it (N12).
+    let added = n.entries.get(m.entries.len()).map(|_| n.postings(n.entries.len())).unwrap_or_default().into_iter().map(|p| p.account);
+    let recorded = n.statements.keys().filter(|k| !m.statements.contains_key(*k)).map(|k| k.0.clone());
+    let new: Vec<Account> = added.chain(recorded).filter(|a| !n.accounts.contains(a) && n.base_of(a) != a && a.rsplit_once(':').is_some_and(|(_, c)| n.is_commodity(c))).collect();
+    n.accounts.extend(new);
     Ok(n)
 }
 
@@ -460,7 +501,7 @@ fn payment(m: &Books, debt: EntryId, date: Date, amount: Decimal, from: &str, co
             let at = (amount <= open).then(|| booked(m, debt, amount)).flatten().filter(|b| b.commodity == c.commodity).map_or(paid, |b| sign(b.quantity));
             off.cost = Some(Amount { quantity: at, commodity: c.commodity.clone() });
             postings.push(off);
-            postings.push(Posting::new(&suffixed(m, from, &c.commodity), -paid, &c.commodity));
+            postings.push(Posting::new(&suffixed_on(m, from, &c.commodity, Some(date)), -paid, &c.commodity));
             let difference = paid - at;
             if !difference.is_zero() {
                 let to = if difference > Decimal::ZERO { EXCHANGE_LOSSES } else { EXCHANGE_GAINS };
@@ -469,7 +510,7 @@ fn payment(m: &Books, debt: EntryId, date: Date, amount: Decimal, from: &str, co
         }
         None => {
             postings.push(off);
-            postings.push(Posting::new(&suffixed(m, from, &d.owed.commodity), -q, &d.owed.commodity));
+            postings.push(Posting::new(&suffixed_on(m, from, &d.owed.commodity, Some(date)), -q, &d.owed.commodity));
         }
     }
     let what = &m.entry(debt).unwrap().description;
@@ -502,15 +543,69 @@ pub fn owed_on(m: &Books, account: &str, commodity: &str) -> Account {
     }
 }
 
-/// `account`, or, where it has accounts under it and one is named after
-/// `commodity`, that one: `Assets:Bank` posted in USD is `Assets:Bank:USD`,
-/// when that is declared.
+/// Where a posting to `account` in `commodity` goes (N12), the first of:
+/// `account` itself, while it holds that commodity; its account in that
+/// commodity, under it, where that is declared; `account` itself, while it
+/// holds nothing; and its account in that commodity, `Assets:Bank` in CHF
+/// to `Assets:Bank:CHF`, declared with the entry. One named after the
+/// commodity, `Assets:Bank:CHF` in CHF, goes where `Assets:Bank` in CHF
+/// does. One not declared, one in a commodity not declared, and one with
+/// other accounts under it and none in that commodity are as written.
 pub fn suffixed(m: &Books, account: &str, commodity: &str) -> Account {
-    let under = format!("{account}:{commodity}");
-    match m.accounts.contains(account) && !m.postable(account) && m.accounts.contains(&under) {
-        true => under,
-        false => account.to_string(),
+    suffixed_on(m, account, commodity, None)
+}
+
+/// `suffixed`, of what the accounts held on `date`: a posting dated back
+/// goes where it would have gone, booked on its day.
+pub fn suffixed_on(m: &Books, account: &str, commodity: &str, date: Option<Date>) -> Account {
+    let base = m.base_of(account);
+    if base != account {
+        return match &account[base.len() + 1..] == commodity && m.is_commodity(commodity) {
+            true => suffixed_on(m, base, commodity, date),
+            false => account.to_string(),
+        };
     }
+    if !m.accounts.contains(account) || !m.is_commodity(commodity) {
+        return account.to_string();
+    }
+    let under = format!("{account}:{commodity}");
+    let held = m.held_on(account, date);
+    // Dated back: nothing else held on a later day either, so that it never
+    // holds two at once.
+    let alone = date.is_none_or(|d| m.holdings(account).iter().filter(|(on, _)| *on > d).all(|(_, h)| h.iter().all(|c| c == commodity)));
+    if held.contains_key(commodity) && alone {
+        account.to_string()
+    } else if m.accounts.contains(&under) {
+        under
+    } else if !m.leaf(account) || (held.is_empty() && alone) {
+        account.to_string()
+    } else {
+        under
+    }
+}
+
+/// Why `a`, an account's account in a commodity, is not declared: the
+/// account it is under holds that commodity itself, so a posting to it in
+/// that commodity goes there, and the commodity would be in two accounts.
+fn held_itself(m: &Books, a: &str) -> Option<String> {
+    let (x, c) = a.rsplit_once(':')?;
+    (m.is_commodity(c) && m.accounts.contains(x) && m.held(x).contains_key(c)).then(|| format!("{x} holds {c} itself, and what is posted to {a} in {c} goes there: {c} would be in two accounts; post to {x}"))
+}
+
+/// `suffixed`, posting by posting: one posting to an account that held
+/// nothing, in one commodity, and another to it in another, in one entry,
+/// the second to its account in that commodity.
+pub fn routed(m: &Books, postings: Vec<Posting>, date: Date) -> Vec<Posting> {
+    let mut out: Vec<Posting> = vec![];
+    for p in postings {
+        let mut account = suffixed_on(m, &p.account, &p.amount.commodity, Some(date));
+        let c = &p.amount.commodity;
+        if m.accounts.contains(&account) && m.base_of(&account) == account && m.is_commodity(c) && out.iter().any(|q| q.account == account && q.amount.commodity != *c) {
+            account = format!("{account}:{c}");
+        }
+        out.push(Posting { account, ..p });
+    }
+    out
 }
 
 /// Where a payment books what a debt in another commodity cost more, or
@@ -541,11 +636,6 @@ fn booked(m: &Books, debt: EntryId, amount: Decimal) -> Option<Amount> {
         .map(|x| x.cost.filter(|k| k.commodity == c.commodity).map_or_else(|| share(x.amount.quantity.abs()), |k| Some(k.quantity.abs())))
         .sum::<Option<Decimal>>()?;
     Some(Amount { quantity: c.quantity.abs() - taken, commodity: c.commodity })
-}
-
-fn latest(m: &Books, account: &str, commodity: &str) -> Option<(Account, Commodity, Date)> {
-    let (a, c) = (account.to_string(), commodity.to_string());
-    m.statements.range((a.clone(), c.clone(), Date::MIN)..=(a, c, Date::MAX)).next_back().map(|(k, _)| k.clone())
 }
 
 /// What a key of abo.toml holds, by its schema.
@@ -598,7 +688,7 @@ fn keys(root: &toml::Value, path: &[&str]) -> Option<Vec<(&'static str, Holds, b
     let method = root.get("vat").and_then(|v| v.get("method")).and_then(toml::Value::as_str).unwrap_or("");
     Some(match path {
         [] => vec![("company", Keys, true), ("vat", Keys, true), ("invoice", Keys, true), ("payment", Any, false)],
-        ["company"] => vec![("name", Text, true), ("currency", Text, true), ("address", Text, false), ("tax_id", Text, false), ("country", Text, false), ("closed_through", Date, false)],
+        ["company"] => vec![("name", Text, true), ("currency", Text, true), ("address", Text, false), ("tax_id", Text, false), ("country", Text, false), ("closed_through", Date, false), ("cost_method", OneOf(&["fifo", "average"]), false)],
         ["vat"] => {
             let mut k = vec![("method", OneOf(&["none", "flat", "effective"]), true)];
             match method {
@@ -617,6 +707,47 @@ fn keys(root: &toml::Value, path: &[&str]) -> Option<Vec<(&'static str, Holds, b
         }
         _ => vec![],
     })
+}
+
+/// The key of abo.toml `key` was likely meant for: one whose name, or
+/// whose last part, it is, a dash for an underscore, in any case;
+/// `cost_method` for `company.cost_method`.
+pub fn key_meant(root: &toml::Value, key: &str) -> Option<String> {
+    let want = key.replace('-', "_").to_lowercase();
+    fn find(root: &toml::Value, path: &mut Vec<&'static str>, want: &str) -> Option<String> {
+        for (name, kind, _) in keys(root, path)? {
+            path.push(name);
+            let full = path.join(".");
+            let last = want.rsplit('.').next().unwrap_or(want);
+            if full == want || name == last || (last.len() > 3 && apart(name, last) <= 2) {
+                return Some(full);
+            }
+            if matches!(kind, Holds::Keys) {
+                if let Some(f) = find(root, path, want) {
+                    return Some(f);
+                }
+            }
+            path.pop();
+        }
+        None
+    }
+    find(root, &mut vec![], &want).filter(|f| *f != key)
+}
+
+/// How many letters, put in, taken out or changed, `a` is from `b`.
+fn apart(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, x) in a.chars().enumerate() {
+        let mut prev = row[0];
+        row[0] = i + 1;
+        for j in 0..b.len() {
+            let next = (row[j + 1] + 1).min(row[j] + 1).min(prev + usize::from(x != b[j]));
+            prev = row[j + 1];
+            row[j + 1] = next;
+        }
+    }
+    row[b.len()]
 }
 
 /// Whether `key` names a key abo.toml may hold, set or not, by its schema
@@ -659,7 +790,8 @@ fn config_problem(root: &toml::Value, key: &str, value: Option<&str>) -> Option<
         };
         if let Some(k) = table.keys().find(|k| !known.iter().any(|(n, ..)| n == k)) {
             let names: Vec<&str> = known.iter().map(|(n, ..)| *n).collect();
-            return Some(format!("{key} names no key of abo.toml: {} is not one of {}", shown(k), names.join(", ")));
+            let hint = key_meant(root, key).map(|m| format!("; the key is {m}")).unwrap_or_default();
+            return Some(format!("{key} names no key of abo.toml: {} is not one of {}{hint}", shown(k), names.join(", ")));
         }
         for (name, kind, needed) in known {
             let Some(v) = table.get(name) else {
@@ -689,7 +821,10 @@ fn config_problem(root: &toml::Value, key: &str, value: Option<&str>) -> Option<
                     Holds::Number => format!("{at} takes a number, such as 8.1; {given} is not one"),
                     Holds::WholeNumber => format!("{at} takes a whole number; {given} is not one"),
                     Holds::Flag => format!("{at} takes true or false; {given} is not one"),
-                    Holds::OneOf(these) => format!("{at}: {given} is not {}", these.join(", ")),
+                    Holds::OneOf(these) => {
+                        let lower = these.iter().find(|t| t.eq_ignore_ascii_case(&given)).map(|t| format!(", written in lowercase: {t}")).unwrap_or_default();
+                        format!("{at}: {given} is not {}{lower}", super::explain::joined(&these.iter().map(|t| t.to_string()).collect::<Vec<_>>(), "or"))
+                    }
                     Holds::Text => format!("{at} takes text; {given} is not"),
                     Holds::Keys | Holds::Any => format!("{at} takes keys, such as {{ name = value, ... }}"),
                 });
@@ -817,7 +952,7 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
             }
         }
         // Against an expense, only the one the bill was booked to: what it takes back.
-        if m.entry(*debt).is_some_and(|e| matches!(e.kind, Kind::Bill(..)) && class(to) == "Expenses") && !m.postings(*debt).iter().any(|p| p.account == *to) {
+        if m.entry(*debt).is_some_and(|e| matches!(e.kind, Kind::Bill(..)) && class(to) == "Expenses") && !m.postings(*debt).iter().any(|p| p.account == *to || m.base_of(&p.account) == to.as_str()) {
             let booked: Vec<String> = m.postings(*debt).into_iter().map(|p| p.account).filter(|a| class(a) == "Expenses").collect();
             no!("N4", "{} was not booked to {to}, but to {}; a forgiven bill is written off to income, or against the expense it was booked to", name(m, *debt), booked.join(" and "));
         }
@@ -827,12 +962,27 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
             no!("N6", "the books are closed through {c}; a closing date only moves forward, but undo takes it back while it is the last change");
         }
     }
+    // What income, expenses or equity hold in another commodity has a
+    // worth: a price by its day, or what was given for it (N14).
+    {
+        let before: BTreeSet<PostingRef> = m.unpriced().into_iter().map(|(r, ..)| r).collect();
+        // What a revert takes back is as though it never were: it needs no price.
+        let gone = if matches!(op, Op::Revert { .. }) { n.taken_back(None) } else { BTreeSet::new() };
+        if let Some((r, d, p)) = n.unpriced().into_iter().find(|(r, ..)| !before.contains(r) && !gone.contains(&r.entry)) {
+            let (c, home) = (&p.amount.commodity, &n.config.company.currency);
+            let amount = grouped(p.amount.quantity, n.places(c), c, " ");
+            match op {
+                Op::PriceRemove { .. } => no!("N14", "{} posts {amount} {c} to {} on {d}, valued in {home} at this price; it stays while that does, or another is set on or before {d}", name(m, r.entry), p.account),
+                _ => no!("N14", "{amount} {c} to {} on {d}: there is no price of {c} by then to say what that is in {home}; set one first, `abo price add {d} {c} <price> {home}`", n.base_of(&p.account)),
+            }
+        }
+    }
     // What a statement shows stays shown: nothing is added before it.
     if let Some(e) = added {
         for p in n.postings(n.entries.len()) {
-            let (a, c) = (p.account.clone(), p.amount.commodity.clone());
-            if let Some(((_, _, d), _)) = m.statements.range((a.clone(), c.clone(), e.date)..=(a, c, Date::MAX)).next_back() {
-                v.push(Violation { code: "N7", what: format!("{} has a statement on {d}, and this is dated {}, on or before it; date it after {d}, or take the statement out first", p.account, e.date), of: Subject::Account(p.account.clone()) });
+            let c = p.amount.commodity.clone();
+            if let Some((_, _, d)) = m.statements.keys().filter(|k| k.1 == c && k.2 >= e.date && m.same(&k.0, &p.account)).max_by_key(|k| k.2) {
+                v.push(Violation { code: "N7", what: format!("{} in {} has a statement on {d}, and this is dated {}, on or before it; date it after {d}, or take the statement out first", m.base_of(&p.account), p.amount.commodity, e.date), of: Subject::Account(p.account.clone()) });
                 break;
             }
         }
@@ -855,14 +1005,16 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
                     let c = &p.amount.commodity;
                     v.push(Violation {
                         code: "N12",
-                        what: format!("{} is named after {named}, and this posts {} {c} to it; an account holds one commodity at a time: post {c} to {parent}:{c}", p.account, p.amount.quantity.abs()),
+                        what: format!("{} is named after {named}, and this posts {} {c} to it; an account named after a commodity holds that one alone: post {c} to {parent}", p.account, p.amount.quantity.abs()),
                         of: Subject::Account(p.account.clone()),
                     });
                     continue;
                 }
             }
             let mut held: BTreeMap<Commodity, Decimal> = BTreeMap::new();
-            for q in (1..=m.entries.len()).flat_map(|id| m.postings(id)).filter(|q| q.account == p.account) {
+            // Of the entries on or before its day: what it held then.
+            let on = added.map(|e| e.date);
+            for q in (1..=m.entries.len()).filter(|id| on.is_none_or(|d| m.entries[id - 1].date <= d)).flat_map(|id| m.postings(id)).filter(|q| q.account == p.account) {
                 *held.entry(q.amount.commodity).or_default() += q.amount.quantity;
             }
             held.retain(|_, q| !q.is_zero());
@@ -875,35 +1027,75 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
                     format!("{b} {c}")
                 }).collect();
                 let c = &p.amount.commodity;
-                // Paid at a cost from an account in the debt's own commodity:
-                // the cost is what is amiss.
-                let own = match op {
-                    Op::Pay { debt, cost: Some(_), from, .. } if *from == p.account => m.debt(*debt).map(|d| d.owed.commodity).filter(|d| held.contains_key(d)),
-                    _ => None,
-                };
                 v.push(Violation {
                     code: "N12",
-                    what: match own {
-                        Some(d) => format!("{} holds {}, the debt's own commodity, and its cost moves {q} {c} through it: a payment from it in {d} is given with no cost", p.account, super::explain::and(&balance)),
-                        None => format!(
-                            "{} holds {}, and this moves {q} {c} through it; an account holds one commodity at a time: post {c} to an account of its own, or to this one once its balance is nought",
-                            p.account,
-                            super::explain::and(&balance)
-                        ),
-                    },
+                    what: format!(
+                        "{} holds {}, and this moves {q} {c} through it; an account holds one commodity at a time: post {c} to an account of its own, or to this one once its balance is nought",
+                        p.account,
+                        super::explain::and(&balance)
+                    ),
                     of: Subject::Account(p.account.clone()),
                 });
                 break;
             }
         }
     }
+    // Dated back, an entry may leave an account holding two commodities on
+    // a later day: refused, on the first such day it brings about.
+    if let Some(e) = added {
+        let mut seen: Vec<String> = vec![];
+        for p in n.postings(n.entries.len()) {
+            // One named after a commodity holds it alone: N12 and I-A3 say so.
+            if seen.contains(&p.account) || m.base_of(&p.account) != p.account {
+                continue;
+            }
+            seen.push(p.account.clone());
+            let before: BTreeSet<Date> = m.holdings(&p.account).into_iter().filter(|(_, h)| h.len() > 1).map(|(d, _)| d).collect();
+            if let Some((d, h)) = n.holdings(&p.account).into_iter().find(|(d, h)| h.len() > 1 && *d > e.date && !before.contains(d)) {
+                let h: Vec<String> = h.into_iter().collect();
+                // A reversal moves what its entry moved, where it did: no
+                // date mends that while the account holds another since.
+                let mend = match op {
+                    Op::Revert { .. } => "a reversal moves what its entry moved, where it did: book the opposite as an entry of its own instead, which goes to the account for its commodity".to_string(),
+                    _ => format!("date it on or after {d}, or post it to an account of its own"),
+                };
+                v.push(Violation {
+                    code: "N12",
+                    what: format!("{} would hold {} from {d}, as this is dated {}, before then; an account holds one commodity at a time: {mend}", p.account, super::explain::and(&h), e.date),
+                    of: Subject::Account(p.account.clone()),
+                });
+                break;
+            }
+        }
+    }
+    // Paid at a cost from an account holding the debt's own commodity, and
+    // none of the cost's, itself or in its account for it: the cost is
+    // what is amiss, not a sum owed in the cost's commodity.
+    if let (Some(e), Op::Pay { debt, cost: Some(cost), from, .. }) = (added, op) {
+        // Named as the account in the cost's commodity, or as the one it is under.
+        let from = &m.base_of(from).to_string();
+        let on = Some(e.date);
+        let held = m.held_on(from, on);
+        let there = suffixed_on(m, from, &cost.commodity, on);
+        if let Some(d) = m.debt(*debt).map(|d| d.owed.commodity).filter(|d| held.contains_key(d) && *d != cost.commodity) {
+            if there != *from && !m.held_on(&there, on).contains_key(&cost.commodity) {
+                let balance: Vec<String> = held.iter().map(|(c, b)| super::explain::amount(m, *b, c)).collect();
+                let c = &cost.commodity;
+                v.push(Violation {
+                    code: "N12",
+                    what: format!("{from} holds {}, the debt's own commodity, and no {c}, itself or in {there}, to pay its cost of {} with: a payment from it in {d} is given with no cost", super::explain::and(&balance), super::explain::amount(m, cost.quantity.abs(), c)),
+                    of: Subject::Account(from.clone()),
+                });
+            }
+        }
+    }
     // What a statement shows moved as booked: reversing it would book a
     // movement no bank made. The other side is corrected instead.
     if let Op::Revert { entry, .. } = op {
-        if let Some(((a, _, d), _)) = m.statements.iter().find(|(_, s)| s.clears.iter().any(|r| r.entry == *entry)) {
+        if let Some(((a, c, d), _)) = m.statements.iter().find(|(_, s)| s.clears.iter().any(|r| r.entry == *entry)) {
             v.push(Violation {
                 code: "N9",
-                what: format!("{} moved money the statement of {a} on {d} shows, as it was booked: reverting it, on any day, would book a movement that never was", name(m, *entry)),
+                what: format!("{} moved money the statement of {} in {c} on {d} shows, as it was booked: reverting it, on any day, would book a movement that never was", name(m, *entry), m.base_of(a)),
                 of: Subject::Account(a.clone()),
             });
             // Whatever its date, it is refused: no advice to date it later.

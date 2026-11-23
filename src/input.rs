@@ -317,13 +317,13 @@ pub fn posting_ref(text: &str) -> Result<model::PostingRef> {
 }
 
 
-/// A period as hledger reads one: `2026-01`, `2026q1`, `from 2026-01-01
-/// to 2026-02-01`, `2026-01-01..2026-02-01`, the end not in it; with both
-/// its ends, its first and last day.
+/// A period as abo reads one (statement::hledger_period): `2026-01`,
+/// `2026q1`, `from 2026-01-01 to 2026-01-31`, `2026-01-01..2026-01-31`, the
+/// end in it; with both its ends, its first and last day.
 pub fn period(s: &str) -> Result<model::Period> {
     let s = s.trim();
     crate::statement::period_ok(s).map_err(|e| unreadable(e.to_string()))?;
-    let bad = || unreadable(format!("{s} is not a period with a first and a last day: give both, such as 2026-01 or 2026-01-01..2026-02-01, the end not in it, as hledger reads it"));
+    let bad = || unreadable(format!("{s} is not a period with a first and a last day: give both, such as 2026-01 or 2026-01-01..2026-01-31, the end in it"));
     match crate::statement::period_days(s)? {
         (Some(from), Some(to)) => Ok(model::Period { from: model::ymd(&from).ok_or_else(bad)?, to: model::ymd(&to).ok_or_else(bad)? }),
         _ => Err(bad()),

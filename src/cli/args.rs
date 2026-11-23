@@ -603,7 +603,7 @@ pub(crate) enum Cmd {
         #[arg(long)]
         agreement: Option<String>,
         /// What it is for, printed on it: a period as hledger reads one,
-        /// `2026-01`, or `2026-01-01..2026-02-01`, the end not in it.
+        /// `2026-01`, or `2026-01-01..2026-01-31`, the end in it.
         #[arg(long)]
         period: Option<String>,
         /// Another like invoice NUMBER: its
@@ -693,7 +693,8 @@ pub(crate) enum Cmd {
         /// The account, given plainly: `abo reconcile Assets:Bank`.
         #[arg(conflicts_with = "account", value_name = "ACCOUNT")]
         at: Option<String>,
-        /// Defaults to the company currency.
+        /// Defaults to the one the account is named after, or else the one
+        /// it holds, if it holds one; else the company currency.
         #[arg(long)]
         commodity: Option<String>,
         /// Statement date. Defaults to today.
@@ -712,7 +713,8 @@ pub(crate) enum Cmd {
         /// with none, Assets:Bank.
         #[arg(long)]
         account: Option<String>,
-        /// Defaults to the company currency.
+        /// Defaults to the one the account is named after, or else the one
+        /// it holds, if it holds one; else the company currency.
         #[arg(long)]
         commodity: Option<String>,
         /// Defaults to today.
@@ -734,7 +736,8 @@ pub(crate) enum Cmd {
         /// with none, Assets:Bank.
         #[arg(long)]
         account: Option<String>,
-        /// Defaults to the company currency.
+        /// Defaults to the one the account is named after, or else the one
+        /// it holds, if it holds one; else the company currency.
         #[arg(long)]
         commodity: Option<String>,
     },

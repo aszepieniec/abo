@@ -273,7 +273,14 @@ fn statement(m: &Books, key: &(Account, Commodity, Date), s: &Statement) -> Stri
     for r in &s.clears {
         t += &format!("    ; clears: {}.{}\n", r.entry, r.n);
     }
-    let assertion = if m.whole(key) { format!(" = {balance}") } else { String::new() };
+    // Of its account in the commodity too, where it has one: `=*`, with
+    // what is under it, as the statement is of both (§2.6).
+    let both = m.accounts.contains(&format!("{}:{}", key.0, key.1));
+    let assertion = match (m.whole(key), both) {
+        (true, true) => format!(" =* {balance}"),
+        (true, false) => format!(" = {balance}"),
+        _ => String::new(),
+    };
     t + &posting_line(&key.0, &amount(m, &Amount { quantity: Decimal::ZERO, commodity: key.1.clone() }), &assertion)
 }
 
@@ -535,7 +542,7 @@ fn parse_block(
             let (account, rest) = p.split_once("  ").ok_or("not a posting")?;
             let rest = rest.trim_start();
             // The assertion is what `whole` says; render writes it back.
-            let rest = rest.split_once(" = ").map_or(rest, |(r, _)| r);
+            let rest = rest.split_once(" =* ").or_else(|| rest.split_once(" = ")).map_or(rest, |(r, _)| r);
             let (a, cost) = match rest.split_once(" @@ ") {
                 Some((a, c)) => (amt(a)?, Some(amt(c)?)),
                 None => (amt(rest)?, None),
@@ -684,6 +691,11 @@ fn place(f: &Files, of: &super::check::Subject, first_by_hand: EntryId) -> Optio
             .or_else(|| {
                 let i = f.get("abo.toml")?.lines().position(|l| l.contains(&format!("\"{a}\"")))?;
                 Some(format!("abo.toml:{}", i + 1))
+            })
+            // Else where it is declared: a name amiss itself (I-A3).
+            .or_else(|| {
+                let i = f.get("journal/accounts.journal")?.lines().position(|l| l.strip_prefix("account ").is_some_and(|r| r.trim_end() == a))?;
+                Some(format!("journal/accounts.journal:{}", i + 1))
             }),
         Subject::Statement(a, d) => {
             let head = format!("{d} Statement of {a}");

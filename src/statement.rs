@@ -51,7 +51,8 @@ pub struct Section {
 pub struct Statement {
     pub title: String,
     /// The period as given, an hledger period such as `2026q3`; empty for
-    /// all time, and for a balance sheet.
+    /// all time, and for a balance sheet: null in JSON, as `from` and `to` are.
+    #[serde(serialize_with = "none_if_empty")]
     pub period: String,
     /// The period's first and last day, as hledger reads it; none for all
     /// time, and for a balance sheet.
@@ -63,6 +64,13 @@ pub struct Statement {
     pub sections: Vec<Section>,
     /// The number the whole thing exists to produce, where there is one.
     pub bottom: Option<Line>,
+}
+
+fn none_if_empty<S: serde::Serializer>(t: &str, s: S) -> std::result::Result<S::Ok, S::Error> {
+    match t {
+        "" => s.serialize_none(),
+        t => s.serialize_str(t),
+    }
 }
 
 /// One commodity-keyed bag of money. Everything is summed in here rather than
@@ -91,6 +99,9 @@ pub fn when(st: &Statement) -> String {
         (None, p) => match (&st.from, &st.to) {
             (Some(f), Some(t)) if p.trim() == "ytd" => format!("year to date ({f} to {t})"),
             (Some(f), Some(t)) => format!("{p} ({f} to {t})"),
+            // An open end's day, where the period does not say it already.
+            (Some(f), None) if !p.contains(f.as_str()) => format!("{p} (from {f})"),
+            (None, Some(t)) if !p.contains(t.as_str()) => format!("{p} (through {t})"),
             _ => p.to_string(),
         },
     }
@@ -98,6 +109,12 @@ pub fn when(st: &Statement) -> String {
 
 pub fn money(a: &[Amount]) -> String {
     a.iter().map(|m| m.text(" ")).collect::<Vec<_>>().join(", ")
+}
+
+/// `bag`, each amount to its commodity's places: as a line shows it, so that
+/// lines add up to the total under them.
+pub fn rounded(b: &crate::model::Books, bag: &Bag) -> Bag {
+    bag.iter().map(|(c, q)| (c.clone(), crate::model::round(*q, b.places(c)))).collect()
 }
 
 fn add(into: &mut Bag, from: &Bag, sign: Decimal) {
@@ -140,12 +157,14 @@ fn top(account: &str) -> String {
 }
 
 /// The accounts' balances over `query`, each in its own commodity and in
-/// the company's: at the latest price, `-X`, where every commodity it and
-/// the other side of its exchanges hold has one; at cost, `-B`, where not.
-/// An exchange is split, `--infer-equity`, into equity's conversion of one
-/// commodity to the other, valued as its two sides are, so that what comes
-/// to nought in each commodity comes to nought valued. Each account with
-/// its own bag and its bag in the company's currency.
+/// the company's. What is held or owed, assets and liabilities, at the
+/// latest price, `-X`; with no price, at what it cost, by
+/// `company.cost_method` (Books::exchanged). Income, expenses and equity at
+/// what they cost, `-B`, or else at the price of their day, `--value=then`,
+/// as they were booked. An exchange is split, `--infer-equity`, into
+/// equity's conversion of one commodity to the other, valued as its two
+/// sides are. Each account with its own bag and its bag in the company's
+/// currency.
 pub fn valued(s: &Store, query: &str, extra: &[&str]) -> Result<Vec<(String, Bag, Bag)>> {
     let home = s.books.config.company.currency.clone();
     let with = |more: &[&str]| -> Result<BTreeMap<String, Bag>> {
@@ -154,40 +173,105 @@ pub fn valued(s: &Store, query: &str, extra: &[&str]) -> Result<Vec<(String, Bag
         args.extend_from_slice(more);
         Ok(balances(s, query, &args)?.into_iter().collect())
     };
-    let (own, at_price, at_cost) = (with(&[])?, with(&["-X", &home])?, with(&["-B"])?);
+    // Accounts come to nought too, `-E`: what they were booked at need not.
+    let (own, at_price, at_cost) = (with(&["-E"])?, with(&["-X", &home])?, with(&["-B"])?);
     let in_home = |b: Option<&Bag>| b.is_none_or(|b| b.iter().all(|(c, q)| *c == home || q.is_zero()));
+    let (begin, end) = window(extra)?;
+    let exchanged = s.books.exchanged(None, end);
+    let lots = &exchanged.lots;
+    // Income, expenses and equity, posting by posting, each at its worth on
+    // its day: as what exchanges realise takes them (Books::worth). One with
+    // none, in its own commodity.
+    let mut booked: BTreeMap<String, Bag> = BTreeMap::new();
+    for (r, d, p) in s.books.all_postings() {
+        if begin.is_some_and(|b| d < b) || end.is_some_and(|e| d > e) || !own.contains_key(&p.account) {
+            continue;
+        }
+        let bag = booked.entry(p.account.clone()).or_default();
+        match exchanged.costed.get(&r).copied().or_else(|| s.books.worth(&p, d)) {
+            Some(v) => *bag.entry(home.clone()).or_default() += v,
+            None => *bag.entry(p.amount.commodity.clone()).or_default() += p.amount.quantity,
+        }
+    }
+    // Of what is held, or owed, with no price: what it cost, in share.
+    let at_lot_cost = |a: &str, bag: &Bag| -> Option<Bag> {
+        let owed = crate::model::class(a) == "Liabilities";
+        let mut v = Bag::new();
+        for (c, q) in bag.iter().filter(|(_, q)| !q.is_zero()) {
+            if *c == home {
+                *v.entry(home.clone()).or_default() += q;
+                continue;
+            }
+            let (held, cost) = lots.get(&(c.clone(), owed))?.iter().fold((Decimal::ZERO, Decimal::ZERO), |(h, k), l| (h + l.0, k + l.1));
+            if held.is_zero() {
+                return None;
+            }
+            *v.entry(home.clone()).or_default() += q * (cost / held);
+        }
+        Some(v)
+    };
     // An exchange's conversion, `equity:conversion:EUR-USD:USD`, by its pair.
     let pair = |a: &str| a.starts_with("equity:conversion:").then(|| a.rsplit_once(':').map_or(a, |(p, _)| p).to_string());
     let priced = |a: &str| match pair(a) {
         Some(p) => own.keys().filter(|k| pair(k).as_deref() == Some(p.as_str())).all(|k| in_home(at_price.get(k))),
         None => in_home(at_price.get(a)),
     };
+    let nought = |b: &Bag| b.values().all(|q| q.is_zero());
     Ok(own
         .iter()
         .map(|(a, bag)| {
-            let valued = if priced(a) { at_price.get(a) } else { at_cost.get(a) }.cloned().unwrap_or_default();
-            (a.clone(), bag.clone(), valued)
+            let valued = match crate::model::class(a) {
+                "Assets" | "Liabilities" if priced(a) => at_price.get(a).cloned(),
+                "Assets" | "Liabilities" => at_lot_cost(a, bag).or_else(|| at_cost.get(a).cloned()),
+                _ if pair(a).is_some() => if priced(a) { at_price.get(a) } else { at_cost.get(a) }.cloned(),
+                _ => booked.get(a).cloned(),
+            };
+            (a.clone(), bag.clone(), valued.unwrap_or_default())
         })
+        .filter(|(_, bag, valued)| !nought(bag) || !nought(valued))
         .collect())
+}
+
+/// The days hledger's `extra` flags report on, as far as abo reads them:
+/// `-p`, `-b`, `-e`, each with or without its long name; `-H` from the
+/// first. The last day, `-e` being the day after.
+// ponytail: -p and -b/-e as given; hledger's other date flags (-M's ranges, date:) not read
+fn window(extra: &[&str]) -> Result<(Option<crate::model::Date>, Option<crate::model::Date>)> {
+    let after = |names: &[&str]| extra.iter().enumerate().find_map(|(i, f)| match names.iter().find_map(|n| f.strip_prefix(n)) {
+        Some("") => extra.get(i + 1).map(|v| v.to_string()),
+        Some(v) => v.strip_prefix('=').map(str::to_string),
+        None => None,
+    });
+    let day = |v: Option<String>| v.as_deref().and_then(crate::model::ymd);
+    let (mut begin, mut end) = (day(after(&["--begin", "-b"])), day(after(&["--end", "-e"])).and_then(|d| d.yesterday().ok()));
+    if let Some(p) = after(&["--period", "-p"]) {
+        // As hledger reads it: those who pass it have read it as abo does.
+        let (f, t) = days(&p)?;
+        begin = begin.or(day(f));
+        end = end.or(day(t));
+    }
+    if extra.iter().any(|f| *f == "-H" || *f == "--historical") {
+        begin = None;
+    }
+    Ok((begin, end))
 }
 
 /// Income and expenses have credit balances and debit balances respectively;
 /// a reader wants both columns positive, so one side is turned over. Each
 /// account in its own commodity, and in the company's where that is
 /// another; the total in the company's. Exchanges' conversion, which is
-/// equity, is one line: what they come to valued.
-fn section(s: &Store, title: &str, account: &str, extra: &[&str], invert: bool) -> Result<(Section, Bag)> {
+/// equity, is one line: what they come to valued. Each line valued to the
+/// cent, and the total theirs; besides, the total not rounded.
+fn section(s: &Store, title: &str, account: &str, extra: &[&str], invert: bool) -> Result<(Section, Bag, Bag)> {
     let sign = if invert { Decimal::NEGATIVE_ONE } else { Decimal::ONE };
     let home = &s.books.config.company.currency;
-    let mut total = Bag::new();
+    let (mut total, mut exact) = (Bag::new(), Bag::new());
     let mut lines = Vec::new();
-    let mut conversion = Bag::new();
-    for (name, bag, valued) in valued(s, &top(account), extra)? {
+    // Exchanges' conversion is said apart, from what they gained (balance_sheet).
+    for (name, bag, valued) in valued(s, &top(account), extra)?.into_iter().filter(|(n, ..)| !n.starts_with("equity:conversion:")) {
+        add(&mut exact, &valued, sign);
+        let valued = rounded(&s.books, &valued);
         add(&mut total, &valued, sign);
-        if name.starts_with("equity:conversion:") {
-            add(&mut conversion, &valued, sign);
-            continue;
-        }
         let mut shown = Bag::new();
         add(&mut shown, &bag, sign);
         let mut line = Line::new(name, amounts(&s.books, &shown));
@@ -198,16 +282,46 @@ fn section(s: &Store, title: &str, account: &str, extra: &[&str], invert: bool) 
         }
         lines.push(line);
     }
-    if conversion.values().any(|q| !q.is_zero()) {
-        lines.push(Line::new(UNREALISED, amounts(&s.books, &conversion)));
-    }
     let t = amounts(&s.books, &total);
-    Ok((Section { title: title.into(), lines, total: t, net: vec![] }, total))
+    Ok((Section { title: title.into(), lines, total: t, net: vec![] }, total, exact))
 }
 
 /// Equity's line for what exchanges come to, valued at the latest prices
-/// against their cost: gains and losses not realised.
-pub const UNREALISED: &str = "Exchange differences not realised";
+/// against their cost: gains and losses, those of what is held still and
+/// of what was exchanged back alike.
+// ponytail: realised and not realised as one line; apart, with a cost method (FIFO or average), if asked
+pub const EXCHANGES: &str = "Exchange differences";
+
+/// A balance sheet's part of `EXCHANGES`: of what is held, or owed, still.
+pub const NOT_REALISED: &str = "Exchange differences not realised";
+
+/// The P&L's part of `EXCHANGES`, income: of what was exchanged back, by
+/// `company.cost_method` (Books::realised).
+pub const REALISED: &str = "Exchange differences realised";
+
+/// `delta` added to the line labelled `label`, put before the one labelled
+/// `before`, or last, where there is none; taken out where it comes to nought.
+fn shift(b: &crate::model::Books, lines: &mut Vec<Line>, label: &str, before: &str, delta: &Bag) {
+    let at = lines.iter().position(|l| l.label == label).unwrap_or_else(|| {
+        let at = lines.iter().position(|l| l.label == before).unwrap_or(lines.len());
+        lines.insert(at, Line::new(label, vec![]));
+        at
+    });
+    let mut line: Bag = lines[at].amounts.iter().map(|a| (a.commodity.clone(), a.quantity.parse::<Decimal>().unwrap_or_default())).collect();
+    add(&mut line, delta, Decimal::ONE);
+    match line.values().all(|q| q.is_zero()) {
+        true => drop(lines.remove(at)),
+        false => lines[at].amounts = amounts(b, &line),
+    }
+}
+
+/// What exchanges realised from `from` through `to`, to the cent, as a bag.
+fn realised(s: &Store, from: Option<&str>, to: Option<&str>) -> Bag {
+    let day = |d: Option<&str>| d.and_then(crate::model::ymd);
+    let home = &s.books.config.company.currency;
+    let r = crate::model::round(s.books.realised(day(from), day(to)), s.books.places(home));
+    [(home.clone(), r)].into_iter().filter(|(_, q)| !q.is_zero()).collect()
+}
 
 fn period_flags(period: &str) -> Vec<&str> {
     if period.is_empty() { vec![] } else { vec!["-p", period] }
@@ -215,13 +329,47 @@ fn period_flags(period: &str) -> Vec<&str> {
 
 /// A period hledger reads, refused in words of its own when it does not.
 /// The period as hledger takes it: `ytd`, the year to date, is 1 January of
-/// this year through today; any other, as given.
-pub(crate) fn hledger_period(period: &str) -> Result<String> {
-    if period.trim() == "ytd" {
+/// this year through today; a range, `2026-01-01..2026-03-31` or `2026-01
+/// to 2026-03`, with its end in it, where hledger leaves it out, so that
+/// the end is said after it; any other, as given.
+pub fn hledger_period(period: &str) -> Result<String> {
+    let period = period.trim();
+    if period == "ytd" {
         let today = crate::store::today()?;
         return Ok(format!("from {}-01-01 to {}", today.year(), today.tomorrow()?));
     }
-    Ok(period.to_string())
+    // A range: `a..b`, `a to b`, `from a to b`, `a - b`; either end may be left open.
+    let split = period.split_once("..").or_else(|| period.rfind(" to ").map(|i| (&period[..i], &period[i + 4..]))).or_else(|| period.split_once(" - "));
+    let split = split.or_else(|| period.strip_prefix("to ").map(|b| ("", b)));
+    let Some((a, b)) = split else { return Ok(period.to_string()) };
+    let a = a.trim();
+    let a = if a == "from" { "" } else { a.strip_prefix("from ").unwrap_or(a).trim() };
+    let b = b.trim();
+    // Each end read as hledger reads a period, and said as it was typed.
+    let read = |end: &str| -> Result<(Option<String>, Option<String>)> {
+        checked_period(end)?;
+        days(end)
+    };
+    let first = match a {
+        "" => None,
+        a => Some(read(a)?.0.with_context(|| format!("{a:?} has no first day"))?),
+    };
+    let last = match b {
+        "" => None,
+        b => Some(read(b)?.1.with_context(|| format!("{b:?} has no last day"))?),
+    };
+    if let (Some(f), Some(l)) = (&first, &last) {
+        if f > l {
+            bail!("{period:?} ends before it begins: {l} is before {f}");
+        }
+    }
+    let after = |d: &str| crate::model::ymd(d).and_then(|d| d.tomorrow().ok()).map(|d| d.to_string());
+    Ok(match (first, last.as_deref().and_then(after)) {
+        (Some(f), Some(t)) => format!("from {f} to {t}"),
+        (Some(f), None) => format!("from {f}"),
+        (None, Some(t)) => format!("to {t}"),
+        (None, None) => String::new(),
+    })
 }
 
 /// A period's first and last day, as hledger reads it: of a report by day,
@@ -230,6 +378,10 @@ pub(crate) fn hledger_period(period: &str) -> Result<String> {
 fn days(period: &str) -> Result<(Option<String>, Option<String>)> {
     if period.is_empty() {
         return Ok((None, None));
+    }
+    // Open at its start, as hledger_period writes one: up to the day before the end.
+    if let Some(end) = period.strip_prefix("to ").and_then(crate::model::ymd) {
+        return Ok((None, Some(end.yesterday()?.to_string())));
     }
     let out = std::process::Command::new("hledger").args(["--no-conf", "-f", "-", "balance", "-D", "-O", "json", "-p", period]).stdin(std::process::Stdio::null()).output().context("running hledger")?;
     let v: Value = serde_json::from_slice(&out.stdout).context("hledger's dates of the period")?;
@@ -278,6 +430,14 @@ pub(crate) fn checked_period(period: &str) -> Result<()> {
     };
     let dated = |w: &&str| w.len() > 5 && w[..4].bytes().all(|b| b.is_ascii_digit()) && w[4..].starts_with(['-', '/', '.']) && w.bytes().all(|b| b.is_ascii_digit() || b"-/.".contains(&b));
     let unreal = period.split_whitespace().flat_map(|w| w.split("..")).filter(dated).any(|w| !real(w));
+    // A number of a day alone, 26, hledger reads as that day of this month.
+    if period.trim().len() < 4 && !period.trim().is_empty() && period.trim().bytes().all(|b| b.is_ascii_digit()) {
+        bail!("{period:?} is not a period: a year is written in full, such as 2026");
+    }
+    // A quarter with a dash, 2026-q4, hledger reads as another period.
+    if let Some(w) = period.split_whitespace().find(|w| w.len() == 7 && w[..4].bytes().all(|b| b.is_ascii_digit()) && w[4..5].contains(['-', '/', '.']) && w[5..6].eq_ignore_ascii_case("q") && (b'1'..=b'4').contains(&w.as_bytes()[6])) {
+        bail!("{period:?} is not a period: a quarter is written {}q{}", &w[..4], &w[6..]);
+    }
     if !period.is_empty() && (unreal || !read()) {
         bail!("{period:?} is not a period; give one such as 2026, 2026q1, 2026-08, last month or ytd");
     }
@@ -289,8 +449,14 @@ pub fn profit_and_loss(s: &Store, period: &str) -> Result<Statement> {
     checked_period(&hp)?;
     let (from, to) = days(&hp)?;
     let extra = period_flags(&hp);
-    let (income, income_total) = section(s, "Income", "income", &extra, true)?;
-    let (expenses, expense_total) = section(s, "Expenses", "expenses", &extra, false)?;
+    let (mut income, mut income_total, _) = section(s, "Income", "income", &extra, true)?;
+    let gained = realised(s, from.as_deref(), to.as_deref());
+    if !gained.is_empty() {
+        shift(&s.books, &mut income.lines, REALISED, "", &gained);
+        add(&mut income_total, &gained, Decimal::ONE);
+        income.total = amounts(&s.books, &income_total);
+    }
+    let (expenses, expense_total, _) = section(s, "Expenses", "expenses", &extra, false)?;
 
     let mut profit = Bag::new();
     add(&mut profit, &income_total, Decimal::ONE);
@@ -328,9 +494,21 @@ pub fn balance_sheet(s: &Store, date: &str) -> Result<Statement> {
     // the latest price, or at cost where there is none (`valued`).
     let extra = vec!["-H", "-e", end.as_str()];
 
-    let (assets, asset_total) = section(s, "Assets", "assets", &extra, false)?;
-    let (liabilities, liability_total) = section(s, "Liabilities", "liabilities", &extra, true)?;
-    let (mut equity, mut equity_total) = section(s, "Equity", "equity", &extra, true)?;
+    let (assets, asset_total, asset_exact) = section(s, "Assets", "assets", &extra, false)?;
+    let (liabilities, liability_total, liability_exact) = section(s, "Liabilities", "liabilities", &extra, true)?;
+    let (mut equity, mut equity_total, mut equity_exact) = section(s, "Equity", "equity", &extra, true)?;
+    // What exchanges gained on what is held or owed still: its value less its cost.
+    let day = crate::model::ymd(date);
+    let home = s.books.config.company.currency.clone();
+    let open = s.books.not_realised(day);
+    if !open.is_zero() {
+        let bag: Bag = [(home.clone(), open)].into();
+        add(&mut equity_exact, &bag, Decimal::ONE);
+        let bag = rounded(&s.books, &bag);
+        add(&mut equity_total, &bag, Decimal::ONE);
+        equity.lines.push(Line::new(NOT_REALISED, amounts(&s.books, &bag)));
+    }
+    let mut retained_exact = Bag::new();
 
     // Profit that has not been closed into equity is still equity. Without
     // this line a balance sheet drawn from a journal simply does not balance,
@@ -339,11 +517,21 @@ pub fn balance_sheet(s: &Store, date: &str) -> Result<Statement> {
     let mut net = Vec::new();
     for account in ["income", "expenses"] {
         for (name, _, valued) in valued(s, &top(account), &extra)? {
+            add(&mut retained_exact, &valued, Decimal::NEGATIVE_ONE);
+            let valued = rounded(&s.books, &valued);
             add(&mut retained, &valued, Decimal::NEGATIVE_ONE);
             let mut part = Bag::new();
             add(&mut part, &valued, Decimal::NEGATIVE_ONE);
             net.push(Line::new(name, amounts(&s.books, &part)));
         }
+    }
+    // What exchanges realised is income, in net income.
+    let gained = realised(s, None, Some(date));
+    let exact_gain = s.books.realised(None, day);
+    *retained_exact.entry(home.clone()).or_default() += exact_gain;
+    if !gained.is_empty() {
+        add(&mut retained, &gained, Decimal::ONE);
+        net.push(Line::new(REALISED, amounts(&s.books, &gained)));
     }
     if retained.values().any(|v| !v.is_zero()) {
         equity.lines.push(Line::new(NET_INCOME, amounts(&s.books, &retained)));
@@ -352,10 +540,24 @@ pub fn balance_sheet(s: &Store, date: &str) -> Result<Statement> {
         equity.total = amounts(&s.books, &equity_total);
     }
 
-    let mut difference = Bag::new();
-    add(&mut difference, &asset_total, Decimal::ONE);
-    add(&mut difference, &liability_total, Decimal::NEGATIVE_ONE);
-    add(&mut difference, &equity_total, Decimal::NEGATIVE_ONE);
+    // What the books do not balance by, not rounded; what the lines, each
+    // to the cent, do not balance by besides is the rounding of foreign
+    // amounts valued: an exchange difference, on that line.
+    let net = |a: &Bag, l: &Bag, e: &[&Bag]| {
+        let mut d = Bag::new();
+        add(&mut d, a, Decimal::ONE);
+        add(&mut d, l, Decimal::NEGATIVE_ONE);
+        e.iter().for_each(|e| add(&mut d, e, Decimal::NEGATIVE_ONE));
+        d
+    };
+    let difference = net(&asset_exact, &liability_exact, &[&equity_exact, &retained_exact]);
+    let mut cents = net(&asset_total, &liability_total, &[&equity_total]);
+    add(&mut cents, &rounded(&s.books, &difference), Decimal::NEGATIVE_ONE);
+    if cents.values().any(|q| !q.is_zero()) {
+        shift(&s.books, &mut equity.lines, NOT_REALISED, NET_INCOME, &cents);
+        add(&mut equity_total, &cents, Decimal::ONE);
+    }
+    equity.total = amounts(&s.books, &equity_total);
 
     Ok(Statement {
         title: "Balance sheet".into(),
@@ -365,7 +567,8 @@ pub fn balance_sheet(s: &Store, date: &str) -> Result<Statement> {
         date: Some(date.to_string()),
         company: s.books.config.company.name.clone(),
         sections: vec![assets, liabilities, equity],
-        bottom: Some(Line::new("Difference (should be nil)", amounts(&s.books, &difference))),
+        // A commodity it comes to nought in is not said beside the rest.
+        bottom: Some(Line::new("Difference (should be nil)", amounts(&s.books, &rounded(&s.books, &difference).into_iter().filter(|(_, q)| !q.is_zero()).collect()))),
     })
 }
 

@@ -54,7 +54,8 @@ pub fn rule(code: &str) -> &'static str {
         "OP" => "the change cannot be made as asked",
         "I-A0" => "an account's name is well formed",
         "I-A1" => "what is named is declared",
-        "I-A2" => "postings go only to accounts with none under them",
+        "I-A2" => "postings go only to accounts with none under them but their accounts in commodities",
+        "I-A3" => "a commodity is in an account's name only as its last part, of the account before it in that commodity, which holds it alone",
         "I-K0" => "a commodity's name and places",
         "I-K1" => "no more places after the point than the commodity has",
         "I-K2" => "a price is above nought, in another commodity",
@@ -98,6 +99,7 @@ pub fn rule(code: &str) -> &'static str {
         "N11" => "an agreement not active stays as it is",
         "N12" => "an account holds one commodity at a time",
         "N13" => "a new account's name is written one way",
+        "N14" => "income, expenses and equity in another commodity have a price by their day",
         _ => "a rule of the books",
     }
 }
@@ -370,18 +372,48 @@ pub fn check(m: &Books) -> Vec<Violation> {
             no!("I-A0", "{a:?} is not an account whose first segment names a class");
         }
     }
-    let leaf = |a: &str| !m.accounts.iter().any(|b| b.len() > a.len() && b.starts_with(a) && b.as_bytes()[a.len()] == b':');
     let mut posted: BTreeSet<&str> = postings.iter().map(|(_, _, p)| p.account.as_str()).collect();
     posted.extend(m.statements.keys().map(|k| k.0.as_str()));
     // The receivable is named, and debts are owed under it, one account
     // per commodity: it is declared, and may have those under it.
     let configured: Vec<Account> = m.config_accounts().into_iter().filter(|a| *a != m.config.invoice.receivable || !m.owes_per_commodity(a)).collect();
     posted.extend(configured.iter().map(String::as_str));
+    // An account's account in a commodity not declared: the commodity is
+    // what is lacking, said once, with the others.
+    let mut lacking: BTreeSet<String> = BTreeSet::new();
     for a in &posted {
-        if !m.accounts.contains(*a) {
+        if let Some((_, c)) = a.rsplit_once(':').filter(|_| !m.accounts.contains(*a) && m.base_of(a) != *a).filter(|(_, c)| !m.is_commodity(c)) {
+            lacking.insert(c.to_string());
+        } else if !m.accounts.contains(*a) {
             no!(@of Subject::Account(a.to_string()), "I-A1", "{a} is not declared, and is in use: posted to, recorded or named in abo.toml");
-        } else if !leaf(a) {
+        } else if !m.leaf(a) {
             no!(@of Subject::Account(a.to_string()), "I-A2", "{a} is in use (posted to, recorded or named in abo.toml), and has accounts under it");
+        }
+    }
+    // A commodity in an account's name: its last part alone, that of the
+    // account before it in that commodity, which holds it alone (I-A3).
+    for a in &m.accounts {
+        let parts: Vec<&str> = a.split(':').collect();
+        for (i, c) in parts.iter().enumerate().skip(1).filter(|(_, c)| m.is_commodity(c)) {
+            let before = parts[..i].join(":");
+            if i + 1 < parts.len() {
+                no!(@of Subject::Account(a.to_string()), "I-A3", "{a} has {c}, a commodity, in its name before its last part; a commodity names only an account's account in it, {before}:{c}, which takes none under it");
+            } else if !before.contains(':') {
+                no!(@of Subject::Account(a.to_string()), "I-A3", "{a} is named after {c}, under the class {before}, and a class has no account in a commodity: an account in {c} is under an account of the class, {before}:<account>:{c}");
+            } else if !m.accounts.contains(&before) {
+                no!(@of Subject::Account(a.to_string()), "I-A3", "{a} is named after {c}, under {before}, which is not declared: an account named after a commodity is the account in it of the one it is under, so {before} is declared first");
+            }
+        }
+    }
+    let named = |a: &str| a.rsplit_once(':').map(|(_, c)| c.to_string()).filter(|c| m.is_commodity(c) && m.base_of(a) != a);
+    for (r, _, p) in &postings {
+        if let Some(c) = named(&p.account).filter(|c| *c != p.amount.commodity) {
+            no!(@of Subject::Entry(r.entry), "I-A3", "{}, named after {c}, holds {c} alone; entry {} posts {} to it", p.account, r.entry, p.amount.commodity);
+        }
+    }
+    for (a, c, d) in m.statements.keys() {
+        if let Some(n) = named(a).filter(|n| n != c) {
+            no!(@of Subject::Account(a.clone()), "I-A3", "the statement of {a} on {d} is in {c}; {a} is named after {n} and holds it alone");
         }
     }
     let mut amounts: Vec<&Amount> = vec![];
@@ -402,7 +434,7 @@ pub fn check(m: &Books) -> Vec<Violation> {
             }
         }
     }
-    for c in used {
+    for c in used.into_iter().chain(lacking.iter().map(String::as_str)).collect::<BTreeSet<_>>() {
         if !m.commodities.contains_key(c) {
             no!(@of Subject::Commodity(c.to_string()), "I-A1", "{c} is not declared, and is in use");
         }
@@ -605,6 +637,10 @@ pub fn check(m: &Books) -> Vec<Violation> {
 
     // An account a debt is on moves only through debts and their payments.
     let on: BTreeSet<Account> = (1..=m.entries.len()).filter_map(|d| m.debt(d)).map(|d| d.account).collect();
+    // Its accounts in other commodities, beside it, too: `Assets:Receivable:USD`
+    // by `Assets:Receivable:EUR`, before any debt is owed on it.
+    let families: BTreeSet<&str> = on.iter().map(|a| m.base_of(a)).filter(|b| on.iter().all(|a| a != b)).collect();
+    let on_debt = |a: &str| on.contains(a) || families.contains(m.base_of(a));
     for (i, e) in m.entries.iter().enumerate() {
         let id = i + 1;
         let own = match &e.kind {
@@ -613,7 +649,7 @@ pub fn check(m: &Books) -> Vec<Violation> {
             Kind::Reversal { .. } | Kind::CreditNote { .. } | Kind::Gone => continue,
             Kind::Plain(..) => None,
         };
-        let there: Vec<Posting> = m.postings(id).into_iter().filter(|p| on.contains(&p.account)).collect();
+        let there: Vec<Posting> = m.postings(id).into_iter().filter(|p| on_debt(&p.account)).collect();
         if there.len() > 1 || there.iter().any(|p| own.as_ref().is_none_or(|d| d.account != p.account)) {
             no!(@of Subject::Entry(id), "I-P3", "entry {id} posts to an account a debt is on, and is not that debt or its payment");
         }
@@ -654,16 +690,17 @@ pub fn check(m: &Books) -> Vec<Violation> {
     for (key, s) in &m.statements {
         for r in &s.clears {
             match lookup.get(r) {
-                Some((d, p)) if p.account == key.0 && p.amount.commodity == key.1 && *d <= key.2 => {}
+                Some((d, p)) if m.same(&p.account, &key.0) && p.amount.commodity == key.1 && *d <= key.2 => {}
                 _ => no!(@of Subject::Statement(key.0.clone(), key.2), "I-S2", "the statement of {} on {} clears {}.{}, not a posting to it on or before then", key.0, key.2, r.entry, r.n),
             }
             if let Some(other) = by_ref.insert(*r, (&key.0, &key.1, key.2)) {
                 no!(@of Subject::Statement(key.0.clone(), key.2), "I-S2", "{}.{} is cleared by the statements of {} on {} and {}", r.entry, r.n, key.0, other.2, key.2);
             }
         }
-        let sum: Decimal = m.cleared_through(key).iter().filter_map(|r| lookup.get(r)).map(|(_, p)| p.amount.quantity).sum();
+        // Of what it clears of its own account, in its commodity: I-S2 says the rest.
+        let sum: Decimal = m.cleared_through(key).iter().filter_map(|r| lookup.get(r)).filter(|(_, p)| m.same(&p.account, &key.0) && p.amount.commodity == key.1).map(|(_, p)| p.amount.quantity).sum();
         if sum != s.balance {
-            no!(@of Subject::Statement(key.0.clone(), key.2), "I-S3", "the statement of {} on {} says {} {}; what it and earlier ones clear sums to {sum}", key.0, key.2, s.balance, key.1);
+            no!(@of Subject::Statement(key.0.clone(), key.2), "I-S3", "the statement of {} on {} says {} {}; what it and earlier ones clear sums to {sum} {}", m.statement_of(&key.0, &key.1), key.2, s.balance, key.1, key.1);
         }
     }
 

@@ -21,7 +21,7 @@ pub mod tests;
 pub use answer::hidden;
 pub use check::{account_canonical, canonical_account, check, rule, option_problem, Subject, Violation};
 pub use explain::{explain, name};
-pub use ops::{apply, bill_number_key, key_known, shape, suffixed, undo, InvoiceMore, Op, Shape, BILL_WEEK, EXCHANGE_GAINS, EXCHANGE_LOSSES};
+pub use ops::{apply, bill_number_key, key_known, key_meant, shape, suffixed, suffixed_on, undo, InvoiceMore, Op, Shape, BILL_WEEK, EXCHANGE_GAINS, EXCHANGE_LOSSES};
 pub use text::{parse, read, render, Files};
 
 pub use jiff::civil::Date;
@@ -342,6 +342,32 @@ pub struct Company {
     #[serde(default)]
     pub country: String,
     pub closed_through: Option<Date>,
+    /// What a commodity exchanged back cost, of what was taken in at
+    /// different costs: the gain realised is what it fetched less that.
+    #[serde(default)]
+    pub cost_method: CostMethod,
+}
+
+/// What exchanges came to, by `Books::exchanged`.
+pub struct Exchanged {
+    /// Gained, realised in the period asked.
+    pub gain: Decimal,
+    /// What is held, on assets (`false`) and liabilities (`true`), in each
+    /// commodity not the company's: lots of how much, and what they cost.
+    pub lots: BTreeMap<(Commodity, bool), std::collections::VecDeque<(Decimal, Decimal)>>,
+    /// Income, expenses and equity booked with no price by their day: in
+    /// the company's currency, what was given for them cost.
+    pub costed: BTreeMap<PostingRef, Decimal>,
+}
+
+/// Of a commodity taken in at different costs, which is given out first:
+/// the earliest, `fifo`; or a part of all of it, at their average cost.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CostMethod {
+    #[default]
+    Fifo,
+    Average,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -947,11 +973,9 @@ impl Books {
         }
     }
 
-    /// Whether `a` can be posted to: declared, and no account declared under
-    /// it (I-A2: postings go to leaves alone).
-    /// The account a debt account named after its commodity is under:
-    /// `Assets:Receivable` of `Assets:Receivable:USD`, when that is
-    /// declared; any other account, itself.
+    /// The account an account named after a commodity is under, whose
+    /// account in that commodity it is: `Assets:Bank` of `Assets:Bank:CHF`,
+    /// when that is declared; any other account, itself.
     pub fn base_of<'a>(&self, a: &'a str) -> &'a str {
         match a.rsplit_once(':') {
             // A commodity declared, or written as one, not declared yet.
@@ -966,8 +990,388 @@ impl Books {
         self.accounts.contains(a) && self.accounts.iter().filter(|b| b.len() > a.len() && b.starts_with(a) && b.as_bytes()[a.len()] == b':').all(|b| self.base_of(b) == a)
     }
 
+    /// Whether `a` can be posted to: declared, and a leaf (I-A2).
     pub fn postable(&self, a: &str) -> bool {
-        self.accounts.contains(a) && !self.accounts.iter().any(|b| b.len() > a.len() && b.starts_with(a) && b.as_bytes()[a.len()] == b':')
+        (self.accounts.contains(a) || self.base_of(a) != a && a.rsplit_once(':').is_some_and(|(_, c)| self.is_commodity(c))) && self.leaf(a)
+    }
+
+    /// What a statement of account `a`, in `c`, is of, said: `Assets:Bank`,
+    /// or `Assets:Bank in CHF` for one of `Assets:Bank:CHF` or in another
+    /// commodity than the company's.
+    pub fn statement_of(&self, a: &str, c: &str) -> String {
+        let base = self.base_of(a);
+        // Or one with accounts in commodities under it: which is meant, said.
+        let several = self.accounts.iter().any(|b| b.strip_prefix(base).is_some_and(|r| r.starts_with(':')) && self.base_of(b) == base);
+        match base != a || c != self.config.company.currency || several {
+            true => format!("{base} in {c}"),
+            false => a.to_string(),
+        }
+    }
+
+    /// Whether `c` is a commodity of the books: declared, or the company's.
+    pub fn is_commodity(&self, c: &str) -> bool {
+        self.commodities.contains_key(c) || c == self.config.company.currency
+    }
+
+    /// Whether every account declared under `a` is its account in a
+    /// commodity, `a:C` with `C` declared: those hold what `a` would hold
+    /// in `C`, so `a` is posted to all the same (I-A2).
+    pub fn leaf(&self, a: &str) -> bool {
+        self.accounts.iter().filter(|b| b.len() > a.len() && b.starts_with(a) && b.as_bytes()[a.len()] == b':').all(|b| self.is_commodity(&b[a.len() + 1..]))
+    }
+
+    /// One `c` in the company's currency on `d`: the latest price on or
+    /// before it, of `c` in that currency, or of that currency in `c`.
+    // ponytail: direct prices only, as abo declares them; none through a third commodity
+    pub fn rate(&self, c: &str, d: Date) -> Option<Decimal> {
+        let home = &self.config.company.currency;
+        if c == home {
+            return Some(Decimal::ONE);
+        }
+        let latest = |of: &str, to: &str| self.prices.range((of.to_string(), Date::MIN)..=(of.to_string(), d)).rev().find(|(_, a)| a.commodity == to).map(|(k, a)| (k.1, a.quantity));
+        match (latest(c, home), latest(home, c).filter(|(_, q)| !q.is_zero())) {
+            (Some((x, q)), Some((y, _))) if x >= y => Some(q),
+            (_, Some((_, q))) => Some(Decimal::ONE / q),
+            (direct, None) => direct.map(|(_, q)| q),
+        }
+    }
+
+    /// `p`, booked on `d`, in the company's currency: as it is, in it; at
+    /// what it cost, in it; or at the price of its commodity on its day, the
+    /// latest by then. None with no price by then: a price set later is
+    /// not one it was booked at (Books::exchanged then costs it).
+    pub fn worth(&self, p: &Posting, d: Date) -> Option<Decimal> {
+        let home = &self.config.company.currency;
+        let near = |c: &str, q: Decimal| self.rate(c, d).map(|r| r * q);
+        match &p.cost {
+            _ if p.amount.commodity == *home => Some(p.amount.quantity),
+            Some(k) => near(&k.commodity, k.quantity),
+            None => near(&p.amount.commodity, p.amount.quantity),
+        }
+    }
+
+    /// What exchanges gained, in the company's currency, realised by those
+    /// dated `from` through `to`: of a commodity given out, what it fetched
+    /// less what it cost, by `company.cost_method`; a loss below nought.
+    /// What was realised through `to`, less what was through the day
+    /// before `from`: so that periods add up to a year, a sale reverted
+    /// later taken back in the period of its reversal.
+    pub fn realised(&self, from: Option<Date>, to: Option<Date>) -> Decimal {
+        let upto = |t: Option<Date>| self.exchanged(None, t).gain;
+        match from.and_then(|f| f.yesterday().ok()) {
+            Some(before) => upto(to) - upto(Some(before)),
+            None => upto(to),
+        }
+    }
+
+    /// What exchanges gained, realised from `from` through `to`; and what
+    /// the company holds through `to` in each other commodity, on its
+    /// assets and, apart, on its liabilities (`true`): how much, and what
+    /// that cost. Held and owed each keep their own costs, by
+    /// `company.cost_method`: the earliest taken in given out first, or a
+    /// part of all, at their average cost. What comes in or goes out costs
+    /// what it is exchanged for: the company's currency given or fetched;
+    /// another commodity, income or an expense, at its price that day; a
+    /// debt in the commodity paid in it, what the debt was booked at. With
+    /// no price by its day, what was given for it: a commodity spent, or
+    /// exchanged for another, at its cost, realising nothing; income, at
+    /// none.
+    pub fn exchanged(&self, from: Option<Date>, to: Option<Date>) -> Exchanged {
+        type Lots = std::collections::VecDeque<(Decimal, Decimal)>;
+        let home = &self.config.company.currency;
+        let average = self.config.company.cost_method == CostMethod::Average;
+        // `q` taken in, or given out below nought, at `k`: what that realises.
+        let event = |held: &mut Lots, mut q: Decimal, mut k: Decimal| -> Decimal {
+            let mut gain = Decimal::ZERO;
+            while !q.is_zero() {
+                let Some(lot) = held.front_mut().filter(|l| l.0.is_sign_positive() != q.is_sign_positive()) else {
+                    match held.front_mut().filter(|_| average) {
+                        Some(lot) => *lot = (lot.0 + q, lot.1 + k),
+                        None => held.push_back((q, k)),
+                    }
+                    break;
+                };
+                // As much of the lot as this gives back, against what it was given for.
+                let whole = q.abs() >= lot.0.abs();
+                let (lot_k, k_here) = if whole { (lot.1, k * (-lot.0 / q)) } else { (lot.1 * (-q / lot.0), k) };
+                gain -= lot_k + k_here;
+                let back = if whole { -lot.0 } else { q };
+                *lot = (lot.0 + back, lot.1 - lot_k);
+                q -= back;
+                k -= k_here;
+                if whole {
+                    held.pop_front();
+                }
+            }
+            gain
+        };
+        // What giving `q` back to `held` would be given for, realising nothing.
+        let at_cost = |held: &Lots, q: Decimal| -> Option<Decimal> {
+            let lot = held.front().filter(|l| l.0.is_sign_positive() != q.is_sign_positive())?;
+            let mut rest = q;
+            let mut k = Decimal::ZERO;
+            for l in held.iter().take(if average { 1 } else { held.len() }) {
+                let part = if rest.abs() >= l.0.abs() { -l.0 } else { rest };
+                k -= l.1 * (part / -l.0);
+                rest -= part;
+                if rest.is_zero() {
+                    break;
+                }
+            }
+            // Beyond what is held, at what the last was.
+            Some(k + rest * (lot.1 / lot.0))
+        };
+        let sign = |d: Decimal| if d.is_sign_negative() { Decimal::NEGATIVE_ONE } else { Decimal::ONE };
+        let mut lots: BTreeMap<(Commodity, bool), Lots> = BTreeMap::new();
+        let mut gain = Decimal::ZERO;
+        let mut costed: BTreeMap<PostingRef, Decimal> = BTreeMap::new();
+        let gone = self.taken_back(to);
+        let mut order: Vec<EntryId> = (1..=self.entries.len()).filter(|id| !gone.contains(id)).collect();
+        order.sort_by_key(|&id| self.entries[id - 1].date);
+        for id in order {
+            let date = self.entries[id - 1].date;
+            if to.is_some_and(|t| date > t) {
+                break;
+            }
+            let counts = from.is_none_or(|f| date >= f);
+            let spot = |c: &str, q: Decimal| self.rate(c, date).map(|r| r * q);
+            // Each commodity's flow: onto assets, onto liabilities; and from
+            // elsewhere, income, expenses, equity or an exchange, with what
+            // that is worth, where it is known.
+            let mut flows: BTreeMap<Commodity, ([Decimal; 2], Decimal, Option<Decimal>)> = BTreeMap::new();
+            // `q` of `c` onto assets (0) or liabilities (1); or from elsewhere, worth `worth`.
+            let mut flow = |c: &str, side: Option<usize>, q: Decimal, worth: Option<Decimal>| {
+                let f = flows.entry(c.to_string()).or_insert(([Decimal::ZERO; 2], Decimal::ZERO, Some(Decimal::ZERO)));
+                match side {
+                    Some(i) => f.0[i] += q,
+                    None => {
+                        f.1 += q;
+                        f.2 = f.2.zip(worth).map(|(a, b)| a + b);
+                    }
+                }
+            };
+            let ps = self.postings(id);
+            // Income, expenses and equity with no price by their day: costed below.
+            let mut unpriced: Vec<(PostingRef, Commodity, Decimal)> = vec![];
+            for (n, p) in ps.iter().enumerate() {
+                let (c, q) = (&p.amount.commodity, p.amount.quantity);
+                if let Some(cost) = &p.cost {
+                    // Exchanged: what went one way is worth what came the other.
+                    let value = match (c == home, cost.commodity == *home) {
+                        (true, _) => Some(q.abs()),
+                        (_, true) => Some(cost.quantity.abs()),
+                        _ => self.worth(&Posting { account: p.account.clone(), amount: cost.clone(), cost: None }, date).or_else(|| self.worth(&Posting { cost: None, ..p.clone() }, date)).map(|v| v.abs()),
+                    };
+                    if c != home {
+                        flow(c, None, -q, value.map(|v| -v * sign(q)));
+                    }
+                    if cost.commodity != *home {
+                        flow(&cost.commodity, None, cost.quantity, value.map(|v| v * sign(cost.quantity)));
+                    }
+                }
+                if c == home {
+                    continue;
+                }
+                match class(&p.account) {
+                    "Assets" => flow(c, Some(0), q, None),
+                    "Liabilities" => flow(c, Some(1), q, None),
+                    _ => {
+                        let w = self.worth(&Posting { cost: None, ..p.clone() }, date);
+                        if w.is_none() {
+                            unpriced.push((PostingRef { entry: id, n }, c.clone(), q));
+                        }
+                        flow(c, None, q, w)
+                    }
+                }
+            }
+            // What was given out with no worth known, at its cost: by commodity,
+            // and what came in for it, to take that cost.
+            let mut given: BTreeMap<Commodity, Decimal> = BTreeMap::new();
+            let mut taken: Vec<(Commodity, bool, Decimal)> = vec![];
+            for (c, ([mut a, mut l], _, worth)) in flows {
+                let key = |owed: bool| (c.clone(), owed);
+                // A debt in the commodity paid in it: at what the debt was booked at.
+                if !a.is_zero() && a.is_sign_positive() != l.is_sign_positive() && !l.is_zero() {
+                    let qa = sign(a) * a.abs().min(l.abs());
+                    let held = |owed| lots.get(&key(owed)).cloned().unwrap_or_default();
+                    let k = at_cost(&held(true), -qa).map(|k| -k).or_else(|| at_cost(&held(false), qa)).or_else(|| spot(&c, qa)).unwrap_or_default();
+                    let g = event(lots.entry(key(true)).or_default(), -qa, -k) + event(lots.entry(key(false)).or_default(), qa, k);
+                    if counts {
+                        gain += g;
+                    }
+                    a -= qa;
+                    l += qa;
+                }
+                // The rest from elsewhere, at what that was worth; or, not
+                // known, given out at its cost and taken in at none.
+                let rest = a + l;
+                if rest.is_zero() {
+                    continue;
+                }
+                for (owed, q) in [(false, a), (true, l)].into_iter().filter(|(_, q)| !q.is_zero()) {
+                    let held = lots.entry(key(owed)).or_default();
+                    // Given out, from assets or towards a debt, at its cost; what
+                    // comes in with no worth known takes what was given for it.
+                    let out = if owed { q.is_sign_positive() } else { q.is_sign_negative() };
+                    let k = match worth.map(|w| -w * (q / rest)).or_else(|| at_cost(held, q).filter(|_| out)) {
+                        Some(k) => k,
+                        None => {
+                            taken.push((c.clone(), owed, q));
+                            continue;
+                        }
+                    };
+                    if worth.is_none() {
+                        *given.entry(c.clone()).or_default() += k;
+                    }
+                    let g = event(held, q, k);
+                    if counts {
+                        gain += g;
+                    }
+                }
+            }
+            // What came in for it, its cost shared out; none given, none.
+            let cost: Decimal = -given.values().sum::<Decimal>();
+            let share = Decimal::from(taken.len().max(1));
+            for (c, owed, q) in taken {
+                let k = sign(q) * cost.abs() / share;
+                // Income with no price and nothing given for it: left in its own
+                // commodity, where the balance sheet shows it, for a price to be set.
+                if !k.is_zero() {
+                    *given.entry(c.clone()).or_default() += k;
+                }
+                let g = event(lots.entry((c, owed)).or_default(), q, k);
+                if counts {
+                    gain += g;
+                }
+            }
+            // Spent with no price: at what it cost, each its share.
+            for (c, cs) in unpriced.iter().fold(BTreeMap::<&Commodity, Vec<&(PostingRef, Commodity, Decimal)>>::new(), |mut m, u| {
+                m.entry(&u.1).or_default().push(u);
+                m
+            }) {
+                let (Some(k), all) = (given.get(c), cs.iter().map(|u| u.2).sum::<Decimal>()) else { continue };
+                if !all.is_zero() {
+                    for u in cs {
+                        costed.insert(u.0, -k * (u.2 / all));
+                    }
+                }
+            }
+        }
+        lots.retain(|_, l| l.iter().any(|x| !x.0.is_zero()));
+        Exchanged { gain, lots, costed }
+    }
+
+    /// Entries reverted, with what reverts them, by `to`: to exchanges, as
+    /// though neither were, a mistake taken back. The latest first, so that
+    /// what reverts a reversal brings back what that reverted.
+    pub fn taken_back(&self, to: Option<Date>) -> BTreeSet<EntryId> {
+        let mut gone: BTreeSet<EntryId> = BTreeSet::new();
+        for id in (1..=self.entries.len()).rev() {
+            let e = &self.entries[id - 1];
+            if let Kind::Reversal { of } = e.kind {
+                if !gone.contains(&id) && to.is_none_or(|t| e.date <= t) {
+                    gone.extend([id, of]);
+                }
+            }
+        }
+        gone
+    }
+
+    /// Postings to income, expenses or equity in another commodity than the
+    /// company's, with no price of it by their day and nothing given for
+    /// them to cost them (Books::exchanged): what they are worth is not
+    /// known (N14).
+    pub fn unpriced(&self) -> Vec<(PostingRef, Date, Posting)> {
+        let home = &self.config.company.currency;
+        let mut v: Vec<(PostingRef, Date, Posting)> = self
+            .all_postings()
+            .into_iter()
+            .filter(|(_, d, p)| !["Assets", "Liabilities"].contains(&class(&p.account)) && p.amount.commodity != *home && !p.amount.quantity.is_zero() && self.worth(p, *d).is_none())
+            .collect();
+        if !v.is_empty() {
+            let costed = self.exchanged(None, None).costed;
+            v.retain(|(r, ..)| !costed.contains_key(r));
+        }
+        v
+    }
+
+    /// What to warn of after a change, said of the books it made: the
+    /// cost method changed while a period is closed, `key`, and what
+    /// exchanges realised through it moving; and of the entry it booked,
+    /// `entry`, an asset left holding less than nought of a commodity.
+    pub fn cautions(&self, key: Option<&str>, entry: Option<EntryId>) -> Vec<String> {
+        let mut v = vec![];
+        let home = &self.config.company.currency;
+        if let (Some("company.cost_method"), Some(c)) = (key, self.config.company.closed_through) {
+            let mut other = self.clone();
+            other.config.company.cost_method = match self.config.company.cost_method {
+                CostMethod::Fifo => CostMethod::Average,
+                CostMethod::Average => CostMethod::Fifo,
+            };
+            let (now, was) = (self.realised(None, Some(c)), other.realised(None, Some(c)));
+            let places = self.places(home);
+            if round(now, places) != round(was, places) {
+                v.push(format!(
+                    "the books are closed through {c}, and what exchanges realised through it changes with the method: {} {home}, where it was {} {home}",
+                    grouped(now, places, home, " "),
+                    grouped(was, places, home, " ")
+                ));
+            }
+        }
+        if let Some(id) = entry {
+            let balances = self.balances();
+            let mut seen = BTreeSet::new();
+            for p in self.postings(id).into_iter().filter(|p| class(&p.account) == "Assets" && p.amount.commodity != *home && p.amount.quantity.is_sign_negative()) {
+                let q = balances.get(&(p.account.clone(), p.amount.commodity.clone())).copied().unwrap_or_default();
+                if q.is_sign_negative() && !q.is_zero() && seen.insert(p.account.clone()) {
+                    let c = &p.amount.commodity;
+                    v.push(format!("{} holds {} {c}: more was given out than it held", p.account, grouped(q, self.places(c), c, " ")));
+                }
+            }
+        }
+        v
+    }
+
+    /// What exchanges gained on what is held, or owed, through `to`, not
+    /// realised: its value at the latest price then less its cost. Of a
+    /// commodity with no price, nothing: it is valued at its cost.
+    pub fn not_realised(&self, to: Option<Date>) -> Decimal {
+        let day = to.unwrap_or(Date::MAX);
+        self.exchanged(None, to).lots.iter().filter_map(|((c, _), l)| self.rate(c, day).map(|r| l.iter().map(|(q, k)| q * r - k).sum::<Decimal>())).sum()
+    }
+
+    /// What `a`'s own postings hold, commodity by commodity, none nought.
+    pub fn held(&self, a: &str) -> BTreeMap<Commodity, Decimal> {
+        self.held_on(a, None)
+    }
+
+    /// What `a`'s own balance holds at the end of each day it moves, in
+    /// order: the days on which it holds more than one commodity are those
+    /// N12 refuses to bring about.
+    pub fn holdings(&self, a: &str) -> Vec<(Date, BTreeSet<Commodity>)> {
+        let mut ps: Vec<(Date, Posting)> = self.all_postings().into_iter().filter(|(_, _, p)| p.account == a).map(|(_, d, p)| (d, p)).collect();
+        ps.sort_by_key(|(d, _)| *d);
+        let mut balance: BTreeMap<Commodity, Decimal> = BTreeMap::new();
+        let mut out: Vec<(Date, BTreeSet<Commodity>)> = vec![];
+        for (d, p) in ps {
+            *balance.entry(p.amount.commodity).or_insert(Decimal::ZERO) += p.amount.quantity;
+            let now: BTreeSet<Commodity> = balance.iter().filter(|(_, q)| !q.is_zero()).map(|(c, _)| c.clone()).collect();
+            match out.last_mut() {
+                Some((last, held)) if *last == d => *held = now,
+                _ => out.push((d, now)),
+            }
+        }
+        out
+    }
+
+    /// `held`, of the postings dated on or before `date`, if one is given.
+    pub fn held_on(&self, a: &str, date: Option<Date>) -> BTreeMap<Commodity, Decimal> {
+        let mut held = BTreeMap::new();
+        for (_, _, p) in self.all_postings().into_iter().filter(|(_, d, p)| p.account == a && date.is_none_or(|on| *d <= on)) {
+            *held.entry(p.amount.commodity).or_insert(Decimal::ZERO) += p.amount.quantity;
+        }
+        held.retain(|_, q: &mut Decimal| !q.is_zero());
+        held
     }
 
     /// The accounts sales are booked to: the configured income, and every
@@ -1096,9 +1500,12 @@ impl Books {
     /// none is credited, is `payable`. Not such postings: `Ok(None)`. Such
     /// postings that cannot be read so, paid from two money accounts say:
     /// why not, and how to book them instead.
-    pub fn paid_at_once(&self, ps: &[Posting]) -> Result<Option<PaidAtOnce>, String> {
-        // Each account with its commodity's under it, where it has one.
-        let ps: Vec<Posting> = ps.iter().map(|p| Posting { account: ops::suffixed(self, &p.account, &p.amount.commodity), ..p.clone() }).collect();
+    pub fn paid_at_once(&self, typed: &[Posting]) -> Result<Option<PaidAtOnce>, String> {
+        // Each account read as where it goes, its commodity's under it, where
+        // that is; the bill and its payment are given them as typed, and go
+        // there as any entry does.
+        let ps: Vec<Posting> = typed.iter().map(|p| Posting { account: ops::suffixed(self, &p.account, &p.amount.commodity), ..p.clone() }).collect();
+        let as_typed = |p: &Posting| ps.iter().position(|q| std::ptr::eq(q, p)).map_or_else(|| p.clone(), |i| typed[i].clone());
         let ps = &ps[..];
         let credit = |p: &Posting| p.amount.quantity < Decimal::ZERO;
         // Of accounts declared only: one mistyped is left to I-A1.
@@ -1151,8 +1558,9 @@ impl Books {
             return Err(format!("this bill is owed on {owes} in another commodity than {from} paid: book the bill crediting {owes} with all it owes, then pay it from {from}"));
         }
         let total = Amount { quantity: amount.quantity + owed.iter().map(|p| p.amount.quantity).sum::<Decimal>(), commodity: amount.commodity.clone() };
-        let mut postings: Vec<Posting> = ps.iter().filter(|p| !money(p) && !liability(p)).cloned().collect();
+        let mut postings: Vec<Posting> = ps.iter().filter(|p| !money(p) && !liability(p)).map(as_typed).collect();
         postings.push(Posting { account: owes, amount: total, cost: None });
+        let from = ps.iter().find(|p| money(p)).map_or(from, |p| as_typed(p).account);
         Ok(Some(PaidAtOnce { postings, from, amount: -amount.quantity, cost }))
     }
 
@@ -1261,10 +1669,17 @@ impl Books {
         b
     }
 
-    /// The postings cleared by this statement and the account's earlier ones.
+    /// The postings cleared by this statement and the earlier ones of its
+    /// account in its commodity: of `Assets:Bank` and `Assets:Bank:CHF` alike.
     pub fn cleared_through(&self, key: &(Account, Commodity, Date)) -> BTreeSet<PostingRef> {
-        let from = (key.0.clone(), key.1.clone(), Date::MIN);
-        self.statements.range(from..=key.clone()).flat_map(|(_, s)| s.clears.iter().copied()).collect()
+        self.statements.iter().filter(|(k, _)| k.1 == key.1 && k.2 <= key.2 && self.same(&k.0, &key.0)).flat_map(|(_, s)| s.clears.iter().copied()).collect()
+    }
+
+    /// Whether accounts `a` and `b` are one in a commodity: the same, or
+    /// one the other's account in it, `Assets:Bank` and `Assets:Bank:CHF` in
+    /// CHF; what a statement of either is of (§2.6).
+    pub fn same(&self, a: &str, b: &str) -> bool {
+        self.base_of(a) == self.base_of(b)
     }
 
     /// Every posting to the statement's account, in its commodity, dated on
@@ -1273,7 +1688,7 @@ impl Books {
         let cleared = self.cleared_through(key);
         self.all_postings()
             .iter()
-            .filter(|(_, d, p)| p.account == key.0 && p.amount.commodity == key.1 && *d <= key.2)
+            .filter(|(_, d, p)| self.same(&p.account, &key.0) && p.amount.commodity == key.1 && *d <= key.2)
             .all(|(r, ..)| cleared.contains(r))
     }
 

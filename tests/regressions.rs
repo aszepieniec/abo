@@ -1299,9 +1299,11 @@ fn an_invoice_in_another_currency_is_booked_in_the_companys() {
     let pl = json(&dir, &["pl", "--period", "2026"]);
     assert!(!pl.to_string().contains("USD"), "{pl}");
     // A bill's expense may be in dollars, an account then of dollars: one
-    // that holds them takes no euros (N12).
+    // that holds them takes euros in its account in euros (N12).
     ok(&dir, &["bill", "--date", "2026-03-01", "--desc", "Licence", "Expenses:General=250.00 USD", "Liabilities:Payable=-250.00 USD"]);
-    refused(&dir, &["bill", "--date", "2026-03-02", "--desc", "Licence", "Expenses:General=230.00", "Liabilities:Payable=-230.00"], "N12");
+    ok(&dir, &["bill", "--date", "2026-03-02", "--desc", "Licence", "Expenses:General=230.00", "Liabilities:Payable=-230.00"]);
+    let j = read(&dir, "journal/2026.journal");
+    assert!(j.contains("Expenses:General:EUR"), "{j}");
 }
 
 /// A reversal dated back to May slipped under two recorded statements, and
@@ -1411,7 +1413,7 @@ fn a_refusal_says_what_to_type() {
     let dir = books("hints", &[]);
     refused(&dir, &["post", "--date", "2026-03-01", "--desc", "Rent", "Expenses:Rent=1800", "Assets:Bank=-1800"], "abo account add Expenses:Rent");
     ok(&dir, &["commodity", "add", "USD", "2"]);
-    refused(&dir, &["invoice", "--to", "X", "--item", "1|100|a", "--currency", "USD", "--date", "2026-03-01"], "abo price add <date> USD");
+    refused(&dir, &["invoice", "--to", "X", "--item", "1|100|a", "--currency", "USD", "--date", "2026-03-01"], "abo price add 2026-03-01 USD <price> EUR");
     refused(&dir, &["invoice", "--to", "X", "--item", "1|100|a", "--vat-rate", "0", "--date", "2026-03-01"], "--vat-reason");
     let id = entry(&dir, &["bill", "--date", "2026-03-03", "--desc", "Chairs", "Expenses:General=40.00", "Liabilities:Payable=-40.00"]);
     ok(&dir, &["pay", &id, "--date", "2026-03-04"]);
@@ -1628,7 +1630,100 @@ fn the_balance_sheet_shows_the_companys_currency_too() {
     assert!(bs.contains("250.00 USD (230.00 EUR)") && !bs.contains("conversion"), "{bs}");
     ok(&dir, &["price", "add", "2026-03-02", "USD", "0.90", "EUR"]);
     let bs = ok(&dir, &["bs", "--date", "2026-03-31"]);
-    assert!(bs.contains("250.00 USD (225.00 EUR)") && bs.contains("Exchange differences not realised") && bs.trim_end().ends_with("0.00 EUR"), "{bs}");
+    assert!(bs.contains("250.00 USD (225.00 EUR)") && bs.contains("Exchange differences") && bs.trim_end().ends_with("0.00 EUR"), "{bs}");
+}
+
+/// Rows valued at a price, each rounded to the cent, added up to a cent
+/// more or less than the total under them; with --depth, exchanges' line
+/// was hledger's `equity:conversion`, or `equity`.
+#[test]
+fn lines_add_up_to_their_totals() {
+    let dir = books("cents", &[]);
+    ok(&dir, &["commodity", "add", "USD", "2"]);
+    for a in ["Float", "Card", "Till"] {
+        ok(&dir, &["account", "add", &format!("Assets:{a}")]);
+        ok(&dir, &["post", "--date", "2026-03-01", "--desc", a, &format!("Assets:{a}=10.01 USD @@ 9.24 EUR"), "Assets:Bank"]);
+    }
+    ok(&dir, &["price", "add", "2026-03-02", "USD", "0.9235", "EUR"]);
+    // 10.01 USD is 9.244235 EUR: three lines of 9.24, and 27.72 under them;
+    // the cent left over, the exchanges', comes to nought with what they gained.
+    let bs = ok(&dir, &["bs", "--date", "2026-03-31"]);
+    assert!(bs.matches("(9.24 EUR)").count() == 3 && bs.contains("-27.72 EUR") && bs.trim_end().ends_with("0.00 EUR"), "{bs}");
+    // At 1.00, 2.31 gained, on exchanges' line, whatever the depth.
+    ok(&dir, &["price", "add", "2026-04-01", "USD", "1.00", "EUR"]);
+    for depth in ["1", "2"] {
+        let bal = ok(&dir, &["balance", "--depth", depth]);
+        assert!(bal.lines().any(|l| l.contains("-2.31 EUR") && l.ends_with("Exchange differences")), "{bal}");
+        assert!(bal.contains("Exchange differences") && !bal.contains("equity") && bal.trim_end().ends_with("0.00 EUR"), "{bal}");
+    }
+}
+
+/// Exchanges, as a person corrects them: income in another currency with no
+/// price, refused until one is set; more given out than held, and the cost
+/// method changed after a period is closed, warned of; a sale reverted, its
+/// gain gone; an expense account moved at what it was booked at; a range of
+/// days with its end in it; a day alone, no period.
+#[test]
+fn exchanges_are_corrected_as_a_person_means() {
+    let dir = books("fx-corrections", &[]);
+    ok(&dir, &["commodity", "add", "USD", "2"]);
+    refused(&dir, &["post", "--date", "2026-01-05", "--desc", "Fee", "Assets:Bank=100.00 USD", "Income:Sales"], "no price of USD by then");
+    ok(&dir, &["price", "add", "2026-01-01", "USD", "0.90", "EUR"]);
+    ok(&dir, &["post", "--date", "2026-01-05", "--desc", "Fee", "Assets:Bank:USD=100.00 USD", "Income:Sales"]);
+    // 100 USD held at 90; 150 given out: warned, not refused.
+    let said = ok(&dir, &["post", "--date", "2026-01-06", "--desc", "Sell", "Assets:Bank:USD=-150.00 USD @@ 140.00 EUR", "Assets:Bank"]);
+    assert!(said.contains("Warning: ") && said.contains("holds -50.00 USD"), "{said}");
+    let sold = said.split("entry ").nth(1).and_then(|r| r.split(':').next()).unwrap().to_string();
+    assert!(ok(&dir, &["pl"]).contains("Exchange differences realised"));
+    // The sale reverted: as though it never was, nothing realised.
+    ok(&dir, &["revert", "--date", "2026-01-07", &sold]);
+    assert!(!ok(&dir, &["pl"]).contains("Exchange differences realised"));
+    ok(&dir, &["post", "--date", "2026-01-08", "--desc", "Buy", "Assets:Bank:USD=100.00 USD @@ 100.00 EUR", "Assets:Bank"]);
+    ok(&dir, &["post", "--date", "2026-01-09", "--desc", "Sell", "Assets:Bank:USD=-100.00 USD @@ 98.00 EUR", "Assets:Bank"]);
+    ok(&dir, &["config", "set", "company.closed_through", "2026-01-31"]);
+    assert!(ok(&dir, &["config", "set", "company.cost_method", "average"]).contains("Warning: the books are closed through 2026-01-31"));
+    // Ranges and a lone day.
+    assert!(ok(&dir, &["pl", "--period", "2026-01-01..2026-01-31"]).contains("(2026-01-01 to 2026-01-31)"));
+    refused(&dir, &["pl", "--period", "26"], "a year is written in full");
+    assert!(ok(&dir, &["bs", "--date", "2026-01-31", "--json"]).contains("\"period\": null"));
+    // Moved at 9.00, as booked, not at the 10.00 of the day it moves.
+    ok(&dir, &["account", "add", "Expenses:Hosting"]);
+    ok(&dir, &["post", "--date", "2026-02-02", "--desc", "Host", "Expenses:Hosting=10.00 USD", "Assets:Bank:USD"]);
+    ok(&dir, &["price", "add", "2026-02-03", "USD", "1.00", "EUR"]);
+    ok(&dir, &["account", "move", "Expenses:Hosting", "Expenses:IT"]);
+    let pl = ok(&dir, &["pl"]);
+    assert!(pl.lines().any(|l| l.contains("Expenses:IT") && l.contains("(9.00 EUR)")) && !pl.contains("(-9.00 EUR)") && !pl.contains("(1.00 EUR)"), "{pl}");
+}
+
+/// Swarm-found: a sale reverted later was taken back from no period; a
+/// price an entry was valued at could be taken out once it was reverted;
+/// spending more than held was costed at a price of the wrong sign; a buy
+/// warned of more given out; ranges in words, with a dash, or backwards.
+#[test]
+fn reverts_periods_and_prices_add_up() {
+    let dir = books("fx-add-up", &[]);
+    ok(&dir, &["commodity", "add", "USD", "2"]);
+    ok(&dir, &["price", "add", "2026-01-01", "USD", "0.90", "EUR"]);
+    ok(&dir, &["post", "--date", "2026-01-02", "--desc", "Buy", "Assets:Bank:USD=100.00 USD @@ 90.00 EUR", "Assets:Bank"]);
+    let sold = entry(&dir, &["post", "--date", "2026-01-10", "--desc", "Sell", "Assets:Bank:USD=-100.00 USD @@ 100.00 EUR", "Assets:Bank"]);
+    ok(&dir, &["revert", "--date", "2026-03-05", &sold]);
+    let realised = |p: &str| ok(&dir, &["pl", "--period", p]).lines().find(|l| l.contains("Exchange differences realised")).map(|l| l.split_whitespace().rev().nth(1).unwrap().to_string());
+    assert_eq!(realised("2026-01"), Some("10.00".into()));
+    assert_eq!(realised("2026-03"), Some("-10.00".into()));
+    assert_eq!(realised("2026"), None);
+    // A buy back towards nought warns of nothing.
+    ok(&dir, &["post", "--date", "2026-03-06", "--desc", "Oversell", "Assets:Bank:USD=-150.00 USD @@ 140.00 EUR", "Assets:Bank"]);
+    assert!(!ok(&dir, &["post", "--date", "2026-03-07", "--desc", "Cover", "Assets:Bank:USD=10.00 USD @@ 9.00 EUR", "Assets:Bank"]).contains("Warning"));
+    // Income valued at the price, which stays while it does, reverted or not.
+    let fee = entry(&dir, &["post", "--date", "2026-03-08", "--desc", "Fee", "Assets:Bank:USD=10.00 USD", "Income:Sales"]);
+    ok(&dir, &["revert", &fee]);
+    refused(&dir, &["price", "remove", "2026-01-01", "USD"], "valued in EUR at this price");
+    // Ranges as people write them: through their end, or refused.
+    for p in ["2026-01-01 - 2026-03-31", "2026-01 - 2026-03", "from 2026-01 to 2026-03"] {
+        assert!(ok(&dir, &["pl", "--period", p]).contains("(2026-01-01 to 2026-03-31)"), "{p}");
+    }
+    refused(&dir, &["pl", "--period", "2026-03..2026-01"], "ends before it begins");
+    assert!(ok(&dir, &["pl", "--period", "..2026-03-31"]).contains("..2026-03-31"));
 }
 
 /// A loss was said as a profit below nought; pl and vat took no -p.
@@ -2406,6 +2501,9 @@ fn a_currency_sign_is_a_commodity_of_its_own() {
     refused(&dir, &["post", "--date", "2026-03-01", "--desc", "x", "Assets:Cash $5", "Equity:Opening"], "$ is not declared");
     ok(&dir, &["commodity", "add", "$", "2"]);
     ok(&dir, &["account", "add", "Equity:OpeningDollars"]);
+    // Equity in dollars, worth their price (N14).
+    refused(&dir, &["post", "--date", "2026-03-01", "--desc", "x", "Assets:Cash $5", "Equity:OpeningDollars"], "no price of $");
+    ok(&dir, &["price", "add", "2026-03-01", "$", "0.90", "EUR"]);
     ok(&dir, &["post", "--date", "2026-03-01", "--desc", "x", "Assets:Cash $5", "Equity:OpeningDollars"]);
     assert!(read(&dir, "journal/2026.journal").contains("5.00 $"));
 }
@@ -2421,7 +2519,7 @@ fn bs_takes_a_plain_date() {
 #[test]
 fn an_invoice_period_is_read_as_hledger_reads_one() {
     let dir = books("period", &[]);
-    for (p, from, to) in [("2026-02", "2026-02-01", "2026-02-28"), ("2026-02-01..2026-03-01", "2026-02-01", "2026-02-28"), ("2026q1", "2026-01-01", "2026-03-31")] {
+    for (p, from, to) in [("2026-02", "2026-02-01", "2026-02-28"), ("2026-02-01..2026-02-28", "2026-02-01", "2026-02-28"), ("2026-02 to 2026-03", "2026-02-01", "2026-03-31"), ("2026q1", "2026-01-01", "2026-03-31")] {
         let v = json(&dir, &["invoice", "--to", "C", "--item", "1|10|Work", "--date", "2026-03-05", "--period", p]);
         let kept = read(&dir, &format!("invoices/2026/{}.json", v["number"].as_str().unwrap()));
         assert!(kept.contains(&format!("\"from\": \"{from}\"")) && kept.contains(&format!("\"to\": \"{to}\"")), "{p}: {kept}");
@@ -2552,15 +2650,16 @@ fn an_account_named_after_a_commodity_holds_it_alone() {
     let dir = books("named-after", &[]);
     ok(&dir, &["commodity", "add", "USD", "2"]);
     ok(&dir, &["price", "add", "2026-03-01", "USD", "0.92", "EUR"]);
-    refused(&dir, &["bill", "--date", "2026-03-02", "--desc", "Hosting", "Expenses:General 90 USD", "Liabilities:Payable:EUR"], "post USD to Liabilities:Payable:USD");
+    refused(&dir, &["bill", "--date", "2026-03-02", "--desc", "Hosting", "Expenses:General 90 USD", "Liabilities:Payable:EUR"], "post USD to Liabilities:Payable");
     let said = ok(&dir, &["bill", "--date", "2026-03-02", "--desc", "Hosting", "Expenses:General 90 USD", "Liabilities:Payable"]);
     assert!(said.contains("Liabilities:Payable is booked as Liabilities:Payable:USD"), "{said}");
     for a in ["Assets:Wise", "Assets:Wise:EUR", "Assets:Wise:USD"] {
         ok(&dir, &["account", "add", a]);
     }
-    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "Mixed", "Assets:Wise:EUR 10 USD @@ 9 EUR", "Assets:Bank"], "post USD to Assets:Wise:USD");
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "Mixed", "Assets:Wise:EUR 10 USD @@ 9 EUR", "Assets:Bank"], "post USD to Assets:Wise");
     refused(&dir, &["post", "--date", "2026-03-02", "--desc", "Mixed", "Assets:Wise 10 CHF", "Assets:Bank"], "");
-    refused(&dir, &["reconcile", "Assets:Wise"], "`abo reconcile Assets:Wise:EUR`");
+    // Its accounts in commodities alone under it: reconciled in one of them.
+    ok(&dir, &["reconcile", "Assets:Wise"]);
     ok(&dir, &["commodity", "add", "JPY", "0"]);
     ok(&dir, &["price", "add", "2026-03-01", "JPY", "0.0061", "EUR"]);
     refused(&dir, &["price", "add", "2026-03-02", "JPY", "0.000000001", "EUR"], "more than 8 places");

@@ -147,9 +147,24 @@ Names are compared exactly, as hledger compares them: `Assets:Bank` and
 accounts abo declares follow, not a rule: a numbered chart such as
 `Assets:1020:Bank` is an account like any other.
 
-Postings go to leaves alone (I-A2). So the balance of an account is the sum of
-the postings to the leaves under it, and a parent's balance is the sum of its
-children's — which is how hledger's reports roll accounts up.
+Every declared account `A` has, for every declared commodity `C`, an
+account in `C`, `A:C`: it holds `C` alone, takes no account under it, and
+is declared by the first entry or statement that uses it. No other
+account's name has a commodity in it (I-A3). A posting to `A` in `C` goes
+to the first of: `A`, while `A` holds `C`; `A:C`, where that is declared;
+`A`, while `A` holds nothing; and `A:C` (N12). What `A` holds is what its
+own balance holds on the posting's date; and `A` itself is taken only while
+it holds no other commodity on any later day, so that a posting dated back
+never leaves it holding two. A posting to `A:C` in `C` goes
+where one to `A` in `C` does. So `Assets:Bank`, holding EUR, takes CHF as
+`Assets:Bank:CHF`, and only `Assets:Bank` and CHF are declared by hand;
+emptied, it takes EUR again itself.
+
+Postings go to leaves alone (I-A2), a leaf being an account with none under
+it but its accounts in commodities. So the balance of an account is the sum
+of its own postings and of those to the accounts under it, and a parent's
+balance is the sum of its own and its children's — which is how hledger's
+reports roll accounts up.
 
 Prices are read by an invoice in another commodity, which states its VAT in
 the company's currency at the latest price on or before its date, and keeps that price. A price says what a
@@ -488,6 +503,14 @@ September that the bank shows only on October's statement is cleared by
 October's: September's balance, which does not include it, still agrees with
 what September's statement clears (I-S3).
 
+An account and its account in a commodity are one account in that
+commodity (§2.2): a statement of `Assets:Bank` in CHF is of the postings in
+CHF to `Assets:Bank` and to `Assets:Bank:CHF` alike, and is recorded on
+`Assets:Bank`, its assertion taking in what is under it (`=*`) where that
+has an account in CHF. So a posting that moved from one to the other, as the
+account changed commodity, is cleared, reconciled and guarded (N7) all the
+same.
+
 ### 2.7 What is derived
 
 | Derived | Definition |
@@ -730,6 +753,7 @@ not in the books.
 | G-H3 | hledger's balance of every account, in every commodity, through any date, at any depth and at cost, is the model's | I-A2, I-E1, I-E2 | `hledger_agrees`, `hledger_agrees_through_any_date`, `hledger_rolls_parents_up`, `at_cost_everything_sums_to_nought` |
 | G-H4 | hledger checks every whole statement, every entry's balance and every account's declaration on its own, so that a fault in `check` shows as a disagreement | I-S3, §7.3 | `hledger_catches_what_check_catches` |
 | G-H5 | The balance sheet comes out nil, whatever the books hold: an exchange at a cost is equity's conversion | I-E1, I-E2 | `the_balance_sheet_comes_out_nil` |
+| G-H6 | A commodity given out realises what it fetched less what it cost, by `company.cost_method`: the earliest taken in first, or at their average cost; held and owed apart, a debt paid in its commodity at what it was booked at | I-E2 | `exchanges_realise_by_the_cost_method` |
 
 ### The files
 
@@ -810,7 +834,7 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 |---|---|---|---|
 | G-O1 | An operation changes what it names, and nothing else; an entry once added never changes; the opposite of an operation gives back the books as they were | §5 | `each_operation_changes_only_its_part`, `balances_move_by_the_new_entry`, `entries_never_change`, `inverses_restore`, `setting_twice_is_setting_once`, `reverting_twice_restores` |
 | G-O2 | Balances depend on the entries alone: not on the order they are booked in, nor on the names of the accounts — roles come from the configuration | I-C3, I-A0 | `the_order_of_entries_does_not_change_balances`, `names_mean_nothing` |
-| G-O3 | A declaration is removed exactly when nothing uses it, and nothing is declared under an account posted to | I-A1, I-A2 | `an_account_is_removable_iff_unused`, `a_commodity_is_removable_iff_unused`, `declaring_under_a_posted_account_is_refused` |
+| G-O3 | A declaration is removed exactly when nothing uses it, an account's when it has no account under it too, and nothing is declared under an account posted to but its accounts in commodities | I-A1, I-A2 | `an_account_is_removable_iff_unused`, `a_commodity_is_removable_iff_unused`, `declaring_under_a_posted_account_is_refused` |
 | G-O4 | A configuration key reads back as set; a key that names nothing is refused | I-C1, I-C2, I-C3, §5.2 | `a_key_set_reads_back`, `unknown_keys_are_refused` |
 | G-O5 | Every command does what its operation does in the model: taken exactly when the model takes it; then the files say the model's state, with every document and PDF beside them; refused, with the rules the model names, in JSON and in words, and nothing written; undo as §5.3. What the commands show is the model's | §5 | `the_cli_is_the_model`, `refusals_in_words_name_their_rules`, `what_abo_shows_is_the_models`, `lists_show_what_the_books_hold`, `reports_read_the_books_as_the_model_does`, `a_key_set_reads_back_through_the_cli`, `company_changes_only_what_it_is_told`, `payment_options_follow_add_edit_remove`, `pay_takes_what_is_open_from_money`, `record_all_clears_everything`, `a_document_filed_for_a_bill_names_it` |
 | G-O6 | Changes sent at once are each made, one after another | §5 | `changes_at_once_are_each_made` |
@@ -822,7 +846,7 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | G-O10 | A refusal says what is wrong with what the operation was given, of the books before it: it names no entry that is not there yet, an invoice or a credit note by its number and never by its id, and quotes nothing as Rust's debug format does | §5 | `refusals_speak_of_the_books_before` |
 | G-O13 | A bill's postings that credit one money account and no other credit but an expense or the one liability a bill is owed on, and debit neither, are read as a bill crediting that liability with all it owes and a payment of what the money account paid; the two, booked in turn, leave open what the liability was credited. Postings that move money in, debit a liability, or credit any other account are not read so. `abo bill`, and a form, given such postings book the two as one change, which one undo takes back. Postings that credit two money accounts so are refused (I-B2) in words that say a bill is paid from one, and to book a payment from each | §4.3, §5 | `a_bill_paid_when_it_came`, `abo_bill_books_a_bill_paid_when_it_came` |
 | G-O14 | An account refused as not declared (I-A1) is said with the declared one likely meant, the same but for case, by its last part, or two letters off; one with accounts under it is said as such, and is nothing to declare; one declared with a part begun by a small letter, or with a space or `;`, is refused (N13), written as it should be, and books holding one from before stay as they are | §4.1, §5 | `an_account_misnamed` |
-| G-O15 | An account holds one commodity at a time: an entry posting another commodity to one whose balance is not nought is refused (N12), whatever operation adds it, a payment at a cost included; one empty, never used or emptied, takes any | §4.9, §5 | `an_account_holds_one_commodity_at_a_time` |
+| G-O15 | An account holds one commodity at a time: an entry posting another commodity to one whose balance is not nought posts it to the account's account in that commodity, declared with it (N12), whatever operation adds it; a payment at a cost from an account holding the debt's own commodity and none of the cost's is refused; one empty, never used or emptied, takes any | §4.9, §5 | `an_account_holds_one_commodity_at_a_time`, `accounts_in_commodities_are_their_accounts_own` |
 | G-O16 | Every command abo suggests, in a message or its help, is written in backticks and reads as a command abo takes, its blanks filled in; one a regression test is told to type runs, in a copy of its books, without a usage error or a panic | §5 | `every_command_abo_suggests_reads` |
 
 ### Whoever uses the pages
@@ -883,9 +907,16 @@ not reused: those missing below were rules about a value now derived.
 - **I-A1** Every account and every commodity that an entry, a statement, a
   price, an invoice or the configuration names is declared.
 - **I-A2** Postings go to leaves alone: every account an entry posts to, a
-  statement is of, or the configuration names for postings is a `leaf`.
-  Declaring an account under one of those breaks it, and is refused; to split
-  an account, its balance is moved by an entry to new accounts beside it.
+  statement is of, or the configuration names for postings is a `leaf`,
+  an account with no account under it but its accounts in commodities,
+  `A:C` for `C` declared. Declaring any other account under one of those
+  breaks it, and is refused; to split an account, its balance is moved by
+  an entry to new accounts beside it.
+- **I-A3** A commodity is a part of an account's name only as its last
+  part, `A:C`, with `A` declared: `A`'s account in `C`. Every posting to it
+  and every statement of it is in `C`. So `Assets:Wallet:BTC` is declared
+  with `Assets:Wallet`, `Assets:BTC:Cold` is not declared, and a commodity
+  is not declared while an account named after it holds another.
 - **I-K0** A commodity is three or more capital letters, A to Z, or a
   currency's sign alone, such as `$` or `€`, with 0 to 8
   places — BTC's eight. With the 12 digits I-K3 allows before the point, an
@@ -1048,24 +1079,28 @@ neither for an entry made long ago.
   (§2.9).
 - **N11** An agreement not active stays as it is: no version is added to it,
   and its status does not change (§2.9).
-- **N12** No entry is added with a posting to an account in a commodity,
-  while the account's balance, of every entry before it, is not nought in
-  another: an account holds one commodity at a time, that of its latest
-  posting, and reports show it in that commodity. What is paid in another
-  commodity, at a cost, goes through an account for that commodity, so that
-  the bank's account in the company's currency never holds a foreign amount
-  no bank would show, and an expense in dollars is an account of dollars.
-  Emptied, an account may take another commodity. One named after a
+- **N12** An account holds one commodity at a time, that of its latest
+  posting, and reports show it in that commodity. A posting to it in
+  another goes as §2.2 says: to its account in that commodity,
+  `Assets:Bank:CHF`, declared with the entry, while it holds another: so the
+  bank's account in the company's currency never holds a foreign amount no
+  bank would show, and an expense in dollars is an account of dollars.
+  Emptied, an account takes another commodity itself. A statement of an
+  account in a commodity is of the account that holds it. One named after a
   commodity, under another, `Assets:Wise:USD`, holds that one alone, empty
-  or not. A debt is owed on an
+  or not, and no entry posts another to it; and no entry, dated back, leaves
+  an account holding two commodities on a later day where it held one; nor is a commodity declared
+  while an account named after it, under another, holds another. A payment
+  at a cost from an account holding the debt's own commodity, and none of
+  the cost's, itself or in its account for it, is refused: the cost is what
+  is amiss. A debt is owed on an
   account of its own for its commodity, under the one named:
   `Assets:Receivable:EUR`, `Assets:Receivable:USD`,
   `Liabilities:Payable:USD`, which the invoice or the bill declares, so
   that debts in several commodities are open at once; the one named holds
   nothing itself, and abo.toml naming the receivable is no use of it (I-A2).
   Named without its commodity, the account is given it: by a bill's debt,
-  and, for any posting, where an account under the one named is named
-  after the posting's commodity, `Assets:Bank` in USD to `Assets:Bank:USD`.
+  and, for any posting, as above.
   Books that owed on the one named itself before keep doing so in the
   company's currency, and owe in another beside it, `Assets:ReceivableUSD`:
   an account posted to has none under it (I-A2).
@@ -1076,6 +1111,13 @@ neither for an entry made long ago.
   12.50` ends the name at its first space; and `;` begins a comment wherever
   hledger reads one. One declared before stays as it is, since the
   entries that post to it never change.
+
+- **N14** Nothing is booked to income, expenses or equity in another
+  commodity than the company's without a price of it by its day, `abo
+  price add`: what it is worth in the company's currency would not be
+  known. One spent from what is held, or given for another commodity, needs
+  none: it is worth what that cost. Nor is a price taken out that such a
+  posting is valued at.
 
 The conditions hold of every operation but `undo`, which takes back the last
 one and makes no change of its own: a period closed by mistake is reopened by
@@ -1228,7 +1270,30 @@ abo config set   <key> <value>
 abo config unset <key>
 ```
 
-`company.closed_through` closes a period (N6); `vat.input`,
+`company.closed_through` closes a period (N6); `company.cost_method`,
+`fifo` (the default) or `average`, says what a commodity given out cost
+(`Books::exchanged`): the earliest taken in first, or a part of all of it
+at its average cost. What is held, on assets, and what is owed, on
+liabilities, keep their costs apart. What comes in or goes out costs what
+it is exchanged for: the company's currency given or fetched; another
+commodity, income or an expense, at its price that day, the latest by
+then; with none, what was given for it, a commodity spent or exchanged at
+its cost; a debt in the commodity paid in it, what the debt was booked at.
+Income in another commodity with no price by its day is refused until one
+is set (N14). An entry reverted, with what reverts it, is to exchanges as
+though neither were, from the reversal's day: a sale taken back realises
+nothing. Changing the method while a period is closed is warned of, with
+what exchanges realised through it before and after; so is an asset left
+holding less than nought of a commodity, more given out than it held.
+What a commodity given out fetched less what it cost is an exchange
+difference realised: income on the P&L, part of net income on the balance
+sheet. What is held or owed still, at the latest price less its cost, is
+the balance sheet's exchange differences not realised; with no price, it
+is at its cost. Income, expenses and equity in another commodity are at
+what they cost, or the price of their day, as they were booked. A debt
+paid in the company's currency is paid at what it was booked at, so its
+payment realises nothing there: its difference is booked by the payment
+itself, to `Expenses:ExchangeLosses` or `Income:ExchangeGains`. `vat.input`,
 `invoice.terms_days` and the like set what they name; each payment option is
 keys of its own, `payment.<id>.iban`. Each key has a shape, from
 `abo.toml`'s schema, and its value is read as that shape and nothing else: a

@@ -34,7 +34,7 @@ pub fn fill(command: &str) -> String {
                 "places" => "2",
                 "date" | "d" | "its day" | "the day it was booked" => "2026-01-31",
                 "price" | "amount" | "what was paid" | "balance" => "10.00",
-                "company currency" | "currency" => "EUR",
+                "company currency" | "currency" | "home" => "EUR",
                 "id" | "option" => "bank",
                 "the bill's id" | "entry" | "debt" | "n" | "p" => "1",
                 "owed" => "10.00",

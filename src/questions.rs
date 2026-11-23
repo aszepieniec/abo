@@ -584,6 +584,7 @@ pub fn books(a: &Answers) -> NewBooks {
                 tax_id: get("tax_id"),
                 currency: get("currency"),
                 closed_through: None,
+                cost_method: Default::default(),
             },
             invoice: model::InvoiceCfg {
                 receivable: "Assets:Receivable".into(),

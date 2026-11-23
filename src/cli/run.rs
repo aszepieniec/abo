@@ -367,7 +367,8 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
             let id = input::debt(&s.books, &d)?;
             // In the debt's commodity, written or not.
             let owed = s.books.debt(id).map(|d| d.owed.commodity).unwrap_or_default();
-            let amount = match amount {
+            // Of what is no debt, what it owes is not asked: paying it is refused as it is.
+            let amount = match amount.filter(|_| s.books.debt(id).is_some()) {
                 None => s.books.to_pay(id),
                 Some(a) => match input::amount_in(Some(&owed), &a) {
                     Ok(x) if x.commodity == owed => x.quantity,
@@ -427,7 +428,8 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
             let mut refs: std::collections::BTreeSet<model::PostingRef> = clears.iter().map(|c| input::posting_ref(c)).collect::<Result<_>>()?;
             if all {
                 let cleared: std::collections::BTreeSet<_> = s.books.statements.values().flat_map(|st| st.clears.iter().copied()).collect();
-                refs.extend(s.books.all_postings().into_iter().filter(|(r, d, p)| p.account == account && p.amount.commodity == commodity && *d <= date && !cleared.contains(r)).map(|(r, ..)| r));
+                // Of `Assets:Bank` in CHF: its postings and `Assets:Bank:CHF`'s alike.
+                refs.extend(s.books.all_postings().into_iter().filter(|(r, d, p)| s.books.same(&p.account, &account) && p.amount.commodity == commodity && *d <= date && !cleared.contains(r)).map(|(r, ..)| r));
             }
             let op = Op::Record { account: account.clone(), commodity: commodity.clone(), date, balance, clears: refs };
             changed(&mut s, &op, &[], cli.json)?;
@@ -449,8 +451,8 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Unrecord { account, commodity } => {
             let mut s = Store::open(&here)?;
-            let account = account.unwrap_or_else(|| s.books.paid_from());
-            let commodity = commodity.unwrap_or_else(|| s.books.config.company.currency.clone());
+            // The commodity as `record` and `reconcile` take it.
+            let (account, commodity) = statement_account(&s.books, account.unwrap_or_else(|| s.books.paid_from()), commodity, "unrecord --account")?;
             let op = Op::Unrecord { account: account.clone(), commodity };
             changed(&mut s, &op, &[], cli.json)
         }
@@ -648,7 +650,10 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
                     let mut at = toml::Value::try_from(&s.books.config)?;
                     for part in key.split('.') {
                         // A key the schema has, not set; or one it has not.
-                        at = at.get(part).cloned().with_context(|| if model::key_known(&s.books.config, &key) { format!("{key} is not set") } else { format!("{key} names no key of abo.toml; `abo config` lists those set") })?;
+                        at = at.get(part).cloned().with_context(|| if model::key_known(&s.books.config, &key) { format!("{key} is not set") } else { match toml::Value::try_from(&s.books.config).ok().and_then(|r| model::key_meant(&r, &key)) {
+                            Some(m) => format!("{key} names no key of abo.toml; the key is {m}"),
+                            None => format!("{key} names no key of abo.toml; `abo config` lists those set"),
+                        } })?;
                     }
                     let shown = match &at {
                         toml::Value::String(v) => v.clone(),
@@ -700,7 +705,14 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
                         of: String,
                         price: statement::Amount,
                     }
-                    let all: Vec<Price> = s.books.prices.iter().map(|((c, d), p)| Price { date: d.to_string(), of: c.clone(), price: statement::Amount::new(&s.books, p.quantity, &p.commodity) }).collect();
+                    let all: Vec<Price> = s.books.prices.iter().map(|((c, d), p)| Price { date: d.to_string(), of: c.clone(), price: {
+                        // As declared, to more places than its commodity's where it has them.
+                        let mut a = statement::Amount::new(&s.books, p.quantity, &p.commodity);
+                        if p.quantity.normalize().scale() > s.books.places(&p.commodity) {
+                            a.quantity = p.quantity.normalize().to_string();
+                        }
+                        a
+                    } }).collect();
                     emit(cli.json, &all, || {
                         if all.is_empty() {
                             return "No prices declared; `abo price add` declares one.".into();
@@ -809,10 +821,12 @@ pub(crate) fn changed_all(s: &mut Store, ops: &[&Op], also: &[(String, Vec<u8>)]
     let lines = store::lines(&s.root);
     let mut what: Vec<String> = lines.iter().rev().take_while(|l| commit.is_some() && l["commit"].as_str() == commit.as_deref()).map(|l| l["what"].as_str().unwrap_or_default().to_string()).collect();
     what.reverse();
-    let r = serde_json::json!({ "commit": commit, "entry": entries.first(), "entries": entries, "what": what });
+    let warnings = commit.as_ref().map(|_| cautions(&s.books, ops, entries.last().copied())).unwrap_or_default();
+    let r = serde_json::json!({ "commit": commit, "entry": entries.first(), "entries": entries, "what": what, "warnings": warnings });
+    let warned: String = warnings.iter().map(|w| format!("\nWarning: {w}.")).collect();
     emit(json, &r, || match &commit {
         None => "Nothing to change: the books say that already.".to_string(),
-        Some(c) => format!("{}.{}\nCommitted {c}.", what.iter().map(|w| past(w)).collect::<Vec<_>>().join(".\n"), filled(&s.books, ops, before)),
+        Some(c) => format!("{}.{}{warned}\nCommitted {c}.", what.iter().map(|w| past(w)).collect::<Vec<_>>().join(".\n"), filled(&s.books, ops, before)),
     })?;
     still(s);
     Ok(())
@@ -836,7 +850,9 @@ fn statement_account(b: &model::Books, account: String, commodity: Option<String
             (None, []) => {}
         }
     }
-    let held: Vec<String> = b.balances().into_keys().filter(|(a, _)| *a == account).map(|(_, c)| c).collect();
+    // What it holds with its accounts in commodities: one account in each.
+    let mut held: Vec<String> = b.balances().into_keys().filter(|(a, _)| b.same(a, &account)).map(|(_, c)| c).collect();
+    held.dedup();
     let commodity = commodity
         .or_else(|| account.rsplit_once(':').map(|(_, c)| c.to_string()).filter(|c| b.commodities.contains_key(c)))
         .or_else(|| (held.len() == 1).then(|| held[0].clone()))
@@ -862,14 +878,36 @@ fn filled(b: &model::Books, ops: &[&Op], before: usize) -> String {
             Op::Pay { from, .. } | Op::WriteOff { to: from, .. } => postings.get(1).map(|p| (from.clone(), p.account.clone())).into_iter().collect(),
             _ => vec![],
         };
+        // Paid from the account in its commodity, picked as none was named.
+        let paying = matches!(op, Op::Pay { .. } | Op::WriteOff { .. });
+        let named: Vec<(String, String)> = named
+            .into_iter()
+            .map(|(typed, booked)| match b.base_of(&booked) {
+                base if paying && typed == booked && base != booked => (base.to_string(), booked),
+                _ => (typed, booked),
+            })
+            .collect();
         for (typed, booked) in named.into_iter().filter(|(a, b)| a != b) {
-            let line = format!("\n{typed} is booked as {booked}, the account for its commodity.");
+            let line = match b.base_of(&booked) != booked {
+                true => format!("\n{typed} is booked as {booked}, the account for its commodity."),
+                false => format!("\n{typed} is booked as {booked}: in its commodity they are one account."),
+            };
             if !said.contains(&line) {
                 said.push(line);
             }
         }
     }
     said.concat()
+}
+
+/// What to warn of after `ops` (Books::cautions): the key they set, and
+/// the last entry they booked.
+fn cautions(b: &model::Books, ops: &[&Op], entry: Option<usize>) -> Vec<String> {
+    let key = ops.iter().find_map(|op| match op {
+        Op::ConfigSet { key, .. } | Op::ConfigUnset { key } => Some(key.as_str()),
+        _ => None,
+    });
+    b.cautions(key, entry)
 }
 
 /// Make a change, and say what it made.
@@ -881,13 +919,15 @@ pub(crate) fn changed(s: &mut Store, op: &Op, also: &[(String, Vec<u8>)], json: 
     let what = what.as_str();
     let entry = (s.books.entries.len() > before).then_some(s.books.entries.len());
     let description = entry.map(|id| s.books.entries[id - 1].description.clone());
-    let r = serde_json::json!({ "commit": commit, "entry": entry, "what": what });
+    let warnings = commit.as_ref().map(|_| cautions(&s.books, &[op], entry)).unwrap_or_default();
+    let r = serde_json::json!({ "commit": commit, "entry": entry, "what": what, "warnings": warnings });
+    let warned: String = warnings.iter().map(|w| format!("\nWarning: {w}.")).collect();
     emit(json, &r, || match (&commit, entry, description) {
         (None, ..) => "Nothing to change: the books say that already.".to_string(),
         // What moves money is said with its amount, as the log says it.
-        (Some(c), Some(id), Some(_)) if matches!(op, Op::Pay { .. } | Op::WriteOff { .. } | Op::Revert { .. }) => format!("{}: entry {id}.{}{}\nCommitted {c}.", past(what), exchanged(&s.books, id), filled(&s.books, &[op], before)),
-        (Some(c), Some(id), Some(d)) => format!("Booked entry {id}: {d}.{}\nCommitted {c}.", filled(&s.books, &[op], before)),
-        (Some(c), ..) => format!("{}. Committed {c}.", past(what)),
+        (Some(c), Some(id), Some(_)) if matches!(op, Op::Pay { .. } | Op::WriteOff { .. } | Op::Revert { .. }) => format!("{}: entry {id}.{}{}{warned}\nCommitted {c}.", past(what), exchanged(&s.books, id), filled(&s.books, &[op], before)),
+        (Some(c), Some(id), Some(d)) => format!("Booked entry {id}: {d}.{}{warned}\nCommitted {c}.", filled(&s.books, &[op], before)),
+        (Some(c), ..) => format!("{}.{warned} Committed {c}.", past(what)),
     })?;
     still(s);
     Ok(())
@@ -1081,35 +1121,51 @@ pub(crate) fn hints(r: &store::Refused) -> Vec<String> {
             ("I-A1", Subject::Commodity(c)) if c.to_uppercase() != *c => format!("{c} written in capitals, {}; and, if {0} is not declared, `abo commodity add {0} <places>`, its places the digits after the point, 2 for most currencies", c.to_uppercase()),
             ("I-A1", Subject::Commodity(c)) => format!("`abo commodity add {c} <places>`, its places the digits after the point, 2 for most currencies"),
             // ponytail: the account likely meant, read back from the message's end.
+            ("I-A1", Subject::Account(a)) if x.what.ends_with(", which is declared first") => format!("`abo account add {}`", a.rsplit_once(':').map_or(a.as_str(), |(x, _)| x)),
             ("I-A1", of) => match (x.what.strip_suffix(" is").and_then(|w| w.rsplit_once(": ")), of) {
+                // The account a commodity's is under: that one, in that commodity.
+                (Some((_, meant)), Subject::Account(a)) if a.strip_prefix(meant).is_some_and(|r| r.starts_with(':')) => format!("{meant} in place of {a}"),
                 (Some((_, meant)), Subject::Account(a)) => format!("{meant} in place of {a}, if that is what was meant; else `abo account add {a}`"),
                 // Not a name an account can have: only the one meant.
                 (Some((typed, meant)), _) => format!("{meant} in place of {}", typed.strip_suffix(" is not declared").unwrap_or(typed)),
                 (None, Subject::Account(a)) => format!("`abo account add {a}`"),
                 (None, _) => continue,
             },
-            ("I-E4", Subject::Commodity(c)) => format!("`abo price add <date> {c} <price> <company currency>`"),
+            ("I-E4", Subject::Commodity(c)) => {
+                // As the refusal says them: `no price of USD in EUR on or before 2026-03-01`.
+                let after = |w: &str| x.what.split(w).nth(1).and_then(|r| r.split([' ', ':']).next()).map(str::to_string);
+                let (home, date) = (after(&format!("no price of {c} in ")).unwrap_or("<company currency>".into()), after("on or before ").unwrap_or("<date>".into()));
+                format!("`abo price add {date} {c} <price> {home}`")
+            }
             ("I-I1", Subject::Field("reason")) => "--vat-reason '<why no VAT is charged>'".into(),
             ("I-I1", Subject::Field("default rate")) => "--vat-reason '<why no VAT is charged>'; or --vat-rate <percent>, to charge VAT after all".into(),
-            ("N12", _) if x.what.contains("is given with no cost") => continue,
+            ("N12", _) if x.what.contains("is given with no cost") => {
+                let there = x.what.split(" itself or in ").nth(1).and_then(|r| r.split(", to pay").next()).unwrap_or("the account in the cost's commodity");
+                format!("the payment without --cost, in the debt's own commodity; or {there} funded first, by an entry of the money that came in")
+            }
             ("N12", Subject::Account(_)) if x.what.contains(" is named after ") => {
                 let to = x.what.rsplit(" to ").next().unwrap_or_default();
-                format!("{to} in its place, declared first if it is not: `abo account add {to}`")
+                format!("{to} in its place")
             }
+            // Dated back into another commodity's days: the refusal says when.
+            ("N12", _) if x.what.contains(" would hold ") && x.what.contains("a reversal moves") => "the opposite as an entry of its own, `abo post`".into(),
+            ("N12", _) if x.what.contains(" would hold ") => continue,
+            // A reversal, which moves what its entry moved, where: the
+            // opposite as an entry of its own goes to the account in it.
             ("N12", Subject::Account(a)) => {
-                // Named after what it moves: beside one named after another,
-                // Assets:Bank:USD by Assets:Bank:EUR; else beside this one,
-                // which holds entries and so takes none under it.
                 let c = x.what.split_once(" through it").and_then(|(m, _)| m.rsplit(' ').next()).unwrap_or("USD");
-                let own = match a.rsplit_once(':') {
-                    Some((parent, last)) if !last.is_empty() && last.chars().all(|c| c.is_ascii_uppercase()) && last.len() >= 3 => format!("{parent}:{c}"),
-                    _ => format!("{a}{c}"),
-                };
-                format!("an account of its own for {c}, declared first: `abo account add {own}`; or this one, once its balance is nought")
+                format!("the opposite as an entry of its own, `abo post`, which books {c} to {a}:{c}, its account in {c}; or this, once {a} holds {c} again")
             }
-            ("N7", Subject::Account(a)) => format!("`abo unrecord --account {a}`, which takes out its latest statement"),
+            // Of `Assets:Bank in CHF`, as the refusal names it.
+            ("N7", Subject::Account(a)) => match x.what.split(" has a statement on ").next().and_then(|n| n.split_once(" in ")) {
+                Some((account, commodity)) => format!("`abo unrecord --account {account} --commodity {commodity}`, which takes out its latest statement"),
+                None => format!("`abo unrecord --account {a}`, which takes out its latest statement"),
+            },
             // The money moved as booked: what was wrong is the other side.
-            ("N9", Subject::Account(a)) => format!("an entry of its own for what was wrong on the other side, as `abo post --desc <description> 'Expenses:General <amount>' Expenses:Other`; or `abo unrecord --account {a}`, if the statement was wrong"),
+            ("N9", Subject::Account(a)) => {
+                let commodity = x.what.split(" on ").next().and_then(|w| w.rsplit_once(" in ")).map_or("", |(_, c)| c);
+                format!("an entry of its own for what was wrong on the other side, as `abo post --desc <description> 'Expenses:General <amount>' Expenses:Other`; or `abo unrecord --account {a} --commodity {commodity}`, if the statement was wrong")
+            }
             // Under the same number it is that bill: no flag makes it another.
             ("N8", Subject::Field("number")) => continue,
             ("N8", _) => "--again, if it is another bill just like it".into(),
@@ -1117,13 +1173,13 @@ pub(crate) fn hints(r: &store::Refused) -> Vec<String> {
             // To split an account in use: what names it moves under it first.
             // Said of a declaration only: a posting's own says what to post to.
             ("I-A2", _) if !x.what.contains("cannot be declared under") || x.what.contains("named after a commodity declared") => continue,
-            ("I-A2", Subject::Account(a)) if x.what.contains("payment option") => format!(
+            ("I-A2", Subject::Account(a)) if x.what.contains("payment option") && !x.what.contains("entries post to it") && !x.what.contains("statement") => format!(
                 "an account in use takes no accounts under it: declare the new one beside it, or move the payment option under it first (`abo payment-options edit <id> --account {a}:Current`)"
             ),
             ("I-A2", _) => "an account in use takes no accounts under it: declare the new one beside it".into(),
             // A count or a statement the books disagree with: what it shows and
             // the books lack is booked first, a shortage say.
-            ("I-S3", _) => "name each posting the statement shows, by the first column of `abo reconcile`: `abo record --balance <balance> <ENTRY.N>`; what it shows and the books lack, a fee say, is booked first, `abo post --desc <description> 'Expenses:General <amount>' Assets:Bank`; and what it does not show is left out".into(),
+            ("I-S3", _) => "name each posting the statement shows, by the first column of `abo reconcile`: `abo record --account <account> --commodity <commodity> --balance <balance> <ENTRY.N>`; what it shows and the books lack, a fee say, is booked first, `abo post --desc <description> 'Expenses:General <amount> <commodity>' <account>`; and what it does not show is left out".into(),
             _ => continue,
         };
         if !v.contains(&h) {

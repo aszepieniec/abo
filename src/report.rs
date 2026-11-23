@@ -44,15 +44,15 @@ pub fn run(s: &Store, cmd: &str, args: &[String], json: bool) -> Result<String> 
     if json {
         a.extend(["-O", "json"]);
     }
-    // `ytd`, as pl and vat take it, in whatever form the period is given.
-    let ytd = crate::statement::hledger_period("ytd")?;
+    // A period as pl and vat take it, `ytd` and a range with its end in it,
+    // in whatever form it is given (statement::hledger_period).
     let mut args: Vec<String> = args.to_vec();
     for i in 0..args.len() {
         let after_flag = i > 0 && matches!(args[i - 1].as_str(), "-p" | "--period");
-        if after_flag && args[i] == "ytd" {
-            args[i] = ytd.clone();
-        } else if args[i] == "--period=ytd" || args[i] == "-pytd" {
-            args[i] = format!("--period={ytd}");
+        if after_flag {
+            args[i] = crate::statement::hledger_period(&args[i])?;
+        } else if let Some(p) = args[i].strip_prefix("--period=").or_else(|| args[i].strip_prefix("-p")).filter(|p| !p.is_empty()) {
+            args[i] = format!("--period={}", crate::statement::hledger_period(p)?);
         }
     }
     // A period or a date, refused as pl and vat refuse it: hledger takes a
@@ -84,7 +84,7 @@ pub fn run(s: &Store, cmd: &str, args: &[String], json: bool) -> Result<String> 
 /// where that is another, at the latest price or at cost (statement::
 /// valued); exchanges' conversion as one line; the total in the company's.
 fn two_figures(s: &Store, args: &[String]) -> Result<String> {
-    use crate::statement::{amounts, money, valued, Bag, UNREALISED};
+    use crate::statement::{amounts, money, rounded, valued, Bag, EXCHANGES};
     let home = &s.books.config.company.currency;
     let mut query = vec![];
     let mut flags: Vec<&str> = vec![];
@@ -97,26 +97,70 @@ fn two_figures(s: &Store, args: &[String]) -> Result<String> {
         }
     }
     let no_total = flags.iter().any(|f| *f == "-N" || *f == "--no-total");
-    let mut rows: Vec<(String, String, String)> = vec![];
-    let (mut total, mut conversion) = (Bag::new(), Bag::new());
+    // --depth N, --depth=N or -N: each account valued as itself, then summed
+    // up to N parts, so that a parent is what its accounts are.
+    let mut depth = None;
+    let mut i = 0;
+    while i < flags.len() {
+        let f = flags[i];
+        let n = match f.strip_prefix("--depth") {
+            Some("") => flags.get(i + 1).and_then(|n| n.parse().ok()).map(|n| (n, 2)),
+            Some(n) => n.strip_prefix('=').and_then(|n| n.parse().ok()).map(|n| (n, 1)),
+            None => f.strip_prefix('-').filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())).and_then(|n| n.parse().ok()).map(|n| (n, 1)),
+        };
+        match n {
+            Some((n, taken)) => {
+                depth = Some(n);
+                flags.drain(i..i + taken);
+            }
+            None => i += 1,
+        }
+    }
+    let whole = query.is_empty();
+    let cut = |a: &str| depth.map_or(a.to_string(), |n: usize| a.split(':').take(n.max(1)).collect::<Vec<_>>().join(":"));
+    let mut accounts: Vec<(String, Bag, Bag)> = vec![];
+    let (mut conversion, mut exchanged) = (Bag::new(), false);
     // Each term an argument of its own, as hledger takes a query.
     flags.extend(query);
     for (account, own, valued) in valued(s, "", &flags)? {
-        for (c, q) in &valued {
-            *total.entry(c.clone()).or_default() += q;
-        }
         if account.starts_with("equity:conversion:") {
+            exchanged = true;
             for (c, q) in &valued {
                 *conversion.entry(c.clone()).or_default() += q;
             }
             continue;
         }
-        let foreign = own.iter().any(|(c, q)| c != home && !q.is_zero()) && valued != own;
-        rows.push((money(&amounts(&s.books, &own)), if foreign { format!("({})", money(&amounts(&s.books, &valued))) } else { String::new() }, account));
+        let (name, valued) = (cut(&account), rounded(&s.books, &valued));
+        if accounts.last().is_none_or(|(n, ..)| *n != name) {
+            accounts.push((name.clone(), Bag::new(), Bag::new()));
+        }
+        let (_, o, v) = accounts.last_mut().unwrap();
+        own.iter().for_each(|(c, q)| *o.entry(c.clone()).or_default() += q);
+        valued.iter().for_each(|(c, q)| *v.entry(c.clone()).or_default() += q);
     }
-    if conversion.values().any(|q| !q.is_zero()) {
-        rows.push((money(&amounts(&s.books, &conversion)), String::new(), UNREALISED.into()));
+    let mut rows: Vec<(String, String, String)> = vec![];
+    let mut total = Bag::new();
+    for (account, own, valued) in &accounts {
+        valued.iter().for_each(|(c, q)| *total.entry(c.clone()).or_default() += q);
+        let own: Bag = own.iter().filter(|(_, q)| !q.is_zero()).map(|(c, q)| (c.clone(), *q)).collect();
+        let foreign = own.iter().any(|(c, _)| c != home) && valued != &own;
+        rows.push((money(&amounts(&s.books, &own)), if foreign { format!("({})", money(&amounts(&s.books, valued))) } else { String::new() }, account.clone()));
     }
+    // Exchanges' line: of the whole books, what the rest comes to, turned
+    // over, as what exchanges gained balances them; of some, as valued.
+    // ponytail: of a query, hledger's conversion valued at the latest prices
+    if exchanged {
+        let line: Bag = match whole {
+            true => total.iter().map(|(c, q)| (c.clone(), -q)).collect(),
+            false => rounded(&s.books, &conversion),
+        };
+        line.iter().for_each(|(c, q)| *total.entry(c.clone()).or_default() += q);
+        if line.values().any(|q| !q.is_zero()) {
+            rows.push((money(&amounts(&s.books, &line)), String::new(), EXCHANGES.into()));
+        }
+    }
+    // A commodity come to nought, `0.00000000 BTC`, is not said beside the rest.
+    let total: Bag = total.into_iter().filter(|(_, q)| !q.is_zero()).collect();
     let width = |f: fn(&(String, String, String)) -> usize| rows.iter().map(f).max().unwrap_or(0);
     let (w1, w2) = (width(|r| r.0.chars().count()).max(20), width(|r| r.1.chars().count()));
     let mut out = String::new();

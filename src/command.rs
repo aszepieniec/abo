@@ -219,9 +219,9 @@ pub fn argv(op: &Op, m: &Books) -> Vec<String> {
     a
 }
 
-/// `2026-01-01..2026-02-01`, as hledger reads a period: the end not in it.
+/// `2026-01-01..2026-01-31`, as abo reads a period: the end in it.
 fn period(p: &model::Period) -> String {
-    format!("{}..{}", p.from, p.to.tomorrow().unwrap_or(p.to))
+    format!("{}..{}", p.from, p.to)
 }
 
 /// A partner's lines as flags: the name, then a line of the address each,
@@ -262,11 +262,14 @@ pub fn subject(op: &Op, m: &Books, n: &Books) -> String {
         }
         Op::WriteOff { debt: d, .. } => format!("Write off {}", name(m, *d)),
         Op::Revert { entry, .. } => format!("Revert {}", name(m, *entry)),
-        Op::Record { account, date, .. } => format!("Record the statement of {account} on {date}"),
-        Op::Unrecord { account, commodity } => match m.statements.keys().rfind(|k| &k.0 == account && &k.1 == commodity) {
-            Some(k) => format!("Take out the statement of {account} on {}", k.2),
-            None => format!("Take out the latest statement of {account}"),
-        },
+        Op::Record { account, commodity, date, .. } => format!("Record the statement of {} on {date}", in_commodity(m, account, commodity)),
+        Op::Unrecord { account, commodity } => {
+            let base = m.base_of(account);
+            match m.statements.keys().filter(|k| &k.1 == commodity && (k.0 == base || m.base_of(&k.0) == base)).max_by_key(|k| k.2) {
+                Some(k) => format!("Take out the statement of {} on {}", m.statement_of(&k.0, &k.1), k.2),
+                None => format!("Take out the latest statement of {}", in_commodity(m, account, commodity)),
+            }
+        }
         Op::ConfigSet { key, .. } => format!("Set {key}"),
         Op::ConfigUnset { key } => format!("Unset {key}"),
         Op::Company { .. } => "Change the company's details".into(),
@@ -498,4 +501,10 @@ pub fn done(what: &str) -> (String, String) {
         .iter()
         .find_map(|(now, then)| what.strip_prefix(now).map(|rest| (then.to_string(), rest.to_string())))
         .unwrap_or_else(|| (what.to_string(), String::new()))
+}
+
+/// What a statement of `account` in `commodity` is of, said:
+/// `Assets:Bank in CHF`, of the account that holds it.
+fn in_commodity(m: &crate::model::Books, account: &str, commodity: &str) -> String {
+    m.statement_of(&crate::model::suffixed(m, account, commodity), commodity)
 }

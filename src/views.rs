@@ -128,11 +128,13 @@ pub struct Outstanding {
     pub description: String,
 }
 
-pub fn reconciled(b: &Books, account: &str, commodity: &str, date: model::Date, balance: Option<Decimal>) -> Reconciled {
+pub fn reconciled(b: &Books, named: &str, commodity: &str, date: model::Date, balance: Option<Decimal>) -> Reconciled {
+    // `Assets:Bank` in CHF: its postings and `Assets:Bank:CHF`'s alike.
+    let account = named;
     let money = |d: Decimal| Amount::new(b, d, commodity);
     let cleared: std::collections::BTreeSet<model::PostingRef> =
-        b.statements.iter().filter(|(k, _)| k.0 == account && k.1 == commodity && k.2 <= date).flat_map(|(_, s)| s.clears.iter().copied()).collect();
-    let mut ps: Vec<_> = b.all_postings().into_iter().filter(|(_, d, p)| p.account == account && p.amount.commodity == commodity && *d <= date).collect();
+        b.statements.iter().filter(|(k, _)| b.same(&k.0, account) && k.1 == commodity && k.2 <= date).flat_map(|(_, s)| s.clears.iter().copied()).collect();
+    let mut ps: Vec<_> = b.all_postings().into_iter().filter(|(_, d, p)| b.same(&p.account, account) && p.amount.commodity == commodity && *d <= date).collect();
     // By date, as a statement lists them.
     ps.sort_by_key(|(r, d, _)| (*d, r.entry, r.n));
     let done: Decimal = ps.iter().filter(|(r, ..)| cleared.contains(r)).map(|(_, _, p)| p.amount.quantity).sum();
@@ -143,7 +145,7 @@ pub fn reconciled(b: &Books, account: &str, commodity: &str, date: model::Date, 
         .map(|(r, d, p)| Outstanding { posting: format!("{}.{}", r.entry, r.n), date: d.to_string(), amount: money(p.amount.quantity), description: b.entries[r.entry - 1].description.clone() })
         .collect();
     Reconciled {
-        account: account.into(),
+        account: named.into(),
         commodity: commodity.into(),
         date: date.to_string(),
         cleared: money(done),

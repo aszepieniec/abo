@@ -776,17 +776,23 @@ fn each_operation_changes_only_its_part(#[strategy(plan())] plan: Vec<Step>) {
         .collect();
         let grows = |a: usize, b: usize| b as i64 - a as i64;
         let (part, by): (&[&str], i64) = match op {
-            Op::Post { .. } | Op::Credit { .. } | Op::Pay { .. } | Op::WriteOff { .. } | Op::Revert { .. } => (&["entries"], grows(m.entries.len(), n.entries.len())),
+            // An account in a commodity the entry posts to is declared
+            // with it, if it is not: `Assets:Bank:CHF` (N12).
+            Op::Post { .. } | Op::Credit { .. } | Op::Pay { .. } | Op::WriteOff { .. } | Op::Revert { .. } => {
+                let new: Vec<_> = n.accounts.difference(&m.accounts).collect();
+                prop_assert!(m.accounts.is_subset(&n.accounts) && new.iter().all(|a| n.base_of(a) != a.as_str() && n.postings(n.entries.len()).iter().any(|p| &&p.account == a)), "{:?} declared {:?}", op, new);
+                (&["entries", "accounts"], grows(m.entries.len(), n.entries.len()))
+            }
             // A debt in another commodity declares the account it is owed
             // on, if it is not: of its own for that commodity (N12).
             Op::Invoice { .. } | Op::Bill { .. } => {
                 let new: Vec<_> = n.accounts.difference(&m.accounts).collect();
-                prop_assert!(m.accounts.is_subset(&n.accounts) && new.iter().all(|a| n.debt(n.entries.len()).is_some_and(|d| &&d.account == a)), "{:?} declared {:?}", op, new);
+                prop_assert!(m.accounts.is_subset(&n.accounts) && new.iter().all(|a| n.debt(n.entries.len()).is_some_and(|d| &&d.account == a) || (n.base_of(a) != a.as_str() && n.postings(n.entries.len()).iter().any(|p| &&p.account == a))), "{:?} declared {:?}", op, new);
                 (&["entries", "documents", "accounts"], grows(m.entries.len(), n.entries.len()))
             }
             Op::File { .. } => (&["documents"], grows(m.documents.len(), n.documents.len())),
             Op::Unfile { .. } => (&["documents"], -grows(m.documents.len(), n.documents.len())),
-            Op::Record { .. } => (&["statements"], grows(m.statements.len(), n.statements.len())),
+            Op::Record { .. } => (&["statements", "accounts"], grows(m.statements.len(), n.statements.len())),
             Op::Unrecord { .. } => (&["statements"], -grows(m.statements.len(), n.statements.len())),
             Op::ConfigSet { .. } | Op::ConfigUnset { .. } | Op::Company { .. } | Op::OptionRemove { .. } => (&["config"], 1),
             // An option's account is declared along with it, if it is not.
@@ -942,8 +948,10 @@ fn given_texts(m: &Books, op: &Op) -> Vec<String> {
         Op::PriceRemove { of, .. } => v.push(of.clone()),
         Op::PartnerAdd { id, partner } => v.extend([id.clone(), partner.lines.clone(), partner.tax_id.clone()]),
         Op::PartnerEdit { id, lines, tax_id, .. } => v.extend([Some(id.clone()), lines.clone(), tax_id.clone()].into_iter().flatten()),
-        Op::PartnerRemove { id } | Op::AgreementRemove { id } | Op::Amend { id, .. } => v.push(id.clone()),
-        Op::AgreementAdd { id, parties, .. } => v.extend([vec![id.clone()], parties.clone()].concat()),
+        Op::PartnerRemove { id } | Op::AgreementRemove { id } => v.push(id.clone()),
+        // A template's fields, and each line of them, are quoted as given.
+        Op::Amend { id, version } => v.extend([id.clone()].into_iter().chain(template_texts(version))),
+        Op::AgreementAdd { id, parties, version } => v.extend([vec![id.clone()], parties.clone(), template_texts(version)].concat()),
         Op::Comment { text, .. } => v.push(text.clone()),
         Op::Uncomment { .. } => {}
         Op::AgreementEnd { id, status } => v.extend([Some(id.clone()), match status {
@@ -956,6 +964,10 @@ fn given_texts(m: &Books, op: &Op) -> Vec<String> {
     v.retain(|t| !t.is_empty());
     v.sort_by_key(|t| std::cmp::Reverse(t.len()));
     v
+}
+
+fn template_texts(v: &Version) -> Vec<String> {
+    v.template.iter().flatten().flat_map(|(_, t)| t.lines().map(str::to_string).chain([t.clone()]).collect::<Vec<_>>()).collect()
 }
 
 /// The number written after `word` wherever it stands in `what`, and the
@@ -1530,13 +1542,15 @@ fn in_use(m: &Books) -> BTreeSet<Account> {
     a
 }
 
-/// §5.1, I-A1: an account can be removed exactly when nothing uses it.
+/// §5.1, I-A1: an account can be removed exactly when nothing uses it and
+/// no account is under it.
 #[proptest]
 fn an_account_is_removable_iff_unused(#[strategy(plan())] plan: Vec<Step>, account: Index) {
     let (m, today) = end(&plan);
     let a = pick(&account, &m.accounts.iter().cloned().collect::<Vec<_>>()).unwrap();
     let removed = apply(&m, &Op::AccountRemove(a.clone()), today);
-    prop_assert_eq!(removed.is_ok(), !in_use(&m).contains(&a), "{}: {:?}", a, removed.map(|_| ()));
+    let under = m.accounts.iter().any(|b| b.strip_prefix(a.as_str()).is_some_and(|r| r.starts_with(':')));
+    prop_assert_eq!(removed.is_ok(), !in_use(&m).contains(&a) && !under, "{}: {:?}", a, removed.map(|_| ()));
 }
 
 /// §5.1, I-A1: a commodity can be removed exactly when nothing is in it.
@@ -1571,7 +1585,8 @@ fn declaring_under_a_posted_account_is_refused(#[strategy(plan())] plan: Vec<Ste
     let (m, today) = end(&plan);
     let a = pick(&account, &in_use(&m).into_iter().collect::<Vec<_>>()).unwrap();
     let under = apply(&m, &Op::AccountAdd(format!("{a}:Sub")), today);
-    prop_assert!(under.as_ref().is_err_and(|v| v.iter().any(|v| v.code == "I-A2")), "{}: {:?}", a, under.map(|_| ()));
+    // Under an account in a commodity, which takes none: said by I-A3.
+    prop_assert!(under.as_ref().is_err_and(|v| v.iter().any(|v| v.code == "I-A2" || v.code == "I-A3")), "{}: {:?}", a, under.map(|_| ()));
 }
 
 /// N2 and N6: once a period is closed, an entry or a statement dated in it is
@@ -2068,6 +2083,8 @@ pub fn edited(m: &Books, file: &Index, edit: &Edit) -> Files {
 fn extremes_survive_hledger(#[strategy(0u32..9)] places: u32, negative: bool, #[strategy(1i64..1000)] small: i64) {
     let today = day("2026-06-30");
     let mut m = apply(&fresh(), &Op::CommodityAdd("ZZZ".into(), places), today).unwrap();
+    // Equity in ZZZ is worth its price (N14).
+    m.prices.insert(("ZZZ".into(), day("2026-01-01")), eur(Decimal::ONE));
     let unit = Decimal::new(1, places);
     let top = Decimal::from(BOUND) - unit;
     for q in [top, unit, Decimal::new(small, places)] {
@@ -2649,9 +2666,10 @@ fn an_account_misnamed() {
     assert!(apply(&old, &post("Expenses:travel"), day("2026-02-01")).is_ok());
 }
 
-/// A money account moves only what it holds: a payment at a cost in another
-/// commodity is refused through the bank that holds EUR, and taken through
-/// an account that holds nothing, never used or emptied.
+/// An account holds one commodity at a time (N12): another goes to its
+/// account in that commodity, declared with the entry. A payment at a cost
+/// in another commodity is refused through the bank that holds EUR and no
+/// USD, and taken through one holding USD, or holding nothing.
 #[test]
 fn an_account_holds_one_commodity_at_a_time() {
     let mut m = fresh();
@@ -2664,13 +2682,43 @@ fn an_account_holds_one_commodity_at_a_time() {
     let id = m.entries.len();
     let pay = |from: &str| Op::Pay { debt: id, date, amount: Decimal::new(1940, 2), from: from.into(), cost: Some(Amount { quantity: Decimal::new(2100, 2), commodity: "USD".into() }) };
     let v = apply(&m, &pay(BANK), today).unwrap_err();
-    assert!(v.iter().any(|v| v.code == "N12" && v.what.starts_with("Assets:Bank holds 1000.00 EUR, the debt's own commodity, and its cost moves 21.00 USD") && v.of == Subject::Account(BANK.into())), "{v:?}");
+    assert!(v.iter().any(|v| v.code == "N12" && v.what.starts_with("Assets:Bank holds 1 000.00 EUR, the debt's own commodity, and no USD, itself or in Assets:Bank:USD") && v.of == Subject::Account(BANK.into())), "{v:?}");
     // In EUR it is taken; through an account for USD, holding nothing yet, too.
     m.accounts.insert("Assets:Dollars".into());
     let n = apply(&m, &pay("Assets:Dollars"), today).unwrap();
-    // Once it holds USD, EUR is refused through it.
-    let v = apply(&n, &Op::Post { date, description: "Mixed".into(), postings: vec![p("Assets:Dollars", 500, "EUR"), p("Equity:Opening", -500, "EUR")], link: Link::default() }, today).unwrap_err();
-    assert!(v.iter().any(|v| v.code == "N12"), "{v:?}");
+    // Once it holds USD, EUR goes to its account in EUR, declared with it.
+    let mixed = apply(&n, &Op::Post { date, description: "Mixed".into(), postings: vec![p("Assets:Dollars", 500, "EUR"), p("Equity:Opening", -500, "EUR")], link: Link::default() }, today).unwrap();
+    assert_eq!(mixed.postings(mixed.entries.len())[0].account, "Assets:Dollars:EUR");
+    assert!(mixed.accounts.contains("Assets:Dollars:EUR") && mixed.postable("Assets:Dollars"));
+    // Written so, it is the same: and it takes no other commodity.
+    let named = apply(&n, &Op::Post { date, description: "Named".into(), postings: vec![p("Assets:Dollars:EUR", 500, "EUR"), p("Equity:Opening", -500, "EUR")], link: Link::default() }, today).unwrap();
+    assert_eq!(named.postings(named.entries.len())[0].account, "Assets:Dollars:EUR");
+    let v = apply(&mixed, &Op::Post { date, description: "Wrong".into(), postings: vec![p("Assets:Dollars:EUR", 500, "USD"), p("Equity:Opening", -500, "USD")], link: Link::default() }, today).unwrap_err();
+    assert!(v.iter().any(|v| v.code == "N12" && v.what.starts_with("Assets:Dollars:EUR is named after EUR")), "{v:?}");
+    // Two commodities to one account empty before, in one entry: the second to its own.
+    let mut fresh_two = m.clone();
+    fresh_two.accounts.insert("Assets:Wise".into());
+    let two = apply(&fresh_two, &Op::Post { date, description: "Both".into(), postings: vec![p("Assets:Wise", 100, "EUR"), p("Assets:Wise", 100, "USD"), p("Equity:Opening", -100, "EUR"), p("Equity:Opening", -100, "USD")], link: Link::default() }, today).unwrap();
+    let accounts: Vec<String> = two.postings(two.entries.len()).into_iter().map(|p| p.account).collect();
+    assert_eq!(accounts[..2], ["Assets:Wise", "Assets:Wise:USD"]);
+    // The bank paying at a cost from its USD, once it holds some.
+    let with_usd = apply(&m, &Op::Post { date, description: "Dollars in".into(), postings: vec![p(BANK, 5000, "USD"), p("Equity:Opening", -5000, "USD")], link: Link::default() }, today).unwrap();
+    assert!(with_usd.accounts.contains("Assets:Bank:USD"));
+    let paid = apply(&with_usd, &pay(BANK), today).unwrap();
+    assert!(paid.postings(paid.entries.len()).iter().any(|p| p.account == "Assets:Bank:USD" && p.amount.quantity == Decimal::new(-2100, 2)));
+    // Its statement in USD is of the bank in USD: recorded on the bank, of
+    // it and of its account in USD alike.
+    let st = apply(&with_usd, &Op::Record { account: BANK.into(), commodity: "USD".into(), date, balance: Decimal::new(5000, 2), clears: BTreeSet::from([PostingRef { entry: with_usd.entries.len(), n: 0 }]) }, today).unwrap();
+    assert!(st.statements.keys().any(|k| k.0 == BANK && k.1 == "USD"), "{:?}", st.statements.keys());
+    assert!(crate::model::render(&st).values().any(|t| t.contains("=* 50.00 USD")));
+    // Another account under the bank is refused, as before (I-A2).
+    let v = apply(&with_usd, &Op::AccountAdd("Assets:Bank:Savings".into()), today).unwrap_err();
+    assert!(v.iter().any(|v| v.code == "I-A2"), "{v:?}");
+    // A commodity named as an account holding another is not declared.
+    let mut gbp = with_usd.clone();
+    gbp.accounts.extend(["Assets:Cash".to_string(), "Assets:Cash:GBP".to_string()]);
+    gbp = apply(&gbp, &Op::Post { date, description: "Cash".into(), postings: vec![p("Assets:Cash:GBP", 100, "EUR"), p("Equity:Opening", -100, "EUR")], link: Link::default() }, today).unwrap();
+    assert!(apply(&gbp, &Op::CommodityAdd("GBP".into(), 2), today).is_err());
     assert!(apply(&m, &Op::Pay { debt: id, date, amount: Decimal::new(1940, 2), from: BANK.into(), cost: None }, today).is_ok());
     // Emptied, the bank takes USD: the same payment at a cost goes through.
     let emptied = apply(&m, &Op::Post { date, description: "Out".into(), postings: vec![p(BANK, -100000, "EUR"), p("Equity:Opening", 100000, "EUR")], link: Link::default() }, today).unwrap();
@@ -2678,8 +2726,8 @@ fn an_account_holds_one_commodity_at_a_time() {
     // Not money alone: an expense booked in EUR takes no USD, one never
     // used takes it; and a bill in USD waits while one in EUR is open.
     let usd = |a: &str| Op::Post { date, description: "Software".into(), postings: vec![p(a, 2000, "USD"), p("Assets:Dollars", -2000, "USD")], link: Link::default() };
-    let v = apply(&n, &usd("Expenses:Hosting"), today).unwrap_err();
-    assert!(v.iter().any(|v| v.code == "N12" && v.what.starts_with("Expenses:Hosting holds")), "{v:?}");
+    let hosting = apply(&n, &usd("Expenses:Hosting"), today).unwrap();
+    assert_eq!(hosting.postings(hosting.entries.len())[0].account, "Expenses:Hosting:USD");
     let mut n2 = n.clone();
     n2.accounts.insert("Expenses:Software".into());
     let n2 = apply(&n2, &usd("Expenses:Software"), today).unwrap();
@@ -2689,4 +2737,151 @@ fn an_account_holds_one_commodity_at_a_time() {
     let both = apply(&m, &second, today).unwrap();
     assert!(both.postings(both.entries.len()).iter().any(|p| p.account == "Liabilities:Payable:USD"), "{:?}", both.entries.last());
     assert!(apply(&n2, &second, today).is_ok());
+}
+
+/// §2.2, N12, I-A3, found by testing the accounts in commodities: `A:C`
+/// written is `A` in `C`; an account emptied takes its commodity again
+/// itself; one with another account under it reaches its declared `A:C`;
+/// a commodity names nothing but an account's account in it; and an
+/// account is taken out only with nothing under it.
+#[test]
+fn accounts_in_commodities_are_their_accounts_own() {
+    let mut m = fresh();
+    let today = day("2026-02-01");
+    let date = day("2026-01-05");
+    let p = |a: &str, q: i64, c: &str| Posting::new(a, Decimal::new(q, 2), c);
+    let post = |m: &Books, ps: Vec<Posting>| apply(m, &Op::Post { date, description: "T".into(), postings: ps, link: Link::default() }, today);
+    let last = |m: &Books| m.postings(m.entries.len()).into_iter().map(|p| p.account).collect::<Vec<_>>();
+    m = post(&m, vec![p(BANK, 100000, "EUR"), p("Equity:Opening", -100000, "EUR")]).unwrap();
+    // Written as the bank's account in EUR, while the bank holds EUR: the bank.
+    let n = post(&m, vec![p("Assets:Bank:EUR", 100, "EUR"), p("Equity:Opening", -100, "EUR")]).unwrap();
+    assert_eq!(last(&n)[0], BANK);
+    assert!(!n.accounts.contains("Assets:Bank:EUR"));
+    // USD beside it; emptied of EUR, the bank takes EUR again itself.
+    let n = post(&m, vec![p(BANK, 500, "USD"), p("Equity:Opening", -500, "USD")]).unwrap();
+    let n = post(&n, vec![p(BANK, -100000, "EUR"), p("Equity:Opening", 100000, "EUR")]).unwrap();
+    let n = post(&n, vec![p(BANK, 100, "EUR"), p("Equity:Opening", -100, "EUR")]).unwrap();
+    assert_eq!(last(&n)[0], BANK);
+    // Dated back: where it would have gone on its day. The bank held EUR
+    // until it was emptied on the 20th, and USD from the 21st.
+    let on = |m: &Books, d: &str, ps: Vec<Posting>| apply(m, &Op::Post { date: day(d), description: "D".into(), postings: ps, link: Link::default() }, today);
+    let h = on(&m, "2026-01-20", vec![p(BANK, -100000, "EUR"), p("Equity:Opening", 100000, "EUR")]).unwrap();
+    let h = on(&h, "2026-01-21", vec![p(BANK, 500, "USD"), p("Equity:Opening", -500, "USD")]).unwrap();
+    assert_eq!(last(&h)[0], BANK);
+    // EUR dated before the emptying would be left beside the USD after it.
+    let back = on(&h, "2026-01-10", vec![p(BANK, 200, "EUR"), p("Equity:Opening", -200, "EUR")]).unwrap();
+    assert_eq!(last(&back)[0], "Assets:Bank:EUR");
+    // Dated after the USD came in, with no other: to its account in EUR, as any day.
+    let back = on(&h, "2026-01-25", vec![p(BANK, 200, "EUR"), p("Equity:Opening", -200, "EUR")]).unwrap();
+    assert_eq!(last(&back)[0], "Assets:Bank:EUR");
+    let back = on(&h, "2026-01-10", vec![p(BANK, 100, "USD"), p("Equity:Opening", -100, "USD")]).unwrap();
+    assert_eq!(last(&back)[0], "Assets:Bank:USD");
+    // Empty on its day, but holding EUR on a later one: its own in CHF, so
+    // that it never holds two at once.
+    let mut x = m.clone();
+    x.accounts.insert("Assets:Box".into());
+    let x = on(&x, "2026-01-10", vec![p("Assets:Box", 1000, "EUR"), p("Equity:Opening", -1000, "EUR")]).unwrap();
+    let y = on(&x, "2026-01-05", vec![p("Assets:Box", 400, "USD"), p("Equity:Opening", -400, "USD")]).unwrap();
+    assert_eq!(last(&y)[0], "Assets:Box:USD");
+    // Holding EUR on its day, and USD after it was emptied: EUR dated back
+    // would leave EUR beside the USD, so to its own in EUR.
+    let z = on(&x, "2026-01-15", vec![p("Assets:Box", -1000, "EUR"), p("Equity:Opening", 1000, "EUR")]).unwrap();
+    let z = on(&z, "2026-01-16", vec![p("Assets:Box", 300, "USD"), p("Equity:Opening", -300, "USD")]).unwrap();
+    assert_eq!(last(&z)[0], "Assets:Box");
+    let w = on(&z, "2026-01-12", vec![p("Assets:Box", 200, "EUR"), p("Equity:Opening", -200, "EUR")]).unwrap();
+    assert_eq!(last(&w)[0], "Assets:Box:EUR");
+    assert!(w.holdings("Assets:Box").iter().all(|(_, h)| h.len() <= 1), "{:?}", w.holdings("Assets:Box"));
+    // A statement of the bank in EUR guards its account in EUR too: EUR
+    // dated back before it, sent there by the USD after, is refused (N7).
+    let s = on(&m, "2026-01-08", vec![p(BANK, 100, "EUR"), p("Equity:Opening", -100, "EUR")]).unwrap();
+    let s = apply(&s, &Op::Record { account: BANK.into(), commodity: "EUR".into(), date: day("2026-01-09"), balance: Decimal::new(100100, 2), clears: s.all_postings().into_iter().filter(|(_, _, p)| p.account == BANK).map(|(r, _, _)| r).collect() }, today).unwrap();
+    let s = on(&s, "2026-01-20", vec![p(BANK, -100100, "EUR"), p("Equity:Opening", 100100, "EUR")]).unwrap();
+    let s = on(&s, "2026-01-21", vec![p(BANK, 500, "USD"), p("Equity:Opening", -500, "USD")]).unwrap();
+    let v = on(&s, "2026-01-07", vec![p(BANK, 300, "EUR"), p("Equity:Opening", -300, "EUR")]).unwrap_err();
+    assert!(v.iter().any(|v| v.code == "N7"), "{v:?}");
+    // Not declared beside a bank holding EUR itself: EUR would be in two.
+    assert!(apply(&m, &Op::AccountAdd("Assets:Bank:EUR".into()), today).is_err());
+    // Posted to itself, with its account in USD under it: no other account
+    // goes under it, for then it would not be posted to (I-A2).
+    let u = apply(&n, &Op::AccountAdd("Assets:Bank:Sub".into()), today).unwrap_err();
+    assert!(u.iter().any(|v| v.code == "I-A2"), "{u:?}");
+    // Another account under it, and one in USD: USD reaches that one.
+    let mut b = m.clone();
+    b.accounts.extend(["Assets:Broker".to_string(), "Assets:Broker:Sub".to_string(), "Assets:Broker:USD".to_string()]);
+    let n = post(&b, vec![p("Assets:Broker", 100, "USD"), p("Equity:Opening", -100, "USD")]).unwrap();
+    assert_eq!(last(&n)[0], "Assets:Broker:USD");
+    // A commodity in a name: its last part alone, under one declared.
+    let i_a3 = |r: Result<Books, Vec<Violation>>| r.is_err_and(|v| v.iter().any(|v| v.code == "I-A3"));
+    assert!(i_a3(apply(&m, &Op::AccountAdd("Assets:USD:Cold".into()), today)));
+    assert!(i_a3(apply(&m, &Op::AccountAdd("Assets:Wise:USD".into()), today)));
+    let w = apply(&m, &Op::AccountAdd("Assets:Wise".into()), today).unwrap();
+    let w = apply(&w, &Op::AccountAdd("Assets:Wise:USD".into()), today).unwrap();
+    assert!(i_a3(apply(&w, &Op::AccountAdd("Assets:Wise:USD:Sub".into()), today)));
+    assert!(apply(&w, &Op::Record { account: "Assets:Wise:USD".into(), commodity: "EUR".into(), date, balance: Decimal::ZERO, clears: BTreeSet::new() }, today).is_err());
+    // Not taken out with an account under it, used or not.
+    assert!(apply(&w, &Op::AccountRemove("Assets:Wise".into()), today).is_err());
+    let w = apply(&w, &Op::AccountRemove("Assets:Wise:USD".into()), today).unwrap();
+    assert!(apply(&w, &Op::AccountRemove("Assets:Wise".into()), today).is_ok());
+}
+
+/// A commodity given back realises what it fetched less what it cost: the
+/// earliest taken in first, or all of it at its average cost; an exchange
+/// that only moves it, or settles what is owed at its cost, realises nothing.
+#[test]
+fn exchanges_realise_by_the_cost_method() {
+    let mut m = fresh();
+    let today = day("2026-02-01");
+    let usd = |q: i64, eur: i64| Posting { account: BANK.into(), amount: Amount { quantity: Decimal::new(q, 0), commodity: "USD".into() }, cost: Some(Amount { quantity: Decimal::new(eur, 0), commodity: "EUR".into() }) };
+    let post = |m: &Books, d: &str, ps: Vec<Posting>| apply(m, &Op::Post { date: day(d), description: "X".into(), postings: ps, link: Link::default() }, today).unwrap();
+    m = post(&m, "2026-01-01", vec![Posting::new(BANK, Decimal::new(1000, 0), "EUR"), Posting::new("Equity:Opening", Decimal::new(-1000, 0), "EUR")]);
+    m = post(&m, "2026-01-02", vec![usd(100, 90), Posting::new(BANK, Decimal::new(-90, 0), "EUR")]);
+    m = post(&m, "2026-01-03", vec![usd(100, 100), Posting::new(BANK, Decimal::new(-100, 0), "EUR")]);
+    m = post(&m, "2026-01-04", vec![usd(-100, -105), Posting::new(BANK, Decimal::new(105, 0), "EUR")]);
+    assert_eq!(m.realised(None, None), Decimal::new(15, 0));
+    // Of none dated in the period, nothing.
+    assert_eq!(m.realised(Some(day("2026-01-05")), None), Decimal::ZERO);
+    m.config.company.cost_method = CostMethod::Average;
+    assert_eq!(m.realised(None, None), Decimal::new(10, 0));
+    // The rest given back, partly: 50 USD at 0.95 against 60 EUR.
+    m = post(&m, "2026-01-05", vec![usd(-50, -60), Posting::new(BANK, Decimal::new(60, 0), "EUR")]);
+    assert_eq!(m.realised(Some(day("2026-01-05")), None), Decimal::new(125, 1));
+    m.config.company.cost_method = CostMethod::Fifo;
+    assert_eq!(m.realised(Some(day("2026-01-05")), None), Decimal::new(10, 0));
+    // 50 USD held, at 1.00: at 0.90, 5 less, not realised.
+    assert_eq!(m.not_realised(None), Decimal::new(-5, 0));
+    let at = |q: i64, c: &str, d: &str| Op::PriceAdd { of: c.into(), date: day(d), price: Amount { quantity: Decimal::new(q, 2), commodity: "EUR".into() } };
+    m = apply(&m, &at(110, "USD", "2026-01-06"), today).unwrap();
+    assert_eq!(m.not_realised(None), Decimal::new(5, 0));
+    let p = |a: &str, q: i64, c: &str| Posting::new(a, Decimal::new(q, 0), c);
+    let owed = |q: i64, eur: i64| Posting { account: "Liabilities:Payable".into(), amount: Amount { quantity: Decimal::new(q, 0), commodity: "USD".into() }, cost: Some(Amount { quantity: Decimal::new(eur, 0), commodity: "EUR".into() }) };
+    // A bill of 30 USD booked at 31 EUR, while USD is held: nothing given out.
+    let before = m.realised(None, None);
+    m = post(&m, "2026-01-07", vec![p("Expenses:Other", 31, "EUR"), owed(-30, -31)]);
+    assert_eq!(m.realised(None, None), before);
+    // Paid from the USD held, which cost 30: what the debt was booked at, less that.
+    m = post(&m, "2026-01-08", vec![Posting { cost: None, ..owed(30, 0) }, p(BANK, -30, "USD")]);
+    assert_eq!(m.realised(Some(day("2026-01-08")), None), Decimal::new(1, 0));
+    // 10 USD spent, at 1.10 that day, costing 10: 1 realised.
+    m = post(&m, "2026-01-09", vec![p("Expenses:Other", 10, "USD"), p(BANK, -10, "USD")]);
+    assert_eq!(m.realised(Some(day("2026-01-09")), None), Decimal::new(1, 0));
+    // 10 USD for 1 BTC, at 1.10 that day: 11 fetched for what cost 10, and
+    // the BTC sold at once for 15 against those 11.
+    m = post(&m, "2026-01-10", vec![Posting { account: BANK.into(), amount: Amount { quantity: Decimal::new(-10, 0), commodity: "USD".into() }, cost: Some(Amount { quantity: Decimal::new(-1, 0), commodity: "BTC".into() }) }, p(BANK, 1, "BTC")]);
+    assert_eq!(m.realised(Some(day("2026-01-10")), None), Decimal::new(1, 0));
+    m = post(&m, "2026-01-11", vec![Posting { account: BANK.into(), amount: Amount { quantity: Decimal::new(-1, 0), commodity: "BTC".into() }, cost: Some(Amount { quantity: Decimal::new(-15, 0), commodity: "EUR".into() }) }, p(BANK, 15, "EUR")]);
+    assert_eq!(m.realised(Some(day("2026-01-11")), None), Decimal::new(4, 0));
+    // With no price, what is held is at its cost: nothing not realised.
+    m.prices.clear();
+    m = post(&m, "2026-01-12", vec![Posting { account: BANK.into(), amount: Amount { quantity: Decimal::new(1, 0), commodity: "BTC".into() }, cost: Some(Amount { quantity: Decimal::new(20, 0), commodity: "EUR".into() }) }, p(BANK, -20, "EUR")]);
+    assert_eq!(m.not_realised(None), Decimal::ZERO);
+    // With no price either way: 1 BTC for 5 ETH, the ETH at the BTC's cost;
+    // spent on an expense, at that, realising nothing.
+    m.commodities.insert("ETH".into(), 8);
+    let before = m.realised(None, None);
+    m = post(&m, "2026-01-13", vec![Posting { account: BANK.into(), amount: Amount { quantity: Decimal::new(-1, 0), commodity: "BTC".into() }, cost: Some(Amount { quantity: Decimal::new(-5, 0), commodity: "ETH".into() }) }, p(BANK, 5, "ETH")]);
+    let held = |m: &Books, c: &str| m.exchanged(None, None).lots.get(&(c.to_string(), false)).map(|l| l.iter().map(|x| x.1).sum::<Decimal>()).unwrap_or_default();
+    assert_eq!(held(&m, "ETH"), Decimal::new(20, 0));
+    m = post(&m, "2026-01-14", vec![p("Expenses:Other", 5, "ETH"), p(BANK, -5, "ETH")]);
+    assert_eq!(m.realised(None, None), before);
+    assert_eq!(m.exchanged(None, None).costed.values().last(), Some(&Decimal::new(20, 0)));
 }

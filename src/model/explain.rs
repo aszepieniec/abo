@@ -23,7 +23,7 @@ pub fn name(m: &Books, id: EntryId) -> String {
 }
 
 /// `q` in `c`, to its places, with its commodity.
-fn amount(m: &Books, q: Decimal, c: &str) -> String {
+pub(super) fn amount(m: &Books, q: Decimal, c: &str) -> String {
     if round(q, m.places(c)) == q {
         format!("{} {c}", grouped(q, m.places(c), c, " "))
     } else {
@@ -36,7 +36,7 @@ pub(crate) fn and(v: &[String]) -> String {
     joined(v, "and")
 }
 
-fn joined(v: &[String], word: &str) -> String {
+pub(super) fn joined(v: &[String], word: &str) -> String {
     match v {
         [] => String::new(),
         [a] => a.clone(),
@@ -204,9 +204,11 @@ pub fn explain(m: &Books, op: &Op, n: &Books, v: Vec<Violation>) -> Vec<Violatio
             // The account an invoice or bill declares for a commodity not declared.
             "N13" => has("I-A1") && matches!(op, Op::Invoice { .. } | Op::Bill { .. }),
             "I-E3" => has("N2"),
+            // An invoice with no price: said once, as the invoice's.
+            "N14" => has("I-E4"),
             "I-I2" => has("N2") || has("I-E3"),
             "I-P2" => matches!(op, Op::Invoice { .. }) && has("I-I1"),
-            "I-P3" => has("N4") || has("I-B2"),
+            "I-P3" => has("N4") || has("I-B2") || has("I-A1"),
             // A posting misnamed, or a sign or cost missing: once put right,
             // the bill may well credit what it should (a bill paid when it
             // came, say), so that is said first, and alone.
@@ -218,7 +220,14 @@ pub fn explain(m: &Books, op: &Op, n: &Books, v: Vec<Violation>) -> Vec<Violatio
             // An invoice in a commodity not declared has no price to be booked at.
             "I-E4" => matches!(op, Op::Invoice { .. }) && has("I-A1"),
             // Booked in a commodity not declared, or with no price: that first.
-            "N12" => has("I-A1") || has("I-E4"),
+            "N12" => has("I-A1") || has("I-E4") || (matches!(op, Op::AccountMove { .. }) && has("I-A3")),
+            // A posting in another commodity to an account named after one:
+            // N12 says it, and where to post it instead.
+            // Moved into an account named after another commodity: I-A3 says it.
+            "I-A3" => has("N12") && !matches!(op, Op::AccountMove { .. }),
+            // An account moved or a commodity taken out, leaving one named
+            // after a commodity amiss: I-A3 says how.
+            "I-A2" if has("I-A3") => true,
             // A customer named by a partner that is not there: that is said.
             "I-I1" => matches!(op, Op::Invoice { .. }) && has("I-T2") && new.iter().filter(|x| x.code == "I-I1").all(|x| x.what.contains("customer")),
             // A version over what is issued: N10 says why.
@@ -365,6 +374,19 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                 .filter_map(|x| match &x.of {
                     Subject::Account(a) => Some(match (under(m, a), near(m, a)) {
                         (Some(c), _) => format!("{} has accounts under it, such as {c}: name one of those", shown(a)),
+                        // A commodity before its last part: no account can be so named.
+                        (None, _) if a.split(':').rev().skip(1).any(|c| m.is_commodity(c)) => {
+                            let c = a.split(':').rev().skip(1).find(|c| m.is_commodity(c)).unwrap_or_default();
+                            format!("{} is not declared, and cannot be: {c} is a commodity, and names only an account's account in it, which takes none under it", shown(a))
+                        }
+                        // Named after a commodity: the account it is under, in that commodity.
+                        (None, _) if a.rsplit_once(':').is_some_and(|(x, c)| m.accounts.contains(x) && (m.is_commodity(&c.to_uppercase()) || super::check::commodity_ok(&c.to_uppercase()))) => {
+                            format!("{} is not declared: {} is", shown(a), a.rsplit_once(':').map_or("", |(x, _)| x))
+                        }
+                        (None, _) if a.rsplit_once(':').is_some_and(|(x, c)| !m.accounts.contains(x) && m.is_commodity(c)) => {
+                            let (x, c) = a.rsplit_once(':').unwrap_or_default();
+                            format!("{} is not declared: it is {x}'s account in {c}, and {x} is not declared either, which is declared first", shown(a))
+                        }
                         (None, Some(b)) => format!("{} is not declared: {b} is", shown(a)),
                         // Where a payment books an exchange gain or loss.
                         (None, None) if matches!(op, Op::Pay { .. }) && [super::ops::EXCHANGE_LOSSES, super::ops::EXCHANGE_GAINS].contains(&a.as_str()) => format!(
@@ -403,6 +425,9 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                     and(&uses_account(m, p))
                 ),
                 Op::AccountAdd(a) => format!("{a} cannot be declared under {p}: {}", and(&uses_account(m, p))),
+                Op::AccountMove { to, .. } => format!("{to} cannot be under {p}: {}", and(&uses_account(m, p))),
+                // Its accounts in the commodity left as accounts of their own.
+                Op::CommodityRemove(c) => format!("{c} cannot be removed: {p}:{c}, {p}'s account in {c}, would be an account of its own under {p}, which is in use; take {p}:{c} out first"),
                 _ => {
                     // In a commodity none under it is named after, where some are.
                     let c = match op {
@@ -411,12 +436,27 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                         Op::Invoice { commodity, .. } => Some(commodity.clone()),
                         _ => None,
                     };
-                    let per = m.accounts.iter().any(|b| b.len() > p.len() && b.starts_with(p) && m.base_of(b) == p);
-                    match (c, per, under(m, p)) {
-                        (Some(c), true, _) => format!("{p} has an account under it for each commodity, and none for {c}: declare one, `abo account add {p}:{c}`"),
-                        (_, _, Some(c)) => format!("{p} has accounts under it, such as {c}: post to one of those"),
-                        _ => format!("{p} has accounts under it: post to one of those"),
+                    let _ = c;
+                    match under(m, p) {
+                        Some(c) => format!("{p} has accounts under it, such as {c}: post to one of those"),
+                        None => format!("{p} has accounts under it: post to one of those"),
                     }
+                }
+            })
+            .collect(),
+        "I-A3" => these
+            .iter()
+            .map(|x| {
+                // Of an entry not booked: what it moves, not its number.
+                let (said, posts) = match x.what.split_once("; entry ") {
+                    Some((said, rest)) => (said, rest.split_once(" posts ").and_then(|(_, r)| r.strip_suffix(" to it"))),
+                    None => (x.what.as_str(), None),
+                };
+                match (op, posts) {
+                    (Op::AccountMove { from, .. }, Some(c)) => format!("{said}, and {from}, moved to it, holds {c}"),
+                    (Op::CommodityAdd(c, _), Some(other)) => format!("{c} cannot be declared: {said} once {c} is a commodity, and it holds {other}"),
+                    (Op::CommodityAdd(c, _), None) => format!("{c} cannot be declared: once {c} is a commodity, {said}"),
+                    _ => x.what.clone(),
                 }
             })
             .collect(),
@@ -714,7 +754,9 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
             let on_m: BTreeSet<Account> = (1..=m.entries.len()).filter_map(|d| m.debt(d)).map(|d| d.account).collect();
             let mut v = vec![];
             if added {
-                let there: Vec<Account> = n.postings(next).into_iter().map(|p| p.account).filter(|a| on_n.contains(a)).collect();
+                // Or one beside a debt's account, in another commodity (check.rs).
+                let families: BTreeSet<&str> = on_n.iter().map(|a| n.base_of(a)).filter(|b| on_n.iter().all(|a| a != b)).collect();
+                let there: Vec<Account> = n.postings(next).into_iter().map(|p| p.account).filter(|a| on_n.contains(a) || families.contains(n.base_of(a))).collect();
                 for a in there.iter().collect::<BTreeSet<_>>() {
                     v.push(match (op, n.debt(next)) {
                         (Op::WriteOff { .. }, _) => format!("{a} is an account bills and invoices owe on; write off to another, an expense or income"),
@@ -796,26 +838,29 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
         }
         "I-S2" => {
             let Op::Record { account, commodity, date, clears, .. } = op else { return vec![] };
+            // Of `Assets:Bank` in CHF: its postings and `Assets:Bank:CHF`'s alike.
+            let held = account.clone();
             let lookup: BTreeMap<PostingRef, (Date, Posting)> = m.all_postings().into_iter().map(|(r, d, p)| (r, (d, p))).collect();
             let mut v = vec![];
             for r in clears {
                 match lookup.get(r) {
-                    Some((d, p)) if p.account == *account && p.amount.commodity == *commodity && d <= date => {}
-                    _ => v.push(format!("{}.{} is not a posting to {account} in {commodity} dated on or before {date}", r.entry, r.n)),
+                    Some((d, p)) if m.same(&p.account, &held) && p.amount.commodity == *commodity && d <= date => {}
+                    _ => v.push(format!("{}.{} is not a posting to {} dated on or before {date}", r.entry, r.n, m.statement_of(&held, commodity))),
                 }
                 if let Some((k, _)) = m.statements.iter().find(|(_, s)| s.clears.contains(r)) {
-                    v.push(format!("{}.{} is cleared already, by the statement of {} on {}", r.entry, r.n, k.0, k.2));
+                    v.push(format!("{}.{} is cleared already, by the statement of {} on {}", r.entry, r.n, m.statement_of(&k.0, &k.1), k.2));
                 }
             }
             v
         }
         "I-S3" => {
             let Op::Record { account, commodity, date, .. } = op else { return vec![] };
-            let new = (account.clone(), commodity.clone(), *date);
-            let lookup: BTreeMap<PostingRef, Decimal> = n.all_postings().into_iter().map(|(r, _, p)| (r, p.amount.quantity)).collect();
+            let new = (account.rsplit_once(':').filter(|(b, c)| c == commodity && m.base_of(account) == *b).map_or(account.clone(), |(b, _)| b.to_string()), commodity.clone(), *date);
+            let lookup: BTreeMap<PostingRef, Posting> = n.all_postings().into_iter().map(|(r, _, p)| (r, p)).collect();
             let mut v = vec![];
             for (key, s) in &n.statements {
-                let sum: Decimal = n.cleared_through(key).iter().filter_map(|r| lookup.get(r)).sum();
+                // What it clears of its own account, in its commodity: I-S2 says the rest.
+                let sum: Decimal = n.cleared_through(key).iter().filter_map(|r| lookup.get(r)).filter(|p| n.same(&p.account, &key.0) && p.amount.commodity == key.1).map(|p| p.amount.quantity).sum();
                 if sum == s.balance {
                     continue;
                 }
@@ -823,7 +868,7 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                 v.push(if *key == new {
                     format!("what this clears, with what earlier ones cleared, sums to {sum}, not {b}")
                 } else {
-                    format!("the statement of {} on {} says {b}; with this one before it, what they clear sums to {sum}", key.0, key.2)
+                    format!("the statement of {} on {} says {b}; what it and those before it clear, with this one, sums to {sum}", m.statement_of(&key.0, &key.1), key.2)
                 });
             }
             v
