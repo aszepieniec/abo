@@ -723,7 +723,14 @@ fn hand_edits_are_checked_and_tidied(#[strategy(plan())] plan: Vec<Step>, file: 
         crate::repo::git_in(&books, &["reset", "-q", "--hard", "HEAD~1"]).unwrap();
     }
     let tidy = abo(&books, today, &args(&["tidy"]));
-    let only_layout = state.as_ref().is_some_and(|s| model::check(s).is_empty());
+    // A line hledger reads as a comment, say a `; next id:` edited, abo
+    // keeps nowhere: tidy refuses to drop what it says, and names it.
+    let note = problems.iter().any(|p| p.contains("is a comment, and abo keeps none"));
+    let only_layout = state.as_ref().is_some_and(|s| model::check(s).is_empty()) && !note;
+    if note && opens.is_ok() {
+        let said = tidy.json.as_ref().and_then(|j| j["error"].as_str()).unwrap_or_default();
+        prop_assert!(!tidy.ok && said.contains("would drop what these lines say"), "{:?} {}", tidy.json, tidy.stderr);
+    }
     if only_layout && opens.is_ok() {
         prop_assert!(tidy.ok, "{}", tidy.stderr);
         let after = abo(&books, today, &args(&["check"]));

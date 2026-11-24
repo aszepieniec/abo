@@ -915,7 +915,7 @@ pub(crate) fn partners_and_agreements(m: &Books, standing: &[bool], who: &dyn Fn
 fn every_rule_is_said_in_words() {
     let model = include_str!("../../MODEL.md");
     let codes = model.lines().filter_map(|l| l.strip_prefix("- **")?.split_once("**").map(|(c, rest)| (c, rest)));
-    for (code, rest) in codes.filter(|(c, rest)| (c.starts_with("I-") || c.starts_with('N')) && !rest.contains("is now")) {
+    for (code, _) in codes.filter(|(c, rest)| (c.starts_with("I-") || c.starts_with('N')) && !rest.contains("is now")) {
         assert_ne!(rule(code), "a rule of the books", "{code} has no words in rule()");
     }
     assert_ne!(rule("OP"), "a rule of the books");
