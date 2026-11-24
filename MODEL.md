@@ -764,6 +764,8 @@ not in the books.
 | G-F3 | Reading never fails, whatever the text: it gives a state, or problems | §8 | `edits_are_noticed` |
 | G-F4 | `abo tidy`, which is `render(parse(f))`, gives text read as the same state, and tidying it again changes nothing | §7, §8 | `tidying_is_idempotent` |
 | G-F5 | Books holding a problem — a hand edit, a file changed — are read; while they break a rule, the only change made is one that mends one and brings none; `abo check` fails exactly while one is there, and `abo tidy` mends what is only not as abo writes it | §8 | `hand_edits_are_checked_and_tidied` |
+| G-F6 | `abo.toml` changes format only on purpose: what fresh books get is frozen, and books an older abo wrote read in a newer one as written, with no problem | §7.5 | `abo_toml_keeps_its_format`, `abo_toml_reads_across_versions` |
+| G-F7 | A key or value of `abo.toml` that abo does not know is refused, and said to be perhaps a newer abo's | §7.5 | `abo_toml_reads_across_versions` |
 
 ### Debts
 
@@ -1600,6 +1602,32 @@ abo writes it: every change goes through `abo config`, `abo company` and `abo
 payment-options`; a comment written in it by hand, like any other hand edit,
 is a problem `parse` reports (§8), and holds every change up until mended.
 
+**Its format across versions of abo.** A key's *default* is the value abo
+takes when the key is absent. Three rules:
+
+1. A key added to `abo.toml` has a default, and that default is what abo did
+   before the key was added.
+2. abo writes a key added after the first format only when its value is not
+   its default.
+3. abo refuses an `abo.toml` that holds a key, or a value, it does not know,
+   and says that a newer abo may have written it.
+
+Books written by an older abo then read in a newer one as they were written:
+each key added since is absent, so it is read at its default, which is what
+the older abo did; and the newer abo writes the same text for them, so
+nothing in them is not canonical. Books written by a newer abo read in an older
+one exactly when they use nothing added since: a key at its default is absent,
+and one that is not is refused by rule 3, since ignoring it would change
+what the books say. Changing a key's default, a value's meaning, or a key's
+name is outside the rules: it is made as a new key, or as a migration.
+
+`company.cost_method` (fifo, average) is the first key added. For a while abo
+wrote it at its default too, `cost_method = "fifo"`; a line that holds a key
+at its default and that `render` does not write is therefore canonical too
+(§8), and the next change abo makes writes the file without it. The format of
+fresh books' `abo.toml` is frozen in `src/model/format/abo.toml`, and a test
+holds `render` to it, so that a change to it is made on purpose.
+
 ### 7.6 partners.toml and contracts/
 
 Written by `render`. `partners.toml` holds the partners in the order of
@@ -1674,7 +1702,9 @@ bill says, and a plain entry's what its link says (§2.4).
 place — file and line — and what is wrong with it: not readable (`parse` fails
 there), breaking an invariant (`check` names it), or not canonical. Files are
 canonical exactly when `render(parse(files)) = files`, so that last list needs
-no rules of its own: it is where the two differ.
+no rules of its own: it is where the two differ. One exception: a line of
+`abo.toml` that holds a key at its default and that `render` does not write
+(§7.5).
 
 - **Reading never stops on a problem.** Pages and reports show the books, and
   every page says that the books hold problems, with a link to the list.

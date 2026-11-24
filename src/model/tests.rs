@@ -2885,3 +2885,39 @@ fn exchanges_realise_by_the_cost_method() {
     assert_eq!(m.realised(None, None), before);
     assert_eq!(m.exchanged(None, None).costed.values().last(), Some(&Decimal::new(20, 0)));
 }
+
+/// MODEL.md §7.5: the format of abo.toml, frozen. A change to what abo
+/// writes for fresh books fails here, so that it is made on purpose: a key
+/// added is written only when not its default, and this file stays as it is.
+#[test]
+fn abo_toml_keeps_its_format() {
+    assert_eq!(render(&fresh())["abo.toml"], include_str!("format/abo.toml"));
+}
+
+/// MODEL.md §7.5, both ways. A key written out at its default, as an abo
+/// from before it was left out wrote it, is canonical too. One not at its
+/// default is written. An unknown key or value is refused as a newer abo's.
+#[test]
+fn abo_toml_reads_across_versions() {
+    let m = fresh();
+    let mut f = render(&m);
+    let text = f["abo.toml"].clone();
+    // As written between cost_method's coming and its being left out at fifo.
+    f.insert("abo.toml".into(), text.replace("country = \"\"\n", "country = \"\"\ncost_method = \"fifo\"\n"));
+    let (back, problems) = read(&f);
+    assert!(problems.is_empty() && back.as_ref() == Some(&m), "{problems:?}");
+    // Average is written, and read back.
+    let mut avg = m.clone();
+    avg.config.company.cost_method = CostMethod::Average;
+    assert!(render(&avg)["abo.toml"].contains("cost_method = \"average\""));
+    assert_eq!(read(&render(&avg)), (Some(avg), vec![]));
+    // A key or value this abo does not know.
+    for (from, to) in [("country = \"\"\n", "country = \"\"\nfiscal_year = \"april\"\n"), ("method = \"effective\"", "method = \"reverse\"")] {
+        f.insert("abo.toml".into(), text.replacen(from, to, 1));
+        let (_, problems) = read(&f);
+        assert!(problems.len() == 1 && problems[0].contains("if a newer abo wrote these books, update abo"), "{problems:?}");
+    }
+    // A key at its default changed by hand is still a change by hand.
+    f.insert("abo.toml".into(), text.replace("tax_id = \"\"", "tax_id  = ''"));
+    assert!(read(&f).1.iter().any(|p| p.starts_with("abo.toml:5: not as abo writes it")), "{:?}", read(&f).1);
+}

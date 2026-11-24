@@ -319,6 +319,12 @@ pub struct PayOut {
     pub lines: Vec<String>,
 }
 
+/// Whether `t` is its type's default: a key added to abo.toml after its
+/// first format is written only when not (MODEL.md §7.5).
+fn is_default<T: Default + PartialEq>(t: &T) -> bool {
+    *t == T::default()
+}
+
 /// abo.toml.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -344,7 +350,9 @@ pub struct Company {
     pub closed_through: Option<Date>,
     /// What a commodity exchanged back cost, of what was taken in at
     /// different costs: the gain realised is what it fetched less that.
-    #[serde(default)]
+    /// Added after the first format: written only when not its default
+    /// (MODEL.md §7.5).
+    #[serde(default, skip_serializing_if = "is_default")]
     pub cost_method: CostMethod,
 }
 

@@ -297,7 +297,12 @@ pub fn parse(f: &Files) -> Result<Books, Vec<String>> {
     let config = match f.get("abo.toml").map(|t| toml::from_str::<Config>(t)) {
         Some(Ok(c)) => c,
         Some(Err(e)) => {
-            return Err(vec![format!("abo.toml:{}: {}", toml_line(&f["abo.toml"], &e), e.message())]);
+            let newer = if e.message().starts_with("unknown field") || e.message().starts_with("unknown variant") {
+                ": this abo does not know it; if a newer abo wrote these books, update abo"
+            } else {
+                ""
+            };
+            return Err(vec![format!("abo.toml:{}: {}{newer}", toml_line(&f["abo.toml"], &e), e.message())]);
         }
         None => return Err(vec!["abo.toml: missing".into()]),
     };
@@ -650,6 +655,7 @@ pub fn read(f: &Files) -> (Option<Books>, Vec<String>) {
     for name in canonical.keys().chain(f.keys().filter(|k| !canonical.contains_key(*k))) {
         match (f.get(name), canonical.get(name)) {
             (Some(a), Some(b)) if a == b => {}
+            (Some(a), Some(b)) if name == "abo.toml" && at_defaults_dropped(a, b) == *b => {}
             (Some(a), Some(b)) => {
                 // Where they first differ; past the end of the file — a last
                 // line missing, or its newline — is its last line.
@@ -677,6 +683,29 @@ fn differs(a: &str, b: &str, at: usize) -> String {
         // The same lines: a newline at the end, or a carriage return.
         (None, None) => ": its line endings are not abo's (a newline at the end, or a carriage return)".into(),
     }
+}
+
+/// abo.toml with every line dropped that `canonical` does not hold and that
+/// says what the file says without it: a key at its default, written out
+/// by an abo from before that key was left out at its default (MODEL.md
+/// §7.5). The next change abo makes writes the file without them.
+fn at_defaults_dropped(text: &str, canonical: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let config = toml::from_str::<Config>(text).ok();
+    let mut keep = vec![true; lines.len()];
+    for i in 0..lines.len() {
+        if canonical.lines().any(|l| l == lines[i]) || !lines[i].contains(" = ") {
+            continue;
+        }
+        keep[i] = false;
+        let without: String = lines.iter().zip(&keep).filter(|(_, k)| **k).map(|(l, _)| format!("{l}\n")).collect();
+        keep[i] = config.is_some() && toml::from_str::<Config>(&without).ok() != config;
+    }
+    let mut out: String = lines.iter().zip(&keep).filter(|(_, k)| **k).map(|(l, _)| format!("{l}\n")).collect();
+    if !text.ends_with('\n') {
+        out.pop();
+    }
+    out
 }
 
 /// Where in the files a violation is: an entry's date line, or the first

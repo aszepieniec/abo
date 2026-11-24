@@ -1,0 +1,29 @@
+[company]
+name = "Test LLC"
+currency = "EUR"
+address = ""
+tax_id = ""
+country = ""
+
+[vat]
+method = "effective"
+input = "Assets:VAT:Input"
+output = "Liabilities:VAT:Output"
+
+[invoice]
+receivable = "Assets:Receivable"
+income = "Income:Sales"
+terms_days = 30
+vat_rate = "8.1"
+
+[payment.bank]
+kind = "bank"
+label = ""
+holder = ""
+iban = "CH93 0076 2011 6238 5295 7"
+bic = ""
+network = ""
+address = ""
+bank = ""
+details = ""
+account = "Assets:Bank"
