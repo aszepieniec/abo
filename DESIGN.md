@@ -664,7 +664,8 @@ crawls every page as a viewer.
 One GET abo does check: **Download the books** (`/export`), for the gateway's
 admin role alone, or anyone where no gateway is in front; **Bring the books
 up to date** (`/backups/import`) is admin's alone too, as is the
-**Backups** page that holds both, and the download links. Admin means `X-Gateway-Role: admin`. A
+**Backups** page that holds both, and the download links; and **Tidy the
+files** (`/tidy`), which rewrites every file of the books. Admin means `X-Gateway-Role: admin`. A
 request with no gateway header at all counts too, because then there is no
 gateway in front: one person at their own computer. A user the gateway names with
 no role does not count. The gateway makes no check of its own on a GET, so a
@@ -737,7 +738,7 @@ them the pages behind a prefix, the download links and Backups break.
 # Every top-level route abo serves (the gateway's contract, item 4), so that the gateway
 # adds the project's prefix to abo's root-relative links and sends these
 # paths to abo. A route added to abo's router is added here.
-reserved = ["account", "agreement", "agreements", "apple-touch-icon.png", "backups", "bill", "bills", "chat", "company", "contracts", "declarations", "entry", "export", "icon-192.png", "icon-512.png", "import", "invoice", "invoices", "log", "manifest.webmanifest", "new", "partner", "partners", "pay", "post", "reconcile", "report", "undo", "write-off"]
+reserved = ["account", "agreement", "agreements", "apple-touch-icon.png", "backups", "bill", "bills", "chat", "company", "contracts", "declarations", "entry", "export", "icon-192.png", "icon-512.png", "import", "invoice", "invoices", "log", "manifest.webmanifest", "new", "partner", "partners", "pay", "post", "reconcile", "report", "tidy", "undo", "write-off"]
 
 # Download links (the gateway's contract, item 12): reached with no session, the
 # token being the credential, which abo checks. The second entry of token_paths

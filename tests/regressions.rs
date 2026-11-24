@@ -1007,6 +1007,10 @@ fn tidy_mends_an_uncommitted_edit() {
     std::fs::write(dir.join("journal/2026.journal"), spaced).unwrap();
     refused(&dir, &["tidy"], "or take it out (git checkout --");
     git(&dir, &["commit", "-qam", "By hand"]);
+    // The problem says what the line holds, and what abo writes there.
+    let o = abo(&dir, &["check"]);
+    let said = format!("{}{}", String::from_utf8_lossy(&o.stdout), err(&o));
+    assert!(said.contains("it says `    Expenses:General  5.00 EUR`, where abo writes `"), "{said}");
     ok(&dir, &["tidy"]);
     assert_eq!(read(&dir, "journal/2026.journal"), journal);
     ok(&dir, &["check"]);

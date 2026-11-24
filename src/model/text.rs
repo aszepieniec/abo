@@ -655,13 +655,28 @@ pub fn read(f: &Files) -> (Option<Books>, Vec<String>) {
                 // line missing, or its newline — is its last line.
                 let at = a.lines().zip(b.lines()).position(|(x, y)| x != y).unwrap_or(a.lines().count().min(b.lines().count()));
                 let line = (at + 1).min(a.lines().count().max(1));
-                problems.push(format!("{name}:{line}: not as abo writes it{}", derived(a, line - 1)));
+                problems.push(format!("{name}:{line}: not as abo writes it{}{}", differs(a, b, at), derived(a, line - 1)));
             }
             (None, _) => problems.push(format!("{name}: missing")),
             (_, None) => problems.push(format!("{name}: says nothing abo would write")),
         }
     }
     (Some(m), problems)
+}
+
+/// How a file's text differs from abo's at line `at` (from 0), the first
+/// where they differ, or past the end of the shorter: what each says there.
+fn differs(a: &str, b: &str, at: usize) -> String {
+    // In backquotes, as typed: a quote is not escaped; a tab or another
+    // control character is, so that nothing in the line is unseen.
+    let q = |l: &str| format!("`{}`", l.chars().map(|c| if c.is_control() { c.escape_debug().to_string() } else { c.to_string() }).collect::<String>());
+    match (a.lines().nth(at), b.lines().nth(at)) {
+        (Some(x), Some(y)) => format!(": it says {}, where abo writes {}", q(x), q(y)),
+        (Some(x), None) => format!(": {} and what follows it abo does not write", q(x)),
+        (None, Some(y)) => format!(": abo writes {} after it", q(y)),
+        // The same lines: a newline at the end, or a carriage return.
+        (None, None) => ": its line endings are not abo's (a newline at the end, or a carriage return)".into(),
+    }
 }
 
 /// Where in the files a violation is: an entry's date line, or the first
