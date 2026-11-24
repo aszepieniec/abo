@@ -174,7 +174,14 @@ pub fn valued(s: &Store, query: &str, extra: &[&str]) -> Result<Vec<(String, Bag
         Ok(balances(s, query, &args)?.into_iter().collect())
     };
     // Accounts come to nought too, `-E`: what they were booked at need not.
-    let (own, at_price, at_cost) = (with(&["-E"])?, with(&["-X", &home])?, with(&["-B"])?);
+    // At their price and at their cost only what is held or owed, and an
+    // exchange's conversion, are read: a query of income or expenses alone
+    // holds none, and is not run again for them.
+    let flows = ["income", "expenses"].iter().any(|a| query == top(a));
+    let (own, at_price, at_cost) = match flows {
+        true => (with(&["-E"])?, BTreeMap::new(), BTreeMap::new()),
+        false => (with(&["-E"])?, with(&["-X", &home])?, with(&["-B"])?),
+    };
     let in_home = |b: Option<&Bag>| b.is_none_or(|b| b.iter().all(|(c, q)| *c == home || q.is_zero()));
     let (begin, end) = window(extra)?;
     let exchanged = s.books.exchanged(None, end);
@@ -379,6 +386,9 @@ fn days(period: &str) -> Result<(Option<String>, Option<String>)> {
     if period.is_empty() {
         return Ok((None, None));
     }
+    if let Some((first, last)) = plain_days(period) {
+        return Ok((Some(first.to_string()), Some(last.to_string())));
+    }
     // Open at its start, as hledger_period writes one: up to the day before the end.
     if let Some(end) = period.strip_prefix("to ").and_then(crate::model::ymd) {
         return Ok((None, Some(end.yesterday()?.to_string())));
@@ -413,7 +423,24 @@ pub fn period_days(period: &str) -> Result<(Option<String>, Option<String>)> {
     days(&hledger_period(period)?)
 }
 
+/// A period of plain dates, as `hledger_period` writes a range closed at
+/// both ends, `from 2026-01-01 to 2026-11-25`, or one day, `2026-11-24`: its
+/// first and last day, read without hledger, which reads them so too.
+fn plain_days(period: &str) -> Option<(crate::model::Date, crate::model::Date)> {
+    use crate::model::ymd;
+    if let Some(d) = ymd(period) {
+        return Some((d, d));
+    }
+    let (a, b) = period.strip_prefix("from ")?.split_once(" to ")?;
+    let (first, last) = (ymd(a)?, ymd(b)?.yesterday().ok()?);
+    // The first day there is, or the last, hledger leaves open (`days`).
+    (first <= last && first.year() > 1 && last.year() < 9999).then_some((first, last))
+}
+
 pub(crate) fn checked_period(period: &str) -> Result<()> {
+    if plain_days(period).is_some() {
+        return Ok(());
+    }
     // Read against no books, so that books hledger cannot read are not
     // blamed on the period.
     let read = || std::process::Command::new("hledger").args(["--no-conf", "-f", "-", "balance", "-p", period]).stdin(std::process::Stdio::null()).output().is_ok_and(|o| o.status.success());
