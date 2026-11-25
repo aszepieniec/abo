@@ -669,6 +669,46 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
+        Cmd::Corporate { change } => {
+            let mut s = Store::open(&here)?;
+            let commit = match change {
+                None | Some(CorporateCmd::List) => {
+                    let l = crate::corporate::list(&s.root)?;
+                    // As people count bytes: a kB is 1000 of them.
+                    let size = |n: u64| if n < 1000 { format!("{n} B") } else if n < 1_000_000 { format!("{:.1} kB", n as f64 / 1e3) } else { format!("{:.1} MB", n as f64 / 1e6) };
+                    return emit(cli.json, &l, || {
+                        let mut lines: Vec<(String, String)> = l.directories.iter().map(|d| (format!("{d}/"), String::new())).collect();
+                        lines.extend(l.files.iter().map(|f| (f.path.clone(), size(f.size))));
+                        lines.sort();
+                        // Wide as it shows: a name committed as `a` and a mark is one letter.
+                        let shows = |p: &str| crate::corporate::nfc(p).chars().count();
+                        let wide = lines.iter().map(|(p, _)| shows(p)).max().unwrap_or(0);
+                        if lines.is_empty() { "No corporate documents.".into() } else { lines.iter().map(|(p, n)| if n.is_empty() { p.clone() } else { format!("{p}{}  {n:>8}", " ".repeat(wide - shows(p))) }).collect::<Vec<_>>().join("\n") }
+                    });
+                }
+                Some(CorporateCmd::Add { files, directory }) => {
+                    let given = files
+                        .iter()
+                        .map(|p| {
+                            let shown = p.display();
+                            match std::fs::metadata(p) {
+                                Err(_) => return Err(input::not_found(format!("there is no file {shown}"))),
+                                Ok(m) if m.is_dir() => bail!("{shown} is a directory, and add takes files: give each file in it, then the directory under corporate/ they go into"),
+                                Ok(_) => {}
+                            }
+                            let name = p.file_name().and_then(|n| n.to_str()).with_context(|| format!("{shown}: its name is not text abo can keep: give the file another name first"))?;
+                            Ok((name.to_string(), std::fs::read(p).with_context(|| format!("{shown}"))?))
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    crate::corporate::add(&mut s, &given, &directory)?
+                }
+                Some(CorporateCmd::Mkdir { directory }) => crate::corporate::mkdir(&mut s, &directory)?,
+                Some(CorporateCmd::Mv { from, to }) => crate::corporate::mv(&mut s, &from, &to)?,
+                Some(CorporateCmd::Rm { paths }) => crate::corporate::rm(&mut s, &paths)?,
+            };
+            let what = store::lines(&s.root).last().and_then(|l| l["what"].as_str().map(String::from)).unwrap_or_default();
+            emit(cli.json, &serde_json::json!({ "commit": commit, "what": what }), || format!("{}. Committed {commit}.", past(&what)))
+        }
         Cmd::Account { change } => {
             let mut s = Store::open(&here)?;
             match change {
@@ -737,6 +777,12 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Check => {
             let s = Store::open(&here)?;
+            // A change abo did not make holds every change up, though the
+            // books read without a problem: one under corporate/, say.
+            if let (true, Some(why)) = (s.problems.is_empty(), s.hand_edit()?) {
+                emit(cli.json, &[&why], || why.clone())?;
+                bail!("the books hold a change abo did not make");
+            }
             // What holds undo up is said here too: check and undo agree.
             let undo = s.git_holds_undo_up()?.into_iter().chain(exchange_notes(&s.books)).reduce(|a, b| format!("{a}\n{b}"));
             emit(cli.json, &s.problems.iter().chain(&undo).collect::<Vec<_>>(), || {

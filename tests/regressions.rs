@@ -1005,7 +1005,7 @@ fn tidy_mends_an_uncommitted_edit() {
         .collect::<Vec<_>>().join("\n") + "\n";
     assert_ne!(spaced, journal);
     std::fs::write(dir.join("journal/2026.journal"), spaced).unwrap();
-    refused(&dir, &["tidy"], "or take it out (git checkout --");
+    refused(&dir, &["tidy"], "or take it out (git restore --source=HEAD --staged --worktree --");
     git(&dir, &["commit", "-qam", "By hand"]);
     // The problem says what the line holds, and what abo writes there.
     let o = abo(&dir, &["check"]);
@@ -1489,7 +1489,7 @@ fn the_same_bill_split_otherwise_is_the_same_bill() {
 fn a_hand_edit_not_committed_is_refused_with_the_commands_that_clear_it() {
     let dir = books("dirty-advice", &[]);
     std::fs::write(dir.join("journal/accounts.journal"), read(&dir, "journal/accounts.journal").replace("account Expenses:General\n", "")).unwrap();
-    refused(&dir, &["account", "add", "Expenses:General"], "git checkout -- journal/accounts.journal");
+    refused(&dir, &["account", "add", "Expenses:General"], "git restore --source=HEAD --staged --worktree -- journal/accounts.journal");
     let o = abo(&dir, &["account", "add", "Expenses:General"]);
     // The person's to settle with git; no abo command is a way out of them.
     assert!(err(&o).contains("git commit -m '...' -- journal/accounts.journal") && !err(&o).contains("abo tidy") && !err(&o).contains("abo account"), "{}", err(&o));
@@ -1506,10 +1506,10 @@ fn check_mends_a_hand_edit_not_committed_by_taking_it_out() {
     std::fs::write(dir.join("journal/accounts.journal"), read(&dir, "journal/accounts.journal").replace("account Expenses:General\n", "")).unwrap();
     let o = abo(&dir, &["check"]);
     let said = String::from_utf8_lossy(&o.stdout);
-    assert!(said.contains("git checkout -- journal/accounts.journal") && !said.contains("abo account add"), "{said}");
-    git(&dir, &["checkout", "--", "journal/accounts.journal"]);
+    assert!(said.contains("git restore --source=HEAD --staged --worktree -- journal/accounts.journal") && !said.contains("abo account add"), "{said}");
+    git(&dir, &["restore", "--source=HEAD", "--staged", "--worktree", "--", "journal/accounts.journal"]);
     std::fs::write(dir.join("journal/2026.journal"), read(&dir, "journal/2026.journal").replace("Fees", "Bank fees")).unwrap();
-    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"], "or take it out (git checkout --");
+    refused(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"], "or take it out (git restore --source=HEAD --staged --worktree --");
 }
 
 /// A change made on books holding a problem went ahead without a word.
@@ -1547,7 +1547,7 @@ fn a_breaking_change_not_committed_is_not_to_be_committed() {
     ok(&dir, &["post", "--date", "2026-03-01", "--desc", "Fees", "Expenses:General=5.00", "Assets:Bank=-5.00"]);
     std::fs::write(dir.join("journal/2026.journal"), read(&dir, "journal/2026.journal").replace("-5.00 EUR", "-4.00 EUR")).unwrap();
     let o = abo(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"]);
-    assert!(err(&o).contains("It breaks the books") && err(&o).contains("git checkout") && !err(&o).contains("git commit"), "{}", err(&o));
+    assert!(err(&o).contains("It breaks the books") && err(&o).contains("git restore") && !err(&o).contains("git commit"), "{}", err(&o));
 }
 
 /// Fifth run: `TAX-123` was read as a tax number of country TA, so every
@@ -2694,6 +2694,7 @@ fn nothing_typed_reaches_the_terminal_raw() {
         vec!["post", "--date", esc, "--desc", "x", "Expenses:General=1.00", "Assets:Bank=-1.00"],
         vec!["revert", esc],
         vec!["config", "get", esc],
+        vec!["corporate", "add", esc, "corporate/x"],
         vec!["reconcile", "Assets:Bank", "--commodity", esc],
         vec!["account", "add", &format!("Expenses:General:{esc}")],
     ] {

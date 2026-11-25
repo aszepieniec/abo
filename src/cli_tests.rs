@@ -867,6 +867,17 @@ pub fn replayed(books: &Path, day: Date) -> Result<(Dir, PathBuf), String> {
             std::fs::write(&doc, bytes).unwrap();
             argv[at] = doc.display().to_string();
         }
+        // Each corporate document from the commit that added it, under its own name.
+        if argv.starts_with(&["corporate".into(), "add".into()]) {
+            let last = argv.len() - 1;
+            for (i, p) in argv[3..last].iter_mut().enumerate() {
+                let bytes = Command::new("git").args(["show", &format!("{}:{}", l["commit"].as_str().unwrap(), p)]).current_dir(books).output().unwrap().stdout;
+                let doc = parent.0.join(format!("corporate-{}-{i}", l["commit"].as_str().unwrap())).join(p.rsplit('/').next().unwrap());
+                std::fs::create_dir_all(doc.parent().unwrap()).unwrap();
+                std::fs::write(&doc, bytes).unwrap();
+                *p = doc.display().to_string();
+            }
+        }
         let o = abo(&again, day, &argv);
         if !o.ok {
             return Err(format!("{argv:?} did not run again: {}", o.stderr));
@@ -1140,4 +1151,303 @@ fn every_command_abo_suggests_reads() {
         }
     }
     assert!(wrong.is_empty(), "{} commands abo suggests do not read:\n{}", wrong.len(), wrong.join("\n"));
+}
+
+/// Every path the books hold, but under `corporate/`, with its blob: what
+/// the corporate commands may not change.
+fn outside_corporate(books: &Path) -> Vec<String> {
+    crate::repo::git_in(books, &["ls-tree", "-r", "-z", "HEAD"]).unwrap().split('\0').filter(|l| !l.is_empty() && !l.split('\t').nth(1).unwrap_or_default().starts_with("corporate/")).map(String::from).collect()
+}
+
+/// What a directory holds, by name, through every directory under it, no
+/// link followed.
+fn everything(dir: &Path) -> BTreeSet<PathBuf> {
+    let mut all = BTreeSet::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if e.file_type().unwrap().is_dir() {
+            all.extend(everything(&p));
+        }
+        all.insert(p);
+    }
+    all
+}
+
+/// A path as anyone might give one: `corporate/` first or not, names
+/// that pass and names that do not, and one through a symbolic link.
+fn corporate_path() -> impl Strategy<Value = String> {
+    let name = prop_oneof![
+        4 => prop::sample::select(vec!["a", "A", "b c", "minutes", "evil", "aΣ", "aσ", "ß", "SS", "*", "[a]", "a?", "x~", "Ma\u{308}rz", "M\u{e4}rz"]).prop_map(String::from),
+        2 => prop::sample::select(vec!["..", ".", "", ".git", ".keep", "x.", "x ", "x\u{a0}", "a\\b", "\u{202E}x", "a\nb"]).prop_map(String::from),
+        1 => arg_text(),
+    ];
+    (prop::sample::select(vec!["corporate/", "corporate/", "corporate/", "", "/", "corporate", "../"]), vec(name, 0..4), any::<bool>()).prop_map(|(first, names, into)| format!("{first}{}{}", names.join("/"), if into { "/" } else { "" }))
+}
+
+/// G-C1: whatever paths the corporate commands are given — `..`, `.git`,
+/// a symbolic link out of the books — every path they write is under
+/// `corporate/`, made of names that pass, or a `.keep`: nothing else in the
+/// books changes, and nothing outside them.
+#[proptest(cases(12))]
+fn corporate_paths_stay_inside(#[strategy(vec((0usize..4, corporate_path(), corporate_path(), any::<bool>()), 1..8))] steps: Vec<(usize, String, String, bool)>) {
+    let (parent, books) = opened();
+    let sources = parent.0.join("sources");
+    std::fs::create_dir_all(&sources).unwrap();
+    for n in ["ok.pdf", ".hidden"] {
+        std::fs::write(sources.join(n), "%PDF-1.4\n").unwrap();
+    }
+    let ok = abo(&books, start(), &args(&["corporate", "mkdir", "corporate/a"]));
+    prop_assert!(ok.ok, "{}", ok.stderr);
+    // A link out of the books, not committed: what writing through it would reach.
+    std::os::unix::fs::symlink(&parent.0, books.join("corporate/evil")).unwrap();
+    let (kept, around) = (outside_corporate(&books), everything(&parent.0).into_iter().filter(|p| !p.starts_with(&books)).collect::<BTreeSet<_>>());
+    for (kind, a, b, hidden) in &steps {
+        let given = match kind {
+            0 => vec!["corporate".into(), "add".into(), "--".into(), sources.join(if *hidden { ".hidden" } else { "ok.pdf" }).display().to_string(), a.clone()],
+            1 => vec!["corporate".into(), "mkdir".into(), "--".into(), a.clone()],
+            2 => vec!["corporate".into(), "mv".into(), "--".into(), a.clone(), b.clone()],
+            _ => vec!["corporate".into(), "rm".into(), "--".into(), a.clone()],
+        };
+        abo(&books, start(), &given);
+        prop_assert_eq!(&outside_corporate(&books), &kept, "{:?}", given);
+        let now: BTreeSet<PathBuf> = everything(&parent.0).into_iter().filter(|p| !p.starts_with(&books)).collect();
+        prop_assert_eq!(&now, &around, "{:?} wrote outside the books", given);
+        let tree = crate::corporate::files(&books).unwrap();
+        for p in tree.keys() {
+            let names: Vec<&str> = p.split('/').skip(1).collect();
+            let (last, dirs) = names.split_last().unwrap();
+            prop_assert!(dirs.iter().all(|n| crate::corporate::bad_name(n).is_none()) && (*last == crate::corporate::KEEP || crate::corporate::bad_name(last).is_none()), "{:?} wrote {}", given, p);
+            prop_assert_eq!(&crate::corporate::nfc(p), p, "{:?} wrote a name not in NFC", given);
+        }
+        // No two names in a directory the same but for case.
+        let mut seen = std::collections::BTreeMap::new();
+        for p in tree.keys() {
+            let mut at = p.as_str();
+            while let Some((d, n)) = at.rsplit_once('/') {
+                let was = seen.insert((d.to_string(), crate::corporate::folded(n)), n.to_string());
+                prop_assert!(was.as_deref().is_none_or(|w| w == n), "{:?}: {}/{} beside {:?}", given, d, n, was);
+                at = d;
+            }
+        }
+    }
+}
+
+/// G-C2: each corporate command changes its part of the tree and nothing
+/// else, or refuses and changes nothing; every directory holds `.keep`;
+/// undo takes one back; and the log makes the tree again (G-O8).
+#[test]
+fn corporate_commands_change_only_their_tree() {
+    let (parent, books) = opened();
+    let state = store::Store::open(&books).unwrap().books;
+    let kept = outside_corporate(&books);
+    for (n, bytes) in [("articles.pdf", "%PDF-1.4\na"), ("extract.pdf", "%PDF-1.4\nb"), ("Articles.pdf", "%PDF-1.4\nc")] {
+        std::fs::write(parent.0.join(n), bytes).unwrap();
+    }
+    let src = |n: &str| parent.0.join(n).display().to_string();
+    let tree = || crate::corporate::files(&books).unwrap().into_keys().collect::<Vec<_>>();
+    let every_dir_kept = |t: &[String]| t.iter().all(|p| {
+        let mut d = p.rsplit_once('/').unwrap().0;
+        loop {
+            if d == "corporate" { return true; }
+            if !t.contains(&format!("{d}/.keep")) { return false; }
+            d = d.rsplit_once('/').unwrap().0;
+        }
+    });
+    let take = |a: &[&str], then: &[&str]| {
+        let o = abo(&books, start(), &args(a));
+        assert!(o.ok, "{a:?}: {}", o.stderr);
+        assert_eq!(tree(), then.iter().map(|s| s.to_string()).collect::<Vec<_>>(), "{a:?}");
+        assert!(every_dir_kept(&tree()), "{a:?}");
+        assert_eq!(store::Store::open(&books).unwrap().books, state, "{a:?}");
+        assert_eq!(outside_corporate(&books), kept, "{a:?}");
+    };
+    let refuse = |a: &[&str]| {
+        let (before, files) = (head(&books), tree());
+        let o = abo(&books, start(), &args(a));
+        assert!(!o.ok, "{a:?} was taken");
+        assert_eq!((head(&books), tree()), (before, files), "{a:?}");
+        assert_eq!(crate::repo::git_in(&books, &["status", "--porcelain"]).unwrap(), "", "{a:?}");
+    };
+    take(&["corporate", "add", &src("articles.pdf"), &src("extract.pdf"), "corporate/statutes/2024"], &[
+        "corporate/statutes/.keep", "corporate/statutes/2024/.keep", "corporate/statutes/2024/articles.pdf", "corporate/statutes/2024/extract.pdf",
+    ]);
+    refuse(&["corporate", "add", &src("articles.pdf"), "corporate/statutes/2024"]);
+    refuse(&["corporate", "add", &src("Articles.pdf"), "corporate/statutes/2024"]);
+    refuse(&["corporate", "add", &src("articles.pdf"), "statutes"]);
+    take(&["corporate", "mkdir", "corporate/minutes"], &[
+        "corporate/minutes/.keep", "corporate/statutes/.keep", "corporate/statutes/2024/.keep", "corporate/statutes/2024/articles.pdf", "corporate/statutes/2024/extract.pdf",
+    ]);
+    refuse(&["corporate", "mkdir", "corporate/minutes"]);
+    refuse(&["corporate", "mkdir", "corporate/Minutes"]);
+    refuse(&["corporate", "mv", "corporate/statutes", "corporate/statutes/2024"]);
+    refuse(&["corporate", "mv", "corporate", "corporate/minutes"]);
+    refuse(&["corporate", "mv", "corporate/nothing", "corporate/minutes"]);
+    refuse(&["corporate", "rm", "corporate"]);
+    refuse(&["corporate", "rm", "corporate/nothing"]);
+    take(&["corporate", "mv", "corporate/statutes/2024/extract.pdf", "corporate/minutes"], &[
+        "corporate/minutes/.keep", "corporate/minutes/extract.pdf", "corporate/statutes/.keep", "corporate/statutes/2024/.keep", "corporate/statutes/2024/articles.pdf",
+    ]);
+    refuse(&["corporate", "mv", "corporate/minutes/extract.pdf", "corporate/statutes/2024/articles.pdf"]);
+    take(&["corporate", "mv", "corporate/statutes", "corporate/minutes"], &[
+        "corporate/minutes/.keep", "corporate/minutes/extract.pdf", "corporate/minutes/statutes/.keep", "corporate/minutes/statutes/2024/.keep", "corporate/minutes/statutes/2024/articles.pdf",
+    ]);
+    take(&["corporate", "mv", "corporate/minutes/extract.pdf", "corporate/registry/2025/extract.pdf"], &[
+        "corporate/minutes/.keep", "corporate/minutes/statutes/.keep", "corporate/minutes/statutes/2024/.keep", "corporate/minutes/statutes/2024/articles.pdf",
+        "corporate/registry/.keep", "corporate/registry/2025/.keep", "corporate/registry/2025/extract.pdf",
+    ]);
+    take(&["corporate", "rm", "corporate/minutes/statutes"], &["corporate/minutes/.keep", "corporate/registry/.keep", "corporate/registry/2025/.keep", "corporate/registry/2025/extract.pdf"]);
+    refuse(&["corporate", "mv", "corporate/registry/2025", "corporate/registry"]);
+    refuse(&["corporate", "mkdir", "corporate/REGISTRY"]);
+    assert!(!books.join("corporate/minutes/statutes").exists());
+    take(&["undo"], &[
+        "corporate/minutes/.keep", "corporate/minutes/statutes/.keep", "corporate/minutes/statutes/2024/.keep", "corporate/minutes/statutes/2024/articles.pdf",
+        "corporate/registry/.keep", "corporate/registry/2025/.keep", "corporate/registry/2025/extract.pdf",
+    ]);
+    // Into a directory that is not there, named with a slash after it.
+    take(&["corporate", "mv", "corporate/registry/2025/extract.pdf", "corporate/old/"], &[
+        "corporate/minutes/.keep", "corporate/minutes/statutes/.keep", "corporate/minutes/statutes/2024/.keep", "corporate/minutes/statutes/2024/articles.pdf",
+        "corporate/old/.keep", "corporate/old/extract.pdf", "corporate/registry/.keep", "corporate/registry/2025/.keep",
+    ]);
+    // Names git would read as patterns, and one its .gitignore names, beside
+    // files it does not track: those are neither committed nor taken out.
+    let t0 = [
+        "corporate/minutes/.keep", "corporate/minutes/statutes/.keep", "corporate/minutes/statutes/2024/.keep", "corporate/minutes/statutes/2024/articles.pdf",
+        "corporate/old/.keep", "corporate/old/extract.pdf", "corporate/registry/.keep", "corporate/registry/2025/.keep",
+    ];
+    for n in ["corporate/old/.env", "corporate/old/d"] {
+        std::fs::write(books.join(n), "untracked").unwrap();
+    }
+    for n in ["*", "[d] x.pdf", "contract~"] {
+        std::fs::write(parent.0.join(n), n).unwrap();
+    }
+    take(&["corporate", "add", &src("*"), &src("[d] x.pdf"), &src("contract~"), "corporate/old"], &[
+        "corporate/minutes/.keep", "corporate/minutes/statutes/.keep", "corporate/minutes/statutes/2024/.keep", "corporate/minutes/statutes/2024/articles.pdf",
+        "corporate/old/*", "corporate/old/.keep", "corporate/old/[d] x.pdf", "corporate/old/contract~", "corporate/old/extract.pdf", "corporate/registry/.keep", "corporate/registry/2025/.keep",
+    ]);
+    take(&["undo"], &t0);
+    for n in ["corporate/old/.env", "corporate/old/d"] {
+        assert_eq!(std::fs::read_to_string(books.join(n)).unwrap(), "untracked");
+        std::fs::remove_file(books.join(n)).unwrap();
+    }
+    refuse(&["corporate", "rm", "corporate/old/.keep"]);
+    // Committed by hand: a directory without .keep, a name abo would not
+    // give, a symbolic link. Moved, each directory gets one; the name is
+    // taken away all the same; the link is not moved, but taken out.
+    std::fs::create_dir_all(books.join("corporate/hand/deep")).unwrap();
+    std::fs::write(books.join("corporate/hand/deep/a.pdf"), "a").unwrap();
+    std::fs::write(books.join("corporate/hand/bad."), "b").unwrap();
+    std::os::unix::fs::symlink("../../abo.toml", books.join("corporate/hand/link")).unwrap();
+    crate::repo::git_in(&books, &["add", "corporate"]).unwrap();
+    crate::repo::git_in(&books, &["commit", "-q", "-m", "By hand"]).unwrap();
+    let o = abo(&books, start(), &args(&["corporate", "rm", "corporate/hand/bad."]));
+    assert!(o.ok, "{}", o.stderr);
+    refuse(&["corporate", "mv", "corporate/hand", "corporate/kept"]);
+    let o = abo(&books, start(), &args(&["corporate", "rm", "corporate/hand/link"]));
+    assert!(o.ok, "{}", o.stderr);
+    assert!(books.join("abo.toml").is_file());
+    take(&["corporate", "mv", "corporate/hand", "corporate/kept"], &[
+        "corporate/kept/.keep", "corporate/kept/deep/.keep", "corporate/kept/deep/a.pdf", "corporate/minutes/.keep", "corporate/minutes/statutes/.keep", "corporate/minutes/statutes/2024/.keep",
+        "corporate/minutes/statutes/2024/articles.pdf", "corporate/old/.keep", "corporate/old/extract.pdf", "corporate/registry/.keep", "corporate/registry/2025/.keep",
+    ]);
+    // Commits abo did not make are outside the log (G-O8): up to the one made by hand, it makes the tree again.
+    let by_hand = crate::repo::git_in(&books, &["log", "--format=%H", "--grep=^By hand$"]).unwrap();
+    let before = format!("{}~1", by_hand.trim());
+    let (_again_parent, again) = {
+        let copy = parent.0.join("copy");
+        crate::repo::git_in(&parent.0, &["clone", "-q", books.to_str().unwrap(), copy.to_str().unwrap()]).unwrap();
+        crate::repo::git_in(&copy, &["reset", "-q", "--hard", &before]).unwrap();
+        replayed(&copy, start()).unwrap()
+    };
+    assert_eq!(crate::repo::git_in(&again, &["ls-tree", "-r", "HEAD", "--", "corporate"]).unwrap(), crate::repo::git_in(&books, &["ls-tree", "-r", &before, "--", "corporate"]).unwrap());
+
+    // A name however it is written, `ä` as a Mac writes it, `a` and a mark,
+    // or as it is typed: kept as typed (NFC), one name either way, found
+    // either way. Several moved or taken out are one commit.
+    let (parent, books) = opened();
+    let mac = parent.0.join("Ma\u{308}rz.pdf");
+    std::fs::write(&mac, "mac").unwrap();
+    std::fs::write(parent.0.join("M\u{e4}rz.pdf"), "typed").unwrap();
+    std::fs::write(parent.0.join("b.pdf"), "b").unwrap();
+    let run = |a: &[&str]| abo(&books, start(), &args(a));
+    assert!(run(&["corporate", "add", mac.to_str().unwrap(), &parent.0.join("b.pdf").display().to_string(), "corporate/Ma\u{308}rz"]).ok);
+    let tree = || crate::corporate::files(&books).unwrap().into_keys().collect::<Vec<_>>();
+    assert_eq!(tree(), ["corporate/M\u{e4}rz/.keep", "corporate/M\u{e4}rz/M\u{e4}rz.pdf", "corporate/M\u{e4}rz/b.pdf"]);
+    let before = head(&books);
+    assert!(!run(&["corporate", "add", &parent.0.join("M\u{e4}rz.pdf").display().to_string(), "corporate/M\u{e4}rz"]).ok);
+    assert_eq!(head(&books), before);
+    assert!(run(&["corporate", "mv", "corporate/Ma\u{308}rz/Ma\u{308}rz.pdf", "corporate/Ma\u{308}rz/b.pdf", "corporate/old"]).ok);
+    assert_eq!(tree(), ["corporate/M\u{e4}rz/.keep", "corporate/old/.keep", "corporate/old/M\u{e4}rz.pdf", "corporate/old/b.pdf"]);
+    assert_eq!(crate::repo::git_in(&books, &["rev-list", "--count", &format!("{}..HEAD", before.trim())]).unwrap().trim(), "1");
+    assert!(!run(&["corporate", "mv", "corporate/old", "corporate/old/b.pdf", "corporate/M\u{e4}rz"]).ok);
+    assert!(run(&["corporate", "rm", "corporate/old/M\u{e4}rz.pdf", "corporate/M\u{e4}rz"]).ok);
+    assert_eq!(tree(), ["corporate/old/.keep", "corporate/old/b.pdf"]);
+    assert_eq!(crate::repo::git_in(&books, &["rev-list", "--count", &format!("{}..HEAD", before.trim())]).unwrap().trim(), "2");
+    assert!(run(&["undo"]).ok);
+    assert_eq!(tree(), ["corporate/M\u{e4}rz/.keep", "corporate/old/.keep", "corporate/old/M\u{e4}rz.pdf", "corporate/old/b.pdf"]);
+    let (_again_parent, again) = replayed(&books, start()).unwrap();
+    assert_eq!(crate::repo::git_in(&again, &["ls-tree", "-r", "HEAD", "--", "corporate"]).unwrap(), crate::repo::git_in(&books, &["ls-tree", "-r", "HEAD", "--", "corporate"]).unwrap());
+
+    // Committed by hand, both ways: two names the same once folded, which
+    // nothing moved onto either may write over; a directory as a Mac writes
+    // it, which a path typed finds, and a rename to how it is typed fixes.
+    let (_parent, books) = opened();
+    for (p, b) in [("corporate/a\u{308}", "nfd"), ("corporate/\u{e4}", "nfc"), ("corporate/dup/A", "1"), ("corporate/dup/a", "2"), ("corporate/Pru\u{308}f/x", "x"), ("corporate/m/B\u{e4}r", "b")] {
+        std::fs::create_dir_all(books.join(p).parent().unwrap()).unwrap();
+        std::fs::write(books.join(p), b).unwrap();
+    }
+    crate::repo::git_in(&books, &["add", "corporate"]).unwrap();
+    crate::repo::git_in(&books, &["commit", "-q", "-m", "By hand"]).unwrap();
+    let run = |a: &[&str]| abo(&books, start(), &args(a));
+    let refused = |a: &[&str]| {
+        let before = head(&books);
+        assert!(!run(a).ok, "{a:?} was taken");
+        assert_eq!(head(&books), before, "{a:?}");
+    };
+    refused(&["corporate", "mv", "corporate/a\u{308}", "corporate/\u{e4}"]);
+    refused(&["corporate", "mv", "corporate/dup/A", "corporate/dup/a"]);
+    refused(&["corporate", "mv", "corporate/dup", "corporate/z"]);
+    refused(&["corporate", "mv", "corporate/m/.keep", "corporate/k"]);
+    refused(&["corporate", "rm", "corporate/m/B\u{e4}r", "corporate/m/Ba\u{308}r"]);
+    assert_eq!(std::fs::read_to_string(books.join("corporate/\u{e4}")).unwrap(), "nfc");
+    assert!(run(&["corporate", "mkdir", "corporate/Pr\u{fc}f/sub"]).ok);
+    assert!(books.join("corporate/Pru\u{308}f/sub/.keep").is_file());
+    assert!(run(&["corporate", "mv", "corporate/Pru\u{308}f", "corporate/Pr\u{fc}f"]).ok);
+    let tree = crate::corporate::files(&books).unwrap().into_keys().filter(|p| p.contains("Pr")).collect::<Vec<_>>();
+    assert_eq!(tree, ["corporate/Pr\u{fc}f/.keep", "corporate/Pr\u{fc}f/sub/.keep", "corporate/Pr\u{fc}f/x"]);
+    // `ẞ` is `ß` is `SS` once folded.
+    std::fs::write(_parent.0.join("\u{df}"), "s").unwrap();
+    std::fs::write(_parent.0.join("\u{1e9e}"), "S").unwrap();
+    assert!(run(&["corporate", "add", &_parent.0.join("\u{df}").display().to_string(), "corporate/sz"]).ok);
+    refused(&["corporate", "add", &_parent.0.join("\u{1e9e}").display().to_string(), "corporate/sz"]);
+}
+
+/// G-C3: whatever is committed under `corporate/` — what looks like abo's
+/// own files, bytes that are no text — the books read the same, with the
+/// same problems.
+#[test]
+fn the_books_do_not_read_corporate() {
+    let (_parent, books) = opened();
+    let before = store::Store::open(&books).unwrap();
+    let junk: [(&str, &[u8]); 6] = [
+        ("corporate/abo.toml", b"[company]\nname = 1\n"),
+        ("corporate/journal/main.journal", b"2020-01-01 x\n    a  1 EUR\n"),
+        ("corporate/bills/index", b"nonsense\n"),
+        ("corporate/contracts/x.toml", b"= =\n"),
+        ("corporate/raw", &[0xff, 0xfe, 0]),
+        ("corporate/x/abo.toml", b"[company]\nname = 'Other'\n"),
+    ];
+    for (p, bytes) in junk {
+        std::fs::create_dir_all(books.join(p).parent().unwrap()).unwrap();
+        std::fs::write(books.join(p), bytes).unwrap();
+    }
+    crate::repo::git_in(&books, &["add", "corporate"]).unwrap();
+    crate::repo::git_in(&books, &["commit", "-q", "-m", "By hand"]).unwrap();
+    let after = store::Store::open(&books).unwrap();
+    assert_eq!(after.books, before.books);
+    assert_eq!(after.problems, before.problems);
+    assert!(abo(&books, start(), &args(&["check"])).ok);
+    // Run from inside corporate/, an abo.toml there is a file kept, not books.
+    let inside = store::Store::open(&books.join("corporate/x")).unwrap();
+    assert_eq!(inside.root, books.canonicalize().unwrap());
+    assert!(abo(&books.join("corporate/x"), start(), &args(&["check"])).ok);
 }

@@ -206,6 +206,36 @@ force; `--no-template` for none), `terminate <id> [--on]`, `subsume <id> --by <o
 **Done when** `contracts/<id>.toml` holds its versions as added, and an
 agreement ended takes no new version.
 
+### A6b. Keep the corporate documents — Supported (CLI)
+The articles, an extract of the commercial registry, the minutes of a
+general meeting: files kept in the books under `corporate/`, in directories
+named and arranged as the company likes. abo reads nothing of them. CLI:
+`abo corporate [list]` shows the tree; `abo corporate add <file>... <dir>`
+puts files in, each under its own name, the directory made if it is not
+there (`abo corporate add Statuten.pdf corporate/statutes`); `abo corporate
+mkdir <dir>` makes a directory; `abo corporate mv <from>... <to>` moves files
+or directories into `<to>` if it is a directory, ends with `/`, or more than
+one is moved, and otherwise renames the one `<to>`; `abo corporate rm
+<path>...` takes out files, or directories with all they hold. However many
+paths it is given, a command is one change. The files `add` is given are read relative to
+the working directory; every other path is relative to the books and begins
+with `corporate/`. A name is refused if it begins with a dot, ends with a
+space or a dot, holds a backslash or a character that does not show, is
+longer than 255 bytes, or is taken in its directory, even with other
+capitals, or with `ä` written as a Mac writes it, `a` and a mark: nothing is
+written over.
+To replace a document — this year's registry extract, say — `rm` the old
+one and `add` the new, or keep both under names of their own. Each command
+is one commit, which `abo undo` takes back while it is the last. A document
+taken out longer ago is in the git history: `git log --diff-filter=D --
+<path>` names the commit that took it out, and `git show <commit>^:<path> >
+<file>` gets it back, to `add` again. A whole directory comes back with `git
+restore --source=<commit>^ --staged --worktree -- <dir>`, then `git commit`;
+that commit is yours, not abo's, and not in its log.
+**Done when** `abo corporate` lists the tree as arranged, a copy of the
+books holds it, and no command has written over a name taken or outside
+`corporate/`.
+
 ### A7. Download the books — Supported (browser)
 **Download the books** on **Backups**, in the sidebar, gives one file, the books and
 their whole history (`git bundle create - --all`): every entry, document

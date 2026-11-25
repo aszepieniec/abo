@@ -284,8 +284,9 @@ impl Store {
         if files.is_empty() {
             return Ok(None);
         }
-        let these = files.join(" ");
-        let mut diff = vec!["diff", "-U0", "--no-color", "--"];
+        // As a shell takes them: a name may hold a space or a quote.
+        let these = files.iter().map(|f| crate::command::quoted(f)).collect::<Vec<_>>().join(" ");
+        let mut diff = vec!["--literal-pathspecs", "diff", "-U0", "--no-color", "--"];
         diff.extend(files.iter().map(String::as_str));
         let lines: Vec<String> = repo::git_in(&self.root, &diff)?
             .lines()
@@ -300,10 +301,10 @@ impl Store {
         let breaks = self.broken_by_hand()?;
         let said = if breaks.is_empty() { String::new() } else { format!("\nIt breaks the books:\n  {}", breaks.join("\n  ")) };
         let ways = if breaks.is_empty() {
-            format!("commit it yourself (git commit -m '...' -- {these}), or take it out (git checkout -- {these}), which throws it away")
+            format!("commit it yourself (git commit -m '...' -- {these}), or take it out (git restore --source=HEAD --staged --worktree -- {these}), which throws it away")
         } else {
             // Committed, a change that breaks the books would be their history.
-            format!("mend it by hand and then commit it yourself; or take it out (git checkout -- {these}), which puts back what the last commit holds and throws the edit away")
+            format!("mend it by hand and then commit it yourself; or take it out (git restore --source=HEAD --staged --worktree -- {these}), which puts back what the last commit holds and throws the edit away")
         };
         Ok(Some(format!(
             "{these} {} a change abo did not make:{shown}{said}\n\
@@ -363,8 +364,8 @@ impl Store {
     /// The books' files that hold a change not committed: another file is
     /// not abo's to sign or to hold up.
     pub fn edited(&self) -> Result<Vec<String>> {
-        let ours = ["status", "--porcelain", "--untracked-files=no", "--", "abo.toml", "journal", "invoices", "bills", "contracts", "partners.toml", "templates"];
-        Ok(repo::git_in(&self.root, &ours)?.lines().map(|l| l.get(3..).unwrap_or(l).to_string()).collect())
+        let ours = ["status", "--porcelain", "-z", "--untracked-files=no", "--", "abo.toml", "journal", "invoices", "bills", "contracts", "partners.toml", "templates", "corporate"];
+        Ok(porcelain(&repo::git_in(&self.root, &ours)?))
     }
 
     /// `abo tidy`: rewrite what is committed as `render` writes it, as one
@@ -422,32 +423,45 @@ impl Store {
         if paths.is_empty() {
             return Ok(None);
         }
+        let mut puts: Vec<(&str, &[u8])> = new.iter().filter(|(k, _)| paths.contains(k)).map(|(k, v)| (k.as_str(), v.as_bytes())).collect();
+        puts.extend(also.iter().map(|(p, b)| (p.as_str(), b.as_slice())));
+        let mut changes: Vec<(&[String], &str)> = before.iter().map(|(a, w)| (a.as_slice(), w.as_str())).collect();
+        changes.push((&argv, what));
+        let commit = self.commit(&paths, &puts, &gone.iter().chain(removed).cloned().collect::<Vec<_>>(), &message(subject, &changes))?;
+        self.books = n;
+        Ok((!commit.is_empty()).then_some(commit))
+    }
+
+    /// `paths`, each written as `puts` has it or removed as `removes` has it,
+    /// committed with `msg`; empty where it changes nothing. Failed, the
+    /// files are as they were, nothing staged.
+    pub(crate) fn commit(&self, paths: &[String], puts: &[(&str, &[u8])], removes: &[String], msg: &str) -> Result<String> {
         let kept: Vec<(String, Option<Vec<u8>>)> = paths.iter().map(|p| (p.clone(), std::fs::read(self.root.join(p)).ok())).collect();
+        // The directories writing makes, deepest first: taken out again if it fails.
+        let mut made: Vec<std::path::PathBuf> = puts.iter().flat_map(|(p, _)| Path::new(p).ancestors().skip(1).filter(|d| !d.as_os_str().is_empty() && !self.root.join(d).exists()).map(Path::to_path_buf).collect::<Vec<_>>()).collect();
+        made.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+        made.dedup();
         let stamp = Stamp::now(&self.root)?;
         let r = (|| -> Result<String> {
-            for (rel, text) in new.iter().filter(|(k, _)| paths.contains(k)) {
-                put(&self.root, rel, text.as_bytes())?;
-            }
-            for (rel, bytes) in also {
+            for (rel, bytes) in puts {
                 put(&self.root, rel, bytes)?;
             }
-            for rel in gone.iter().chain(removed) {
+            for rel in removes {
                 let _ = std::fs::remove_file(self.root.join(rel));
             }
-            let mut add = vec!["add", "-A", "--"];
+            // Each path as it is, never a pattern: a name may hold `*` or
+            // `[`; and added though .gitignore names it, as `contract~`.
+            let mut add = vec!["--literal-pathspecs", "add", "-A", "--force", "--"];
             add.extend(paths.iter().map(String::as_str));
             repo::git_in(&self.root, &add)?;
             // Written back as the last commit has it — a hand edit tidied
             // away — there is nothing to commit.
-            let mut staged = vec!["diff", "--cached", "--quiet", "--"];
+            let mut staged = vec!["--literal-pathspecs", "diff", "--cached", "--quiet", "--"];
             staged.extend(paths.iter().map(String::as_str));
             if repo::git_in(&self.root, &staged).is_ok() {
                 return Ok(String::new());
             }
-            let mut changes: Vec<(&[String], &str)> = before.iter().map(|(a, w)| (a.as_slice(), w.as_str())).collect();
-            changes.push((&argv, what));
-            let msg = message(subject, &changes);
-            let mut commit = vec!["commit", "-q", "-m", &msg, "--"];
+            let mut commit = vec!["--literal-pathspecs", "commit", "-q", "-m", msg, "--"];
             commit.extend(paths.iter().map(String::as_str));
             repo::git_env(&self.root, &commit, &stamp.env())?;
             Ok(repo::git_in(&self.root, &["rev-parse", "--short", "HEAD"])?.trim().to_string())
@@ -456,7 +470,7 @@ impl Store {
             Ok(c) => c,
             Err(e) => {
                 // As it was: no file half written, nothing left staged.
-                let mut reset = vec!["reset", "-q", "--"];
+                let mut reset = vec!["--literal-pathspecs", "reset", "-q", "--"];
                 reset.extend(paths.iter().map(String::as_str));
                 let _ = repo::git_in(&self.root, &reset);
                 for (rel, bytes) in &kept {
@@ -465,11 +479,13 @@ impl Store {
                         None => drop(std::fs::remove_file(self.root.join(rel))),
                     }
                 }
+                for d in &made {
+                    let _ = std::fs::remove_dir(self.root.join(d));
+                }
                 return Err(e);
             }
         };
-        self.books = n;
-        Ok((!commit.is_empty()).then_some(commit))
+        Ok(commit)
     }
 
     /// What in git holds `abo undo` up, which `abo check` says too. Undo
@@ -477,15 +493,16 @@ impl Store {
     /// lies beside the books, but not while anything is staged, nor over a
     /// change, or a file not committed, where the commit wrote.
     pub fn git_holds_undo_up(&self) -> Result<Option<String>> {
-        if let Some(f) = repo::git_in(&self.root, &["diff", "--cached", "--name-only"])?.lines().next() {
-            return Ok(Some(format!("{f} is staged and not committed, and `abo undo` takes nothing back while anything is: commit it yourself, or unstage it (git restore --staged {f})")));
+        if let Some(f) = repo::git_in(&self.root, &["diff", "--cached", "--name-only", "-z"])?.split('\0').find(|f| !f.is_empty()) {
+            let q = crate::command::quoted(f);
+            return Ok(Some(format!("{f} is staged and not committed, and `abo undo` takes nothing back while anything is: commit it yourself, or unstage it (git restore --staged {q})")));
         }
-        let touched = repo::git_in(&self.root, &["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]).unwrap_or_default();
-        if touched.lines().next().is_some() {
-            let mut status = vec!["status", "--porcelain", "--"];
-            status.extend(touched.lines());
-            if let Some(l) = repo::git_in(&self.root, &status)?.lines().next() {
-                let f = l.get(3..).unwrap_or(l);
+        let touched = repo::git_in(&self.root, &["diff-tree", "--no-commit-id", "--name-only", "-z", "-r", "HEAD"]).unwrap_or_default();
+        let touched: Vec<&str> = touched.split('\0').filter(|f| !f.is_empty()).collect();
+        if !touched.is_empty() {
+            let mut status = vec!["--literal-pathspecs", "status", "--porcelain", "-z", "--"];
+            status.extend(touched);
+            if let Some(f) = porcelain(&repo::git_in(&self.root, &status)?).first() {
                 return Ok(Some(format!("{f} is where the last change wrote, and holds something not committed, which `abo undo` would write over: commit it yourself, or take it out")));
             }
         }
@@ -676,6 +693,21 @@ fn unreadable_mend(problems: &[String]) -> String {
     format!("Mend it by hand at the line named. git diff shows what changed since the last commit, and git checkout -- {} puts back what that commit holds, throwing the edit away", files.join(" "))
 }
 
+/// The paths `git status --porcelain -z` names, as they are: not quoted, as
+/// git quotes a name with a `"` or a letter outside ASCII without `-z`. A
+/// rename's old path, which follows it, is left out.
+fn porcelain(out: &str) -> Vec<String> {
+    let mut paths = vec![];
+    let mut items = out.split('\0').filter(|i| !i.is_empty());
+    while let Some(i) = items.next() {
+        paths.push(i.get(3..).unwrap_or(i).to_string());
+        if i.starts_with(['R', 'C']) {
+            items.next();
+        }
+    }
+    paths
+}
+
 /// The text files `render` writes, as the last commit has them.
 fn head_files(root: &Path) -> Result<Files> {
     files_at(root, "HEAD")
@@ -710,7 +742,7 @@ fn put(root: &Path, rel: &str, bytes: &[u8]) -> Result<()> {
 /// Where it holds more than one, each command has a comment before it that
 /// says what it did. Subject and comments are put on one line first, so
 /// that no text typed into them makes a line of its own.
-fn message(subject: &str, changes: &[(&[String], &str)]) -> String {
+pub(crate) fn message(subject: &str, changes: &[(&[String], &str)]) -> String {
     let one = |t: &str| t.replace(['\n', '\r'], " ");
     let mut m = format!("{}\n\n", one(subject));
     for (argv, what) in changes {

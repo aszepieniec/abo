@@ -121,10 +121,17 @@ fn a_slug_is_sixty_characters_at_most() {
 }
 
 /// The books `dir` is in, if any: the nearest of it and its parents that
-/// holds an abo.toml.
+/// holds an abo.toml, but for one under another's `corporate/`, which is a
+/// file the company keeps there (MODEL.md §10), not books.
 pub fn books_root(dir: &Path) -> Result<Option<PathBuf>> {
     let dir = dir.canonicalize().with_context(|| format!("{}", dir.display()))?;
-    Ok(dir.ancestors().find(|a| a.join("abo.toml").is_file()).map(Path::to_path_buf))
+    let mut root: Option<PathBuf> = None;
+    for a in dir.ancestors().filter(|a| a.join("abo.toml").is_file()) {
+        if root.as_ref().is_none_or(|r| r.starts_with(a.join(crate::corporate::ROOT))) {
+            root = Some(a.to_path_buf());
+        }
+    }
+    Ok(root)
 }
 
 /// Whether a change is being made to the books at `root` just now, by

@@ -3,6 +3,7 @@
 
 pub mod cli;
 pub mod command;
+pub mod corporate;
 pub mod input;
 pub mod invoice;
 pub mod links;

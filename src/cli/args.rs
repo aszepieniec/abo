@@ -404,6 +404,47 @@ pub(crate) enum ConfigCmd {
 }
 
 #[derive(Subcommand)]
+pub(crate) enum CorporateCmd {
+    /// The tree: each directory, and each file with its size. The same as
+    /// no subcommand.
+    List,
+    /// Put files into a directory, each under its own name, the directory
+    /// made if it is not there: `abo corporate add articles.pdf corporate/statutes`.
+    /// A name taken, or another but for case, is refused, never written over.
+    Add {
+        /// Files, wherever they are.
+        #[arg(required = true, num_args = 1..)]
+        files: Vec<PathBuf>,
+        /// Where they go: a path in the books, beginning with corporate/, as
+        /// corporate/statutes, wherever abo is run.
+        directory: String,
+    },
+    /// Make a directory: `abo corporate mkdir corporate/minutes`.
+    Mkdir {
+        /// A path in the books, beginning with corporate/.
+        directory: String,
+    },
+    /// Move files or directories, with all they hold, into a directory, or
+    /// rename one, as one change: `abo corporate mv corporate/minutes/2025.pdf corporate/archive/`.
+    Mv {
+        /// What is moved: paths in the books, beginning with corporate/.
+        #[arg(required = true, num_args = 1..)]
+        from: Vec<String>,
+        /// Into this directory if it is there, ends with /, or more than one
+        /// is moved, the directories it needs made; otherwise, the new path
+        /// of the one moved.
+        to: String,
+    },
+    /// Take out files, or directories with all they hold, as one change.
+    /// `abo undo` takes it back while it is the last change.
+    Rm {
+        /// Paths in the books, beginning with corporate/.
+        #[arg(required = true, num_args = 1..)]
+        paths: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
 pub(crate) enum AccountCmd {
     /// The declared accounts. The same as no subcommand.
     List,
@@ -882,6 +923,12 @@ pub(crate) enum Cmd {
     Config {
         #[command(subcommand)]
         change: Option<ConfigCmd>,
+    },
+    /// The corporate documents: the articles, registry extracts, minutes,
+    /// in directories under corporate/ arranged as you like.
+    Corporate {
+        #[command(subcommand)]
+        change: Option<CorporateCmd>,
     },
     /// The declared accounts.
     Account {

@@ -72,6 +72,7 @@ company-books/
   contracts/acme-hosting.toml   # an agreement: parties, status, versions
   contracts/acme-hosting/…      # its signed contract and amendments
   contracts/index         # every contract document: its hash, path and version
+  corporate/…             # the articles, registry extracts, minutes: arranged as you like
   .abo/                   # gitignored: typst's scratch files, the lock
 ```
 
@@ -105,6 +106,13 @@ and active until terminated or subsumed by another on a day. A version may
 carry an invoice template: the invoice form's fields an invoice issued
 under it starts from. An agreement holds no schedule: nothing falls due
 under it, and abo makes nothing of its own accord.
+
+The corporate documents are the company's own tree: directories and files
+it names and arranges itself, through abo, and that abo reads nothing of.
+They are kept in the books because they are the company's record, as the
+bills are, and go wherever the books go: a backup, an export, a clone.
+Every directory under `corporate/` holds an empty `.keep`, so that one
+emptied stays (MODEL.md §10).
 
 Account naming: CamelCase segments, acronyms in capitals: `Assets:Bank`,
 `Expenses:Telecom`, `Liabilities:VAT:Output`. If your accountant wants a
@@ -467,6 +475,40 @@ someone starting a server actually reads. Better than a puzzling failure three s
 workflow, and for `abo-web serve` it means the server declines to boot broken
 instead of raising an error on the first request that needs a PDF.
 
+`abo corporate` keeps the corporate documents. Every path is relative to
+the books and begins with `corporate/`, wherever abo is run; only `add`'s
+files are read relative to the working directory:
+
+    abo corporate list [--json]                 # the tree, each file with its size
+    abo corporate add <file>… <dir>             # each file into <dir>, under its own name
+    abo corporate mkdir <dir>
+    abo corporate mv <from>… <to>               # into <to> if it is a directory, ends with /, or more are moved; else renamed <to>
+    abo corporate rm <path>…                    # files, or directories with all they hold
+
+Each is one commit, however many paths it is given. A name is kept in NFC,
+as it is typed: one a Mac gives as `a` and a mark is kept as `ä`, and either
+finds the other.
+
+A directory that `add`, `mkdir` or `mv` needs and that is not there is made,
+with its `.keep`. A name taken is refused, never written over, and so is one
+the same but for case. To replace a document, `rm` it, then `add` the new
+one: two commits, so `abo undo` takes back the `add` alone. Each command is
+one commit, which `abo undo` takes back while it is the last. A document
+taken out longer ago is in the git history: `git log --diff-filter=D --
+<path>` names the commit that took it out, and `git show <commit>^:<path> >
+<file>` gets it as it was before, to `add` again. A refusal has the code
+`OP`, as an operation's does, and names the command that resolves it, if
+there is one; a path not there is said as not found, as elsewhere. abo
+hands git each path as it is, never as a pattern, so a name may hold `*`
+or `[`.
+
+`add` logs each file where it landed, so the log reads it from that commit
+(MODEL.md G-O8). Moving a file by hand with `git mv` and committing it
+changes nothing abo reads, but it is not in the log: replayed, the log
+makes the tree as it was before that commit, and a later abo command naming
+a path the hand commit made fails. The git history, not the
+log, is what restores the books.
+
 ### Web
 axum + maud, server-rendered forms: balances and recent entries, the bill
 form, invoice form, reconciliation checkboxes, statements with a PDF
@@ -588,6 +630,17 @@ are read from their files alone, and the git history is what restores them
 `/log` and `abo log` show the lines, each with the command as it would be
 typed and, on `/log`, the diff its commit made.
 
+The Company page ends with **Corporate documents**: the tree, a directory
+a heading over its files, each file a download link with its size, and on
+each row **Move** (to a path typed, which renames it) and **Remove**. Under
+it, one form adds files: several chosen at once, into a directory chosen
+from those there are or typed new. **New directory** is a form of one
+field. Each is the `abo corporate` command it amounts to, logged as such, and
+its notice carries Undo, which is the one way back from Remove: there is no
+"are you sure". These are routes under `/company`, which is reserved
+already: `GET /company/corporate/file/<path>` downloads, and `POST
+/company/corporate/{add,mkdir,mv,rm}` change.
+
 ### Phone
 A **PWA** over the same server-rendered pages: a manifest plus a responsive
 stylesheet. The camera is a platform feature and needs no library:
@@ -609,14 +662,24 @@ functions.
 
 ## 8. Security
 
-Two items are day-one, not deferred to exposure.
+Three items are day-one, not deferred to exposure.
 
 - **CSRF on every mutating POST.** Binding to 127.0.0.1 is not protection: any
   page open in the browser can POST to localhost. `SameSite=Strict` plus an
   Origin check. This shortcut is not available.
 - **Never derive a filesystem path from an uploaded filename.** Build it from the
   date, a sanitized issuer string and the sha256. Path traversal through a multipart
-  filename is how a file-upload feature becomes a shell.
+  filename is how a file-upload feature becomes a shell. The one exception is
+  `corporate/`, where the path is the company's by design: there each name
+  of it — a multipart filename, one typed, one on the command line — is
+  checked on its own (MODEL.md G-C1), and the path is joined from names
+  that pass, never taken whole. The tree is read without following a
+  symbolic link.
+- **Never serve an uploaded file as a page.** A corporate document is any
+  file at all, and an HTML one served from abo's own origin would run as
+  abo. So each is sent `Content-Disposition: attachment`, but a PDF, PNG or
+  JPEG, whose type the bytes say, which is shown inline; each with
+  `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`.
 
 ### Every string is an untrusted input
 
@@ -635,6 +698,11 @@ from every source. Two rules keep that boundary where it is.
    a `;` in a description forges a tag. What each field may hold is the
    table of what hledger reads back as written, asked of hledger itself
    (MODEL.md §2.3), with every hidden character refused.
+
+What abo says back to a person — a refusal, a warning, a listing — shows
+each hidden character as `?`, but a newline and a tab, whatever typed it: a
+date not read, an account's name, a path. So an escape typed into a command
+does not reach the terminal it was typed in. JSON escapes them itself.
 
 This matters most for the application a model lives in (§5). A supplier's PDF
 can contain text addressed to the model, and what that text can reach is the

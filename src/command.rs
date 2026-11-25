@@ -406,28 +406,30 @@ fn flag(argv: &mut Vec<String>, name: &str, value: &str) {
 /// control character in it, a newline say, written `$'...'` with escapes, so
 /// that a command is one line of its commit, as the log reads it back.
 pub fn shell(words: &[&str]) -> String {
-    let quote = |w: &&str| {
-        if !w.is_empty() && w.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.,:/=@%+".contains(&b)) {
-            w.to_string()
-        } else if w.chars().any(char::is_control) {
-            let escaped: String = w
-                .chars()
-                .map(|c| match c {
-                    '\\' => "\\\\".to_string(),
-                    '\'' => "\\'".to_string(),
-                    '\n' => "\\n".to_string(),
-                    '\t' => "\\t".to_string(),
-                    '\r' => "\\r".to_string(),
-                    c if c.is_control() => format!("\\u{:04x}", c as u32),
-                    c => c.to_string(),
-                })
-                .collect();
-            format!("$'{escaped}'")
-        } else {
-            format!("'{}'", w.replace('\'', "'\\''"))
-        }
-    };
-    std::iter::once("abo".to_string()).chain(words.iter().map(quote)).collect::<Vec<_>>().join(" ")
+    std::iter::once("abo".to_string()).chain(words.iter().map(|w| quoted(w))).collect::<Vec<_>>().join(" ")
+}
+
+/// One word as a shell takes it back, as `shell` writes each.
+pub fn quoted(w: &str) -> String {
+    if !w.is_empty() && w.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.,:/=@%+".contains(&b)) {
+        w.to_string()
+    } else if w.chars().any(char::is_control) {
+        let escaped: String = w
+            .chars()
+            .map(|c| match c {
+                '\\' => "\\\\".to_string(),
+                '\'' => "\\'".to_string(),
+                '\n' => "\\n".to_string(),
+                '\t' => "\\t".to_string(),
+                '\r' => "\\r".to_string(),
+                c if c.is_control() => format!("\\u{:04x}", c as u32),
+                c => c.to_string(),
+            })
+            .collect();
+        format!("$'{escaped}'")
+    } else {
+        format!("'{}'", w.replace('\'', "'\\''"))
+    }
 }
 
 /// The words of a command as `shell` writes it, `abo` left off: None for a
@@ -491,11 +493,12 @@ fn a_command_is_shown_as_a_shell_takes_it() {
 /// verb in the past, and what it was done to. `Book Rent, October` is
 /// (`Booked`, `Rent, October`).
 pub fn done(what: &str) -> (String, String) {
-    const VERBS: [(&str, &str); 19] = [
+    const VERBS: [(&str, &str); 21] = [
         ("Declare ", "Declared"), ("Take out ", "Took out"), ("Record ", "Recorded"), ("Change ", "Changed"), ("Set ", "Set"),
         ("Unset ", "Unset"), ("File ", "Filed"), ("Book the bill ", "Booked the bill"), ("Book ", "Booked"), ("Pay ", "Paid"), ("Write off ", "Wrote off"),
         ("Revert ", "Reverted"), ("Add ", "Added"), ("Remove ", "Removed"), ("Undo ", "Undid"), ("Close ", "Closed"),
         ("Amend ", "Amended"), ("Terminate ", "Terminated"), ("Subsume ", "Subsumed"),
+        ("Make ", "Made"), ("Move ", "Moved"),
     ];
     VERBS
         .iter()

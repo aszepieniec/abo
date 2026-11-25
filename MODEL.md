@@ -39,9 +39,10 @@ read the books on that account (§8).
 
 **An operation** is a partial function `M → M`: defined where its
 preconditions hold, and then giving a state that again satisfies every
-invariant. Every command abo has — booking, issuing an invoice, recording a
-payment, reverting, undoing — is an operation, and nothing changes the books
-otherwise.
+invariant. Every command abo has that changes the state — booking, issuing
+an invoice, recording a payment, reverting, undoing — is an operation, and
+nothing else changes it. The corporate commands change only `corporate/`,
+which is outside the state (§10).
 
 **Each fact is held once.** A field of the state is one of two things:
 
@@ -719,7 +720,7 @@ A **guarantee** is a property of the books that something reading them relies
 on. The readers are hledger; the files on disk and whoever reads or edits
 them; the record of what each debt owes; an invoice and the customer who
 received it; the bank statement; the reports and the periods closed; a bill's
-document; a partner, an employee, and their agreements; and whoever runs a command. The list below is closed: it is what
+document; a partner, an employee, and their agreements; the corporate documents; and whoever runs a command. The list below is closed: it is what
 the books promise, and nothing else is promised.
 
 Three rules tie it to the rest of this document:
@@ -829,6 +830,25 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 | G-N1 | A comment is on a bill or an invoice, and is read back as written; no entry changes for one but in the comments written under it, and hledger reads none of its text as a tag | I-N1, §7 | `files_say_the_state`, `entries_never_change`, `hledger_reads_entries_as_written` |
 | G-N2 | Who wrote a comment, and when, is the author and date of the commit that added it, through any undo, redo or tidy since | §2.10, §5.4 | `comments_are_signed_by_their_commit` |
 | G-N3 | On the pages, a comment is taken out only by whoever wrote it, or by an admin; behind the gateway, whoever wrote it is known by their user name, which each commit made for them says | §5 | `abo-web::comments_are_taken_out_by_their_author_or_an_admin` |
+
+### Corporate documents
+
+A *name* is a part of a path under `corporate/`: a text (§2) of at most 255
+bytes, not empty, that holds no `/`, `\` or newline, does not begin with `.`,
+and does not end with a space of any kind or a `.`. Within a directory no two
+names are the same once their case is folded — `ß` as `ss`, `Σ`, `σ` and `ς`
+as one — so that a copy of the books on a computer that ignores case keeps
+every file. A name is kept in NFC, `ä` one character as it is typed, not
+`a` and a mark as a Mac writes it in a file's name; given either way, it
+is one name, and finds a name committed by hand the other way. Which paths there are is the company's
+choice, so what is guaranteed is only where abo writes, what each command
+does, and that the books do not depend on the tree.
+
+| | Guarantee | Rules | Properties |
+|---|---|---|---|
+| G-C1 | Every path abo writes under `corporate/` is `corporate/` and names, each checked as above, except the `.keep` files it writes; every name it gives is in NFC, and so is every name `mv` carries, though a directory committed by hand that it writes into keeps its spelling; nothing it is given — `..`, a leading `/`, a symbolic link, `.git`, a name git would read as a pattern, as `*` or `[a]` — makes it write, take out or commit any path but those it was given and their `.keep` | §10 | `corporate_paths_stay_inside` |
+| G-C2 | `add` puts each file in the directory it is told, under the file's own name; `mkdir` makes a directory; `mv` moves files or directories with all they hold, into `to` if `to` is a directory, ends with `/`, or more than one is moved, else the one to the path `to`; `rm` takes out files or directories with all they hold; a directory needed and not there is made. Each is one commit, however many it is given. Nothing else changes: not the state, not any other file. Each refuses, changing nothing, a name taken or another the same once folded, but for a name renamed in other capitals; a path not there; a file where a directory is needed; a file not committed, a symbolic link, or a git repository of its own, where it would write or on the way there; `corporate/` itself moved or taken out; a `.keep` moved, or taken out but with its directory; a directory moved into itself; a symbolic link committed by hand moved, which `rm` takes out instead; a path given twice, or one moved with a directory it is in; a move that would make two names one. After each, every directory under `corporate/` holds `.keep`, one made by hand too, but for one with a name abo would not give | §10 | `corporate_commands_change_only_their_tree` |
+| G-C3 | Whatever `corporate/` holds, the books read the same, with the same problems | §8, §10 | `the_books_do_not_read_corporate` |
 
 ### Whoever runs a command
 
@@ -1459,6 +1479,7 @@ contracts/acme-hosting.toml  # an agreement: its parties, status and versions, w
 contracts/acme-hosting/…     # an agreement's documents, kept as they came; known by their hash
 contracts/index              # every agreement's document: its hash, path and version, written by render
 templates/…                  # the company's, not the model's (§10)
+corporate/…                  # the corporate documents, arranged as the company arranges them; not the model's (§10)
 ```
 
 `render` writes the text files: `abo.toml`, the journal, each invoice's and
@@ -1753,6 +1774,34 @@ With the model, one set of invariants holds, and the 76 rule-version switches ar
 
 - **Templates** (`templates/*.typ`) are the company's, edited by hand, and not
   part of the state. An invoice's content and its PDF's hash are.
+- **Corporate documents** (`corporate/…`) — the articles, a registry extract,
+  the minutes of a general meeting — are files in a tree of directories the
+  company arranges as it likes. They are not `Document`s (§2.5): no hash is
+  held, no path is derived, and nothing in the state names one. `parse`
+  reads nothing under `corporate/`, so no file there is a problem (§8), and
+  books with no `corporate/` read as before; an `abo.toml` there is a file
+  kept, and abo run below it finds the books above it.
+
+  `abo corporate add`, `mkdir`, `mv` and `rm` change the tree and nothing
+  else (DESIGN §7). They are not operations, but are kept as operations are:
+  each is one commit, its command logged (§5.4) and made again by the log
+  (G-O8). `add` logs each file by the path it landed at in the books, and
+  the log reads its bytes from that commit. Undo takes one back while it is
+  the last change, as it takes back any of abo's. Every directory under
+  `corporate/` holds an empty `.keep`, which each of these commands writes
+  into every directory that lacks one, so that a directory stays until it
+  is removed, whether files are in it or not: git keeps no directory
+  without a file. G-C1 says which paths abo writes.
+
+  What is not committed is not the tree. A change not committed under
+  `corporate/` holds every operation up, as one anywhere in the books does
+  (§8), and `abo check` says so. A file there that git does not track holds
+  nothing up, is never written over, and stays when the directory it is in
+  is moved or taken out; `list` does not show it. A commit made by hand
+  under `corporate/` is outside the log, as any is (G-O8). A name it holds
+  that abo would not give may be moved or taken out, but no command makes
+  one, and `list` leaves out every path with a name that begins with a dot,
+  as it leaves out `.keep`.
 - **The log** and the rest of `.abo/` are working state, as today.
 - **Reports** are functions of the state, not part of it.
 - **Users** are the gateway's (DESIGN §8): the author of a commit is the person
@@ -1793,7 +1842,8 @@ The commands are tested the same way, through the binary
 step, abo and the model agree on whether it is taken; the files on disk are
 what `render` writes for the model's state; and a refusal names the model's
 rules and changes nothing. The other CLI properties are those §3 names under
-G-F5 and G-O5 to G-O7. The web pages are tested so too (abo-web's `tests/props.rs`):
+G-F5, G-C1 to G-C3 and G-O5 to G-O7; the corporate commands, which are not
+operations, are tested only under G-C1 to G-C3 and G-O8. The web pages are tested so too (abo-web's `tests/props.rs`):
 the same plans posted as their forms to a running `abo-web serve`, under G-W1 to
 G-W4.
 

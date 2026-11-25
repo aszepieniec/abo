@@ -22,6 +22,8 @@ deunicode = "1.6.2"
 regex = "1"
 toml_edit = "0.22"
 unicode-general-category = "1.1.0"
+# Names under corporate/ kept in one form, NFC: a Mac writes ä as a and a mark.
+unicode-normalization = "0.1"
 
 # Already built for rustyline; used directly for the key-by-key VAT method
 # list, and by tests/tty.rs for a terminal to press keys on.
