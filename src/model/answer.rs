@@ -125,6 +125,13 @@ pub fn plain(s: &str) -> String {
     s.chars().map(|c| if hidden(c) { '?' } else { c }).collect()
 }
 
+/// `s` as abo prints it for a person: each hidden character `?` but a
+/// newline and a tab, so that no escape typed into what abo says back —
+/// an account's name, a date, a path — reaches the terminal.
+pub fn printed(s: &str) -> String {
+    s.chars().map(|c| if hidden(c) && c != '\n' && c != '\t' { '?' } else { c }).collect()
+}
+
 /// A character no text abo keeps may hold: a control character, or one
 /// that is invisible or turns the text around it — a zero-width space, a
 /// right-to-left override — so that what is printed is not what was read.

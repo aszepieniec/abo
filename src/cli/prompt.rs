@@ -100,7 +100,7 @@ pub(crate) fn ask_until<T>(
             Ok(v) => return Ok(v),
             // Ctrl-D is no answer to ask again for.
             Err(e) if answer.is_none() => bail!("{question}: {e}"),
-            Err(e) => eprintln!("  {e}"),
+            Err(e) => eprintln!("  {}", crate::model::answer::printed(&e.to_string())),
         }
     }
 }
@@ -321,7 +321,7 @@ impl questions::Source for Terminal {
     }
 
     fn item_problem(&mut self, prefix: &str, _first: &str, problem: String, answers: &questions::Answers) -> Result<bool> {
-        eprintln!("  {problem} Asking again.");
+        eprintln!("  {} Asking again.", crate::model::answer::printed(&problem.to_string()));
         self.start.extend(answers.iter().filter(|(k, _)| k.starts_with(prefix)).map(|(k, v)| (k.clone(), v.clone())));
         Ok(true)
     }

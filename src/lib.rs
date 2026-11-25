@@ -96,7 +96,7 @@ pub fn cli_main() -> std::process::ExitCode {
     // Under --json a usage error is JSON too: the output is the API.
     let cli = match cli::command().try_get_matches().and_then(|m| <Cli as clap::FromArgMatches>::from_arg_matches(&m)) {
         Ok(cli) => cli,
-        Err(e) if std::env::args().any(|a| a == "--json") && !matches!(e.kind(), clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion) => {
+        Err(e) if std::env::args_os().any(|a| a == "--json") && !matches!(e.kind(), clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion) => {
             println!("{}", serde_json::json!({ "error": e.to_string().trim(), "rules": [] }));
             return std::process::ExitCode::from(2);
         }
@@ -120,13 +120,13 @@ pub fn cli_main() -> std::process::ExitCode {
                 // A refusal says so itself; anything else, its causes on one line.
                 match e.downcast_ref::<store::Refused>() {
                     Some(r) => {
-                        eprintln!("{r}");
+                        eprintln!("{}", model::answer::printed(&r.to_string()));
                         let try_ = cli::hints(r);
                         if !try_.is_empty() {
-                            eprintln!("Try:\n  {}", try_.join("\n  "));
+                            eprintln!("Try:\n  {}", model::answer::printed(&try_.join("\n  ")));
                         }
                     }
-                    None => eprintln!("Error: {e:#}"),
+                    None => eprintln!("Error: {}", model::answer::printed(&format!("{e:#}"))),
                 }
             }
             std::process::ExitCode::from(code)

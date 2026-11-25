@@ -437,13 +437,13 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
             if !cli.json {
                 let r = views::reconciled(&s.books, &account, &commodity, date, None);
                 let n = r.outstanding.len();
-                println!("The statement says {}.", views::Amount::new(&s.books, balance, &commodity).text(" "));
+                println!("{}", crate::model::answer::printed(&format!("The statement says {}.", views::Amount::new(&s.books, balance, &commodity).text(" "))));
                 match n {
-                    0 => println!("The books agree: {} in the books, all of it cleared.", r.books.text(" ")),
+                    0 => println!("{}", crate::model::answer::printed(&format!("The books agree: {} in the books, all of it cleared.", r.books.text(" ")))),
                     _ => {
                         let left: rust_decimal::Decimal = r.outstanding.iter().filter_map(|o| o.amount.quantity.parse::<rust_decimal::Decimal>().ok()).sum();
                         let left = views::Amount::new(&s.books, left, &commodity);
-                        println!("In the books {} on {date}; {n} posting{} not yet cleared, {} in all (`abo reconcile` lists them).", r.books.text(" "), if n == 1 { "" } else { "s" }, left.text(" "));
+                        println!("{}", crate::model::answer::printed(&format!("In the books {} on {date}; {n} posting{} not yet cleared, {} in all (`abo reconcile` lists them).", r.books.text(" "), if n == 1 { "" } else { "s" }, left.text(" "))));
                     }
                 }
             }
@@ -992,7 +992,7 @@ pub(crate) fn still(s: &Store) {
     // nothing while it is there, though it still reports.
     if let Ok(files) = s.edited() {
         if !files.is_empty() {
-            eprintln!("warning: {} {} a change abo did not make, and abo changes nothing until it is taken out or committed; `abo check` shows it", files.join(" "), if files.len() == 1 { "holds" } else { "hold" });
+            eprintln!("warning: {} {} a change abo did not make, and abo changes nothing until it is taken out or committed; `abo check` shows it", crate::model::answer::printed(&files.join(" ")), if files.len() == 1 { "holds" } else { "hold" });
             return;
         }
     }
@@ -1015,7 +1015,7 @@ pub(crate) fn past(what: &str) -> String {
 pub(crate) fn issue(s: &mut Store, op: impl Fn(String) -> Op, json: bool, given: bool) -> Result<()> {
     let r = crate::invoice::issue(s, op)?;
     for w in &r.warnings {
-        eprintln!("Warning: {w}");
+        eprintln!("Warning: {}", crate::model::answer::printed(w));
     }
     let e = &s.books.entries[r.entry - 1];
     let what = if matches!(e.kind, model::Kind::CreditNote { .. }) { "Credit note" } else { "Invoice" };
@@ -1047,7 +1047,8 @@ pub(crate) fn flat(v: &toml::Value, prefix: &str) -> Vec<(String, String)> {
 
 pub(crate) fn passthrough(here: &std::path::Path, cmd: &str, args: &[String], json: bool) -> Result<()> {
     let s = Store::open(here)?;
-    print!("{}", report::run(&s, cmd, args, json)?);
+    let out = report::run(&s, cmd, args, json)?;
+    print!("{}", if json { out } else { crate::model::answer::printed(&out) });
     still(&s);
     Ok(())
 }
@@ -1057,7 +1058,8 @@ pub(crate) fn emit<T: serde::Serialize>(json: bool, value: &T, human: impl FnOnc
     if json {
         println!("{}", serde_json::to_string_pretty(value)?);
     } else {
-        println!("{}", human());
+        // Whatever it says back of what was typed, nothing hidden.
+        println!("{}", crate::model::answer::printed(&human()));
     }
     Ok(())
 }

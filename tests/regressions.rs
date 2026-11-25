@@ -2669,3 +2669,37 @@ fn an_account_named_after_a_commodity_holds_it_alone() {
     refused(&dir, &["price", "add", "2026-03-02", "JPY", "0.000000001", "EUR"], "more than 8 places");
     ok(&dir, &["check"]);
 }
+
+/// An account typed with hidden characters, a backslash and a `;` was
+/// refused (N13) with its name, and the name as it should be written,
+/// printed as typed: a terminal's escape in it reached the terminal. Each
+/// is now printed with its hidden characters `?`.
+#[test]
+fn an_account_misnamed_is_refused_without_its_hidden_characters() {
+    let dir = books("misnamed-hidden", &[]);
+    let said = refused(&dir, &["account", "add", "Expenses:\u{1b}[2J4EI;\u{39a}c\u{1}\\^"], "N13");
+    assert!(!said.chars().any(|c| c.is_control() && c != '\n'), "{said:?}");
+    assert!(said.contains("Expenses:?[2J4EI;\u{39a}c?\\^") && said.contains("Expenses:?[2J4EI\u{39a}c?\\^"), "{said}");
+}
+
+/// Text typed into a command came back raw in what abo said of it — a date
+/// not read, an entry not there, a key not known, a file not found, a
+/// commodity — so that an escape typed in reached the terminal. Whatever
+/// abo prints for a person now shows each hidden character as `?`.
+#[test]
+fn nothing_typed_reaches_the_terminal_raw() {
+    let dir = books("typed-raw", &[]);
+    let esc = "\u{1b}[2J\u{7}\r\u{202e}x";
+    for args in [
+        vec!["post", "--date", esc, "--desc", "x", "Expenses:General=1.00", "Assets:Bank=-1.00"],
+        vec!["revert", esc],
+        vec!["config", "get", esc],
+        vec!["reconcile", "Assets:Bank", "--commodity", esc],
+        vec!["account", "add", &format!("Expenses:General:{esc}")],
+    ] {
+        let o = abo(&dir, &args);
+        for said in [String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)] {
+            assert!(!said.chars().any(|c| c.is_control() && c != '\n' && c != '\t') && !said.contains('\u{202e}'), "{args:?}: {said:?}");
+        }
+    }
+}

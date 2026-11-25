@@ -992,7 +992,9 @@ fn conditions(m: &Books, n: &Books, op: &Op, today: Date) -> Vec<Violation> {
     // Whatever declares it: account add or move, a payment option.
     for a in n.accounts.difference(&m.accounts) {
         if !super::check::account_canonical(a) {
-            no!("N13", "{a}: each part of an account's name begins with a capital letter or another character, never a small letter, and holds no space or semicolon: {}", super::check::canonical_account(a));
+            // Shown, its hidden characters `?`: a name typed may hold a
+            // terminal's escape, which a refusal does not print.
+            no!("N13", "{}: each part of an account's name begins with a capital letter or another character, never a small letter, and holds no space or semicolon: {}", super::explain::shown(a), super::explain::shown(&super::check::canonical_account(a)));
         }
     }
     // An account holds one commodity at a time, that of its latest
