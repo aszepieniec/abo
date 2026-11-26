@@ -630,7 +630,7 @@ are read from their files alone, and the git history is what restores them
 `/log` and `abo log` show the lines, each with the command as it would be
 typed and, on `/log`, the diff its commit made.
 
-Planned, not built yet: the Company page ends with **Corporate documents**: the tree, a directory
+The Company page ends with **Corporate documents**: the tree, a directory
 a heading over its files, each file a download link with its size, and on
 each row **Move** (to a path typed, which renames it) and **Remove**. Under
 it, one form adds files: several chosen at once, into a directory chosen

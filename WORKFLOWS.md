@@ -206,7 +206,7 @@ force; `--no-template` for none), `terminate <id> [--on]`, `subsume <id> --by <o
 **Done when** `contracts/<id>.toml` holds its versions as added, and an
 agreement ended takes no new version.
 
-### A6b. Keep the corporate documents — Supported (CLI)
+### A6b. Keep the corporate documents — Supported (CLI, browser)
 The articles, an extract of the commercial registry, the minutes of a
 general meeting: files kept in the books under `corporate/`, in directories
 named and arranged as the company likes. abo reads nothing of them. CLI:
@@ -233,6 +233,14 @@ taken out longer ago is in the git history: `git log --diff-filter=D --
 <file>` gets it back, to `add` again. A whole directory comes back with `git
 restore --source=<commit>^ --staged --worktree -- <dir>`, then `git commit`;
 that commit is yours, not abo's, and not in its log.
+In the browser, **Corporate documents** ends the Company page: each
+directory a heading over its files, each file opened or downloaded by its
+name, with its size, and **Move** and **Remove** on each row; under the
+tree, a form adds files, several at once, into a directory chosen or typed
+new, and another makes a directory. A path typed there may leave out
+`corporate/`. Each is the command above, in the log as such, and its notice
+carries Undo. A PDF, PNG or JPEG opens in the browser; any other file is
+downloaded, never shown as a page.
 **Done when** `abo corporate` lists the tree as arranged, a copy of the
 books holds it, and no command has written over a name taken or outside
 `corporate/`.

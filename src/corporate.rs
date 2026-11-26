@@ -193,6 +193,16 @@ pub fn list(root: &Path) -> Result<Listing> {
     Ok(Listing { directories: directories.into_iter().filter(|d| shown(d)).collect(), files })
 }
 
+/// A file `list` shows, as the last commit holds it: read from git, not
+/// from a path on disk, so nothing a link or a file not committed holds is
+/// read; for abo-web to serve.
+pub fn read(root: &Path, path: &str) -> Result<Vec<u8>> {
+    if path.split('/').any(|n| n.starts_with('.')) || !files(root)?.contains_key(path) {
+        return Err(crate::input::not_found(format!("there is no {}", crate::model::answer::printed(path))));
+    }
+    Ok(blobs(root, &[path.to_string()])?.remove(0))
+}
+
 /// The tree, and what each command reads of it.
 struct Tree {
     files: BTreeMap<String, u64>,
