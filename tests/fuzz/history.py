@@ -12,6 +12,16 @@ ENV = dict(os.environ, ABO_TODAY='2025-12-01', GIT_AUTHOR_NAME='t', GIT_AUTHOR_E
            GIT_COMMITTER_NAME='t', GIT_COMMITTER_EMAIL='t@x.invalid')
 
 def nfc(s): return unicodedata.normalize('NFC', s)
+
+# The directories new books open with, taken out at once: the model starts
+# from nothing, and the log holds it, as replay needs.
+def bare(abo, books, env=None):
+    import json as _j
+    p = subprocess.run([abo, "--json", "corporate", "list"], cwd=books, env=env, capture_output=True, text=True)
+    dirs = [d for d in _j.loads(p.stdout)["directories"] if d.count("/") == 1]
+    if dirs:
+        p = subprocess.run([abo, "corporate", "rm", "--"] + dirs, cwd=books, env=env, capture_output=True, text=True)
+        assert p.returncode == 0, p.stderr
 def fold(s): return nfc(nfc(s).casefold())
 
 def run(cwd, args, env=ENV, check=False):
@@ -89,6 +99,7 @@ class Fuzz:
         os.makedirs(s.books); os.makedirs(s.src)
         p = run(s.books, ['init', 'Test LLC', '--currency', 'EUR', '--git-name', 't', '--git-email', 't@x.invalid', '--ni'])
         assert p.returncode == 0, p.stderr
+        bare(ABO, s.books, ENV)
         s.m = Model(); s.before = None; s.last_invoice = False; s.nfile = 0; s.partners = []
         s.issues = []; s.trace = []
 

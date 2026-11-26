@@ -32,6 +32,11 @@ fn shown(name: &str) -> String {
 
 /// `s` in one form, NFC: `ä` one character, as it is typed, not `a` and a
 /// mark, as a Mac writes it in a file's name.
+/// The directories new books open with, each with its `.keep`: where a
+/// company's documents usually go. Only a start: renamed, moved or taken
+/// out as any.
+pub const LAYOUT: [&str; 5] = ["Articles of association", "Commercial register", "Shareholder meetings", "Board meetings", "Share register"];
+
 pub fn nfc(s: &str) -> String {
     s.nfc().collect()
 }

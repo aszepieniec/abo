@@ -1232,12 +1232,23 @@ fn corporate_paths_stay_inside(#[strategy(vec((0usize..4, corporate_path(), corp
     }
 }
 
+
+/// New books, their directories taken out at once: the tree from nothing.
+fn opened_bare() -> (Dir, PathBuf) {
+    let (parent, books) = opened();
+    let layout: Vec<String> = crate::corporate::LAYOUT.iter().map(|d| format!("corporate/{d}")).collect();
+    let o = abo(&books, start(), &args(&["corporate", "rm"].into_iter().chain(layout.iter().map(String::as_str)).collect::<Vec<_>>()));
+    assert!(o.ok, "{}", o.stderr);
+    assert!(crate::corporate::files(&books).unwrap().is_empty());
+    (parent, books)
+}
+
 /// G-C2: each corporate command changes its part of the tree and nothing
 /// else, or refuses and changes nothing; every directory holds `.keep`;
 /// undo takes one back; and the log makes the tree again (G-O8).
 #[test]
 fn corporate_commands_change_only_their_tree() {
-    let (parent, books) = opened();
+    let (parent, books) = opened_bare();
     let state = store::Store::open(&books).unwrap().books;
     let kept = outside_corporate(&books);
     for (n, bytes) in [("articles.pdf", "%PDF-1.4\na"), ("extract.pdf", "%PDF-1.4\nb"), ("Articles.pdf", "%PDF-1.4\nc")] {
@@ -1363,7 +1374,7 @@ fn corporate_commands_change_only_their_tree() {
     // A name however it is written, `ä` as a Mac writes it, `a` and a mark,
     // or as it is typed: kept as typed (NFC), one name either way, found
     // either way. Several moved or taken out are one commit.
-    let (parent, books) = opened();
+    let (parent, books) = opened_bare();
     let mac = parent.0.join("Ma\u{308}rz.pdf");
     std::fs::write(&mac, "mac").unwrap();
     std::fs::write(parent.0.join("M\u{e4}rz.pdf"), "typed").unwrap();
@@ -1390,7 +1401,7 @@ fn corporate_commands_change_only_their_tree() {
     // Committed by hand, both ways: two names the same once folded, which
     // nothing moved onto either may write over; a directory as a Mac writes
     // it, which a path typed finds, and a rename to how it is typed fixes.
-    let (_parent, books) = opened();
+    let (_parent, books) = opened_bare();
     for (p, b) in [("corporate/a\u{308}", "nfd"), ("corporate/\u{e4}", "nfc"), ("corporate/dup/A", "1"), ("corporate/dup/a", "2"), ("corporate/Pru\u{308}f/x", "x"), ("corporate/m/B\u{e4}r", "b")] {
         std::fs::create_dir_all(books.join(p).parent().unwrap()).unwrap();
         std::fs::write(books.join(p), b).unwrap();

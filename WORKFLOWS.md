@@ -209,7 +209,10 @@ agreement ended takes no new version.
 ### A6b. Keep the corporate documents — Supported (CLI, browser)
 The articles, an extract of the commercial registry, the minutes of a
 general meeting: files kept in the books under `corporate/`, in directories
-named and arranged as the company likes. abo reads nothing of them. CLI:
+named and arranged as the company likes; new books start with Articles of
+association, Commercial register, Shareholder meetings, Board meetings and
+Share register, each renamed, moved or taken out as any. abo reads nothing
+of them. CLI:
 `abo corporate [list]` shows the tree; `abo corporate add <file>... <dir>`
 puts files in, each under its own name, the directory made if it is not
 there (`abo corporate add Statuten.pdf corporate/statutes`); `abo corporate
@@ -233,13 +236,13 @@ taken out longer ago is in the git history: `git log --diff-filter=D --
 <file>` gets it back, to `add` again. A whole directory comes back with `git
 restore --source=<commit>^ --staged --worktree -- <dir>`, then `git commit`;
 that commit is yours, not abo's, and not in its log.
-In the browser, **Corporate documents** ends the Company page: each
-directory a heading over its files, each file opened or downloaded by its
-name, with its size, and **Move** and **Remove** on each row; under the
-tree, a form adds files, several at once, into a directory chosen or typed
-new, and another makes a directory. A path typed there may leave out
-`corporate/`. Each is the command above, in the log as such, and its notice
-carries Undo. A PDF, PNG or JPEG opens in the browser; any other file is
+In the browser, **Corporate documents** ends the Company page, a tree by
+names: drag a file or directory onto a directory to move it, or onto the
+heading for the top; drop files from the computer onto a directory to add
+them; double-click a name to rename it; a directory's icons make a directory
+in it or add files to it; the download icon opens or downloads a file, and
+Remove takes it out. Each is the command above, in the log as such, and its
+notice carries Undo. A PDF, PNG or JPEG opens in the browser; any other file is
 downloaded, never shown as a page.
 **Done when** `abo corporate` lists the tree as arranged, a copy of the
 books holds it, and no command has written over a name taken or outside

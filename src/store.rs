@@ -956,6 +956,9 @@ pub fn init(dir: &Path, config: model::Config, author: Option<(String, String)>,
             put(dir, &rel, text.as_bytes())?;
         }
         put(dir, ".gitignore", b".abo/\n*~\n.DS_Store\n")?;
+        for d in crate::corporate::LAYOUT {
+            put(dir, &format!("corporate/{d}/.keep"), b"")?;
+        }
         repo::git_in(dir, &["init", "-q", "-b", "master"])?;
         if let Some((name, email)) = &author {
             for (key, value) in [("user.name", name), ("user.email", email)] {

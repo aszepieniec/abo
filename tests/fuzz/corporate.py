@@ -34,6 +34,16 @@ def valid(n):
 
 def iskeep(n): return fold(n) == ".keep"
 
+# The directories new books open with, taken out at once: the model starts
+# from nothing, and the log holds it, as replay needs.
+def bare(abo, books, env=None):
+    import json as _j
+    p = subprocess.run([abo, "--json", "corporate", "list"], cwd=books, env=env, capture_output=True, text=True)
+    dirs = [d for d in _j.loads(p.stdout)["directories"] if d.count("/") == 1]
+    if dirs:
+        p = subprocess.run([abo, "corporate", "rm", "--"] + dirs, cwd=books, env=env, capture_output=True, text=True)
+        assert p.returncode == 0, p.stderr
+
 # ---------- snapshots ----------
 def tree(b, rev="HEAD"):
     rc, out, _ = git(b, "ls-tree", "-r", "-z", rev)
@@ -376,6 +386,7 @@ class Seq:
         os.makedirs(self.b); os.makedirs(self.src)
         rc, o, e = sh([ABO, "init", "Test", "LLC", "--currency", "EUR", "--vat", "none", "--git-name", "t", "--git-email", "t@x.invalid"], self.b)
         assert rc == 0, e
+        bare(ABO, self.b, ENV)
         self.hand = False
         self.abo_commits = {git(self.b, "rev-parse", "HEAD")[1].strip(): "init"}
         self.models = {}

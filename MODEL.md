@@ -840,7 +840,11 @@ names are the same once their case is folded — `ß` as `ss`, `Σ`, `σ` and `�
 as one — so that a copy of the books on a computer that ignores case keeps
 every file; two such names are *twins*. A name is kept in NFC, `ä` one character as it is typed, not
 `a` and a mark as a Mac writes it in a file's name; given either way, it
-is one name, and finds a name committed by hand the other way. Which paths there are is the company's
+is one name, and finds a name committed by hand the other way. New books
+open with five directories, `corporate::LAYOUT`: Articles of association,
+Commercial register, Shareholder meetings, Board meetings and Share
+register, each with its `.keep`, in the commit that opens them; books
+opened before they did are replayed with them too. Which paths there are is the company's
 choice, so what is guaranteed is only where abo writes, what each command
 does, and that the books do not depend on the tree.
 

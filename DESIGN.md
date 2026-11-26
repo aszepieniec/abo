@@ -630,16 +630,21 @@ are read from their files alone, and the git history is what restores them
 `/log` and `abo log` show the lines, each with the command as it would be
 typed and, on `/log`, the diff its commit made.
 
-The Company page ends with **Corporate documents**: the tree, a directory
-a heading over its files, each file a download link with its size, and on
-each row **Move** (to a path typed, which renames it) and **Remove**. Under
-it, one form adds files: several chosen at once, into a directory chosen
-from those there are or typed new. **New directory** is a form of one
-field. Each is the `abo corporate` command it amounts to, logged as such, and
-its notice carries Undo, which is the one way back from Remove: there is no
-"are you sure". These are routes under `/company`, which is reserved
-already: `GET /company/corporate/file/<path>` downloads, and `POST
-/company/corporate/{add,mkdir,mv,rm}` change.
+The Company page ends with **Corporate documents**: the tree, each
+directory and file by its name, `corporate/` left off, as they nest; each
+file with its size and a download icon. A row dragged onto a directory, or
+onto the section's heading for the top, moves there; files dropped from the
+computer onto a directory are added to it; a name double-clicked is renamed
+in place, or, typed with a `/`, moved to that path from the top. A
+directory's icons make a directory in it or add files to it, which is how a
+phone, which drags nothing, does both. Each row has Remove. Each is the
+`abo corporate` command it amounts to, logged as such, and its notice
+carries Undo, which is the one way back from Remove: there is no "are you
+sure". A refusal is said in the section, by the names it shows. These are
+routes under `/company`, which is reserved already: `GET
+/company/corporate/file/<path>` downloads, and `POST
+/company/corporate/{add,mkdir,mv,rm}` change; a script sends what a form
+would (`corporate.js`).
 
 ### Phone
 A **PWA** over the same server-rendered pages: a manifest plus a responsive
