@@ -443,11 +443,14 @@ impl Store {
         made.dedup();
         let stamp = Stamp::now(&self.root)?;
         let r = (|| -> Result<String> {
-            for (rel, bytes) in puts {
-                put(&self.root, rel, bytes)?;
-            }
+            // What goes, before what comes: on a computer that ignores
+            // case, `Minutes/a` put as `minutes/a` is the same file, which
+            // a remove after would take out.
             for rel in removes {
                 let _ = std::fs::remove_file(self.root.join(rel));
+            }
+            for (rel, bytes) in puts {
+                put(&self.root, rel, bytes)?;
             }
             // Each path as it is, never a pattern: a name may hold `*` or
             // `[`; and added though .gitignore names it, as `contract~`.
@@ -500,10 +503,20 @@ impl Store {
         let touched = repo::git_in(&self.root, &["diff-tree", "--no-commit-id", "--name-only", "-z", "-r", "HEAD"]).unwrap_or_default();
         let touched: Vec<&str> = touched.split('\0').filter(|f| !f.is_empty()).collect();
         if !touched.is_empty() {
-            let mut status = vec!["--literal-pathspecs", "status", "--porcelain", "-z", "--"];
-            status.extend(touched);
+            // Ignored too: git writes over what .gitignore names, `a~` say.
+            let mut status = vec!["--literal-pathspecs", "status", "--porcelain", "-z", "--ignored", "--"];
+            status.extend(touched.iter().copied());
             if let Some(f) = porcelain(&repo::git_in(&self.root, &status)?).first() {
                 return Ok(Some(format!("{f} is where the last change wrote, and holds something not committed, which `abo undo` would write over: commit it yourself, or take it out")));
+            }
+            // A file not committed where the change has a directory.
+            for p in &touched {
+                for a in Path::new(p).ancestors().skip(1).filter(|a| !a.as_os_str().is_empty()) {
+                    if std::fs::symlink_metadata(self.root.join(a)).is_ok_and(|m| !m.is_dir()) {
+                        let a = a.display();
+                        return Ok(Some(format!("{a} is where the last change has a directory, and is a file not committed, which `abo undo` would write over: commit it yourself, or take it out")));
+                    }
+                }
             }
         }
         Ok(None)
@@ -695,16 +708,19 @@ fn unreadable_mend(problems: &[String]) -> String {
 
 /// The paths `git status --porcelain -z` names, as they are: not quoted, as
 /// git quotes a name with a `"` or a letter outside ASCII without `-z`. A
-/// rename's old path, which follows it, is left out.
+/// rename or a copy, staged or not, names its old path in the item after
+/// it, which is a path of the change too: what takes the change out, or
+/// commits it, names both.
 fn porcelain(out: &str) -> Vec<String> {
-    let mut paths = vec![];
+    let mut paths: Vec<String> = vec![];
     let mut items = out.split('\0').filter(|i| !i.is_empty());
     while let Some(i) = items.next() {
         paths.push(i.get(3..).unwrap_or(i).to_string());
-        if i.starts_with(['R', 'C']) {
-            items.next();
+        if i.get(..2).is_some_and(|xy| xy.contains(['R', 'C'])) {
+            paths.extend(items.next().map(String::from));
         }
     }
+    paths.dedup();
     paths
 }
 

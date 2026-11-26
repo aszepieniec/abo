@@ -2704,3 +2704,49 @@ fn nothing_typed_reaches_the_terminal_raw() {
         }
     }
 }
+
+/// Undo wrote over what git ignores: a file `a~`, which abo's .gitignore
+/// names, put where the change taken back had a directory, or a file.
+#[test]
+fn undo_writes_over_nothing_ignored() {
+    let dir = books("undo-ignored", &[]);
+    ok(&dir, &["corporate", "mkdir", "corporate/keep"]);
+    ok(&dir, &["corporate", "mkdir", "corporate/a~"]);
+    ok(&dir, &["undo"]);
+    std::fs::write(dir.join("corporate/a~"), "mine").unwrap();
+    refused(&dir, &["undo"], "would write over");
+    assert_eq!(read(&dir, "corporate/a~"), "mine");
+    std::fs::remove_file(dir.join("corporate/a~")).unwrap();
+    std::fs::write(dir.join("b~"), "b").unwrap();
+    ok(&dir, &["corporate", "add", dir.join("b~").to_str().unwrap(), "corporate/k"]);
+    ok(&dir, &["corporate", "rm", "corporate/k/b~"]);
+    std::fs::write(dir.join("corporate/k/b~"), "MINE").unwrap();
+    refused(&dir, &["undo"], "would write over");
+    assert_eq!(read(&dir, "corporate/k/b~"), "MINE");
+}
+
+/// A rename by hand, `git mv`, staged: what abo said would take it out
+/// named the new path alone, and left the old one's deletion staged.
+#[test]
+fn a_rename_by_hand_is_taken_out_as_said() {
+    let dir = books("renamed-by-hand", &[]);
+    std::fs::write(dir.join("x"), "x").unwrap();
+    ok(&dir, &["corporate", "add", dir.join("x").to_str().unwrap(), "corporate/r"]);
+    git(&dir, &["mv", "corporate/r/x", "corporate/r/y"]);
+    let said = refused(&dir, &["corporate", "mkdir", "corporate/z"], "git restore --source=HEAD --staged --worktree --");
+    let paths = said.split("git restore --source=HEAD --staged --worktree -- ").nth(1).unwrap().split(')').next().unwrap();
+    assert_eq!(paths, "corporate/r/y corporate/r/x");
+    git(&dir, &["restore", "--source=HEAD", "--staged", "--worktree", "--", "corporate/r/y", "corporate/r/x"]);
+    ok(&dir, &["corporate", "mkdir", "corporate/z"]);
+}
+
+/// What only joins letters, as in a Persian name, printed as `?` once
+/// every hidden character did; a git author's name may hold it.
+#[test]
+fn joiners_print_as_they_are() {
+    let dir = books("joiners", &[]);
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_abo")).args(["corporate", "mkdir", "corporate/z"]).current_dir(&dir).env("GIT_AUTHOR_NAME", "\u{639}\u{644}\u{6cc}\u{200c}\u{631}\u{636}\u{627}").output().unwrap();
+    assert!(o.status.success(), "{}", err(&o));
+    let log = String::from_utf8_lossy(&abo(&dir, &["log"]).stdout).into_owned();
+    assert!(log.contains("\u{639}\u{644}\u{6cc}\u{200c}\u{631}\u{636}\u{627}"), "{log}");
+}

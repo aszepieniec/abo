@@ -125,11 +125,16 @@ pub fn plain(s: &str) -> String {
     s.chars().map(|c| if hidden(c) { '?' } else { c }).collect()
 }
 
-/// `s` as abo prints it for a person: each hidden character `?` but a
-/// newline and a tab, so that no escape typed into what abo says back —
-/// an account's name, a date, a path — reaches the terminal.
+/// `s` as abo prints it for a person: each control character `?` but a
+/// newline and a tab, and each that turns the text around it, so that no
+/// escape typed into what abo says back — an account's name, a date, a
+/// path — reaches the terminal, and no line reads in another order than it
+/// was written. What only joins letters, as the joiners of an emoji or of
+/// a Persian name, prints as it is: it is no `hidden` text abo keeps, but it
+/// may be a git author's name, or a file's committed by hand.
 pub fn printed(s: &str) -> String {
-    s.chars().map(|c| if hidden(c) && c != '\n' && c != '\t' { '?' } else { c }).collect()
+    let turns = |c: char| matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{2028}' | '\u{2029}');
+    s.chars().map(|c| if (c.is_control() && c != '\n' && c != '\t') || turns(c) { '?' } else { c }).collect()
 }
 
 /// A character no text abo keeps may hold: a control character, or one

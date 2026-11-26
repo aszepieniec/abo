@@ -1799,9 +1799,12 @@ With the model, one set of invariants holds, and the 76 rule-version switches ar
   nothing up, is never written over, and stays when the directory it is in
   is moved or taken out; `list` does not show it. A commit made by hand
   under `corporate/` is outside the log, as any is (G-O8). A name it holds
-  that abo would not give may be moved or taken out, but no command makes
-  one, and `list` leaves out every path with a name that begins with a dot,
-  as it leaves out `.keep`.
+  that abo would not give may be taken out, or moved alone to a name abo
+  would give, but no command makes one or carries one to a new path; and
+  `list` leaves out every path with a name that begins with a dot, as it
+  leaves out `.keep`. A directory committed by hand that abo writes into
+  keeps its spelling, but two names there the same once folded are not
+  added to.
 - **The log** and the rest of `.abo/` are working state, as today.
 - **Reports** are functions of the state, not part of it.
 - **Users** are the gateway's (DESIGN §8): the author of a commit is the person

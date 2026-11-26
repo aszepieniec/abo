@@ -1419,6 +1419,23 @@ fn corporate_commands_change_only_their_tree() {
     std::fs::write(_parent.0.join("\u{1e9e}"), "S").unwrap();
     assert!(run(&["corporate", "add", &_parent.0.join("\u{df}").display().to_string(), "corporate/sz"]).ok);
     refused(&["corporate", "add", &_parent.0.join("\u{1e9e}").display().to_string(), "corporate/sz"]);
+
+    // Twins committed by hand stay theirs to settle, and hold nothing else
+    // up; a move carrying them, or a name abo would not give, is refused;
+    // a `.Keep` keeps its directory, beside which no `.keep` is written.
+    for (p, b) in [("corporate/h/.Keep", "k"), ("corporate/h/f", "f"), ("corporate/w/\u{e4}/x", "x"), ("corporate/w/a\u{308}/y", "y"), ("corporate/c/K/x", "1"), ("corporate/c/k/y", "2"), ("corporate/b/x.", "b")] {
+        std::fs::create_dir_all(books.join(p).parent().unwrap()).unwrap();
+        std::fs::write(books.join(p), b).unwrap();
+    }
+    crate::repo::git_in(&books, &["add", "corporate"]).unwrap();
+    crate::repo::git_in(&books, &["commit", "-q", "-m", "By hand again"]).unwrap();
+    assert!(run(&["corporate", "add", &_parent.0.join("\u{df}").display().to_string(), "corporate/h"]).ok);
+    assert!(!crate::corporate::files(&books).unwrap().contains_key("corporate/h/.keep"));
+    refused(&["corporate", "mv", "corporate/w", "corporate/e"]);
+    refused(&["corporate", "mv", "corporate/c", "corporate/e"]);
+    refused(&["corporate", "mv", "corporate/b", "corporate/e"]);
+    refused(&["corporate", "mv", "corporate/w/a\u{308}", "corporate/w/a\u{308}/"]);
+    assert!(run(&["corporate", "mv", "corporate/b/x.", "corporate/b/x"]).ok);
 }
 
 /// G-C3: whatever is committed under `corporate/` — what looks like abo's

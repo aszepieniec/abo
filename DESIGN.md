@@ -699,10 +699,13 @@ from every source. Two rules keep that boundary where it is.
    table of what hledger reads back as written, asked of hledger itself
    (MODEL.md §2.3), with every hidden character refused.
 
-What abo says back to a person — a refusal, a warning, a listing — shows
-each hidden character as `?`, but a newline and a tab, whatever typed it: a
-date not read, an account's name, a path. So an escape typed into a command
-does not reach the terminal it was typed in. JSON escapes them itself.
+What abo says back to a person — a refusal, a warning, a listing, a
+prompt, clap's usage errors — shows each control character as `?`, but a
+newline and a tab, and each that turns text around (the bidirectional
+controls, the line and paragraph separators), whatever typed it: a date not
+read, an account's name, a path. So an escape typed into a command does not
+reach the terminal it was typed in. What only joins letters prints as it
+is: a Persian author's name, an emoji. JSON escapes for itself.
 
 This matters most for the application a model lives in (§5). A supplier's PDF
 can contain text addressed to the model, and what that text can reach is the

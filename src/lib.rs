@@ -101,7 +101,12 @@ pub fn cli_main() -> std::process::ExitCode {
             println!("{}", serde_json::json!({ "error": e.to_string().trim(), "rules": [] }));
             return std::process::ExitCode::from(2);
         }
-        Err(e) => e.exit(),
+        Err(e) if matches!(e.kind(), clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion) => e.exit(),
+        // clap's own message quotes what was typed: printed, as abo's are.
+        Err(e) => {
+            eprint!("{}", model::answer::printed(&e.to_string()));
+            return std::process::ExitCode::from(u8::try_from(e.exit_code()).unwrap_or(2));
+        }
     };
     if cli.parse_only {
         return std::process::ExitCode::SUCCESS;

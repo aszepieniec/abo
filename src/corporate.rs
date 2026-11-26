@@ -325,9 +325,45 @@ fn commit(s: &mut Store, mut c: Change, subject: &str, argv: Vec<String>) -> Res
         .collect();
     for d in dirs {
         let keep = format!("{d}/{KEEP}");
-        let there = (t.is_file(&keep) && !c.removes.contains(&keep)) || c.puts.iter().any(|(p, _)| *p == keep);
+        // One committed by hand in other capitals, `.Keep`, keeps it as well.
+        let there = t.paths().any(|p| !c.removes.contains(p) && p.rsplit_once('/').is_some_and(|(pd, n)| pd == d && folded(n) == folded(KEEP))) || c.puts.iter().any(|(p, _)| *p == keep);
         if !there {
             c.puts.push((keep, vec![]));
+        }
+    }
+    // A `.keep` asked for where one in other capitals is there already.
+    c.puts.retain(|(p, _)| {
+        let Some((d, KEEP)) = p.rsplit_once('/') else { return true };
+        !t.paths().any(|q| q != p && !c.removes.contains(q) && q.rsplit_once('/').is_some_and(|(qd, n)| qd == d && folded(n) == folded(KEEP)))
+    });
+    // Each name a path written makes is one abo would give, whatever wrote
+    // it — `mv` carrying names committed by hand too — but a directory the
+    // tree holds already, and `.keep`; and none is another beside it once
+    // folded: no two directories made one, no twins brought in.
+    let mut kids: BTreeMap<(String, String), std::collections::BTreeSet<String>> = BTreeMap::new();
+    for p in t.paths().filter(|p| !c.removes.contains(p)).chain(c.puts.iter().map(|(p, _)| p)) {
+        let parts: Vec<&str> = p.split('/').collect();
+        for i in 1..parts.len() {
+            kids.entry((parts[..i].join("/"), folded(parts[i]))).or_default().insert(parts[i].to_string());
+        }
+    }
+    for (p, _) in &c.puts {
+        let parts: Vec<&str> = p.split('/').collect();
+        for i in 1..parts.len() {
+            let (at, name) = (parts[..=i].join("/"), parts[i]);
+            let old = t.is_dir(&at) && i + 1 < parts.len();
+            if !old && !(i + 1 == parts.len() && name == KEEP) {
+                if let Some(why) = bad_name(name) {
+                    return Err(refused(format!("{why}, which no name under corporate/ may: {at} would be written so; rename it or take it out first")));
+                }
+            }
+            let same = &kids[&(parts[..i].join("/"), folded(name))];
+            // Twins committed by hand, there before, are theirs to settle;
+            // only a name made now may not be one.
+            if !old && same.len() > 1 {
+                let them: Vec<String> = same.iter().map(|n| format!("{}/{n}", parts[..i].join("/"))).collect();
+                return Err(refused(format!("{} would be one name: two names in a directory may not differ only in case, or in how a letter is written; rename or take out one first", them.join(" and "))));
+            }
         }
     }
     for (p, _) in &c.puts {
@@ -439,9 +475,18 @@ pub fn mv(s: &mut Store, from: &[String], to: &str) -> Result<String> {
         let dir = keep.rsplit_once('/').unwrap().0;
         return Err(refused(format!("{keep} keeps its directory, and goes only with it: move {dir} instead")));
     }
+    // `to` as typed, where the tree holds it so: of two directories
+    // committed by hand, one `ä` and one `a` and a mark, the one typed.
+    let raw = to.strip_suffix('/').unwrap_or(to);
+    if srcs.iter().any(|s| s == raw) {
+        return Err(refused(format!("{raw} is not moved onto itself")));
+    }
     let mut d = names(to)?;
     let mut whole = d.clone();
     spelled(&t, &mut whole);
+    if raw.starts_with("corporate/") && t.is_dir(raw) {
+        whole = raw.split('/').skip(1).map(String::from).collect();
+    }
     // `to` is no directory to move into where it is the one moved, written
     // another way: that renames it, as `a` and a mark to `ä`.
     let into = (t.is_dir(&join(&whole)) && !srcs.contains(&join(&whole))) || to.ends_with('/') || srcs.len() > 1;
@@ -486,6 +531,17 @@ pub fn mv(s: &mut Store, from: &[String], to: &str) -> Result<String> {
             let rm = crate::command::shell(&["corporate", "rm", "--", &link]);
             return Err(refused(format!("{link} is a symbolic link, which abo does not move: `{rm}` takes it out")));
         }
+        // Two names carried, `ä` and `a` and a mark, `K` and `k`, would land as one.
+        let mut carried: BTreeMap<String, String> = BTreeMap::new();
+        for p in t.under(src) {
+            let rel: Vec<&str> = p[src.len()..].split('/').filter(|n| !n.is_empty()).collect();
+            for i in 0..rel.len() {
+                let raw = rel[..=i].join("/");
+                if let Some(other) = carried.insert(folded(&raw), raw.clone()).filter(|o| *o != raw) {
+                    return Err(refused(format!("{src}/{other} and {src}/{raw} would be one name: rename or take out one first")));
+                }
+            }
+        }
         for p in t.under(src) {
             no_link(&s.root, &p)?;
             // As the last commit holds it, not as a filter on checkout wrote it.
@@ -497,13 +553,6 @@ pub fn mv(s: &mut Store, from: &[String], to: &str) -> Result<String> {
             c.removes.push(p);
         }
         dsts.push((dst, src));
-    }
-    // Two names committed by hand the same once folded would be one.
-    let mut landed: BTreeMap<String, &str> = BTreeMap::new();
-    for (p, _) in &c.puts {
-        if let Some(other) = landed.insert(folded(p), p) {
-            return Err(refused(format!("{other} and {p} would be one name: move or rename one of them first")));
-        }
     }
     c.gone = srcs.clone();
     let subject = match (&srcs[..], &dsts[..]) {

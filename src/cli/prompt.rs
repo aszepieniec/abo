@@ -36,6 +36,9 @@ fn line(prompt: &str, initial: &str) -> rustyline::Result<String> {
     if ni() {
         return Err(rustyline::error::ReadlineError::Io(std::io::Error::other("--ni asks nothing, and this asks")));
     }
+    // A prompt may hold what the books hold, edited by hand: printed so,
+    // and offered so, a hidden character `?`.
+    let (prompt, initial) = (&crate::model::answer::printed(prompt), &crate::model::answer::printed(initial));
     if std::io::stdin().is_terminal() {
         return rustyline::DefaultEditor::new()?.readline_with_initial(prompt, (initial, ""));
     }
@@ -47,7 +50,7 @@ fn line(prompt: &str, initial: &str) -> rustyline::Result<String> {
         return Err(rustyline::error::ReadlineError::Eof);
     }
     let s = s.trim_end_matches(['\n', '\r']).to_string();
-    println!("{s}");
+    println!("{}", crate::model::answer::printed(&s));
     Ok(s)
 }
 
