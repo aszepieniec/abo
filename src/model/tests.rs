@@ -1010,9 +1010,11 @@ fn refusals_speak_of_the_books_before(#[strategy(plan())] plan: Vec<Step>) {
             // What was given, as given and as printed, its hidden characters `?`;
             // an account's name too as it should be written, each part begun
             // by a capital, spaces and `;` taken out (N13), as given and as
-            // printed. A dotted key is quoted a segment at a time too.
+            // printed; a supplier's number as it should be written, without
+            // its commas, spaces and hidden characters (I-B3). A dotted key
+            // is quoted a segment at a time too.
             let capital = |t: &str| t.split(':').map(|s| { let mut c = s.chars(); c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default() }).collect::<Vec<_>>().join(":");
-            let given: Vec<String> = given.iter().flat_map(|t| t.split('.').chain([t.as_str()]).flat_map(|t| [t.to_string(), super::explain::shown(t), capital(t), super::explain::shown(&super::check::canonical_account(t))]).collect::<Vec<_>>()).filter(|t| !t.is_empty()).collect();
+            let given: Vec<String> = given.iter().flat_map(|t| t.split('.').chain([t.as_str()]).flat_map(|t| [t.to_string(), super::explain::shown(t), capital(t), super::explain::shown(&super::check::canonical_account(t)), t.chars().filter(|c| !super::hidden(*c) && !matches!(c, ',' | ' ')).collect()]).collect::<Vec<_>>()).filter(|t| !t.is_empty()).collect();
             let mut rest = w.clone();
             for t in &given {
                 rest = rest.replace(t.as_str(), "");
@@ -2031,7 +2033,9 @@ fn tidying_is_idempotent(#[strategy(plan())] plan: Vec<Step>, file: Index, edit:
     prop_assert_eq!(again.as_ref(), Ok(&m));
     prop_assert_eq!(render(&again.unwrap()), tidy.clone());
     let (_, problems) = read(&tidy);
-    prop_assert!(problems.iter().all(|p| !p.contains("not as abo writes it") && !p.contains("missing") && !p.contains("says nothing")), "{:?}", problems);
+    // Text abo would not write, by its own words: not a comment's rule,
+    // I-N1, whose words "says nothing" are of a comment left blank.
+    prop_assert!(problems.iter().all(|p| !p.contains("not as abo writes it") && !p.contains("missing") && !p.contains("says nothing abo would write")), "{:?}", problems);
 }
 
 /// §8: each problem names a file, and a line of it that is there.

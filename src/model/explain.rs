@@ -561,7 +561,12 @@ fn say(m: &Books, n: &Books, op: &Op, code: &str, these: &[&Violation]) -> Vec<S
                 let mut v = vec![];
                 let n = more.number.trim();
                 if !text_ok(n) || n.contains(',') {
-                    v.push(format!("the supplier's number {} holds a comma or a hidden character, where hledger would end it: write it without, such as {}", shown(n), n.replace([',', ' '], "").chars().filter(|c| !c.is_control()).collect::<String>()));
+                    // Without every character the rule refuses, not the
+                    // control characters alone: a suggestion that is refused
+                    // again is none. Where nothing is left, none is made.
+                    let fit: String = n.chars().filter(|c| !super::hidden(*c) && !matches!(c, ',' | ' ')).collect();
+                    let such = if fit.is_empty() { String::new() } else { format!(", such as {fit}") };
+                    v.push(format!("the supplier's number {} holds a comma or a hidden character, where hledger would end it: write it without{such}", shown(n)));
                 }
                 if let Some(d) = more.due.filter(|d| d < date) {
                     v.push(format!("it would be due on {d}, before its own date, {date}"));
