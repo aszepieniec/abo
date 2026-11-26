@@ -327,12 +327,15 @@ pub fn option_twin<'a>(payment: &'a BTreeMap<String, PayOption>, id: &str) -> Op
 
 pub fn check(m: &Books) -> Vec<Violation> {
     // Four digits of year, as the files write it and hledger reads it.
-    if let Some(d) = dates(m).into_iter().find(|d| !(1..=9999).contains(&d.year())) {
-        return vec![Violation::new("I-D1", format!("{d} is not in the years 1 to 9999"))];
+    // Each one, not the first: a change that mends one of two mends.
+    let v: Vec<Violation> = dates(m).into_iter().filter(|d| !(1..=9999).contains(&d.year())).map(|d| Violation::new("I-D1", format!("{d} is not in the years 1 to 9999"))).collect();
+    if !v.is_empty() {
+        return v;
     }
     // First, and alone: what follows computes with these.
-    if let Some(q) = numbers(m).into_iter().find(|q| q.abs() >= Decimal::from(BOUND)) {
-        return vec![Violation { code: "I-K3", what: format!("{q} is too large: an amount is below {BOUND}"), of: Subject::Number(q) }];
+    let v: Vec<Violation> = numbers(m).into_iter().filter(|q| q.abs() >= Decimal::from(BOUND)).map(|q| Violation { code: "I-K3", what: format!("{q} is too large: an amount is below {BOUND}"), of: Subject::Number(q) }).collect();
+    if !v.is_empty() {
+        return v;
     }
     let mut rates = vec![m.config.invoice.vat_rate];
     if let Vat::Flat { rate, .. } = m.config.vat {
@@ -345,17 +348,22 @@ pub fn check(m: &Books) -> Vec<Violation> {
             }
         }
     }
-    if let Some(r) = rates.into_iter().find(|r| *r < Decimal::ZERO || *r > Decimal::ONE_HUNDRED) {
-        return vec![Violation::new("I-K3", format!("a rate of {r} percent is not 0 to 100"))];
+    let v: Vec<Violation> = rates.into_iter().filter(|r| *r < Decimal::ZERO || *r > Decimal::ONE_HUNDRED).map(|r| Violation::new("I-K3", format!("a rate of {r} percent is not 0 to 100"))).collect();
+    if !v.is_empty() {
+        return v;
     }
     // What is owed is paid in amounts, so it is bounded as they are.
+    let mut v = vec![];
     for (i, e) in m.entries.iter().enumerate() {
         if let Kind::Invoice { content, .. } = &e.kind {
             let big = |q: Decimal| q.abs() >= Decimal::from(BOUND);
             if m.checked_totals(content).is_none_or(|(net, _, total)| big(net) || big(total)) || m.checked_home_totals(content).is_none_or(|(net, vat)| big(net) || big(vat) || big(net + vat)) {
-                return vec![Violation { code: "I-K3", what: format!("invoice {}'s total is not below {BOUND} in magnitude", i + 1), of: Subject::Total(i + 1) }];
+                v.push(Violation { code: "I-K3", what: format!("invoice {}'s total is not below {BOUND} in magnitude", i + 1), of: Subject::Total(i + 1) });
             }
         }
+    }
+    if !v.is_empty() {
+        return v;
     }
     let mut v = vec![];
     macro_rules! no {

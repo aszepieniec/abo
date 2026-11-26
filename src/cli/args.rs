@@ -946,9 +946,9 @@ pub(crate) enum Cmd {
         change: Option<PriceCmd>,
     },
     /// What is wrong with the books, by file and line, and how each is
-    /// mended. A change abo did not make (a file edited by hand) comes first:
-    /// while it is there abo changes nothing, so it is taken out or committed
-    /// by hand before any abo command mends the rest.
+    /// mended. A change abo did not make (a file edited by hand) is mended
+    /// first: while it is there abo changes nothing, so it is taken out or
+    /// committed by hand before any abo command mends the rest.
     Check,
     /// Rewrite the books as abo writes them, where they are not.
     Tidy,

@@ -219,8 +219,9 @@ one is moved, and otherwise renames the one `<to>`; `abo corporate rm
 <path>...` takes out files, or directories with all they hold. However many
 paths it is given, a command is one change. The files `add` is given are read relative to
 the working directory; every other path is relative to the books and begins
-with `corporate/`. A name is refused if it begins with a dot, ends with a
-space or a dot, holds a backslash or a character that does not show, is
+with `corporate/`. A name is refused if it begins with a dot or a mark,
+ends with a space or a dot, holds a backslash or a character that does not
+show — a joiner too, as in an emoji or a Persian word — is
 longer than 255 bytes, or is taken in its directory, even with other
 capitals, or with `ä` written as a Mac writes it, `a` and a mark: nothing is
 written over.
@@ -539,14 +540,16 @@ entry is given. Undo again, and the change is made again. Refused when the
 last commit is not abo's last change, or files hold changes abo did not
 make; and when the last change issued an invoice or a credit note, which may
 be with the customer: it is cancelled by a credit note (F5), and the refusal
-names the command. Anything older is reverted (F7).
+names the command. Refused too, changing nothing, where it would write over a
+file not committed, in a directory it cannot write in, or when a git hook
+refuses its commit. Anything older is reverted (F7).
 
 ### F8. Changes not made by abo — Supported (CLI, browser)
 abo commits every change it makes. A change to the books' files not
 committed is someone else's: while there is one, abo changes nothing, `abo
 tidy` included, and asks for it to be settled first — committed by whoever
-made it (`git commit -m '...' -- <files>`), or taken out (`git checkout --
-<files>`) — naming the files, and what the change breaks against the last
+made it (`git commit -m '...' -- <files>`), or taken out (`git restore
+--source=HEAD --staged --worktree -- <files>`) — naming the files, and what the change breaks against the last
 commit, for information. It offers no abo command as a way out. Reports
 still read. Committed, a change that breaks the books is listed by `abo
 check` at its file and line, with how to mend it; changes go ahead on such
@@ -556,8 +559,11 @@ In the browser a page says it in the bookkeeper's words — the books were
 changed outside abo, and whoever runs abo settles it — with the files, the
 diff and the git commands folded under **For whoever runs abo**. So does an
 `abo.toml` that cannot be read, as a page of its own, not a bare error.
+During a merge, a rebase, a cherry-pick or a revert, it names git's own
+`--continue` and `--abort` instead.
 **Done when** nothing is changed while files hold changes abo did not make,
-and the refusal names both git commands.
+and the refusal names both git commands, or, where the change breaks the
+books, says to mend it by hand at the line named and commit it.
 
 ### F3. Take out a statement recorded by mistake — Supported (browser, CLI)
 **Take out the statement** on Reconcile, or `abo unrecord`: the latest

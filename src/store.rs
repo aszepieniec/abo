@@ -355,7 +355,7 @@ impl Store {
             return Err(amiss(
                 AmissKind::Problems,
                 format!(
-                    "the books hold {} that this change does not mend, and abo adds nothing to them until they are mended:\n  {}\nabo check says how each is mended",
+                    "the books hold {} that this change does not mend, and abo adds nothing to them until they are mended:\n  {}\n`abo check` says how each is mended",
                     if held.len() == 1 { "a problem" } else { "problems" },
                     these.iter().map(|p| p.as_str()).collect::<Vec<_>>().join("\n  ")
                 ),
@@ -455,6 +455,9 @@ impl Store {
     /// removed as `removes` has it, committed with `msg`; empty where it
     /// changes nothing. Failed, the files are as they were, nothing staged.
     pub(crate) fn commit(&self, paths: &[String], puts: &[(&str, &[u8])], removes: &[String], exec: &[String], msg: &str) -> Result<String> {
+        // No paths given to git is every path to git: the whole tree
+        // added and committed, what it ignores too.
+        anyhow::ensure!(!paths.is_empty(), "abo has nothing to commit; this is a bug in abo");
         // Each file there now is moved aside, not read and written back: a
         // rename writes nothing, so it cannot fail half way for a full disk,
         // and keeps a file's mode and a link as a link. Put back if the
@@ -580,7 +583,7 @@ impl Store {
             // out that it could not take out, or fail half way.
             for p in &touched {
                 if let Some(d) = Path::new(p).ancestors().skip(1).map(|a| self.root.join(a)).find(|a| a.is_dir()) {
-                    if std::fs::metadata(&d).is_ok_and(|m| m.permissions().readonly()) {
+                    if nix::unistd::access(&d, nix::unistd::AccessFlags::W_OK).is_err() {
                         return Ok(Some(format!("{} is not writable, and `abo undo` would change what is in it: make it writable first", d.strip_prefix(&self.root).unwrap_or(&d).display())));
                     }
                 }
@@ -1146,7 +1149,7 @@ impl Store {
                 if let Ok(Some(edit)) = self.hand_edit() {
                     return Err(amiss(AmissKind::Unreportable, format!("hledger cannot report on the books as they now are.\n{edit}")));
                 }
-                return Err(amiss(AmissKind::Unreportable, format!("the books hold problems, so hledger cannot report on them:\n  {}\nabo check says how each is mended", self.problems.join("\n  "))));
+                return Err(amiss(AmissKind::Unreportable, format!("the books hold problems, so hledger cannot report on them:\n  {}\n`abo check` says how each is mended", self.problems.join("\n  "))));
             }
             bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
         }

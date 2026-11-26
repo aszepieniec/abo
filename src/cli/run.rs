@@ -781,6 +781,11 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
             // books read without a problem: one under corporate/, say.
             if let (true, Some(why)) = (s.problems.is_empty(), s.hand_edit()?) {
                 emit(cli.json, &[&why], || why.clone())?;
+                // Under --json the array is the answer, one document: the
+                // exit status says it is a problem.
+                if cli.json {
+                    std::process::exit(1);
+                }
                 bail!("the books hold a change abo did not make");
             }
             // What holds undo up is said here too: check and undo agree.
@@ -789,6 +794,9 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
                 let undo = undo.as_ref().map_or(String::new(), |u| format!("{u}\n"));
                 if s.problems.is_empty() { format!("{undo}{}", if undo.is_empty() { "No problems." } else { "The books hold no problem." }) } else { format!("{undo}{}\n{}", s.problems.join("\n"), mending(&s)) }
             })?;
+            if !s.problems.is_empty() && cli.json {
+                std::process::exit(1);
+            }
             if !s.problems.is_empty() {
                 bail!("the books hold {} problem{}", s.problems.len(), if s.problems.len() == 1 { "" } else { "s" });
             }

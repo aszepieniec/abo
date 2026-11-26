@@ -23,7 +23,7 @@ fn refused(what: String) -> anyhow::Error {
 /// A name as a refusal shows it: between quotes, so that a space it ends
 /// with shows, and cut short where it is long.
 fn shown(name: &str) -> String {
-    let n = crate::model::answer::plain(name);
+    let n = crate::model::answer::printed(name);
     match n.char_indices().nth(40) {
         Some((i, _)) => format!("\u{201c}{}\u{2026}\u{201d}", &n[..i]),
         None => format!("\u{201c}{n}\u{201d}"),
@@ -267,11 +267,11 @@ impl Change {
                 return Err(refused(format!("{d} is a file, not a directory")));
             }
             let keep = format!("{d}/{KEEP}");
-            if !t.is_file(&keep) && !self.puts.iter().any(|(p, _)| *p == keep) {
-                if !t.is_dir(&d) {
-                    if let Some(other) = t.taken(&join(&dir[..i - 1]), &dir[i - 1]) {
-                        return Err(clash(&d, &other));
-                    }
+            // One there already is given its `.keep` by `commit`, as any:
+            // not where something not committed sits there.
+            if !t.is_dir(&d) && !self.puts.iter().any(|(p, _)| *p == keep) {
+                if let Some(other) = t.taken(&join(&dir[..i - 1]), &dir[i - 1]) {
+                    return Err(clash(&d, &other));
                 }
                 self.puts.push((keep, vec![]));
             }
@@ -323,7 +323,7 @@ fn clear(root: &Path, rel: &str, t: &Tree) -> Result<()> {
             } else if meta.file_type().is_symlink() {
                 format!("{at} is a symbolic link, which abo does not follow: take it out first")
             } else {
-                format!("{at} is there, and not committed: commit it yourself (git add, then git commit), or take it out first")
+                format!("{at} is there, and not committed: commit it yourself (`git add --force -- {q}`, then `git commit`), or take it out first", q = crate::command::quoted(&at))
             }));
         }
     }
@@ -400,7 +400,7 @@ fn commit(s: &mut Store, mut c: Change, subject: &str, argv: Vec<String>) -> Res
         }
     }
     c.puts.retain(|(p, _)| match p.rsplit_once('/') {
-        Some((d, KEEP)) => (!kept.contains(d) || t.is_file(p)) && !(std::fs::symlink_metadata(s.root.join(p)).is_ok() && !t.is_file(p)),
+        Some((d, KEEP)) => !kept.contains(d) || t.is_file(p),
         _ => true,
     });
     // Each name a path written makes is one abo would give, whatever wrote
@@ -534,7 +534,7 @@ fn said(paths: &[String]) -> String {
 pub fn mv(s: &mut Store, from: &[String], to: &str) -> Result<String> {
     let t = Tree::read(&s.root)?;
     let srcs = from.iter().map(|f| there(&t, f, "moved")).collect::<Result<Vec<_>>>()?;
-    if let Some(keep) = srcs.iter().find(|p| p.rsplit('/').next().is_some_and(|n| folded(n) == folded(KEEP))) {
+    if let Some(keep) = srcs.iter().find(|p| !t.is_dir(p) && p.rsplit('/').next().is_some_and(|n| folded(n) == folded(KEEP))) {
         let dir = keep.rsplit_once('/').unwrap().0;
         return Err(refused(format!("{keep} keeps its directory, and goes only with it: move {dir} instead")));
     }
@@ -643,7 +643,7 @@ pub fn rm(s: &mut Store, paths: &[String]) -> Result<String> {
     let mut ats: Vec<String> = vec![];
     for p in paths {
         let at = there(&t, p, "removed")?;
-        if let Some((dir, _)) = at.rsplit_once('/').filter(|(_, n)| folded(n) == folded(KEEP)) {
+        if let Some((dir, _)) = at.rsplit_once('/').filter(|(_, n)| !t.is_dir(&at) && folded(n) == folded(KEEP)) {
             let rm = crate::command::shell(&["corporate", "rm", "--", dir]);
             return Err(refused(format!("{at} keeps its directory, and goes only with it: `{rm}` takes out the directory")));
         }

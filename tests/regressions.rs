@@ -2912,7 +2912,7 @@ fn a_problem_the_books_hold_is_said_as_theirs() {
     let year = read(&dir, "journal/2026.journal").replace("12.50", "2000000000000.00");
     std::fs::write(dir.join("journal/2026.journal"), year).unwrap();
     git(&dir, &["commit", "-q", "-am", "By hand"]);
-    refused(&dir, &["partner", "add", "acme", "--name", "Acme"], "the books hold a problem");
+    refused(&dir, &["partner", "add", "acme", "--name", "Acme"], "that this change does not mend");
 }
 
 /// Undo where git cannot write: in a directory not writable it committed a
@@ -2926,7 +2926,7 @@ fn undo_refuses_where_it_cannot_write() {
     std::fs::write(&f, "f").unwrap();
     ok(&dir, &["corporate", "add", f.to_str().unwrap(), "corporate/f"]);
     ok(&dir, &["corporate", "mv", "corporate/f/undo-readonly-f", "corporate/d/f"]);
-    std::fs::set_permissions(dir.join("corporate/d"), std::fs::Permissions::from_mode(0o555)).unwrap();
+    std::fs::set_permissions(dir.join("corporate/d"), std::fs::Permissions::from_mode(0o575)).unwrap();
     let said = refused(&dir, &["undo"], "is not writable");
     std::fs::set_permissions(dir.join("corporate/d"), std::fs::Permissions::from_mode(0o755)).unwrap();
     assert!(said.contains("corporate/d"), "{said}");
@@ -2945,4 +2945,56 @@ fn a_staged_change_is_shown() {
     git(&dir, &["add", "journal/accounts.journal"]);
     let said = refused(&dir, &["account", "add", "Expenses:Rent"], "a change abo did not make");
     assert!(said.contains("+account Expenses:Staged"), "{said}");
+}
+
+/// A `.keep` not committed where `mkdir` or `mv` would write one was dropped
+/// from the change: `mkdir` then committed with no path, which git reads
+/// as every path, what it ignores too; `mv` of an empty directory lost it.
+#[test]
+fn a_keep_not_committed_is_refused_where_a_command_writes_one() {
+    let dir = books("keep-asked", &[]);
+    std::fs::create_dir_all(dir.join("corporate/x")).unwrap();
+    std::fs::write(dir.join("corporate/x/.keep"), "").unwrap();
+    std::fs::write(dir.join("secret.env"), "k").unwrap();
+    let n = log_len(&dir);
+    refused(&dir, &["corporate", "mkdir", "corporate/x"], "git add --force -- corporate/x/.keep");
+    assert_eq!(log_len(&dir), n);
+    ok(&dir, &["corporate", "mkdir", "corporate/a"]);
+    std::fs::create_dir_all(dir.join("corporate/b")).unwrap();
+    std::fs::write(dir.join("corporate/b/.keep"), "").unwrap();
+    refused(&dir, &["corporate", "mv", "corporate/a", "corporate/b"], "not committed");
+    assert!(dir.join("corporate/a/.keep").exists());
+}
+
+/// A directory named `.Keep`, committed by hand, was refused as if it were
+/// the file that keeps its directory.
+#[test]
+fn a_directory_named_keep_is_taken_out() {
+    let dir = books("keep-dir", &[]);
+    std::fs::create_dir_all(dir.join("corporate/d/.Keep")).unwrap();
+    std::fs::write(dir.join("corporate/d/.Keep/f"), "f").unwrap();
+    std::fs::write(dir.join("corporate/d/g"), "g").unwrap();
+    git(&dir, &["add", "corporate"]);
+    git(&dir, &["commit", "-qm", "by hand"]);
+    ok(&dir, &["corporate", "rm", "corporate/d/.Keep"]);
+    assert!(!dir.join("corporate/d/.Keep").exists());
+    assert!(dir.join("corporate/d/g").exists());
+}
+
+/// A path holding a hidden character was advised as `?`, which no shell
+/// finds; and `check --json` printed two documents.
+#[test]
+fn advice_names_a_hidden_character_by_its_number() {
+    let dir = books("advice-hidden", &[]);
+    std::fs::create_dir_all(dir.join("corporate/d\u{202e}x")).unwrap();
+    std::fs::write(dir.join("corporate/d\u{202e}x/f"), "f").unwrap();
+    git(&dir, &["add", "corporate"]);
+    git(&dir, &["commit", "-qm", "by hand"]);
+    std::fs::write(dir.join("corporate/d\u{202e}x/f"), "g").unwrap();
+    let said = refused(&dir, &["account", "add", "Expenses:Rent"], "a change abo did not make");
+    assert!(said.contains("$'corporate/d\\u202ex/f'"), "{said}");
+    let o = abo(&dir, &["check", "--json"]);
+    assert!(!o.status.success());
+    let out = String::from_utf8(o.stdout).unwrap();
+    assert!(serde_json::from_str::<serde_json::Value>(&out).is_ok(), "{out}");
 }

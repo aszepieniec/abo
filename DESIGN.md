@@ -630,7 +630,7 @@ are read from their files alone, and the git history is what restores them
 `/log` and `abo log` show the lines, each with the command as it would be
 typed and, on `/log`, the diff its commit made.
 
-The Company page ends with **Corporate documents**: the tree, a directory
+Planned, not built yet: the Company page ends with **Corporate documents**: the tree, a directory
 a heading over its files, each file a download link with its size, and on
 each row **Move** (to a path typed, which renames it) and **Remove**. Under
 it, one form adds files: several chosen at once, into a directory chosen
@@ -706,7 +706,9 @@ into a command does not reach the terminal it was typed in, no line reads in
 another order than it was written, and nothing invisible rides along to
 whoever, or whatever model, reads it. A newline and a tab print, and so does
 what only joins letters or picks their form — the joiners of a Persian
-name or an emoji, a variation selector. JSON escapes for itself.
+name or an emoji, a variation selector. Advice that names a path holding a
+hidden character writes it as its number, `$'\u202e'`, which a shell reads
+back. JSON carries each character as it is: whoever prints it prints it.
 
 This matters most for the application a model lives in (§5). A supplier's PDF
 can contain text addressed to the model, and what that text can reach is the

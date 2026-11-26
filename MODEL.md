@@ -88,7 +88,7 @@ Three consequences follow from the definitions, and are why they are chosen:
 
 As `src/model/mod.rs` writes it. `Decimal` is an exact decimal; `Date` a
 calendar date; a text holds no character that `hidden` refuses (by Unicode
-category, DESIGN §1), and a newline only where the field is lines; `Hash` a
+category, DESIGN §8), and a newline only where the field is lines; `Hash` a
 SHA-256 hash, in lower-case hex; `EntryId` an entry's place in `entries`,
 a gap included (§2.3).
 
@@ -764,7 +764,7 @@ not in the books.
 | G-F2 | An edit to the files is never read as the same state with no problem | §7, §8 | `edits_are_noticed` |
 | G-F3 | Reading never fails, whatever the text: it gives a state, or problems | §8 | `edits_are_noticed` |
 | G-F4 | `abo tidy`, which is `render(parse(f))`, gives text read as the same state, and tidying it again changes nothing | §7, §8 | `tidying_is_idempotent` |
-| G-F5 | Books holding a problem — a hand edit, a file changed — are read; while they break a rule, the only change made is one that mends one and brings none; `abo check` fails exactly while one is there, and `abo tidy` mends what is only not as abo writes it | §8 | `hand_edits_are_checked_and_tidied` |
+| G-F5 | Books holding a problem — a hand edit, a file changed — are read; while they break a rule, the only change made is one that mends one and brings none, and none while one is I-K3's or I-D1's; `abo check` fails exactly while one is there, and `abo tidy` mends what is only not as abo writes it | §8 | `hand_edits_are_checked_and_tidied` |
 | G-F6 | `abo.toml` changes format only on purpose: what fresh books get is frozen, and books an older abo wrote read in a newer one as written, with no problem | §7.5 | `abo_toml_keeps_its_format`, `abo_toml_reads_across_versions` |
 | G-F7 | A key or value of `abo.toml` that abo does not know is refused, and said to be perhaps a newer abo's | §7.5 | `abo_toml_reads_across_versions` |
 
@@ -834,11 +834,11 @@ with the ledger. Broken, the ledger and the debts in it disagree.
 ### Corporate documents
 
 A *name* is a part of a path under `corporate/`: a text (§2) of at most 255
-bytes, not empty, that holds no `/`, `\` or newline, does not begin with `.`,
-and does not end with a space of any kind or a `.`. Within a directory no two
+bytes, not empty, that holds no `/`, `\` or newline, does not begin with `.`
+or with a mark that joins the character before it, and does not end with a space of any kind or a `.`. Within a directory no two
 names are the same once their case is folded — `ß` as `ss`, `Σ`, `σ` and `ς`
 as one — so that a copy of the books on a computer that ignores case keeps
-every file. A name is kept in NFC, `ä` one character as it is typed, not
+every file; two such names are *twins*. A name is kept in NFC, `ä` one character as it is typed, not
 `a` and a mark as a Mac writes it in a file's name; given either way, it
 is one name, and finds a name committed by hand the other way. Which paths there are is the company's
 choice, so what is guaranteed is only where abo writes, what each command
@@ -953,7 +953,9 @@ not reused: those missing below were rules about a value now derived.
   10^12 in magnitude, and every VAT rate is 0 to 100 percent. Within these
   and I-K0, every sum the books take is exact, and every product an invoice
   takes fits.
-  Checked first, and alone: the rest computes with these numbers.
+  Checked first, and alone: the rest computes with these numbers. So while
+  the books hold one, no change is made, not even one that takes out another:
+  it is mended by hand.
 - **I-D1** Every date is in the years 1 to 9999, which the files write as four
   digits and hledger reads. Checked first, and alone, with I-K3.
 
@@ -1805,7 +1807,7 @@ With the model, one set of invariants holds, and the 76 rule-version switches ar
   that abo would not give may be taken out, or moved alone to a name abo
   would give, but no command makes one or carries one to a new path; and
   `list` leaves out every path with a name that begins with a dot, as it
-  leaves out `.keep`. A directory committed by hand that abo writes into
+  leaves out `.keep`, and every symbolic link. A directory committed by hand that abo writes into
   keeps its spelling. Two names in a directory the same once folded,
   committed by hand, are not written into, not even a `.keep`, and one
   emptied goes; nor is a `.keep` written where a file not committed sits,

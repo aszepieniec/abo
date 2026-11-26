@@ -28,7 +28,7 @@ unicode-normalization = "0.1"
 # Already built for rustyline; used directly for the key-by-key VAT method
 # list, and by tests/tty.rs for a terminal to press keys on.
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31", default-features = false, features = ["term", "signal"] }
+nix = { version = "0.31", default-features = false, features = ["term", "signal", "fs"] }
 
 # The model's plans and the command line's replays (src/model/tests.rs,
 # src/cli_tests.rs), for another crate's tests: abo-web's, as a dev-dependency.

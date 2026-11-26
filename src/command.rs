@@ -413,7 +413,9 @@ pub fn shell(words: &[&str]) -> String {
 pub fn quoted(w: &str) -> String {
     if !w.is_empty() && w.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.,:/=@%+".contains(&b)) {
         w.to_string()
-    } else if w.chars().any(char::is_control) {
+    // A character that does not show, written as its number: pasted, the
+    // shell reads it back; printed, nothing in it turns to `?`.
+    } else if w.chars().any(crate::model::answer::hidden) {
         let escaped: String = w
             .chars()
             .map(|c| match c {
@@ -422,7 +424,8 @@ pub fn quoted(w: &str) -> String {
                 '\n' => "\\n".to_string(),
                 '\t' => "\\t".to_string(),
                 '\r' => "\\r".to_string(),
-                c if c.is_control() => format!("\\u{:04x}", c as u32),
+                c if crate::model::answer::hidden(c) && (c as u32) > 0xFFFF => format!("\\U{:08x}", c as u32),
+                c if crate::model::answer::hidden(c) => format!("\\u{:04x}", c as u32),
                 c => c.to_string(),
             })
             .collect();
@@ -449,7 +452,7 @@ pub fn unshell(line: &str) -> Option<Vec<String>> {
                             'n' => '\n',
                             't' => '\t',
                             'r' => '\r',
-                            'u' => char::from_u32(u32::from_str_radix(&(0..4).map(|_| chars.next()).collect::<Option<String>>()?, 16).ok()?)?,
+                            u @ ('u' | 'U') => char::from_u32(u32::from_str_radix(&(0..if u == 'u' { 4 } else { 8 }).map(|_| chars.next()).collect::<Option<String>>()?, 16).ok()?)?,
                             c => c,
                         }),
                         c => w.push(c),
@@ -486,6 +489,11 @@ fn a_command_is_shown_as_a_shell_takes_it() {
     let words = ["company", "--country=\n", "--address=a\\b'c\r\td\u{7f}\u{85}"];
     let line = shell(&words);
     assert_eq!(line, "abo company $'--country=\\n' $'--address=a\\\\b\\'c\\r\\td\\u007f\\u0085'");
+    assert_eq!(unshell(&line).unwrap(), words);
+    // Every character that does not show, past U+FFFF too.
+    let words = ["corporate", "rm", "corporate/a\u{202e}b\u{200d}c\u{e0041}"];
+    let line = shell(&words);
+    assert_eq!(line, "abo corporate rm $'corporate/a\\u202eb\\u200dc\\U000e0041'");
     assert_eq!(unshell(&line).unwrap(), words);
 }
 
