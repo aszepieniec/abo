@@ -36,9 +36,10 @@ fn line(prompt: &str, initial: &str) -> rustyline::Result<String> {
     if ni() {
         return Err(rustyline::error::ReadlineError::Io(std::io::Error::other("--ni asks nothing, and this asks")));
     }
-    // A prompt may hold what the books hold, edited by hand: printed so,
-    // and offered so, a hidden character `?`.
-    let (prompt, initial) = (&crate::model::answer::printed(prompt), &crate::model::answer::printed(initial));
+    // A prompt may hold what the books hold, edited by hand: printed so, a
+    // hidden character `?`. What is put on the line is never one that holds
+    // such a character (`read_over`): taken as shown, it would be changed.
+    let prompt = &crate::model::answer::printed(prompt);
     if std::io::stdin().is_terminal() {
         return rustyline::DefaultEditor::new()?.readline_with_initial(prompt, (initial, ""));
     }
@@ -72,13 +73,16 @@ pub(crate) fn read_over(question: &str, now: &str) -> Result<Option<String>> {
     use std::io::IsTerminal as _;
     // Without a terminal, `now` cannot be put on the line: it is shown, as
     // what a blank answer takes.
-    let prompt = if std::io::stdin().is_terminal() || now.is_empty() { format!("{question}: ") } else { format!("{question} [{now}]: ") };
-    let s = match line(&prompt, now) {
+    // Nor where it holds what prints as `?`, an edit by hand: on the line,
+    // accepted, the `?` would be kept in its place.
+    let on_line = std::io::stdin().is_terminal() && crate::model::answer::printed(now) == now;
+    let prompt = if on_line || now.is_empty() { format!("{question}: ") } else { format!("{question} [{now}]: ") };
+    let s = match line(&prompt, if on_line { now } else { "" }) {
         Err(rustyline::error::ReadlineError::Eof) => return ran_out(question),
         r => r?,
     };
     let s = s.trim();
-    Ok(Some(if s.is_empty() && !std::io::stdin().is_terminal() { now.to_string() } else { s.to_string() }))
+    Ok(Some(if s.is_empty() && !on_line { now.to_string() } else { s.to_string() }))
 }
 
 /// Asks until `check` accepts the answer, saying each time what was wrong.

@@ -95,6 +95,9 @@ pub fn names(path: &str) -> Result<Vec<String>> {
 /// would not give is taken away all the same.
 fn there(t: &Tree, path: &str, verb: &str) -> Result<String> {
     let p = path.strip_suffix('/').unwrap_or(path);
+    if p != path && (t.is_file(p) || t.is_link(p)) {
+        return Err(refused(format!("{p} is a file, not a directory, as the / after it says")));
+    }
     if p.starts_with("corporate/") && (t.is_file(p) || t.is_link(p) || t.is_dir(p)) {
         return Ok(p.to_string());
     }
@@ -114,20 +117,28 @@ fn join(names: &[String]) -> String {
 
 /// The tree as the last commit holds it: each file's path and size, and
 /// apart, each symbolic link committed by hand, which is no file of it.
-fn entries(root: &Path) -> Result<(BTreeMap<String, u64>, std::collections::BTreeSet<String>)> {
+/// Paths, a set of them.
+type Paths = std::collections::BTreeSet<String>;
+
+fn entries(root: &Path) -> Result<(BTreeMap<String, u64>, Paths, Paths)> {
     let out = repo::git_in(root, &["ls-tree", "-r", "-l", "-z", "HEAD", "--", ROOT])?;
-    let (mut files, mut links) = (BTreeMap::new(), std::collections::BTreeSet::new());
+    let (mut files, mut links, mut exec) = (BTreeMap::new(), std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
     for l in out.split('\0') {
         let Some((meta, path)) = l.split_once('\t') else { continue };
         let mut m = meta.split_whitespace();
         let (Some(mode), Some(kind), Some(size)) = (m.next(), m.next(), m.nth(1)) else { continue };
         match (kind, mode) {
             ("blob", "120000") => drop(links.insert(path.to_string())),
-            ("blob", _) => drop(files.insert(path.to_string(), size.parse().unwrap_or(0))),
+            ("blob", m) => {
+                if m == "100755" {
+                    exec.insert(path.to_string());
+                }
+                files.insert(path.to_string(), size.parse().unwrap_or(0));
+            }
             _ => {}
         }
     }
-    Ok((files, links))
+    Ok((files, links, exec))
 }
 
 /// The files of the tree as the last commit holds it, with their sizes.
@@ -178,12 +189,17 @@ pub fn list(root: &Path) -> Result<Listing> {
 struct Tree {
     files: BTreeMap<String, u64>,
     links: std::collections::BTreeSet<String>,
+    /// The files committed executable, whose mode a move keeps.
+    exec: std::collections::BTreeSet<String>,
+    /// Every directory the paths are in, found once, not by a scan each time.
+    dirs: std::collections::HashSet<String>,
 }
 
 impl Tree {
     fn read(root: &Path) -> Result<Tree> {
-        let (files, links) = entries(root)?;
-        Ok(Tree { files, links })
+        let (files, links, exec) = entries(root)?;
+        let dirs = files.keys().chain(&links).flat_map(|p| Path::new(p).ancestors().skip(1).map(|d| d.to_string_lossy().into_owned()).take_while(|d| !d.is_empty()).collect::<Vec<_>>()).collect();
+        Ok(Tree { files, links, exec, dirs })
     }
     fn paths(&self) -> impl Iterator<Item = &String> {
         self.files.keys().chain(&self.links)
@@ -195,7 +211,7 @@ impl Tree {
         self.links.contains(p)
     }
     fn is_dir(&self, p: &str) -> bool {
-        p == ROOT || self.paths().any(|k| k.strip_prefix(p).is_some_and(|r| r.starts_with('/')))
+        p == ROOT || self.dirs.contains(p)
     }
     /// The path in the tree that is `p` written another way, `ä` as `a` and
     /// a mark, if one is: a file, a link, or a directory.
@@ -234,6 +250,8 @@ struct Change {
     removes: Vec<String>,
     /// What `mv` or `rm` takes away: files, and directories with all under them.
     gone: Vec<String>,
+    /// What is put executable, as it was where it was moved from.
+    exec: Vec<String>,
 }
 
 impl Change {
@@ -316,51 +334,93 @@ fn commit(s: &mut Store, mut c: Change, subject: &str, argv: Vec<String>) -> Res
     // §10): one `mv` brings, and one made by hand without it that the
     // change is in, too.
     let gone = |p: &str| c.gone.iter().any(|g| p == g || p.strip_prefix(g.as_str()).is_some_and(|r| r.starts_with('/')));
-    // Not one with a name abo would not give: it writes no such path (G-C1).
+    // What stays, and of it, once over: the directories kept already, by a
+    // `.keep` in any capitals, a file or a directory committed by hand; and
+    // each directory's names, folded, to find twins. Sets, not scans: a
+    // directory of thousands moved is thousands of paths each way.
+    let removed: std::collections::HashSet<&str> = c.removes.iter().map(String::as_str).collect();
+    let mut kept: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut kids: BTreeMap<(String, String), std::collections::BTreeSet<String>> = BTreeMap::new();
+    let tally = |p: &str, kids: &mut BTreeMap<(String, String), std::collections::BTreeSet<String>>, kept: &mut std::collections::HashSet<String>| {
+        let parts: Vec<&str> = p.split('/').collect();
+        let mut parent = parts[0].to_string();
+        for name in &parts[1..] {
+            if folded(name) == folded(KEEP) {
+                kept.insert(parent.clone());
+            }
+            kids.entry((parent.clone(), folded(name))).or_default().insert(name.to_string());
+            parent = format!("{parent}/{name}");
+        }
+    };
+    for p in t.paths().filter(|p| !removed.contains(p.as_str())) {
+        tally(p, &mut kids, &mut kept);
+    }
+    // Twins as the tree holds them before the change: one emptied by it is
+    // a twin still, and goes, as nothing is written into it.
+    let mut before: BTreeMap<(String, String), std::collections::BTreeSet<String>> = BTreeMap::new();
+    for p in t.paths() {
+        tally(p, &mut before, &mut std::collections::HashSet::new());
+    }
+    // A directory with a twin, committed by hand, is theirs to settle:
+    // nothing is written into it, not even a `.keep`, until one goes.
+    let twin = |d: &str, kids: &BTreeMap<(String, String), std::collections::BTreeSet<String>>| {
+        let parts: Vec<&str> = d.split('/').collect();
+        (1..parts.len()).any(|i| kids.get(&(parts[..i].join("/"), folded(parts[i]))).is_some_and(|k| k.len() > 1))
+    };
+    // Every directory there is after the change holds `.keep` (MODEL.md
+    // §10): one `mv` brings, and one made by hand without it, too; but not
+    // one with a name abo would not give, which it writes no path into
+    // (G-C1), nor a twin's.
     let dirs: std::collections::BTreeSet<String> = t
         .paths()
         .chain(c.puts.iter().map(|(p, _)| p))
         .flat_map(|p| Path::new(p).ancestors().skip(1).map(|d| d.to_string_lossy().into_owned()).take_while(|d| d != ROOT).collect::<Vec<_>>())
-        .filter(|d| !gone(d) && !by_hand(d))
+        .filter(|d| !gone(d) && !by_hand(d) && !twin(d, &before))
         .collect();
+    let asked: std::collections::HashSet<String> = c.puts.iter().map(|(p, _)| p.clone()).collect();
     for d in dirs {
         let keep = format!("{d}/{KEEP}");
-        // One committed by hand in other capitals, `.Keep`, keeps it as well.
-        let there = t.paths().any(|p| !c.removes.contains(p) && p.rsplit_once('/').is_some_and(|(pd, n)| pd == d && folded(n) == folded(KEEP))) || c.puts.iter().any(|(p, _)| *p == keep);
-        if !there {
+        // Something not committed there already holds nothing up: the
+        // directory goes without, until it is settled.
+        let not_committed = std::fs::symlink_metadata(s.root.join(&keep)).is_ok() && !t.is_file(&keep);
+        if !kept.contains(&d) && !asked.contains(&keep) && !not_committed {
             c.puts.push((keep, vec![]));
         }
     }
-    // A `.keep` asked for where one in other capitals is there already.
-    c.puts.retain(|(p, _)| {
-        let Some((d, KEEP)) = p.rsplit_once('/') else { return true };
-        !t.paths().any(|q| q != p && !c.removes.contains(q) && q.rsplit_once('/').is_some_and(|(qd, n)| qd == d && folded(n) == folded(KEEP)))
+    // A `.keep` asked for where one in other capitals is kept already, or
+    // comes with what is moved: a `.Keep` committed by hand.
+    for (p, _) in &c.puts {
+        if let Some((d, n)) = p.rsplit_once('/') {
+            if n != KEEP && folded(n) == folded(KEEP) {
+                kept.insert(d.to_string());
+            }
+        }
+    }
+    c.puts.retain(|(p, _)| match p.rsplit_once('/') {
+        Some((d, KEEP)) => !kept.contains(d) || t.is_file(p),
+        _ => true,
     });
     // Each name a path written makes is one abo would give, whatever wrote
     // it — `mv` carrying names committed by hand too — but a directory the
-    // tree holds already, and `.keep`; and none is another beside it once
-    // folded: no two directories made one, no twins brought in.
-    let mut kids: BTreeMap<(String, String), std::collections::BTreeSet<String>> = BTreeMap::new();
-    for p in t.paths().filter(|p| !c.removes.contains(p)).chain(c.puts.iter().map(|(p, _)| p)) {
-        let parts: Vec<&str> = p.split('/').collect();
-        for i in 1..parts.len() {
-            kids.entry((parts[..i].join("/"), folded(parts[i]))).or_default().insert(parts[i].to_string());
-        }
+    // tree holds already, and a `.keep` in any capitals; and none has a
+    // twin beside it once folded: no two directories made one, no twins
+    // brought in, none written into.
+    for (p, _) in &c.puts {
+        tally(p, &mut kids, &mut kept);
     }
     for (p, _) in &c.puts {
         let parts: Vec<&str> = p.split('/').collect();
         for i in 1..parts.len() {
             let (at, name) = (parts[..=i].join("/"), parts[i]);
             let old = t.is_dir(&at) && i + 1 < parts.len();
-            if !old && !(i + 1 == parts.len() && name == KEEP) {
+            let keep = i + 1 == parts.len() && folded(name) == folded(KEEP);
+            if !old && !keep {
                 if let Some(why) = bad_name(name) {
                     return Err(refused(format!("{why}, which no name under corporate/ may: {at} would be written so; rename it or take it out first")));
                 }
             }
             let same = &kids[&(parts[..i].join("/"), folded(name))];
-            // Twins committed by hand, there before, are theirs to settle;
-            // only a name made now may not be one.
-            if !old && same.len() > 1 {
+            if same.len() > 1 {
                 let them: Vec<String> = same.iter().map(|n| format!("{}/{n}", parts[..i].join("/"))).collect();
                 return Err(refused(format!("{} would be one name: two names in a directory may not differ only in case, or in how a letter is written; rename or take out one first", them.join(" and "))));
             }
@@ -378,7 +438,7 @@ fn commit(s: &mut Store, mut c: Change, subject: &str, argv: Vec<String>) -> Res
     paths.dedup();
     let puts: Vec<(&str, &[u8])> = c.puts.iter().map(|(p, b)| (p.as_str(), b.as_slice())).collect();
     let msg = store::message(subject, &[(&argv, subject)]);
-    let commit = s.commit(&paths, &puts, &c.removes, &msg)?;
+    let commit = s.commit(&paths, &puts, &c.removes, &c.exec, &msg)?;
     if commit.is_empty() {
         anyhow::bail!("git committed nothing of it: is a directory on the way a git repository of its own?");
     }
@@ -542,14 +602,21 @@ pub fn mv(s: &mut Store, from: &[String], to: &str) -> Result<String> {
                 }
             }
         }
-        for p in t.under(src) {
-            no_link(&s.root, &p)?;
-            // As the last commit holds it, not as a filter on checkout wrote it.
-            let bytes = blob(&s.root, &p)?;
+        let under = t.under(src);
+        for p in &under {
+            no_link(&s.root, p)?;
+        }
+        // As the last commit holds them, not as a filter on checkout wrote them.
+        let blobs = blobs(&s.root, &under)?;
+        for (p, bytes) in under.into_iter().zip(blobs) {
             // In NFC, what it carries too: a name committed by hand as `a`
             // and a mark lands as `ä`.
             // The directory it goes into as the tree writes it, never respelled.
-            c.puts.push((format!("{}/{}", join(parent), nfc(&format!("{}{}", last[0], &p[src.len()..]))), bytes));
+            let to = format!("{}/{}", join(parent), nfc(&format!("{}{}", last[0], &p[src.len()..])));
+            if t.exec.contains(&p) {
+                c.exec.push(to.clone());
+            }
+            c.puts.push((to, bytes));
             c.removes.push(p);
         }
         dsts.push((dst, src));
@@ -585,18 +652,38 @@ pub fn rm(s: &mut Store, paths: &[String]) -> Result<String> {
     let mut removes: Vec<String> = ats.iter().flat_map(|a| t.under(a)).collect();
     removes.sort();
     removes.dedup();
-    let c = Change { puts: vec![], removes, gone: ats.clone() };
+    let c = Change { puts: vec![], removes, gone: ats.clone(), exec: vec![] };
     let subject = format!("Remove {}", said(&ats));
     let mut argv: Vec<String> = vec!["corporate".into(), "rm".into(), "--".into()];
     argv.extend(ats);
     commit(s, c, &subject, argv)
 }
 
-/// The bytes of `path` as the last commit holds them.
-fn blob(root: &Path, path: &str) -> Result<Vec<u8>> {
-    let o = std::process::Command::new("git").current_dir(root).args(["cat-file", "blob", &format!("HEAD:{path}")]).output()?;
-    if !o.status.success() {
-        anyhow::bail!("git cat-file {path}: {}", String::from_utf8_lossy(&o.stderr).trim());
+/// The bytes of each of `paths` as the last commit holds them, read by one
+/// `git cat-file --batch`, not one git a file: a directory of thousands
+/// moved. Its requests are a line each, so no path may hold a newline,
+/// which no name abo gives does.
+fn blobs(root: &Path, paths: &[String]) -> Result<Vec<Vec<u8>>> {
+    use std::io::Write as _;
+    if let Some(p) = paths.iter().find(|p| p.contains('\n')) {
+        anyhow::bail!("{}: a name with a newline, which abo does not move: take it out with git", crate::model::answer::printed(p));
     }
-    Ok(o.stdout)
+    let mut child = std::process::Command::new("git").current_dir(root).args(["cat-file", "--batch"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn()?;
+    let mut stdin = child.stdin.take().unwrap();
+    let asked: String = paths.iter().map(|p| format!("HEAD:{p}\n")).collect();
+    let writer = std::thread::spawn(move || stdin.write_all(asked.as_bytes()));
+    let out = child.wait_with_output()?;
+    writer.join().map_err(|_| anyhow::anyhow!("git cat-file: writing to it failed"))??;
+    let (mut at, mut all) = (0, vec![]);
+    for p in paths {
+        let end = out.stdout[at..].iter().position(|b| *b == b'\n').map(|e| at + e).ok_or_else(|| anyhow::anyhow!("git cat-file: no answer for {p}"))?;
+        let head = String::from_utf8_lossy(&out.stdout[at..end]).into_owned();
+        let size: usize = match head.split(' ').collect::<Vec<_>>()[..] {
+            [_, "blob", n] => n.parse()?,
+            _ => anyhow::bail!("git cat-file {p}: {head}"),
+        };
+        all.push(out.stdout[end + 1..end + 1 + size].to_vec());
+        at = end + 1 + size + 1;
+    }
+    Ok(all)
 }

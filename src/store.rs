@@ -427,16 +427,21 @@ impl Store {
         puts.extend(also.iter().map(|(p, b)| (p.as_str(), b.as_slice())));
         let mut changes: Vec<(&[String], &str)> = before.iter().map(|(a, w)| (a.as_slice(), w.as_str())).collect();
         changes.push((&argv, what));
-        let commit = self.commit(&paths, &puts, &gone.iter().chain(removed).cloned().collect::<Vec<_>>(), &message(subject, &changes))?;
+        let commit = self.commit(&paths, &puts, &gone.iter().chain(removed).cloned().collect::<Vec<_>>(), &[], &message(subject, &changes))?;
         self.books = n;
         Ok((!commit.is_empty()).then_some(commit))
     }
 
-    /// `paths`, each written as `puts` has it or removed as `removes` has it,
-    /// committed with `msg`; empty where it changes nothing. Failed, the
-    /// files are as they were, nothing staged.
-    pub(crate) fn commit(&self, paths: &[String], puts: &[(&str, &[u8])], removes: &[String], msg: &str) -> Result<String> {
-        let kept: Vec<(String, Option<Vec<u8>>)> = paths.iter().map(|p| (p.clone(), std::fs::read(self.root.join(p)).ok())).collect();
+    /// `paths`, each written as `puts` has it, those in `exec` executable, or
+    /// removed as `removes` has it, committed with `msg`; empty where it
+    /// changes nothing. Failed, the files are as they were, nothing staged.
+    pub(crate) fn commit(&self, paths: &[String], puts: &[(&str, &[u8])], removes: &[String], exec: &[String], msg: &str) -> Result<String> {
+        // Each file there now is moved aside, not read and written back: a
+        // rename writes nothing, so it cannot fail half way for a full disk,
+        // and keeps a file's mode and a link as a link. Put back if the
+        // change fails; gone once it is made.
+        let aside_dir = self.root.join(".abo/aside");
+        let mut aside: Vec<(std::path::PathBuf, std::path::PathBuf)> = vec![];
         // The directories writing makes, deepest first: taken out again if it fails.
         let mut made: Vec<std::path::PathBuf> = puts.iter().flat_map(|(p, _)| Path::new(p).ancestors().skip(1).filter(|d| !d.as_os_str().is_empty() && !self.root.join(d).exists()).map(Path::to_path_buf).collect::<Vec<_>>()).collect();
         made.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
@@ -445,12 +450,24 @@ impl Store {
         let r = (|| -> Result<String> {
             // What goes, before what comes: on a computer that ignores
             // case, `Minutes/a` put as `minutes/a` is the same file, which
-            // a remove after would take out.
-            for rel in removes {
-                let _ = std::fs::remove_file(self.root.join(rel));
+            // a remove after would take out. A remove that fails fails the
+            // change: none is made in part.
+            let _ = removes;
+            for (i, rel) in paths.iter().enumerate() {
+                let at = self.root.join(rel);
+                if std::fs::symlink_metadata(&at).is_ok_and(|m| !m.is_dir()) {
+                    std::fs::create_dir_all(&aside_dir)?;
+                    let to = aside_dir.join(format!("{}-{i}", std::process::id()));
+                    std::fs::rename(&at, &to).with_context(|| format!("{rel}: it could not be moved aside"))?;
+                    aside.push((at, to));
+                }
             }
             for (rel, bytes) in puts {
                 put(&self.root, rel, bytes)?;
+                if exec.iter().any(|e| e == rel) {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    std::fs::set_permissions(self.root.join(rel), std::fs::Permissions::from_mode(0o755))?;
+                }
             }
             // Each path as it is, never a pattern: a name may hold `*` or
             // `[`; and added though .gitignore names it, as `contract~`.
@@ -476,11 +493,11 @@ impl Store {
                 let mut reset = vec!["--literal-pathspecs", "reset", "-q", "--"];
                 reset.extend(paths.iter().map(String::as_str));
                 let _ = repo::git_in(&self.root, &reset);
-                for (rel, bytes) in &kept {
-                    match bytes {
-                        Some(b) => drop(std::fs::write(self.root.join(rel), b)),
-                        None => drop(std::fs::remove_file(self.root.join(rel))),
-                    }
+                for (rel, _) in puts {
+                    let _ = std::fs::remove_file(self.root.join(rel));
+                }
+                for (at, to) in &aside {
+                    let _ = std::fs::rename(to, at);
                 }
                 for d in &made {
                     let _ = std::fs::remove_dir(self.root.join(d));
@@ -488,6 +505,9 @@ impl Store {
                 return Err(e);
             }
         };
+        for (_, to) in &aside {
+            let _ = std::fs::remove_file(to);
+        }
         Ok(commit)
     }
 
@@ -504,17 +524,18 @@ impl Store {
         let touched: Vec<&str> = touched.split('\0').filter(|f| !f.is_empty()).collect();
         if !touched.is_empty() {
             // Ignored too: git writes over what .gitignore names, `a~` say.
-            let mut status = vec!["--literal-pathspecs", "status", "--porcelain", "-z", "--ignored", "--"];
+            // Every file not tracked, whatever status.showUntrackedFiles says.
+            let mut status = vec!["--literal-pathspecs", "status", "--porcelain", "-z", "--ignored", "--untracked-files=all", "--"];
             status.extend(touched.iter().copied());
             if let Some(f) = porcelain(&repo::git_in(&self.root, &status)?).first() {
-                return Ok(Some(format!("{f} is where the last change wrote, and holds something not committed, which `abo undo` would write over: commit it yourself, or take it out")));
+                return Ok(Some(format!("{f} is where the last change wrote, and holds something not committed, which `abo undo` would write over: commit it yourself (git add --force, then git commit), or move it elsewhere")));
             }
             // A file not committed where the change has a directory.
             for p in &touched {
                 for a in Path::new(p).ancestors().skip(1).filter(|a| !a.as_os_str().is_empty()) {
                     if std::fs::symlink_metadata(self.root.join(a)).is_ok_and(|m| !m.is_dir()) {
                         let a = a.display();
-                        return Ok(Some(format!("{a} is where the last change has a directory, and is a file not committed, which `abo undo` would write over: commit it yourself, or take it out")));
+                        return Ok(Some(format!("{a} is where the last change has a directory, and is a file or a link not committed, which `abo undo` would write over: move it elsewhere")));
                     }
                 }
             }

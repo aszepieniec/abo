@@ -1436,6 +1436,28 @@ fn corporate_commands_change_only_their_tree() {
     refused(&["corporate", "mv", "corporate/b", "corporate/e"]);
     refused(&["corporate", "mv", "corporate/w/a\u{308}", "corporate/w/a\u{308}/"]);
     assert!(run(&["corporate", "mv", "corporate/b/x.", "corporate/b/x"]).ok);
+    // A `.Keep` moves with its directory, as its keep; a directory `.keep`
+    // committed by hand holds nothing up; a twin is not written into.
+    assert!(run(&["corporate", "mv", "corporate/h", "corporate/hh"]).ok);
+    assert!(crate::corporate::files(&books).unwrap().keys().filter(|p| p.starts_with("corporate/hh/")).all(|p| !p.ends_with("/.keep")));
+    std::fs::create_dir_all(books.join("corporate/k/.keep")).unwrap();
+    std::fs::write(books.join("corporate/k/.keep/x"), "x").unwrap();
+    crate::repo::git_in(&books, &["add", "corporate"]).unwrap();
+    crate::repo::git_in(&books, &["commit", "-q", "-m", "By hand a third time"]).unwrap();
+    assert!(run(&["corporate", "mkdir", "corporate/yy"]).ok);
+    refused(&["corporate", "add", &_parent.0.join("\u{df}").display().to_string(), "corporate/c/K"]);
+    // A twin emptied goes; a file given as a directory, `x/`, is refused;
+    // a file not committed where a `.keep` would go holds nothing up.
+    assert!(run(&["corporate", "rm", "corporate/c/k/y"]).ok);
+    assert!(!crate::corporate::files(&books).unwrap().keys().any(|p| p.starts_with("corporate/c/k/")));
+    refused(&["corporate", "rm", "corporate/hh/f/"]);
+    std::fs::create_dir_all(books.join("corporate/u")).unwrap();
+    std::fs::write(books.join("corporate/u/f"), "f").unwrap();
+    crate::repo::git_in(&books, &["add", "corporate/u/f"]).unwrap();
+    crate::repo::git_in(&books, &["commit", "-q", "-m", "By hand once more"]).unwrap();
+    std::fs::write(books.join("corporate/u/.keep"), "untracked").unwrap();
+    assert!(run(&["corporate", "mkdir", "corporate/vv"]).ok);
+    assert_eq!(std::fs::read_to_string(books.join("corporate/u/.keep")).unwrap(), "untracked");
 }
 
 /// G-C3: whatever is committed under `corporate/` — what looks like abo's

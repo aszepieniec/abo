@@ -125,16 +125,17 @@ pub fn plain(s: &str) -> String {
     s.chars().map(|c| if hidden(c) { '?' } else { c }).collect()
 }
 
-/// `s` as abo prints it for a person: each control character `?` but a
-/// newline and a tab, and each that turns the text around it, so that no
-/// escape typed into what abo says back — an account's name, a date, a
-/// path — reaches the terminal, and no line reads in another order than it
-/// was written. What only joins letters, as the joiners of an emoji or of
-/// a Persian name, prints as it is: it is no `hidden` text abo keeps, but it
-/// may be a git author's name, or a file's committed by hand.
+/// `s` as abo prints it for a person: each `hidden` character `?`, so that
+/// no escape typed into what abo says back — an account's name, a date, a
+/// path — reaches the terminal, no line reads in another order than it was
+/// written, and nothing invisible rides along, as tag characters; but a
+/// newline and a tab, and what only joins letters or picks their form —
+/// the joiners of an emoji or of a Persian name, a variation selector —
+/// which print as they are: no text abo keeps holds them, but a git
+/// author's name may, or a file's committed by hand.
 pub fn printed(s: &str) -> String {
-    let turns = |c: char| matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{2028}' | '\u{2029}');
-    s.chars().map(|c| if (c.is_control() && c != '\n' && c != '\t') || turns(c) { '?' } else { c }).collect()
+    let joins = |c: char| matches!(c, '\n' | '\t' | '\u{200C}' | '\u{200D}' | '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}');
+    s.chars().map(|c| if hidden(c) && !joins(c) { '?' } else { c }).collect()
 }
 
 /// A character no text abo keeps may hold: a control character, or one

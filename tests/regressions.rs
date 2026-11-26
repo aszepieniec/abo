@@ -2750,3 +2750,61 @@ fn joiners_print_as_they_are() {
     let log = String::from_utf8_lossy(&abo(&dir, &["log"]).stdout).into_owned();
     assert!(log.contains("\u{639}\u{644}\u{6cc}\u{200c}\u{631}\u{636}\u{627}"), "{log}");
 }
+
+/// A change that failed put back what it had taken out by writing its
+/// bytes again: a mode lost, a link become a copy of what it named, a file
+/// cut short where the disk was full; a remove that failed was passed over,
+/// so a move became a copy. Each file now goes aside and comes back whole,
+/// and a remove that fails fails the change.
+#[test]
+fn a_change_that_fails_puts_back_each_file_as_it_was() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = books("fails-whole", &[]);
+    std::fs::create_dir_all(dir.join("corporate/x")).unwrap();
+    std::fs::write(dir.join("corporate/x/run.sh"), "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(dir.join("corporate/x/run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink("../../abo.toml", dir.join("corporate/x/link")).unwrap();
+    git(&dir, &["add", "corporate"]);
+    git(&dir, &["commit", "-q", "-m", "By hand"]);
+    let hook = dir.join(".git/hooks/pre-commit");
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let head = |d: &Path| String::from_utf8(std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(d).output().unwrap().stdout).unwrap();
+    let before = head(&dir);
+    assert!(!abo(&dir, &["corporate", "mv", "corporate/x/run.sh", "corporate/y/run.sh"]).status.success());
+    assert!(!abo(&dir, &["corporate", "rm", "corporate/x/link"]).status.success());
+    assert_eq!(head(&dir), before);
+    let status = String::from_utf8(std::process::Command::new("git").args(["status", "--porcelain", "--untracked-files=all"]).current_dir(&dir).output().unwrap().stdout).unwrap();
+    assert_eq!(status, "", "{status}");
+    assert!(std::fs::symlink_metadata(dir.join("corporate/x/link")).unwrap().file_type().is_symlink());
+    std::fs::remove_file(&hook).unwrap();
+    // Moved, a file keeps its mode.
+    ok(&dir, &["corporate", "mv", "corporate/x/run.sh", "corporate/y/run.sh"]);
+    let mode = String::from_utf8(std::process::Command::new("git").args(["ls-files", "-s", "corporate/y/run.sh"]).current_dir(&dir).output().unwrap().stdout).unwrap();
+    assert!(mode.starts_with("100755"), "{mode}");
+    // A remove that fails, its directory not writable, fails the move.
+    std::fs::write(dir.join("f"), "f").unwrap();
+    ok(&dir, &["corporate", "add", dir.join("f").to_str().unwrap(), "corporate/ro"]);
+    std::fs::set_permissions(dir.join("corporate/ro"), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let before = head(&dir);
+    let o = abo(&dir, &["corporate", "mv", "corporate/ro/f", "corporate/rw/f"]);
+    std::fs::set_permissions(dir.join("corporate/ro"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!o.status.success(), "{}", err(&o));
+    assert_eq!(head(&dir), before);
+    assert_eq!(read(&dir, "corporate/ro/f"), "f");
+}
+
+/// Undo looked for files not committed where it would write as git's
+/// status.showUntrackedFiles said: set to no, it saw none, and wrote over one.
+#[test]
+fn undo_sees_files_not_committed_whatever_git_shows() {
+    let dir = books("undo-untracked-no", &[]);
+    std::fs::write(dir.join("x"), "orig").unwrap();
+    ok(&dir, &["corporate", "add", dir.join("x").to_str().unwrap(), "corporate/d"]);
+    ok(&dir, &["corporate", "rm", "corporate/d/x"]);
+    git(&dir, &["config", "status.showUntrackedFiles", "no"]);
+    std::fs::write(dir.join(".git/info/exclude"), "x\n").unwrap();
+    std::fs::write(dir.join("corporate/d/x"), "precious").unwrap();
+    refused(&dir, &["undo"], "would write over");
+    assert_eq!(read(&dir, "corporate/d/x"), "precious");
+}
