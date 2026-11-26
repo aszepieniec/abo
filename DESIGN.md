@@ -630,7 +630,8 @@ are read from their files alone, and the git history is what restores them
 `/log` and `abo log` show the lines, each with the command as it would be
 typed and, on `/log`, the diff its commit made.
 
-The Company page ends with **Corporate documents**: the tree, each
+Second on the Company page, under Details, is **Corporate documents**:
+the tree, each
 directory and file by its name, `corporate/` left off, as they nest; each
 file with its size and a download icon. A row dragged onto a directory, or
 onto the section's heading for the top, moves there; files dropped from the

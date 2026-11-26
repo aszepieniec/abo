@@ -236,8 +236,8 @@ taken out longer ago is in the git history: `git log --diff-filter=D --
 <file>` gets it back, to `add` again. A whole directory comes back with `git
 restore --source=<commit>^ --staged --worktree -- <dir>`, then `git commit`;
 that commit is yours, not abo's, and not in its log.
-In the browser, **Corporate documents** ends the Company page, a tree by
-names: drag a file or directory onto a directory to move it, or onto the
+In the browser, **Corporate documents** is second on the Company page,
+under Details, a tree by names: drag a file or directory onto a directory to move it, or onto the
 heading for the top; drop files from the computer onto a directory to add
 them; double-click a name to rename it; a directory's icons make a directory
 in it or add files to it; the download icon opens or downloads a file, and
