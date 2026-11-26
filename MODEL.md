@@ -847,7 +847,7 @@ does, and that the books do not depend on the tree.
 | | Guarantee | Rules | Properties |
 |---|---|---|---|
 | G-C1 | Every path abo writes under `corporate/` is `corporate/` and names, each checked as above, except the `.keep` files it writes; every name it gives is in NFC, and so is every name `mv` carries, though a directory committed by hand that it writes into keeps its spelling; nothing it is given — `..`, a leading `/`, a symbolic link, `.git`, a name git would read as a pattern, as `*` or `[a]` — makes it write, take out or commit any path but those it was given and their `.keep` | §10 | `corporate_paths_stay_inside` |
-| G-C2 | `add` puts each file in the directory it is told, under the file's own name; `mkdir` makes a directory; `mv` moves files or directories with all they hold, into `to` if `to` is a directory, ends with `/`, or more than one is moved, else the one to the path `to`; `rm` takes out files or directories with all they hold; a directory needed and not there is made. Each is one commit, however many it is given. Nothing else changes: not the state, not any other file. Each refuses, changing nothing, a name taken or another the same once folded, but for a name renamed in other capitals; a path not there; a file where a directory is needed; a file not committed, a symbolic link, or a git repository of its own, where it would write or on the way there; `corporate/` itself moved or taken out; a `.keep` moved, or taken out but with its directory; a directory moved into itself; a symbolic link committed by hand moved, which `rm` takes out instead; a path given twice, or one moved with a directory it is in; a move that would make two names one. After each, every directory under `corporate/` holds `.keep`, in any capitals, one made by hand too, but for one with a name abo would not give, one with a twin, and one where a file not committed sits at its `.keep` | §10 | `corporate_commands_change_only_their_tree` |
+| G-C2 | `add` puts each file in the directory it is told, under the file's own name; `mkdir` makes a directory; `mv` moves files or directories with all they hold, into `to` if `to` is a directory, ends with `/`, or more than one is moved, else the one to the path `to`; `rm` takes out files or directories with all they hold; a directory needed and not there is made. Each is one commit, however many it is given. Nothing else changes: not the state, not any other file. Each refuses, changing nothing, a name taken or another the same once folded, but for a name renamed in other capitals; a path not there; a file where a directory is needed; a file not committed, a symbolic link, or a git repository of its own, where it would write or on the way there, or committed by hand where it would move or take out; `corporate/` itself moved or taken out; a `.keep` moved, or taken out but with its directory; a directory moved into itself; a symbolic link committed by hand moved, which `rm` takes out instead; a path given twice, or one moved with a directory it is in; a move that would make two names one. After each, every directory under `corporate/` holds `.keep`, in any capitals, one made by hand too, but for one with a name abo would not give, one with a twin, and one where a file not committed sits at its `.keep` | §10 | `corporate_commands_change_only_their_tree` |
 | G-C3 | Whatever `corporate/` holds, the books read the same, with the same problems | §8, §10 | `the_books_do_not_read_corporate` |
 
 ### Whoever runs a command
@@ -1239,6 +1239,13 @@ one adds something; removes a document that names no bill, an account's
 latest statement, or a partner or agreement nothing names; links a document
 to its bill; removes a comment; or changes the configuration, the
 declarations, a partner's details or an agreement's status.
+
+An operation is made whole or not at all. One stopped half way — abo killed,
+the machine off — is taken back by the next abo to hold the books, before
+anything reads them, and that abo says so: each file it changed is as the
+last commit has it, or as it was if it was not committed, and an undo under
+way is called off. Before it starts, an operation records in git's directory
+what it changes; it deletes the record once the commit is made.
 
 ### 5.1 Declarations
 

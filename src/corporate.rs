@@ -123,15 +123,20 @@ fn join(names: &[String]) -> String {
 /// Paths, a set of them.
 type Paths = std::collections::BTreeSet<String>;
 
-fn entries(root: &Path) -> Result<(BTreeMap<String, u64>, Paths, Paths)> {
+/// Files with their sizes, links, files executable, git repositories.
+type Entries = (BTreeMap<String, u64>, Paths, Paths, Paths);
+
+fn entries(root: &Path) -> Result<Entries> {
     let out = repo::git_in(root, &["ls-tree", "-r", "-l", "-z", "HEAD", "--", ROOT])?;
-    let (mut files, mut links, mut exec) = (BTreeMap::new(), std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
+    let (mut files, mut links, mut exec, mut repos) = (BTreeMap::new(), Paths::new(), Paths::new(), Paths::new());
     for l in out.split('\0') {
         let Some((meta, path)) = l.split_once('\t') else { continue };
         let mut m = meta.split_whitespace();
         let (Some(mode), Some(kind), Some(size)) = (m.next(), m.next(), m.nth(1)) else { continue };
         match (kind, mode) {
             ("blob", "120000") => drop(links.insert(path.to_string())),
+            // A git repository of its own, committed by hand: a gitlink.
+            ("commit", _) => drop(repos.insert(path.to_string())),
             ("blob", m) => {
                 if m == "100755" {
                     exec.insert(path.to_string());
@@ -141,7 +146,7 @@ fn entries(root: &Path) -> Result<(BTreeMap<String, u64>, Paths, Paths)> {
             _ => {}
         }
     }
-    Ok((files, links, exec))
+    Ok((files, links, exec, repos))
 }
 
 /// The files of the tree as the last commit holds it, with their sizes.
@@ -196,13 +201,16 @@ struct Tree {
     exec: std::collections::BTreeSet<String>,
     /// Every directory the paths are in, found once, not by a scan each time.
     dirs: std::collections::HashSet<String>,
+    /// The git repositories of their own committed by hand, which no command
+    /// moves, takes out or writes into.
+    repos: Paths,
 }
 
 impl Tree {
     fn read(root: &Path) -> Result<Tree> {
-        let (files, links, exec) = entries(root)?;
-        let dirs = files.keys().chain(&links).flat_map(|p| Path::new(p).ancestors().skip(1).map(|d| d.to_string_lossy().into_owned()).take_while(|d| !d.is_empty()).collect::<Vec<_>>()).collect();
-        Ok(Tree { files, links, exec, dirs })
+        let (files, links, exec, repos) = entries(root)?;
+        let dirs = files.keys().chain(&links).chain(&repos).flat_map(|p| Path::new(p).ancestors().skip(1).map(|d| d.to_string_lossy().into_owned()).take_while(|d| !d.is_empty()).collect::<Vec<_>>()).collect();
+        Ok(Tree { files, links, exec, dirs, repos })
     }
     fn paths(&self) -> impl Iterator<Item = &String> {
         self.files.keys().chain(&self.links)
@@ -212,6 +220,11 @@ impl Tree {
     }
     fn is_link(&self, p: &str) -> bool {
         self.links.contains(p)
+    }
+    /// A git repository of its own at `p`, under it, or above it.
+    fn repo(&self, p: &str) -> Option<anyhow::Error> {
+        let r = self.repos.iter().find(|r| *r == p || r.strip_prefix(p).is_some_and(|x| x.starts_with('/')) || p.strip_prefix(r.as_str()).is_some_and(|x| x.starts_with('/')))?;
+        Some(refused(format!("{r} is a git repository of its own, committed by hand, which abo does not move, take out or write into: `git rm --cached -- {}` takes it out of the books", crate::command::quoted(r))))
     }
     fn is_dir(&self, p: &str) -> bool {
         p == ROOT || self.dirs.contains(p)
@@ -385,7 +398,7 @@ fn commit(s: &mut Store, mut c: Change, subject: &str, argv: Vec<String>) -> Res
         let keep = format!("{d}/{KEEP}");
         // Something not committed there already holds nothing up: the
         // directory goes without, until it is settled.
-        let not_committed = std::fs::symlink_metadata(s.root.join(&keep)).is_ok() && !t.is_file(&keep);
+        let not_committed = std::fs::symlink_metadata(s.root.join(&keep)).is_ok() && !t.is_file(&keep) && !t.is_link(&keep);
         if !kept.contains(&d) && !asked.contains(&keep) && !not_committed {
             c.puts.push((keep, vec![]));
         }
@@ -430,6 +443,14 @@ fn commit(s: &mut Store, mut c: Change, subject: &str, argv: Vec<String>) -> Res
         }
     }
     for (p, _) in &c.puts {
+        if let Some(e) = t.repo(p) {
+            return Err(e);
+        }
+        // A link committed by hand that the change takes out is no link to
+        // write through: it is moved aside first.
+        if t.is_link(p) && c.removes.contains(p) {
+            continue;
+        }
         clear(&s.root, p, &t)?;
     }
     for p in &c.removes {
@@ -590,6 +611,9 @@ pub fn mv(s: &mut Store, from: &[String], to: &str) -> Result<String> {
         if let Some((_, other)) = dsts.iter().find(|(o, _)| folded(o) == folded(&dst)) {
             return Err(refused(format!("{other} and {src} would both be {dst}: move them apart")));
         }
+        if let Some(e) = t.repo(src) {
+            return Err(e);
+        }
         if let Some(link) = t.under(src).into_iter().find(|p| t.is_link(p)) {
             let rm = crate::command::shell(&["corporate", "rm", "--", &link]);
             return Err(refused(format!("{link} is a symbolic link, which abo does not move: `{rm}` takes it out")));
@@ -643,9 +667,12 @@ pub fn rm(s: &mut Store, paths: &[String]) -> Result<String> {
     let mut ats: Vec<String> = vec![];
     for p in paths {
         let at = there(&t, p, "removed")?;
-        if let Some((dir, _)) = at.rsplit_once('/').filter(|(_, n)| !t.is_dir(&at) && folded(n) == folded(KEEP)) {
+        if let Some((dir, _)) = at.rsplit_once('/').filter(|(_, n)| !t.is_dir(&at) && !t.is_link(&at) && folded(n) == folded(KEEP)) {
             let rm = crate::command::shell(&["corporate", "rm", "--", dir]);
             return Err(refused(format!("{at} keeps its directory, and goes only with it: `{rm}` takes out the directory")));
+        }
+        if let Some(e) = t.repo(&at) {
+            return Err(e);
         }
         if ats.contains(&at) {
             return Err(refused(format!("{at} is given twice")));

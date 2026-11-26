@@ -2998,3 +2998,64 @@ fn advice_names_a_hidden_character_by_its_number() {
     let out = String::from_utf8(o.stdout).unwrap();
     assert!(serde_json::from_str::<serde_json::Value>(&out).is_ok(), "{out}");
 }
+
+/// An abo killed half way through a change left what it had written — an
+/// untracked partners.toml the books then read, a journal emptied, a revert
+/// staged whose `git revert --continue` gave an id twice — and called it a
+/// change abo did not make. The next abo takes it back.
+#[test]
+fn a_change_stopped_half_way_is_taken_back() {
+    let head = |dir: &Path| String::from_utf8(std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(dir).output().unwrap().stdout).unwrap().trim().to_string();
+    let status = |dir: &Path| String::from_utf8(std::process::Command::new("git").args(["status", "--porcelain", "--untracked-files=all"]).current_dir(dir).output().unwrap().stdout).unwrap();
+    let dir = books("stopped", &[]);
+    ok(&dir, &["post", "--date", "2026-01-05", "--desc", "Pens", "--", "Expenses:General  12.50 EUR", "Assets:Bank  -12.50 EUR"]);
+    let year = read(&dir, "journal/2026.journal");
+    // Killed once all was aside and partners.toml written.
+    std::fs::create_dir_all(dir.join(".abo/aside")).unwrap();
+    std::fs::rename(dir.join("journal/2026.journal"), dir.join(".abo/aside/0")).unwrap();
+    std::fs::write(dir.join("journal/2026.journal"), "").unwrap();
+    std::fs::write(dir.join("partners.toml"), "[acme]\nname = \"Acme\"\n").unwrap();
+    std::fs::write(dir.join(".git/abo-changing"), format!("put\0{}\0journal/2026.journal\0partners.toml", head(&dir))).unwrap();
+    let o = abo(&dir, &["check"]);
+    assert!(o.status.success(), "{}", err(&o));
+    assert!(err(&o).contains("stopped half way"), "{}", err(&o));
+    assert_eq!(read(&dir, "journal/2026.journal"), year);
+    assert_eq!(status(&dir), "");
+    assert!(!dir.join(".git/abo-changing").exists());
+    // Killed while moving aside: what was moved goes back, nothing else.
+    std::fs::create_dir_all(dir.join(".abo/aside")).unwrap();
+    std::fs::rename(dir.join("journal/2026.journal"), dir.join(".abo/aside/0")).unwrap();
+    std::fs::write(dir.join(".git/abo-changing"), format!("aside\0{}\0journal/2026.journal\0journal/main.journal", head(&dir))).unwrap();
+    ok(&dir, &["check"]);
+    assert_eq!(read(&dir, "journal/2026.journal"), year);
+    assert_eq!(status(&dir), "");
+    // An undo killed in its revert: called off, no id given twice.
+    git(&dir, &["revert", "--no-commit", "HEAD"]);
+    std::fs::write(dir.join(".git/abo-changing"), format!("undo\0{}\0journal/2026.journal\0journal/main.journal", head(&dir))).unwrap();
+    let said = ok(&dir, &["post", "--date", "2026-01-06", "--desc", "Paper", "--", "Expenses:General  5.00 EUR", "Assets:Bank  -5.00 EUR"]);
+    assert!(said.contains("entry 2"), "{said}");
+    assert!(!dir.join(".git/REVERT_HEAD").exists());
+}
+
+/// A `.keep` committed by hand as a symbolic link: `mv` advised an `rm`
+/// that `rm` refused; it is taken out, and a `.keep` put in its place.
+/// A git repository committed by hand under corporate/ was not seen:
+/// `mv` left it behind; it is refused by name.
+#[test]
+fn links_and_repositories_committed_by_hand() {
+    let dir = books("link-keep", &[]);
+    std::fs::create_dir_all(dir.join("corporate/c")).unwrap();
+    std::os::unix::fs::symlink("/etc/passwd", dir.join("corporate/c/.keep")).unwrap();
+    std::fs::write(dir.join("corporate/c/f"), "f").unwrap();
+    git(&dir, &["add", "-A", "corporate"]);
+    git(&dir, &["commit", "-qm", "by hand"]);
+    ok(&dir, &["corporate", "rm", "--", "corporate/c/.keep"]);
+    assert!(std::fs::symlink_metadata(dir.join("corporate/c/.keep")).unwrap().is_file());
+    ok(&dir, &["corporate", "mkdir", "corporate/sub"]);
+    git(&dir.join("corporate/sub"), &["init", "-q", "inner"]);
+    git(&dir.join("corporate/sub/inner"), &["-c", "user.name=t", "-c", "user.email=t@x.invalid", "commit", "-q", "--allow-empty", "-m", "x"]);
+    git(&dir, &["add", "corporate/sub/inner"]);
+    git(&dir, &["commit", "-qm", "by hand"]);
+    refused(&dir, &["corporate", "mv", "corporate/sub", "corporate/s2"], "git repository of its own");
+    refused(&dir, &["corporate", "rm", "corporate/sub"], "git repository of its own");
+}

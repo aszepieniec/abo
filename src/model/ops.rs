@@ -885,7 +885,8 @@ fn config_edited(c: &Config, key: &str, value: Option<&str>) -> Result<Config, S
 /// A supplier's number as N8 compares it: its letters and digits, in
 /// lower case. `OW-1042`, `ow 1042` and `OW1042` are one number.
 pub fn bill_number_key(n: &str) -> String {
-    n.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+    // Folded as a letter's every case is one: `ϐ` and `Β`, `ß` and `SS`.
+    n.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).flat_map(char::to_uppercase).flat_map(char::to_lowercase).collect()
 }
 
 /// How many days apart two bills owing the same are taken for one (N8).

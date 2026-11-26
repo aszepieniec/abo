@@ -468,13 +468,9 @@ impl Store {
         // change at a time holds the lock, so none is another's.
         let _ = std::fs::remove_dir_all(&aside_dir);
         let mut aside: Vec<(std::path::PathBuf, std::path::PathBuf)> = vec![];
-        // What was written, or begun: only that is taken out again.
-        let mut written: Vec<String> = vec![];
-        // The directories writing makes, deepest first: taken out again if it fails.
-        let mut made: Vec<std::path::PathBuf> = puts.iter().flat_map(|(p, _)| Path::new(p).ancestors().skip(1).filter(|d| !d.as_os_str().is_empty() && !self.root.join(d).exists()).map(Path::to_path_buf).collect::<Vec<_>>()).collect();
-        made.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
-        made.dedup();
         let stamp = Stamp::now(&self.root)?;
+        let head = repo::git_in(&self.root, &["rev-parse", "HEAD"])?.trim().to_string();
+        begin(&self.root, "aside", &head, paths)?;
         let r = (|| -> Result<String> {
             // What goes, before what comes: on a computer that ignores
             // case, `Minutes/a` put as `minutes/a` is the same file, which
@@ -501,8 +497,8 @@ impl Store {
                     aside.push((at, to));
                 }
             }
+            begin(&self.root, "put", &head, paths)?;
             for (rel, bytes) in puts {
-                written.push(rel.to_string());
                 put(&self.root, rel, bytes)?;
                 // Its mode as the file it replaces had it; executable where
                 // `exec` says, as one moved from such a file.
@@ -535,28 +531,15 @@ impl Store {
         let commit = match r {
             Ok(c) => c,
             Err(e) => {
-                // As it was: no file half written, nothing left staged.
-                let mut reset = vec!["--literal-pathspecs", "reset", "-q", "--"];
-                reset.extend(paths.iter().map(String::as_str));
-                let _ = repo::git_in(&self.root, &reset);
-                for rel in &written {
-                    let _ = std::fs::remove_file(self.root.join(rel));
-                }
-                for (at, to) in &aside {
-                    // A directory a put made where it was, emptied above.
-                    let _ = std::fs::remove_dir(at);
-                    let _ = std::fs::rename(to, at);
-                }
-                for d in &made {
-                    let _ = std::fs::remove_dir(self.root.join(d));
+                // As it was: no file half written, nothing left staged; or,
+                // where that fails too, as it will be for the next abo.
+                if let Err(r) = recover(&self.root) {
+                    return Err(e.context(format!("and abo could not yet put the files back as they were ({r:#}); the next abo command does")));
                 }
                 return Err(e);
             }
         };
-        for (_, to) in &aside {
-            let _ = std::fs::remove_file(to);
-        }
-        let _ = std::fs::remove_dir(&aside_dir);
+        end(&self.root, paths)?;
         Ok(commit)
     }
 
@@ -765,6 +748,10 @@ impl Store {
         // is then taken back, and no bare revert is left with no line of the
         // log. (Reverted and amended, git ran the hook at the amend alone.)
         let touched: Vec<String> = repo::git_in(&self.root, &["diff-tree", "--no-commit-id", "--name-only", "-z", "-r", "HEAD"])?.split('\0').filter(|p| !p.is_empty()).map(String::from).collect();
+        let mut recorded = touched.clone();
+        recorded.push("journal/main.journal".into());
+        let head_full = repo::git_in(&self.root, &["rev-parse", "HEAD"])?.trim().to_string();
+        begin(&self.root, "undo", &head_full, &recorded)?;
         let r = (|| -> Result<()> {
             repo::git_env(&self.root, &["revert", "--no-commit", "HEAD"], &stamp.env())?;
             // An id given stays given: an entry taken back leaves a gap, which
@@ -784,20 +771,13 @@ impl Store {
             // touched as HEAD has it, and none HEAD has not — a revert that
             // failed half way leaves both behind. Nothing else was there
             // (`git_holds_undo_up`).
-            let _ = repo::git_in(&self.root, &["revert", "--abort"]);
-            let mut restore = vec!["--literal-pathspecs", "restore", "--source=HEAD", "--staged", "--worktree", "--"];
-            let held: Vec<&str> = touched.iter().map(String::as_str).filter(|p| repo::git_in(&self.root, &["cat-file", "-e", &format!("HEAD:{p}")]).is_ok()).collect();
-            if !held.is_empty() {
-                restore.extend(held.iter().copied());
-                let _ = repo::git_in(&self.root, &restore);
-            }
-            for p in touched.iter().filter(|p| !held.contains(&p.as_str())) {
-                let _ = repo::git_in(&self.root, &["--literal-pathspecs", "rm", "-q", "--cached", "--ignore-unmatch", "--", p]);
-                let _ = std::fs::remove_file(self.root.join(p));
+            if let Err(r) = recover(&self.root) {
+                return Err(e.context(format!("and abo could not yet put the files back as they were ({r:#}); the next abo command does")));
             }
             return Err(e);
         }
         let commit = repo::git_in(&self.root, &["rev-parse", "--short", "HEAD"])?.trim().to_string();
+        end(&self.root, &recorded)?;
         *self = Store::open(&self.root)?;
         Ok(commit)
     }
@@ -1172,4 +1152,110 @@ pub fn by_hand_first(broken: &[model::Violation]) -> String {
     lines.dedup();
     let declare = if lines.is_empty() { String::new() } else { format!("declare what it names by adding to journal/accounts.journal the line{} {}; ", if lines.len() == 1 { "" } else { "s" }, lines.iter().map(|l| format!("`{l}`")).collect::<Vec<_>>().join(", ")) };
     format!("Mend it by hand, as abo changes nothing while it is there: {declare}put right at the line named what else it breaks; commit that; then `abo tidy` takes it in.")
+}
+
+/// Where a change says what it is changing until it is made — its kind,
+/// the commit it began on, its paths — so that one stopped half way, a
+/// process killed, is taken back by the next abo to hold the books
+/// (`repo::lock`). In git's own directory: a commit writes there, `.abo`
+/// may not be writable.
+fn changing(root: &Path) -> Result<PathBuf> {
+    let git = root.join(".git");
+    Ok(if git.is_dir() { git.join("abo-changing") } else { root.join(repo::git_in(root, &["rev-parse", "--git-path", "abo-changing"])?.trim()) })
+}
+
+/// Records that `paths` are being changed, as `kind`: `aside` while what is
+/// there is moved aside, `put` once all is and what comes is written,
+/// `undo` for a revert. Written whole or not at all.
+fn begin(root: &Path, kind: &str, head: &str, paths: &[String]) -> Result<()> {
+    let at = changing(root)?;
+    let tmp = at.with_extension("tmp");
+    let mut s = format!("{kind}\0{head}");
+    for p in paths {
+        s.push('\0');
+        s.push_str(p);
+    }
+    std::fs::write(&tmp, s).context("abo could not record the change it begins")?;
+    std::fs::rename(&tmp, &at).context("abo could not record the change it begins")?;
+    Ok(())
+}
+
+/// Where `paths[i]` is moved aside, if it is (`Store::commit`).
+fn aside_of(root: &Path, i: usize, rel: &str) -> Option<PathBuf> {
+    let at = root.join(rel);
+    let name = at.file_name()?.to_string_lossy().into_owned();
+    [root.join(".abo/aside").join(i.to_string()), at.with_file_name(format!(".{name}.abo-aside-{i}~"))].into_iter().find(|a| std::fs::symlink_metadata(a).is_ok())
+}
+
+/// The change recorded by `begin` taken back, or only tidied away where it
+/// was committed; nothing recorded, nothing done. Each file put back as it
+/// was: what was moved aside put back, and what was written in its place
+/// taken out; an undo called off as git calls a revert off, each path it
+/// touched as the last commit has it. True when something was taken back.
+/// Failed — another git holding the index, say — the record stays, for the
+/// next abo to try again.
+pub(crate) fn recover(root: &Path) -> Result<bool> {
+    let at = changing(root)?;
+    let Ok(s) = std::fs::read_to_string(&at) else { return Ok(false) };
+    let mut parts = s.split('\0');
+    let (kind, head) = (parts.next().unwrap_or_default(), parts.next().unwrap_or_default());
+    let paths: Vec<String> = parts.map(String::from).collect();
+    let now = repo::git_in(root, &["rev-parse", "HEAD"])?.trim().to_string();
+    let undone = now == head;
+    if undone && kind == "undo" {
+        let _ = repo::git_in(root, &["revert", "--abort"]);
+        let held: Vec<&str> = paths.iter().map(String::as_str).filter(|p| repo::git_in(root, &["cat-file", "-e", &format!("HEAD:{p}")]).is_ok()).collect();
+        if !held.is_empty() {
+            let mut restore = vec!["--literal-pathspecs", "restore", "--source=HEAD", "--staged", "--worktree", "--"];
+            restore.extend(held.iter().copied());
+            repo::git_in(root, &restore)?;
+        }
+        for p in paths.iter().filter(|p| !held.contains(&p.as_str())) {
+            repo::git_in(root, &["--literal-pathspecs", "rm", "-q", "--cached", "--ignore-unmatch", "--", p])?;
+            let _ = std::fs::remove_file(root.join(p));
+        }
+    } else if undone && !paths.is_empty() {
+        let mut reset = vec!["--literal-pathspecs", "reset", "-q", "--"];
+        reset.extend(paths.iter().map(String::as_str));
+        repo::git_in(root, &reset)?;
+        for (i, p) in paths.iter().enumerate() {
+            let here = root.join(p);
+            // Once all is aside, what is at a path was written there.
+            if kind == "put" && std::fs::symlink_metadata(&here).is_ok_and(|m| !m.is_dir()) {
+                std::fs::remove_file(&here)?;
+            }
+            if let Some(a) = aside_of(root, i, p) {
+                // A directory a put made where a file was, emptied above.
+                let _ = std::fs::remove_dir(&here);
+                if let Some(d) = here.parent() {
+                    std::fs::create_dir_all(d)?;
+                }
+                std::fs::rename(&a, &here)?;
+            }
+        }
+        // The directories writing made, emptied: each that is empty.
+        if kind == "put" {
+            let mut dirs: Vec<&Path> = paths.iter().flat_map(|p| Path::new(p).ancestors().skip(1).filter(|d| !d.as_os_str().is_empty())).collect();
+            dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+            dirs.dedup();
+            for d in dirs {
+                let _ = std::fs::remove_dir(root.join(d));
+            }
+        }
+    }
+    end(root, &paths)?;
+    Ok(undone)
+}
+
+/// The change recorded by `begin` done with: what is aside, the last
+/// commit's or put back by `recover`, taken out, and the record.
+fn end(root: &Path, paths: &[String]) -> Result<()> {
+    for (i, p) in paths.iter().enumerate() {
+        if let Some(a) = aside_of(root, i, p) {
+            let _ = std::fs::remove_file(a);
+        }
+    }
+    let _ = std::fs::remove_dir_all(root.join(".abo/aside"));
+    std::fs::remove_file(changing(root)?)?;
+    Ok(())
 }

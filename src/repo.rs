@@ -158,6 +158,11 @@ pub fn lock(root: &Path, wait: bool) -> Result<std::fs::File> {
     } else if f.try_lock().is_err() {
         bail!("another abo is changing these books just now; try again in a moment");
     }
+    // An abo stopped half way through a change, which held the books till
+    // then: the change is taken back before anything reads them.
+    if crate::store::recover(root)? {
+        eprintln!("abo was stopped half way through a change; it is taken back, and the books are as the last commit has them");
+    }
     Ok(f)
 }
 
