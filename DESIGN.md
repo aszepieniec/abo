@@ -633,7 +633,8 @@ typed and, on `/log`, the diff its commit made.
 Second on the Company page, under Details, is **Corporate documents**:
 the tree, each
 directory and file by its name, `corporate/` left off, as they nest; each
-file with its size and a download icon. A row dragged onto a directory, or
+file with its size, the day its last commit changed it, and a download
+icon. A row dragged onto a directory, or
 onto the section's heading for the top, moves there; files dropped from the
 computer onto a directory are added to it; a name double-clicked is renamed
 in place, or, typed with a `/`, moved to that path from the top. A

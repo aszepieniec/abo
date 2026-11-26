@@ -177,6 +177,28 @@ pub struct Listing {
 pub struct File {
     pub path: String,
     pub size: u64,
+    /// The day of the last commit that changed it, put it there or moved it
+    /// there: yyyy-mm-dd.
+    pub modified: String,
+}
+
+/// The day each path under corporate/ last changed, by the commit that
+/// changed it last: one walk of the log, newest first.
+fn modified(root: &Path) -> Result<BTreeMap<String, String>> {
+    let out = repo::git_in(root, &["log", "--no-renames", "-z", "--format=@%cs", "--name-only", "--", ROOT])?;
+    let (mut days, mut day) = (BTreeMap::new(), String::new());
+    for t in out.split('\0') {
+        match t.strip_prefix('@') {
+            Some(d) => day = d.to_string(),
+            None => {
+                let p = t.trim_start_matches('\n');
+                if !p.is_empty() {
+                    days.entry(p.to_string()).or_insert_with(|| day.clone());
+                }
+            }
+        }
+    }
+    Ok(days)
 }
 
 pub fn list(root: &Path) -> Result<Listing> {
@@ -194,7 +216,8 @@ pub fn list(root: &Path) -> Result<Listing> {
     }
     // `.keep`, and whatever else begins with a dot, there or above.
     let shown = |p: &str| !p.split('/').any(|n| n.starts_with('.'));
-    let files = all.into_iter().filter(|(p, _)| shown(p)).map(|(path, size)| File { path, size }).collect();
+    let days = modified(root)?;
+    let files = all.into_iter().filter(|(p, _)| shown(p)).map(|(path, size)| File { modified: days.get(&path).cloned().unwrap_or_default(), path, size }).collect();
     Ok(Listing { directories: directories.into_iter().filter(|d| shown(d)).collect(), files })
 }
 

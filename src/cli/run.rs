@@ -678,12 +678,12 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
                     let size = |n: u64| if n < 1000 { format!("{n} B") } else if n < 1_000_000 { format!("{:.1} kB", n as f64 / 1e3) } else { format!("{:.1} MB", n as f64 / 1e6) };
                     return emit(cli.json, &l, || {
                         let mut lines: Vec<(String, String)> = l.directories.iter().map(|d| (format!("{d}/"), String::new())).collect();
-                        lines.extend(l.files.iter().map(|f| (f.path.clone(), size(f.size))));
+                        lines.extend(l.files.iter().map(|f| (f.path.clone(), format!("{:>8}  {}", size(f.size), f.modified))));
                         lines.sort();
                         // Wide as it shows: a name committed as `a` and a mark is one letter.
                         let shows = |p: &str| crate::corporate::nfc(p).chars().count();
                         let wide = lines.iter().map(|(p, _)| shows(p)).max().unwrap_or(0);
-                        if lines.is_empty() { "No corporate documents.".into() } else { lines.iter().map(|(p, n)| if n.is_empty() { p.clone() } else { format!("{p}{}  {n:>8}", " ".repeat(wide - shows(p))) }).collect::<Vec<_>>().join("\n") }
+                        if lines.is_empty() { "No corporate documents.".into() } else { lines.iter().map(|(p, n)| if n.is_empty() { p.clone() } else { format!("{p}{}  {n}", " ".repeat(wide - shows(p))) }).collect::<Vec<_>>().join("\n") }
                     });
                 }
                 Some(CorporateCmd::Add { files, directory }) => {

@@ -213,7 +213,8 @@ named and arranged as the company likes; new books start with Articles of
 association, Commercial register, Shareholder meetings, Board meetings and
 Share register, each renamed, moved or taken out as any. abo reads nothing
 of them. CLI:
-`abo corporate [list]` shows the tree; `abo corporate add <file>... <dir>`
+`abo corporate [list]` shows the tree, each file with its size and the day
+it last changed; `abo corporate add <file>... <dir>`
 puts files in, each under its own name, the directory made if it is not
 there (`abo corporate add Statuten.pdf corporate/statutes`); `abo corporate
 mkdir <dir>` makes a directory; `abo corporate mv <from>... <to>` moves files
