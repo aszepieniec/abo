@@ -640,8 +640,9 @@ pub fn mv(s: &mut Store, from: &[String], to: &str) -> Result<String> {
         }
         // As the last commit holds them, not as a filter on checkout wrote them.
         let blobs = blobs(&s.root, &under)?;
-        let mut keeps: std::collections::HashSet<String> = std::collections::HashSet::new();
-        // Of two keeps, `.keep` itself is the one carried.
+        // Of two keeps alike, `.keep` itself is the one carried; two that
+        // differ are two files, which would be one name.
+        let mut keeps: BTreeMap<String, (String, Vec<u8>)> = BTreeMap::new();
         let mut carry: Vec<(String, Vec<u8>)> = under.into_iter().zip(blobs).collect();
         carry.sort_by_key(|(p, _)| !p.ends_with("/.keep"));
         for (p, bytes) in carry {
@@ -650,7 +651,17 @@ pub fn mv(s: &mut Store, from: &[String], to: &str) -> Result<String> {
             // The directory it goes into as the tree writes it, never respelled.
             let to = format!("{}/{}", join(parent), nfc(&format!("{}{}", last[0], &p[src.len()..])));
             let keep = to.rsplit_once('/').filter(|(_, n)| folded(n) == folded(KEEP)).map(|(d, _)| d.to_string());
-            if keep.is_none_or(|d| keeps.insert(d)) {
+            if let Some(d) = keep {
+                if let Some((other, was)) = keeps.get(&d) {
+                    if *was != bytes {
+                        return Err(refused(format!("{other} and {p} would be one name, and hold different things: rename or take out one first")));
+                    }
+                    c.removes.push(p);
+                    continue;
+                }
+                keeps.insert(d, (p.clone(), bytes.clone()));
+            }
+            {
                 if t.exec.contains(&p) {
                     c.exec.push(to.clone());
                 }
@@ -679,7 +690,11 @@ pub fn rm(s: &mut Store, paths: &[String]) -> Result<String> {
     let mut ats: Vec<String> = vec![];
     for p in paths {
         let at = there(&t, p, "removed")?;
-        if let Some((dir, _)) = at.rsplit_once('/').filter(|(_, n)| !t.is_dir(&at) && !t.is_link(&at) && folded(n) == folded(KEEP)) {
+        if let Some((dir, _)) = at.rsplit_once('/').filter(|(d, n)| {
+            // One of two in other capitals may go: the other keeps it.
+            let other = t.files.keys().any(|o| *o != at && o.rsplit_once('/').is_some_and(|(od, on)| od == *d && folded(on) == folded(KEEP)));
+            !t.is_dir(&at) && !t.is_link(&at) && folded(n) == folded(KEEP) && !other
+        }) {
             let rm = crate::command::shell(&["corporate", "rm", "--", dir]);
             return Err(refused(format!("{at} keeps its directory, and goes only with it: `{rm}` takes out the directory")));
         }

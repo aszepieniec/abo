@@ -1839,8 +1839,9 @@ With the model, one set of invariants holds, and the 76 rule-version switches ar
   leaves out `.keep`, and every symbolic link. A directory committed by hand that abo writes into
   keeps its spelling. Two names in a directory the same once folded,
   committed by hand, are not written into, not even a `.keep`, and one
-  emptied goes; a directory's `.keep` in two capitals is moved as one,
-  `.keep` itself where it is one of them; nor is a `.keep` written where a file not committed sits,
+  emptied goes; a directory's `.keep` in two capitals, both holding the same,
+  is moved as one, `.keep` itself where it is one of them, and either may be
+  taken out alone while the other stays; nor is a `.keep` written where a file not committed sits,
   until that is settled.
 - **The log** and the rest of `.abo/` are working state, as today.
 - **Reports** are functions of the state, not part of it.

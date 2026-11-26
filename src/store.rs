@@ -762,12 +762,17 @@ impl Store {
         let mut recorded = touched.clone();
         recorded.push("journal/main.journal".into());
         let head_full = repo::git_in(&self.root, &["rev-parse", "HEAD"])?.trim().to_string();
+        // Each file's mode, which git keeps only whether it is executable,
+        // put back as it was if the undo is taken back.
+        let modes: Vec<(PathBuf, std::fs::Permissions)> = recorded.iter().map(|p| self.root.join(p)).filter_map(|p| std::fs::symlink_metadata(&p).ok().filter(|m| m.is_file()).map(|m| (p, m.permissions()))).collect();
         begin(&self.root, "undo", &head_full, &recorded, &[])?;
         let r = (|| -> Result<()> {
             repo::git_env(&self.root, &["revert", "--no-commit", "HEAD"], &stamp.env())?;
             // An id given stays given: an entry taken back leaves a gap, which
             // main.journal records when it is the last (MODEL.md §2.3).
-            let back = Store::open(&self.root)?.books;
+            // Read as it is, not opened: opening takes back a change
+            // recorded, this one.
+            let back = model::read(&text_files(&self.root)?).0.context("the books as they were cannot be read")?;
             let undone = model::undo(&after, &back).map_err(anyhow::Error::msg)?;
             if undone.entries.len() > back.entries.len() {
                 let main = "journal/main.journal";
@@ -784,6 +789,9 @@ impl Store {
             // (`git_holds_undo_up`).
             if let Err(r) = recover(&self.root) {
                 return Err(e.context(format!("and abo could not yet put the files back as they were ({r:#}); the next abo command does")));
+            }
+            for (p, m) in modes {
+                let _ = std::fs::set_permissions(p, m);
             }
             return Err(e);
         }

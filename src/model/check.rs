@@ -333,7 +333,7 @@ pub fn check(m: &Books) -> Vec<Violation> {
         return v;
     }
     // First, and alone: what follows computes with these.
-    let v: Vec<Violation> = numbers(m).into_iter().filter(|q| q.abs() >= Decimal::from(BOUND)).collect::<std::collections::BTreeSet<_>>().into_iter().map(|q| Violation { code: "I-K3", what: format!("{q} is too large: an amount is below {BOUND}"), of: Subject::Number(q) }).collect();
+    let v: Vec<Violation> = numbers(m).into_iter().filter(|q| q.abs() >= Decimal::from(BOUND)).map(|q| (q.to_string(), q)).collect::<BTreeMap<_, _>>().into_values().map(|q| Violation { code: "I-K3", what: format!("{q} is too large: an amount is below {BOUND}"), of: Subject::Number(q) }).collect();
     if !v.is_empty() {
         return v;
     }

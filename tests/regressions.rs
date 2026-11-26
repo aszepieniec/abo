@@ -3101,3 +3101,42 @@ fn taking_a_change_back_keeps_what_was_there() {
     let said = String::from_utf8_lossy(&o.stdout);
     assert_eq!(said.matches("2000000000000.00 is too large").count() - said.matches("-2000000000000.00 is too large").count(), 1, "{said}");
 }
+
+/// A directory's `.keep` in two capitals, holding different things, was
+/// moved as one, the other's content dropped; and neither could be taken
+/// out alone to settle it.
+#[test]
+fn keeps_that_differ_are_not_moved_as_one() {
+    let dir = books("keeps-differ", &[]);
+    std::fs::create_dir_all(dir.join("corporate/d")).unwrap();
+    std::fs::write(dir.join("corporate/d/.keep"), "").unwrap();
+    std::fs::write(dir.join("corporate/d/.KEEP"), "board note").unwrap();
+    git(&dir, &["add", "-A", "corporate"]);
+    git(&dir, &["commit", "-qm", "by hand"]);
+    refused(&dir, &["corporate", "mv", "corporate/d", "corporate/e"], "hold different things");
+    assert_eq!(read(&dir, "corporate/d/.KEEP"), "board note");
+    ok(&dir, &["corporate", "rm", "corporate/d/.KEEP"]);
+    refused(&dir, &["corporate", "rm", "corporate/d/.keep"], "goes only with it");
+    ok(&dir, &["corporate", "mv", "corporate/d", "corporate/e"]);
+    assert!(dir.join("corporate/e/.keep").exists());
+}
+
+/// Undo opened the books again while its own change was recorded, which
+/// took the undo back; and an undo taken back left each file it touched
+/// with git's mode, not its own.
+#[test]
+fn undo_keeps_itself_and_each_mode() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = books("undo-itself", &[]);
+    ok(&dir, &["post", "--date", "2026-01-05", "--desc", "Pens", "--", "Expenses:General  12.50 EUR", "Assets:Bank  -12.50 EUR"]);
+    let mut s = abo::store::Store::open(&dir).unwrap();
+    s.undo().unwrap();
+    assert!(read(&dir, "journal/2026.journal").is_empty() || !read(&dir, "journal/2026.journal").contains("Pens"));
+    ok(&dir, &["post", "--date", "2026-01-06", "--desc", "Ink", "--", "Expenses:General  5.00 EUR", "Assets:Bank  -5.00 EUR"]);
+    let year = dir.join("journal/2026.journal");
+    std::fs::set_permissions(&year, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::write(dir.join(".git/hooks/pre-commit"), "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(dir.join(".git/hooks/pre-commit"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    refused(&dir, &["undo"], "hook");
+    assert_eq!(std::fs::metadata(&year).unwrap().permissions().mode() & 0o777, 0o600);
+}
