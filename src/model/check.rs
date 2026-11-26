@@ -327,13 +327,13 @@ pub fn option_twin<'a>(payment: &'a BTreeMap<String, PayOption>, id: &str) -> Op
 
 pub fn check(m: &Books) -> Vec<Violation> {
     // Four digits of year, as the files write it and hledger reads it.
-    // Each one, not the first: a change that mends one of two mends.
-    let v: Vec<Violation> = dates(m).into_iter().filter(|d| !(1..=9999).contains(&d.year())).map(|d| Violation::new("I-D1", format!("{d} is not in the years 1 to 9999"))).collect();
+    // Each one, not only the first, each once: `abo check` lists them all.
+    let v: Vec<Violation> = dates(m).into_iter().filter(|d| !(1..=9999).contains(&d.year())).collect::<std::collections::BTreeSet<_>>().into_iter().map(|d| Violation::new("I-D1", format!("{d} is not in the years 1 to 9999"))).collect();
     if !v.is_empty() {
         return v;
     }
     // First, and alone: what follows computes with these.
-    let v: Vec<Violation> = numbers(m).into_iter().filter(|q| q.abs() >= Decimal::from(BOUND)).map(|q| Violation { code: "I-K3", what: format!("{q} is too large: an amount is below {BOUND}"), of: Subject::Number(q) }).collect();
+    let v: Vec<Violation> = numbers(m).into_iter().filter(|q| q.abs() >= Decimal::from(BOUND)).collect::<std::collections::BTreeSet<_>>().into_iter().map(|q| Violation { code: "I-K3", what: format!("{q} is too large: an amount is below {BOUND}"), of: Subject::Number(q) }).collect();
     if !v.is_empty() {
         return v;
     }

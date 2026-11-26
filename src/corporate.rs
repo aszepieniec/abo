@@ -624,6 +624,11 @@ pub fn mv(s: &mut Store, from: &[String], to: &str) -> Result<String> {
             let rel: Vec<&str> = p[src.len()..].split('/').filter(|n| !n.is_empty()).collect();
             for i in 0..rel.len() {
                 let raw = rel[..=i].join("/");
+                // A directory's `.keep` in two capitals, both committed by
+                // hand, is one keep carried (below): no clash.
+                if i + 1 == rel.len() && folded(rel[i]) == folded(KEEP) {
+                    continue;
+                }
                 if let Some(other) = carried.insert(folded(&raw), raw.clone()).filter(|o| *o != raw) {
                     return Err(refused(format!("{src}/{other} and {src}/{raw} would be one name: rename or take out one first")));
                 }
@@ -635,15 +640,22 @@ pub fn mv(s: &mut Store, from: &[String], to: &str) -> Result<String> {
         }
         // As the last commit holds them, not as a filter on checkout wrote them.
         let blobs = blobs(&s.root, &under)?;
-        for (p, bytes) in under.into_iter().zip(blobs) {
+        let mut keeps: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Of two keeps, `.keep` itself is the one carried.
+        let mut carry: Vec<(String, Vec<u8>)> = under.into_iter().zip(blobs).collect();
+        carry.sort_by_key(|(p, _)| !p.ends_with("/.keep"));
+        for (p, bytes) in carry {
             // In NFC, what it carries too: a name committed by hand as `a`
             // and a mark lands as `ä`.
             // The directory it goes into as the tree writes it, never respelled.
             let to = format!("{}/{}", join(parent), nfc(&format!("{}{}", last[0], &p[src.len()..])));
-            if t.exec.contains(&p) {
-                c.exec.push(to.clone());
+            let keep = to.rsplit_once('/').filter(|(_, n)| folded(n) == folded(KEEP)).map(|(d, _)| d.to_string());
+            if keep.is_none_or(|d| keeps.insert(d)) {
+                if t.exec.contains(&p) {
+                    c.exec.push(to.clone());
+                }
+                c.puts.push((to, bytes));
             }
-            c.puts.push((to, bytes));
             c.removes.push(p);
         }
         dsts.push((dst, src));

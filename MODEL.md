@@ -1244,14 +1244,16 @@ An operation is made whole or not at all. Before it writes, it records in
 `.git/abo-changing` its kind, the commit it starts from and each path it
 writes or takes out; it deletes the record once its commit is made. An abo
 stopped half way, killed, leaves the record, and with it files half changed.
-The next abo to hold the books (`repo::lock`: every command but `init`, and
-each change abo-web makes) finds the record before it reads anything and:
+The next abo to read or change the books — every command but `init`, each
+page abo-web shows and each change it makes — finds the record before it
+reads anything, and where no other abo holds the books (`repo::lock`):
 
 - where the last commit is not the one recorded, the commit was made: it
   only clears what was left aside;
 - where it is, takes the operation back: each path recorded as it was before
-  — a file moved aside put back, one written in its place taken out, a
-  directory made for it and left empty taken out — and nothing staged; an
+  — a file moved aside put back, one written in its place taken out, each
+  directory made for it taken out, none that was there before — and nothing
+  staged; an
   undo under way called off as `git revert --abort` calls it off, each path
   as the last commit has it;
 
@@ -1263,8 +1265,7 @@ left by a git that was itself killed is taken out by hand, as git says.
 
 What this does not cover: a file edited by hand and saved while abo is
 changing that same file is lost, as the edit lands between abo's check for
-hand edits and its write; abo-web's pages, which read without holding the
-books, show a change half made until the next change or command; and git's
+hand edits and its write; and git's
 own files damaged by the machine stopping, which `git fsck` finds and abo
 does not mend.
 
@@ -1838,7 +1839,8 @@ With the model, one set of invariants holds, and the 76 rule-version switches ar
   leaves out `.keep`, and every symbolic link. A directory committed by hand that abo writes into
   keeps its spelling. Two names in a directory the same once folded,
   committed by hand, are not written into, not even a `.keep`, and one
-  emptied goes; nor is a `.keep` written where a file not committed sits,
+  emptied goes; a directory's `.keep` in two capitals is moved as one,
+  `.keep` itself where it is one of them; nor is a `.keep` written where a file not committed sits,
   until that is settled.
 - **The log** and the rest of `.abo/` are working state, as today.
 - **Reports** are functions of the state, not part of it.

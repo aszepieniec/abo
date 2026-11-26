@@ -313,6 +313,13 @@ def model(op, t, b, ctx):
                         new[nk] = t[k]
                         if k != p:
                             if disk_kind(b, nk) is not None and nk not in t: raise Refuse("untracked inside dest")
+            # A directory's keeps in two capitals, committed by hand, are
+            # carried as one: `.keep` itself, or the first.
+            for p, np_ in moves:
+                ds = {k.rsplit("/", 1)[0] for k in new if (k == np_ or k.startswith(np_ + "/")) and iskeep(k.rsplit("/", 1)[1])}
+                for d in ds:
+                    ks = sorted((k for k in new if k.rsplit("/", 1)[0] == d and iskeep(k.rsplit("/", 1)[1])), key=lambda k: (not k.endswith("/.keep"), k))
+                    for k in ks[1:]: del new[k]
             emptied = [d for d in dirs_of(t) - dirs_of(new) if not any(d == p or d.startswith(p + "/") for p in srcs)]
             if emptied: raise Either("emptied dir")
         else:
@@ -641,6 +648,13 @@ class Seq:
                 sh([ABO, "check"], b); post = snap(b)
             for k in ("head", "index"):
                 if pre[k] != post[k]: self.issues.append(("failed-but-changed-" + k, argv, inj, e[-300:]))
+            # An undo taken back is written as the last commit has it, which
+            # keeps of a file's mode only whether it is executable.
+            if op[0] == "undo":
+                # and git's own revert --abort takes out a directory it empties.
+                x = lambda v: (v[0], v[1] & 0o111, *v[2:]) if v and v[0] == "f" else v
+                pre = dict(pre, files={k: x(v) for k, v in pre["files"].items() if v[0] != "d"})
+                post = dict(post, files={k: x(v) for k, v in post["files"].items() if v[0] != "d"})
             if pre["files"] != post["files"]:
                 d = [(p, pre["files"].get(p), post["files"].get(p)) for p in sorted(set(pre["files"]) | set(post["files"])) if pre["files"].get(p) != post["files"].get(p)]
                 self.issues.append(("failed-but-changed-files", argv, inj, d[:6], e[-300:]))

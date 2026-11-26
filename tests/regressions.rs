@@ -3059,3 +3059,45 @@ fn links_and_repositories_committed_by_hand() {
     refused(&dir, &["corporate", "mv", "corporate/sub", "corporate/s2"], "git repository of its own");
     refused(&dir, &["corporate", "rm", "corporate/sub"], "git repository of its own");
 }
+
+/// abo-web reads the books before it takes the lock: a change stopped half
+/// way was read as the books, and committed with the next change. Opened
+/// while no abo holds them, the books are taken back first.
+#[test]
+fn the_books_are_taken_back_before_they_are_read() {
+    let dir = books("read-back", &[]);
+    ok(&dir, &["post", "--date", "2026-01-05", "--desc", "Pens", "--", "Expenses:General  12.50 EUR", "Assets:Bank  -12.50 EUR"]);
+    let year = read(&dir, "journal/2026.journal");
+    let head = String::from_utf8(Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&dir).output().unwrap().stdout).unwrap();
+    std::fs::create_dir_all(dir.join(".abo/aside")).unwrap();
+    std::fs::rename(dir.join("journal/2026.journal"), dir.join(".abo/aside/0")).unwrap();
+    std::fs::write(dir.join("journal/2026.journal"), year.replace("Pens", "Paper")).unwrap();
+    std::fs::write(dir.join(".git/abo-changing"), format!("put\0{}\0journal/2026.journal", head.trim())).unwrap();
+    let s = abo::store::Store::open(&dir).unwrap();
+    assert!(s.problems.is_empty(), "{:?}", s.problems);
+    assert_eq!(read(&dir, "journal/2026.journal"), year);
+}
+
+/// A change taken back took out every empty directory above what it wrote,
+/// those there before it too; and a number too large was said once for
+/// each place it is in.
+#[test]
+fn taking_a_change_back_keeps_what_was_there() {
+    let dir = books("keeps-empty", &[]);
+    std::fs::create_dir_all(dir.join("corporate/a")).unwrap();
+    std::fs::write(dir.join(".git/hooks/pre-commit"), "#!/bin/sh\nexit 1\n").unwrap();
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(dir.join(".git/hooks/pre-commit"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    refused(&dir, &["corporate", "mkdir", "corporate/a/b"], "hook");
+    assert!(dir.join("corporate/a").is_dir());
+    assert!(!dir.join("corporate/a/b").exists());
+    std::fs::remove_file(dir.join(".git/hooks/pre-commit")).unwrap();
+    for d in ["2026-01-05", "2026-01-06"] {
+        ok(&dir, &["post", "--date", d, "--desc", "Pens", "--", "Expenses:General  12.50 EUR", "Assets:Bank  -12.50 EUR"]);
+    }
+    std::fs::write(dir.join("journal/2026.journal"), read(&dir, "journal/2026.journal").replace("12.50", "2000000000000.00")).unwrap();
+    git(&dir, &["commit", "-qam", "By hand"]);
+    let o = abo(&dir, &["check"]);
+    let said = String::from_utf8_lossy(&o.stdout);
+    assert_eq!(said.matches("2000000000000.00 is too large").count() - said.matches("-2000000000000.00 is too large").count(), 1, "{said}");
+}

@@ -203,6 +203,12 @@ impl Store {
         let root = repo::books_root(dir)?.with_context(|| {
             format!("there are no books here: no abo.toml in {} or any directory above it. Run abo in the directory of your books, or give it with --dir; `abo init` opens new ones", dir.display())
         })?;
+        // A change stopped half way, where no abo holds the books now: taken
+        // back before anything is read — by a page abo-web shows, or read
+        // for a change before its lock is taken. Held, it is the holder's.
+        if changing(&root)?.exists() {
+            let _ = repo::lock(&root, false);
+        }
         let (books, mut problems) = model::read(&text_files(&root)?);
         let books = books.ok_or_else(|| amiss(AmissKind::Unreadable, format!("the books cannot be read:\n  {}\n{}", problems.join("\n  "), under_way(&root).map_or_else(|| unreadable_mend(&problems), |w| format!("Mend it so: {w}.")))))?;
         // The hashes the books hold are checks: the files must have them.
@@ -470,7 +476,7 @@ impl Store {
         let mut aside: Vec<(std::path::PathBuf, std::path::PathBuf)> = vec![];
         let stamp = Stamp::now(&self.root)?;
         let head = repo::git_in(&self.root, &["rev-parse", "HEAD"])?.trim().to_string();
-        begin(&self.root, "aside", &head, paths)?;
+        begin(&self.root, "aside", &head, paths, &[])?;
         let r = (|| -> Result<String> {
             // What goes, before what comes: on a computer that ignores
             // case, `Minutes/a` put as `minutes/a` is the same file, which
@@ -497,7 +503,12 @@ impl Store {
                     aside.push((at, to));
                 }
             }
-            begin(&self.root, "put", &head, paths)?;
+            // The directories writing makes, which taking it back takes out:
+            // none that was there before, empty or not.
+            let mut made: Vec<String> = puts.iter().flat_map(|(p, _)| Path::new(p).ancestors().skip(1).filter(|d| !d.as_os_str().is_empty() && !self.root.join(d).exists()).map(|d| d.to_string_lossy().into_owned()).collect::<Vec<_>>()).collect();
+            made.sort();
+            made.dedup();
+            begin(&self.root, "put", &head, paths, &made)?;
             for (rel, bytes) in puts {
                 put(&self.root, rel, bytes)?;
                 // Its mode as the file it replaces had it; executable where
@@ -751,7 +762,7 @@ impl Store {
         let mut recorded = touched.clone();
         recorded.push("journal/main.journal".into());
         let head_full = repo::git_in(&self.root, &["rev-parse", "HEAD"])?.trim().to_string();
-        begin(&self.root, "undo", &head_full, &recorded)?;
+        begin(&self.root, "undo", &head_full, &recorded, &[])?;
         let r = (|| -> Result<()> {
             repo::git_env(&self.root, &["revert", "--no-commit", "HEAD"], &stamp.env())?;
             // An id given stays given: an entry taken back leaves a gap, which
@@ -1165,15 +1176,24 @@ fn changing(root: &Path) -> Result<PathBuf> {
 }
 
 /// Records that `paths` are being changed, as `kind`: `aside` while what is
-/// there is moved aside, `put` once all is and what comes is written,
-/// `undo` for a revert. Written whole or not at all.
-fn begin(root: &Path, kind: &str, head: &str, paths: &[String]) -> Result<()> {
+/// there is moved aside, `put` once all is and what comes is written, with
+/// the directories it `made`; `undo` for a revert. Written whole or not at
+/// all: the kind, the commit, each path, then after an empty one, which no
+/// path is, each directory made.
+fn begin(root: &Path, kind: &str, head: &str, paths: &[String], made: &[String]) -> Result<()> {
     let at = changing(root)?;
     let tmp = at.with_extension("tmp");
     let mut s = format!("{kind}\0{head}");
     for p in paths {
         s.push('\0');
         s.push_str(p);
+    }
+    if !made.is_empty() {
+        s.push('\0');
+        for d in made {
+            s.push('\0');
+            s.push_str(d);
+        }
     }
     std::fs::write(&tmp, s).context("abo could not record the change it begins")?;
     std::fs::rename(&tmp, &at).context("abo could not record the change it begins")?;
@@ -1199,7 +1219,11 @@ pub(crate) fn recover(root: &Path) -> Result<bool> {
     let Ok(s) = std::fs::read_to_string(&at) else { return Ok(false) };
     let mut parts = s.split('\0');
     let (kind, head) = (parts.next().unwrap_or_default(), parts.next().unwrap_or_default());
-    let paths: Vec<String> = parts.map(String::from).collect();
+    let rest: Vec<String> = parts.map(String::from).collect();
+    let (paths, made) = match rest.iter().position(String::is_empty) {
+        Some(i) => (rest[..i].to_vec(), rest[i + 1..].to_vec()),
+        None => (rest, vec![]),
+    };
     let now = repo::git_in(root, &["rev-parse", "HEAD"])?.trim().to_string();
     let undone = now == head;
     if undone && kind == "undo" {
@@ -1233,14 +1257,11 @@ pub(crate) fn recover(root: &Path) -> Result<bool> {
                 std::fs::rename(&a, &here)?;
             }
         }
-        // The directories writing made, emptied: each that is empty.
-        if kind == "put" {
-            let mut dirs: Vec<&Path> = paths.iter().flat_map(|p| Path::new(p).ancestors().skip(1).filter(|d| !d.as_os_str().is_empty())).collect();
-            dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
-            dirs.dedup();
-            for d in dirs {
-                let _ = std::fs::remove_dir(root.join(d));
-            }
+        // The directories writing made, emptied above, deepest first.
+        let mut made = made;
+        made.sort_by_key(|d| std::cmp::Reverse(d.matches('/').count()));
+        for d in &made {
+            let _ = std::fs::remove_dir(root.join(d));
         }
     }
     end(root, &paths)?;
