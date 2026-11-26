@@ -2808,3 +2808,73 @@ fn undo_sees_files_not_committed_whatever_git_shows() {
     refused(&dir, &["undo"], "would write over");
     assert_eq!(read(&dir, "corporate/d/x"), "precious");
 }
+
+/// An amount past what is computed with exactly (I-K3) was checked, and
+/// then the conditions on the change computed with it all the same: the
+/// cost of USD given out, at what it was held at, overflowed, and abo
+/// panicked. Such a number is refused first, and alone.
+#[test]
+fn an_amount_too_large_is_refused_before_anything_computes_with_it() {
+    let dir = books("too-large", &[]);
+    ok(&dir, &["commodity", "add", "USD", "2"]);
+    ok(&dir, &["price", "add", "2025-01-01", "USD", "698.93", "EUR"]);
+    ok(&dir, &["post", "--date", "2025-02-01", "--desc", "In", "--", "Assets:Bank  2447.85 USD @@ 1710875.80 EUR", "Equity:Opening  -1710875.80 EUR"]);
+    let said = refused(&dir, &["post", "--date", "2025-02-02", "--desc", "Out", "--", "Assets:Bank  -12515059229885834964220672389 USD", "Expenses:General  12515059229885834964220672389 USD"], "I-K3");
+    assert!(!said.contains("panicked"), "{said}");
+}
+
+/// With a pre-commit hook that refuses, `abo undo` reverted, then amended
+/// its message, which ran the hook: refused, it left a bare revert, no line
+/// of the log, and every undo after refused it as not abo's. Undo is now
+/// one commit, called off whole if the hook refuses.
+#[test]
+fn undo_refused_by_a_hook_leaves_nothing() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = books("undo-hook", &[]);
+    ok(&dir, &["account", "add", "Expenses:Rent"]);
+    let head = |d: &Path| String::from_utf8(std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(d).output().unwrap().stdout).unwrap();
+    let before = head(&dir);
+    let hook = dir.join(".git/hooks/pre-commit");
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!abo(&dir, &["undo"]).status.success());
+    assert_eq!(head(&dir), before);
+    let status = String::from_utf8(std::process::Command::new("git").args(["status", "--porcelain"]).current_dir(&dir).output().unwrap().stdout).unwrap();
+    assert_eq!(status, "");
+    std::fs::remove_file(&hook).unwrap();
+    ok(&dir, &["undo"]);
+}
+
+/// A merge that stopped on a conflict: abo said to take the change out
+/// with `git checkout --`, which git refuses for a path not merged, or to
+/// commit it alone, which git refuses in a merge. It now says git's own
+/// two ways: finish the merge, or call it off.
+#[test]
+fn a_merge_under_way_is_settled_as_git_says() {
+    let dir = books("merge-under-way", &[]);
+    git(&dir, &["checkout", "-q", "-b", "side"]);
+    ok(&dir, &["company", "--name", "Side AG"]);
+    git(&dir, &["checkout", "-q", "-"]);
+    ok(&dir, &["company", "--name", "Main AG"]);
+    let o = std::process::Command::new("git").args(["merge", "-q", "side"]).current_dir(&dir).output().unwrap();
+    assert!(!o.status.success());
+    let said = refused(&dir, &["check"], "git merge --abort");
+    assert!(!said.contains("git checkout --"), "{said}");
+    git(&dir, &["merge", "--abort"]);
+    ok(&dir, &["check"]);
+}
+
+/// `abo partner edit` with its answers piped: a blank first line of the
+/// address, which keeps it on a terminal, where it is on the line, took it
+/// out. It now keeps it, as a blank answer keeps a name.
+#[test]
+fn a_blank_piped_address_keeps_it() {
+    use std::io::Write as _;
+    let dir = books("piped-address", &[]);
+    ok(&dir, &["partner", "add", "acme", "--name", "Acme AG", "--address", "Street 1", "--address", "8000 Zurich"]);
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_abo")).args(["partner", "edit", "acme"]).current_dir(&dir).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(b"\n\n\n").unwrap();
+    assert!(child.wait_with_output().unwrap().status.success());
+    let partners = read(&dir, "partners.toml");
+    assert!(partners.contains("Street 1") && partners.contains("8000 Zurich"), "{partners}");
+}

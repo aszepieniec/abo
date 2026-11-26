@@ -204,7 +204,7 @@ impl Store {
             format!("there are no books here: no abo.toml in {} or any directory above it. Run abo in the directory of your books, or give it with --dir; `abo init` opens new ones", dir.display())
         })?;
         let (books, mut problems) = model::read(&text_files(&root)?);
-        let books = books.ok_or_else(|| amiss(AmissKind::Unreadable, format!("the books cannot be read:\n  {}\n{}", problems.join("\n  "), unreadable_mend(&problems))))?;
+        let books = books.ok_or_else(|| amiss(AmissKind::Unreadable, format!("the books cannot be read:\n  {}\n{}", problems.join("\n  "), under_way(&root).map_or_else(|| unreadable_mend(&problems), |w| format!("Mend it so: {w}.")))))?;
         // The hashes the books hold are checks: the files must have them.
         let mut binaries: Vec<(String, String)> = books.documents.iter().map(|(h, d)| (d.path(h), h.clone())).collect();
         for id in 1..=books.entries.len() {
@@ -300,7 +300,12 @@ impl Store {
         };
         let breaks = self.broken_by_hand()?;
         let said = if breaks.is_empty() { String::new() } else { format!("\nIt breaks the books:\n  {}", breaks.join("\n  ")) };
-        let ways = if breaks.is_empty() {
+        // In a merge, a rebase, a cherry-pick or a revert, git's own way out
+        // is the one: a path not merged is neither checked out nor
+        // committed alone.
+        let ways = if let Some(w) = under_way(&self.root) {
+            w
+        } else if breaks.is_empty() {
             format!("commit it yourself (git commit -m '...' -- {these}), or take it out (git restore --source=HEAD --staged --worktree -- {these}), which throws it away")
         } else {
             // Committed, a change that breaks the books would be their history.
@@ -702,21 +707,50 @@ impl Store {
         let stamp = Stamp::now(&self.root)?;
         let what = format!("Undo {head}");
         let after = self.books.clone();
-        repo::git_env(&self.root, &["revert", "--no-edit", "HEAD"], &stamp.env())?;
-        // An id given stays given: an entry taken back leaves a gap, which
-        // main.journal records when it is the last (MODEL.md §2.3).
-        let back = Store::open(&self.root)?.books;
-        let undone = model::undo(&after, &back).map_err(anyhow::Error::msg)?;
-        if undone.entries.len() > back.entries.len() {
-            let main = "journal/main.journal";
-            put(&self.root, main, model::render(&undone)[main].as_bytes())?;
-            repo::git_in(&self.root, &["add", "--", main])?;
+        // Reverted, not yet committed, then committed once, as every change
+        // is: a pre-commit hook that refuses refuses the whole undo, which
+        // is then taken back, and no bare revert is left with no line of the
+        // log. (Reverted and amended, git ran the hook at the amend alone.)
+        repo::git_env(&self.root, &["revert", "--no-commit", "HEAD"], &stamp.env())?;
+        let r = (|| -> Result<()> {
+            // An id given stays given: an entry taken back leaves a gap, which
+            // main.journal records when it is the last (MODEL.md §2.3).
+            let back = Store::open(&self.root)?.books;
+            let undone = model::undo(&after, &back).map_err(anyhow::Error::msg)?;
+            if undone.entries.len() > back.entries.len() {
+                let main = "journal/main.journal";
+                put(&self.root, main, model::render(&undone)[main].as_bytes())?;
+                repo::git_in(&self.root, &["add", "--", main])?;
+            }
+            repo::git_env(&self.root, &["commit", "-q", "-m", &message(&what, &[(&argv, &what)])], &stamp.env())?;
+            Ok(())
+        })();
+        if let Err(e) = r {
+            let _ = repo::git_in(&self.root, &["revert", "--abort"]);
+            return Err(e);
         }
-        repo::git_env(&self.root, &["commit", "-q", "--amend", "-m", &message(&what, &[(&argv, &what)])], &stamp.env())?;
         let commit = repo::git_in(&self.root, &["rev-parse", "--short", "HEAD"])?.trim().to_string();
         *self = Store::open(&self.root)?;
         Ok(commit)
     }
+}
+
+/// What git is in the middle of in the books, if anything, said with its
+/// own two ways out of it.
+fn under_way(root: &Path) -> Option<String> {
+    let git = root.join(repo::git_in(root, &["rev-parse", "--git-dir"]).ok()?.trim());
+    let (what, go_on, off) = if git.join("MERGE_HEAD").exists() {
+        ("merge", "git commit", "git merge --abort")
+    } else if git.join("rebase-merge").exists() || git.join("rebase-apply").exists() {
+        ("rebase", "git rebase --continue", "git rebase --abort")
+    } else if git.join("CHERRY_PICK_HEAD").exists() {
+        ("cherry-pick", "git cherry-pick --continue", "git cherry-pick --abort")
+    } else if git.join("REVERT_HEAD").exists() {
+        ("revert", "git revert --continue", "git revert --abort")
+    } else {
+        return None;
+    };
+    Some(format!("finish the {what} git is in the middle of — settle each file it names, git add it, then {go_on} — or call it off ({off}), which puts the books back as they were before it"))
 }
 
 /// How what cannot be read is mended: by hand at the line named, or the

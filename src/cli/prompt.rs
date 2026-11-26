@@ -116,7 +116,19 @@ pub(crate) fn ask_until<T>(
 /// starting as `now`'s, to change or keep.
 pub(crate) fn prompt_lines_over(question: &str, now: &[&str]) -> Result<Vec<String>> {
     use std::io::IsTerminal as _;
-    println!("{question}, a line at a time; an empty line ends it:");
+    // Without a terminal, the lines cannot be put on the line to keep: they
+    // are shown, and a blank first answer keeps them, as `read_over` keeps
+    // a value.
+    let all = now;
+    let keeps = !std::io::stdin().is_terminal() && !all.is_empty();
+    if keeps {
+        println!("{question}, a line at a time; an empty line ends it, and an empty first line keeps:");
+        for l in now {
+            println!("  {}", crate::model::answer::printed(l));
+        }
+    } else {
+        println!("{question}, a line at a time; an empty line ends it:");
+    }
     let mut lines = vec![];
     loop {
         let now = now.get(lines.len()).copied().unwrap_or("");
@@ -127,7 +139,12 @@ pub(crate) fn prompt_lines_over(question: &str, now: &[&str]) -> Result<Vec<Stri
                 ran_out(question)?;
                 break;
             }
-            r if r.as_ref().is_ok_and(|l| l.trim().is_empty()) => break,
+            r if r.as_ref().is_ok_and(|l| l.trim().is_empty()) => {
+                if keeps && lines.is_empty() {
+                    return Ok(all.iter().map(|l| l.to_string()).collect());
+                }
+                break;
+            }
             r => lines.push(r?.trim().to_string()),
         }
     }

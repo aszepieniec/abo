@@ -91,7 +91,15 @@ pub fn apply(m: &Books, op: &Op, today: Date) -> Result<Books, Vec<Violation>> {
     // What the books held before is not the change's to answer for: a change
     // that mends one problem of several goes ahead (MODEL.md §8).
     let before = check(m);
-    let mut v: Vec<Violation> = check(&n).into_iter().filter(|x| !before.iter().any(|b| b.code == x.code && b.what == x.what)).collect();
+    let after = check(&n);
+    // A number past what is computed with exactly, or a date past four
+    // digits, is checked first and alone (I-K3, I-D1): the conditions on
+    // the change compute with them, and would overflow.
+    let first: Vec<Violation> = after.iter().filter(|x| matches!(x.code, "I-K3" | "I-D1")).cloned().collect();
+    if !first.is_empty() {
+        return Err(explain(m, op, &n, first));
+    }
+    let mut v: Vec<Violation> = after.into_iter().filter(|x| !before.iter().any(|b| b.code == x.code && b.what == x.what)).collect();
     v.extend(conditions(m, &n, op, today));
     if v.is_empty() {
         Ok(n)
