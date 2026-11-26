@@ -1458,6 +1458,11 @@ fn corporate_commands_change_only_their_tree() {
     std::fs::write(books.join("corporate/u/.keep"), "untracked").unwrap();
     assert!(run(&["corporate", "mkdir", "corporate/vv"]).ok);
     assert_eq!(std::fs::read_to_string(books.join("corporate/u/.keep")).unwrap(), "untracked");
+    // Nor below it; and a `.Keep` is a `.keep`: not moved or taken out alone.
+    assert!(run(&["corporate", "add", &_parent.0.join("\u{df}").display().to_string(), "corporate/u/sub"]).ok);
+    assert_eq!(std::fs::read_to_string(books.join("corporate/u/.keep")).unwrap(), "untracked");
+    refused(&["corporate", "mv", "corporate/hh/.Keep", "corporate/q"]);
+    refused(&["corporate", "rm", "corporate/hh/.Keep"]);
 }
 
 /// G-C3: whatever is committed under `corporate/` — what looks like abo's

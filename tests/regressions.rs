@@ -1935,7 +1935,7 @@ fn text_not_as_abo_writes_it_holds_changes_up_until_tidied() {
     let o = abo(&dir, &["check"]);
     assert!(String::from_utf8_lossy(&o.stdout).contains("an invoice's or credit note's postings follow from what it says"), "{}", String::from_utf8_lossy(&o.stdout));
     let o = abo(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"]);
-    assert!(err(&o).contains("git checkout") && !err(&o).contains("git commit"), "{}", err(&o));
+    assert!(err(&o).contains("git restore") && !err(&o).contains("git commit"), "{}", err(&o));
     git(&dir, &["commit", "-qam", "By hand"]);
     refused(&dir, &["post", "--date", "2026-03-02", "--desc", "More", "Expenses:General=1.00", "Assets:Bank=-1.00"], "until `abo tidy`");
     assert!(ok(&dir, &["tidy"]).contains("Rewrote journal/2026.journal"));
@@ -2877,4 +2877,72 @@ fn a_blank_piped_address_keeps_it() {
     assert!(child.wait_with_output().unwrap().status.success());
     let partners = read(&dir, "partners.toml");
     assert!(partners.contains("Street 1") && partners.contains("8000 Zurich"), "{partners}");
+}
+
+/// Files moved aside for a change, round six: a file rewritten lost its
+/// mode; `.abo` not writable, or on another file system, failed every
+/// change, and a rollback then took out files never moved aside; files an
+/// abo killed half way left aside stayed for good.
+#[test]
+fn a_change_keeps_modes_and_needs_no_writable_abo() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = books("aside-six", &[]);
+    std::fs::set_permissions(dir.join("abo.toml"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    git(&dir, &["commit", "-q", "-am", "By hand"]);
+    std::fs::create_dir_all(dir.join(".abo/aside")).unwrap();
+    std::fs::write(dir.join(".abo/aside/0"), "left by an abo killed").unwrap();
+    ok(&dir, &["company", "--name", "Other LLC"]);
+    assert!(std::fs::metadata(dir.join("abo.toml")).unwrap().permissions().mode() & 0o111 != 0);
+    assert!(!dir.join(".abo/aside").exists());
+    std::fs::set_permissions(dir.join(".abo"), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let o = abo(&dir, &["account", "add", "Expenses:Rent"]);
+    std::fs::set_permissions(dir.join(".abo"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(o.status.success(), "{}", err(&o));
+    let status = String::from_utf8(std::process::Command::new("git").args(["status", "--porcelain", "--ignored"]).current_dir(&dir).output().unwrap().stdout).unwrap();
+    assert!(status.lines().all(|l| l.starts_with("!! .abo/")), "{status}");
+}
+
+/// Books already holding a number too large (I-K3), edited in by hand: a
+/// partner added was refused for it, as if the partner were too large.
+/// The books' own problem is said as theirs.
+#[test]
+fn a_problem_the_books_hold_is_said_as_theirs() {
+    let dir = books("held-too-large", &[]);
+    ok(&dir, &["post", "--date", "2026-01-05", "--desc", "Pens", "--", "Expenses:General  12.50 EUR", "Assets:Bank  -12.50 EUR"]);
+    let year = read(&dir, "journal/2026.journal").replace("12.50", "2000000000000.00");
+    std::fs::write(dir.join("journal/2026.journal"), year).unwrap();
+    git(&dir, &["commit", "-q", "-am", "By hand"]);
+    refused(&dir, &["partner", "add", "acme", "--name", "Acme"], "the books hold a problem");
+}
+
+/// Undo where git cannot write: in a directory not writable it committed a
+/// file taken out that stayed on disk, or failed half way and left what it
+/// had done. It now refuses first; and a revert that fails is taken back.
+#[test]
+fn undo_refuses_where_it_cannot_write() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = books("undo-readonly", &[]);
+    let f = dir.parent().unwrap().join("undo-readonly-f");
+    std::fs::write(&f, "f").unwrap();
+    ok(&dir, &["corporate", "add", f.to_str().unwrap(), "corporate/f"]);
+    ok(&dir, &["corporate", "mv", "corporate/f/undo-readonly-f", "corporate/d/f"]);
+    std::fs::set_permissions(dir.join("corporate/d"), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let said = refused(&dir, &["undo"], "is not writable");
+    std::fs::set_permissions(dir.join("corporate/d"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(said.contains("corporate/d"), "{said}");
+    let status = String::from_utf8(std::process::Command::new("git").args(["status", "--porcelain", "--untracked-files=all"]).current_dir(&dir).output().unwrap().stdout).unwrap();
+    assert_eq!(status, "");
+    ok(&dir, &["undo"]);
+    assert!(!dir.join("corporate/d/f").exists());
+}
+
+/// A change staged by hand, `git mv` say, was shown as nothing: the diff
+/// abo showed was the work tree's against what was staged.
+#[test]
+fn a_staged_change_is_shown() {
+    let dir = books("staged-shown", &[]);
+    std::fs::write(dir.join("journal/accounts.journal"), read(&dir, "journal/accounts.journal") + "account Expenses:Staged\n").unwrap();
+    git(&dir, &["add", "journal/accounts.journal"]);
+    let said = refused(&dir, &["account", "add", "Expenses:Rent"], "a change abo did not make");
+    assert!(said.contains("+account Expenses:Staged"), "{said}");
 }

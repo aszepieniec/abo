@@ -101,8 +101,11 @@ fn there(t: &Tree, path: &str, verb: &str) -> Result<String> {
     if p.starts_with("corporate/") && (t.is_file(p) || t.is_link(p) || t.is_dir(p)) {
         return Ok(p.to_string());
     }
-    if let Some(p) = t.written(p).filter(|_| p.starts_with("corporate/")) {
-        return Ok(p);
+    if let Some(w) = t.written(p).filter(|_| p.starts_with("corporate/")) {
+        if p != path && (t.is_file(&w) || t.is_link(&w)) {
+            return Err(refused(format!("{w} is a file, not a directory, as the / after it says")));
+        }
+        return Ok(w);
     }
     let n = names(path)?;
     if n.is_empty() {
@@ -375,7 +378,7 @@ fn commit(s: &mut Store, mut c: Change, subject: &str, argv: Vec<String>) -> Res
         .paths()
         .chain(c.puts.iter().map(|(p, _)| p))
         .flat_map(|p| Path::new(p).ancestors().skip(1).map(|d| d.to_string_lossy().into_owned()).take_while(|d| d != ROOT).collect::<Vec<_>>())
-        .filter(|d| !gone(d) && !by_hand(d) && !twin(d, &before))
+        .filter(|d| !gone(d) && !by_hand(d) && !twin(d, &kids) && !(twin(d, &before) && !kids.keys().any(|(parent, _)| parent == d)))
         .collect();
     let asked: std::collections::HashSet<String> = c.puts.iter().map(|(p, _)| p.clone()).collect();
     for d in dirs {
@@ -397,7 +400,7 @@ fn commit(s: &mut Store, mut c: Change, subject: &str, argv: Vec<String>) -> Res
         }
     }
     c.puts.retain(|(p, _)| match p.rsplit_once('/') {
-        Some((d, KEEP)) => !kept.contains(d) || t.is_file(p),
+        Some((d, KEEP)) => (!kept.contains(d) || t.is_file(p)) && !(std::fs::symlink_metadata(s.root.join(p)).is_ok() && !t.is_file(p)),
         _ => true,
     });
     // Each name a path written makes is one abo would give, whatever wrote
@@ -531,7 +534,7 @@ fn said(paths: &[String]) -> String {
 pub fn mv(s: &mut Store, from: &[String], to: &str) -> Result<String> {
     let t = Tree::read(&s.root)?;
     let srcs = from.iter().map(|f| there(&t, f, "moved")).collect::<Result<Vec<_>>>()?;
-    if let Some(keep) = srcs.iter().find(|p| p.rsplit('/').next() == Some(KEEP)) {
+    if let Some(keep) = srcs.iter().find(|p| p.rsplit('/').next().is_some_and(|n| folded(n) == folded(KEEP))) {
         let dir = keep.rsplit_once('/').unwrap().0;
         return Err(refused(format!("{keep} keeps its directory, and goes only with it: move {dir} instead")));
     }
@@ -640,7 +643,7 @@ pub fn rm(s: &mut Store, paths: &[String]) -> Result<String> {
     let mut ats: Vec<String> = vec![];
     for p in paths {
         let at = there(&t, p, "removed")?;
-        if let Some((dir, KEEP)) = at.rsplit_once('/') {
+        if let Some((dir, _)) = at.rsplit_once('/').filter(|(_, n)| folded(n) == folded(KEEP)) {
             let rm = crate::command::shell(&["corporate", "rm", "--", dir]);
             return Err(refused(format!("{at} keeps its directory, and goes only with it: `{rm}` takes out the directory")));
         }

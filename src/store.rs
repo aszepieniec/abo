@@ -229,7 +229,7 @@ impl Store {
     /// None where the change changes nothing: no commit, no line.
     pub fn change(&mut self, op: &Op, also: &[(String, Vec<u8>)]) -> Result<Option<String>> {
         self.changeable()?;
-        let n = model::apply(&self.books, op, today()?).map_err(Refused)?;
+        let n = model::apply(&self.books, op, today()?).map_err(|v| self.held(v))?;
         self.mends(&n)?;
         let argv = crate::command::argv(op, &self.books);
         let what = crate::command::subject(op, &self.books, &n);
@@ -252,7 +252,7 @@ impl Store {
         let mut n = self.books.clone();
         let mut lines: Vec<(Vec<String>, String)> = vec![];
         for op in ops {
-            let next = model::apply(&n, op, today()?).map_err(Refused)?;
+            let next = model::apply(&n, op, today()?).map_err(|v| self.held(v))?;
             self.mends(&next)?;
             lines.push((crate::command::argv(op, &n), crate::command::subject(op, &n, &next)));
             n = next;
@@ -286,7 +286,8 @@ impl Store {
         }
         // As a shell takes them: a name may hold a space or a quote.
         let these = files.iter().map(|f| crate::command::quoted(f)).collect::<Vec<_>>().join(" ");
-        let mut diff = vec!["--literal-pathspecs", "diff", "-U0", "--no-color", "--"];
+        // Against the last commit: what is staged, `git mv` say, too.
+        let mut diff = vec!["--literal-pathspecs", "diff", "-U0", "--no-color", "HEAD", "--"];
         diff.extend(files.iter().map(String::as_str));
         let lines: Vec<String> = repo::git_in(&self.root, &diff)?
             .lines()
@@ -317,6 +318,19 @@ impl Store {
              Please {ways}.",
             if files.len() == 1 { "holds" } else { "hold" }
         )))
+    }
+
+    /// A refusal for violations the books held already, each of them, is
+    /// said as theirs, as `mends` says it, not as the change's: a partner
+    /// added is not what holds a number too large.
+    fn held(&self, v: Vec<model::Violation>) -> anyhow::Error {
+        let before = model::check(&self.books);
+        if !v.is_empty() && v.iter().all(|x| before.iter().any(|b| b.code == x.code && b.what == x.what)) {
+            if let Err(e) = self.mends(&self.books) {
+                return e;
+            }
+        }
+        Refused(v).into()
     }
 
     /// While the books break a rule, a change is made only if it mends one
@@ -446,7 +460,13 @@ impl Store {
         // and keeps a file's mode and a link as a link. Put back if the
         // change fails; gone once it is made.
         let aside_dir = self.root.join(".abo/aside");
+        // What an abo killed half way left there is the last commit's, as
+        // every file moved aside is (`changeable`): nothing to keep. One
+        // change at a time holds the lock, so none is another's.
+        let _ = std::fs::remove_dir_all(&aside_dir);
         let mut aside: Vec<(std::path::PathBuf, std::path::PathBuf)> = vec![];
+        // What was written, or begun: only that is taken out again.
+        let mut written: Vec<String> = vec![];
         // The directories writing makes, deepest first: taken out again if it fails.
         let mut made: Vec<std::path::PathBuf> = puts.iter().flat_map(|(p, _)| Path::new(p).ancestors().skip(1).filter(|d| !d.as_os_str().is_empty() && !self.root.join(d).exists()).map(Path::to_path_buf).collect::<Vec<_>>()).collect();
         made.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
@@ -461,16 +481,34 @@ impl Store {
             for (i, rel) in paths.iter().enumerate() {
                 let at = self.root.join(rel);
                 if std::fs::symlink_metadata(&at).is_ok_and(|m| !m.is_dir()) {
-                    std::fs::create_dir_all(&aside_dir)?;
-                    let to = aside_dir.join(format!("{}-{i}", std::process::id()));
-                    std::fs::rename(&at, &to).with_context(|| format!("{rel}: it could not be moved aside"))?;
+                    let to = aside_dir.join(i.to_string());
+                    // `.abo` on another file system than the books, as a link
+                    // to one, or not writable: aside in the file's own
+                    // directory, under a name ending in `~`, which the
+                    // books' .gitignore names.
+                    let to = match std::fs::create_dir_all(&aside_dir).and_then(|()| std::fs::rename(&at, &to)) {
+                        Ok(()) => to,
+                        Err(_) => {
+                            let name = at.file_name().unwrap_or_default().to_string_lossy();
+                            let beside = at.with_file_name(format!(".{name}.abo-aside-{i}~"));
+                            std::fs::rename(&at, &beside).with_context(|| format!("{rel}: it could not be moved aside"))?;
+                            beside
+                        }
+                    };
                     aside.push((at, to));
                 }
             }
             for (rel, bytes) in puts {
+                written.push(rel.to_string());
                 put(&self.root, rel, bytes)?;
+                // Its mode as the file it replaces had it; executable where
+                // `exec` says, as one moved from such a file.
+                use std::os::unix::fs::PermissionsExt as _;
+                let was = aside.iter().find(|(at, _)| *at == self.root.join(rel)).and_then(|(_, to)| std::fs::symlink_metadata(to).ok()).filter(|m| m.is_file());
+                if let Some(m) = was {
+                    std::fs::set_permissions(self.root.join(rel), m.permissions())?;
+                }
                 if exec.iter().any(|e| e == rel) {
-                    use std::os::unix::fs::PermissionsExt as _;
                     std::fs::set_permissions(self.root.join(rel), std::fs::Permissions::from_mode(0o755))?;
                 }
             }
@@ -498,10 +536,12 @@ impl Store {
                 let mut reset = vec!["--literal-pathspecs", "reset", "-q", "--"];
                 reset.extend(paths.iter().map(String::as_str));
                 let _ = repo::git_in(&self.root, &reset);
-                for (rel, _) in puts {
+                for rel in &written {
                     let _ = std::fs::remove_file(self.root.join(rel));
                 }
                 for (at, to) in &aside {
+                    // A directory a put made where it was, emptied above.
+                    let _ = std::fs::remove_dir(at);
                     let _ = std::fs::rename(to, at);
                 }
                 for d in &made {
@@ -513,6 +553,7 @@ impl Store {
         for (_, to) in &aside {
             let _ = std::fs::remove_file(to);
         }
+        let _ = std::fs::remove_dir(&aside_dir);
         Ok(commit)
     }
 
@@ -533,7 +574,16 @@ impl Store {
             let mut status = vec!["--literal-pathspecs", "status", "--porcelain", "-z", "--ignored", "--untracked-files=all", "--"];
             status.extend(touched.iter().copied());
             if let Some(f) = porcelain(&repo::git_in(&self.root, &status)?).first() {
-                return Ok(Some(format!("{f} is where the last change wrote, and holds something not committed, which `abo undo` would write over: commit it yourself (git add --force, then git commit), or move it elsewhere")));
+                return Ok(Some(format!("{f} is where the last change wrote, and holds something not committed, which `abo undo` would write over: move it elsewhere first; committed, it would be the last change, and not abo's to undo")));
+            }
+            // A directory git cannot write in: it would commit a file taken
+            // out that it could not take out, or fail half way.
+            for p in &touched {
+                if let Some(d) = Path::new(p).ancestors().skip(1).map(|a| self.root.join(a)).find(|a| a.is_dir()) {
+                    if std::fs::metadata(&d).is_ok_and(|m| m.permissions().readonly()) {
+                        return Ok(Some(format!("{} is not writable, and `abo undo` would change what is in it: make it writable first", d.strip_prefix(&self.root).unwrap_or(&d).display())));
+                    }
+                }
             }
             // A file not committed where the change has a directory.
             for p in &touched {
@@ -711,8 +761,9 @@ impl Store {
         // is: a pre-commit hook that refuses refuses the whole undo, which
         // is then taken back, and no bare revert is left with no line of the
         // log. (Reverted and amended, git ran the hook at the amend alone.)
-        repo::git_env(&self.root, &["revert", "--no-commit", "HEAD"], &stamp.env())?;
+        let touched: Vec<String> = repo::git_in(&self.root, &["diff-tree", "--no-commit-id", "--name-only", "-z", "-r", "HEAD"])?.split('\0').filter(|p| !p.is_empty()).map(String::from).collect();
         let r = (|| -> Result<()> {
+            repo::git_env(&self.root, &["revert", "--no-commit", "HEAD"], &stamp.env())?;
             // An id given stays given: an entry taken back leaves a gap, which
             // main.journal records when it is the last (MODEL.md §2.3).
             let back = Store::open(&self.root)?.books;
@@ -726,7 +777,21 @@ impl Store {
             Ok(())
         })();
         if let Err(e) = r {
+            // As it was: git's own way first, then each path the change
+            // touched as HEAD has it, and none HEAD has not — a revert that
+            // failed half way leaves both behind. Nothing else was there
+            // (`git_holds_undo_up`).
             let _ = repo::git_in(&self.root, &["revert", "--abort"]);
+            let mut restore = vec!["--literal-pathspecs", "restore", "--source=HEAD", "--staged", "--worktree", "--"];
+            let held: Vec<&str> = touched.iter().map(String::as_str).filter(|p| repo::git_in(&self.root, &["cat-file", "-e", &format!("HEAD:{p}")]).is_ok()).collect();
+            if !held.is_empty() {
+                restore.extend(held.iter().copied());
+                let _ = repo::git_in(&self.root, &restore);
+            }
+            for p in touched.iter().filter(|p| !held.contains(&p.as_str())) {
+                let _ = repo::git_in(&self.root, &["--literal-pathspecs", "rm", "-q", "--cached", "--ignore-unmatch", "--", p]);
+                let _ = std::fs::remove_file(self.root.join(p));
+            }
             return Err(e);
         }
         let commit = repo::git_in(&self.root, &["rev-parse", "--short", "HEAD"])?.trim().to_string();
@@ -758,7 +823,8 @@ fn under_way(root: &Path) -> Option<String> {
 fn unreadable_mend(problems: &[String]) -> String {
     let mut files: Vec<&str> = problems.iter().filter_map(|p| p.split(':').next()).collect();
     files.dedup();
-    format!("Mend it by hand at the line named. git diff shows what changed since the last commit, and git checkout -- {} puts back what that commit holds, throwing the edit away", files.join(" "))
+    let these = files.iter().map(|f| crate::command::quoted(f)).collect::<Vec<_>>().join(" ");
+    format!("Mend it by hand at the line named. git diff HEAD shows what changed since the last commit, and git restore --source=HEAD --staged --worktree -- {these} puts back what that commit holds, throwing the edit away")
 }
 
 /// The paths `git status --porcelain -z` names, as they are: not quoted, as

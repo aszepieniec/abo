@@ -86,7 +86,13 @@ pub(crate) fn git_env(dir: &Path, args: &[&str], env: &[(&str, String)]) -> Resu
         if err.contains("Author identity unknown") || err.contains("Committer identity unknown") {
             bail!("git has no name and email to sign abo's commits with: give them for these books, git config user.name 'Your Name' and git config user.email you@example.com, run in the books' directory");
         }
-        bail!("git {}: {}", args.join(" "), err.trim());
+        // Said by what git was doing, not by every word abo gave it: a
+        // commit's whole message, every path.
+        let doing = args.iter().find(|a| !a.starts_with('-')).copied().unwrap_or_default();
+        if err.trim().is_empty() {
+            bail!("git {doing} failed and said nothing: a hook of the books' git that refuses, perhaps (.git/hooks)");
+        }
+        bail!("git {doing}: {}", err.trim());
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }

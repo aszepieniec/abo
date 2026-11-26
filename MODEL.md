@@ -1345,6 +1345,9 @@ whoever holds the states keeps — the git history, in the books:
 
 - It is `before`, but that the ids `after` gave stay given: an entry the
   operation added leaves a gap where it was, so its id is never given again.
+- It is not made where git could not make it whole: over a file not
+  committed, or in a directory not writable, where git would commit a file
+  taken out that it could not take out. Begun and failed, it is taken back.
 - It is not defined where the operation issued an invoice or a credit note:
   one issued may be with the customer already, and is cancelled by a credit
   note (F5), not taken back.
@@ -1805,8 +1808,8 @@ With the model, one set of invariants holds, and the 76 rule-version switches ar
   leaves out `.keep`. A directory committed by hand that abo writes into
   keeps its spelling. Two names in a directory the same once folded,
   committed by hand, are not written into, not even a `.keep`, and one
-  emptied goes; nor is a directory where a file not committed sits at its
-  `.keep`, until that is settled.
+  emptied goes; nor is a `.keep` written where a file not committed sits,
+  until that is settled.
 - **The log** and the rest of `.abo/` are working state, as today.
 - **Reports** are functions of the state, not part of it.
 - **Users** are the gateway's (DESIGN §8): the author of a commit is the person

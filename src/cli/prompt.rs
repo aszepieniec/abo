@@ -120,7 +120,11 @@ pub(crate) fn prompt_lines_over(question: &str, now: &[&str]) -> Result<Vec<Stri
     // are shown, and a blank first answer keeps them, as `read_over` keeps
     // a value.
     let all = now;
-    let keeps = !std::io::stdin().is_terminal() && !all.is_empty();
+    // On a terminal each line is put on the line to keep or change, but not
+    // where one holds what prints as `?`, an edit by hand (`read_over`):
+    // then they are shown, as without a terminal.
+    let on_line = std::io::stdin().is_terminal() && all.iter().all(|l| crate::model::answer::printed(l) == *l);
+    let keeps = !on_line && !all.is_empty();
     if keeps {
         println!("{question}, a line at a time; an empty line ends it, and an empty first line keeps:");
         for l in now {
@@ -133,7 +137,7 @@ pub(crate) fn prompt_lines_over(question: &str, now: &[&str]) -> Result<Vec<Stri
     loop {
         let now = now.get(lines.len()).copied().unwrap_or("");
         // Without a terminal there is no line to put them on.
-        let now = if std::io::stdin().is_terminal() { now } else { "" };
+        let now = if on_line { now } else { "" };
         match line("  ", now) {
             Err(rustyline::error::ReadlineError::Eof) => {
                 ran_out(question)?;

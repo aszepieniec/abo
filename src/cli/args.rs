@@ -13,7 +13,7 @@ use std::path::PathBuf;
     name = "abo",
     version,
     about = "accountant back office",
-    after_help = "abo commits every change it makes. While the books' files hold a change it did not make (a file edited by hand, say), abo changes nothing, not even to mend what that change breaks: its commit would take the change in as abo's own. Take the change out with git checkout, or commit it yourself; `abo check` says which files, and what they break."
+    after_help = "abo commits every change it makes. While the books' files hold a change it did not make (a file edited by hand, say), abo changes nothing, not even to mend what that change breaks: its commit would take the change in as abo's own. Take the change out with git restore, or commit it yourself; `abo check` says which files, and what they break."
 )]
 pub(crate) struct Cli {
     /// Machine-readable output. This is the API schema.
