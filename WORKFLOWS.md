@@ -565,6 +565,18 @@ During a merge, a rebase, a cherry-pick or a revert, it names git's own
 and the refusal names both git commands, or, where the change breaks the
 books, says to mend it by hand at the line named and commit it.
 
+### F9. After abo was stopped half way — Supported (CLI, browser)
+abo killed in the middle of a change — Ctrl-C at the wrong moment, the
+terminal closed, the server restarted — leaves files half changed. Run any
+abo command, `abo check` say, or make any change in the browser: before it
+reads the books it takes the half-made change back and says so ("abo was
+stopped half way through a change; it is taken back"). Nothing is to be done
+by hand, unless git's index is held: the error names `.git/index.lock`, which
+is taken out once no git is running, and the next command finishes. What it
+does not cover is in MODEL.md §5.
+**Done when** the books are as the last commit has them, or the change is
+committed whole, and `abo check` says no problem.
+
 ### F3. Take out a statement recorded by mistake — Supported (browser, CLI)
 **Take out the statement** on Reconcile, or `abo unrecord`: the latest
 statement of the account, as only the latest can go (MODEL.md §5).

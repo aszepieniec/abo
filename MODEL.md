@@ -1240,12 +1240,33 @@ latest statement, or a partner or agreement nothing names; links a document
 to its bill; removes a comment; or changes the configuration, the
 declarations, a partner's details or an agreement's status.
 
-An operation is made whole or not at all. One stopped half way — abo killed,
-the machine off — is taken back by the next abo to hold the books, before
-anything reads them, and that abo says so: each file it changed is as the
-last commit has it, or as it was if it was not committed, and an undo under
-way is called off. Before it starts, an operation records in git's directory
-what it changes; it deletes the record once the commit is made.
+An operation is made whole or not at all. Before it writes, it records in
+`.git/abo-changing` its kind, the commit it starts from and each path it
+writes or takes out; it deletes the record once its commit is made. An abo
+stopped half way, killed, leaves the record, and with it files half changed.
+The next abo to hold the books (`repo::lock`: every command but `init`, and
+each change abo-web makes) finds the record before it reads anything and:
+
+- where the last commit is not the one recorded, the commit was made: it
+  only clears what was left aside;
+- where it is, takes the operation back: each path recorded as it was before
+  — a file moved aside put back, one written in its place taken out, a
+  directory made for it and left empty taken out — and nothing staged; an
+  undo under way called off as `git revert --abort` calls it off, each path
+  as the last commit has it;
+
+and says on stderr that it did. An operation that fails, a hook refusing it
+say, is taken back the same way at once. Where that cannot be done — git's
+index held by another git, `.git/index.lock` — the error says so, the
+files are left as they are, and the next abo tries again; an `index.lock`
+left by a git that was itself killed is taken out by hand, as git says.
+
+What this does not cover: a file edited by hand and saved while abo is
+changing that same file is lost, as the edit lands between abo's check for
+hand edits and its write; abo-web's pages, which read without holding the
+books, show a change half made until the next change or command; and git's
+own files damaged by the machine stopping, which `git fsck` finds and abo
+does not mend.
 
 ### 5.1 Declarations
 
@@ -1840,6 +1861,17 @@ are properties (`src/model/tests.rs`, with proptest), each over plans of up to
 Each property tests a guarantee of §3, whose tables name them; that every
 property there exists, and every property is there, is itself a test,
 `every_guarantee_is_tested`.
+
+Two fuzzers in `tests/fuzz/`, run by `tests/fuzz.rs` against the built
+binary, check through the command line what a property cannot reach, git
+and the file system: `corporate.py` runs
+random corporate commands, with names chosen to collide and failures
+injected (a hook refusing, git's index held, a directory not writable, a full
+disk), each against a model of the tree it keeps, then replays the log
+(G-C1, G-C2, G-O8); `history.py` runs long histories of every operation,
+corporate ones among them, undone and redone, then replays the log. Each
+seed is fixed; `ABO_FUZZ=n` runs n times as many, `ABO_FUZZ_SEED` from
+another. They need python3.
 
 A plan is a list of steps drawn without looking at the books: post, file,
 unfile, bill, invoice, credit, pay, write-off, revert, record, unrecord,
